@@ -1,5 +1,18 @@
 # Network Digital Twin — Plan 1: IR Core + Indexes + Representations
 
+> **STATUS: ✅ IMPLEMENTED** (commit `c79553d`, 2026-06-09). 66 tests pass; ruff + mypy-strict clean.
+> This document is synced to the **as-built** code. **The repository code is the source of truth**;
+> deltas applied during implementation (all improvements, no scope change):
+> 1. **Typed graph payloads** — `representations/graph_data.py` defines `L2Edge`/`VlanNode`; graphs
+>    store one typed object under the `data` key instead of stringly-typed attribute dicts (schema in
+>    one place; mypy-checked access for the future analysis/checks layers).
+> 2. **Shared test factories** — `tests/factories.py` (`sw`/`ap`/`trunk_port`/`access_port`/`link`/
+>    `irb`/`wired_client`/`wireless_client`) replaces per-file helpers. Test code blocks below may
+>    still show inline helpers; the repository tests use the factories.
+> 3. **Tidies** — `node_for()` lives in `ir/indexes.py` (shared, not private to the graph builder);
+>    `_bundle_key()` replaces the `is_bundle` + `assert` dance; enums use Python 3.14 `StrEnum`;
+>    frozen tests assert `dataclasses.FrozenInstanceError`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the bottom two pure layers of the twin — the vendor-neutral **IR** (typed immutable entities with per-fact provenance/confidence, validating builder, capability/version metadata, `IRDiff`, and pure index lookups) and the **representations** layer (the L2 and per-VLAN graph *views*) — that every later layer consumes.
@@ -27,13 +40,16 @@ src/digital_twin/
 │   ├── entities.py          # enums, id helpers, frozen entities (with FactMeta)
 │   ├── model.py             # IR, validating IRBuilder, IRValidationError, IR_VERSION
 │   ├── diff.py              # EntityRef, Modified, IRDiff, diff_ir()
-│   └── indexes.py           # vc_root_map, ports_by_device, access_ports_by_vlan, exits_by_vlan, clients_by_*
+│   └── indexes.py           # vc_root_map, node_for, ports_by_device, access/exits/clients_by_*
 └── representations/
-    ├── __init__.py          # re-exports build_l2_graph, build_vlan_graph, link_carried_vlans
+    ├── __init__.py          # re-exports builders + L2Edge/VlanNode
+    ├── graph_data.py        # typed graph payloads: L2Edge, VlanNode (schema in ONE place)
     ├── l2_graph.py          # link_carried_vlans(), build_l2_graph()
     └── vlan_graph.py        # build_vlan_graph() (uses ir.indexes)
 tests/
+├── factories.py             # shared IR fixture builders (sw, ap, trunk_port, link, ...)
 ├── test_smoke.py
+├── test_public_api.py
 ├── ir/
 │   ├── __init__.py
 │   ├── test_confidence.py
@@ -58,7 +74,7 @@ Dependency chain: `representations → {ir.indexes, ir.model, ir.entities}`, `ir
 **Files:**
 - Create: `pyproject.toml`, `src/digital_twin/__init__.py`, `src/digital_twin/ir/__init__.py`, `src/digital_twin/representations/__init__.py`, `tests/__init__.py`, `tests/ir/__init__.py`, `tests/representations/__init__.py`, `tests/test_smoke.py`
 
-- [ ] **Step 1: Initialize the uv package**
+- [x] **Step 1: Initialize the uv package**
 
 Run:
 ```bash
@@ -66,7 +82,7 @@ uv init --package --name digital-twin --python 3.14
 ```
 Expected: creates `pyproject.toml` and `src/digital_twin/__init__.py`. (If uv reports 3.14 missing: `uv python install 3.14` first.)
 
-- [ ] **Step 2: Add dependencies**
+- [x] **Step 2: Add dependencies**
 
 Run:
 ```bash
@@ -74,7 +90,7 @@ uv add networkx netaddr
 uv add --dev pytest ruff mypy
 ```
 
-- [ ] **Step 3: Add tool configuration to `pyproject.toml`**
+- [x] **Step 3: Add tool configuration to `pyproject.toml`**
 
 Merge the blocks below into the generated `pyproject.toml`. **Keep the `[build-system]` and dependency sections uv generated;** only set `requires-python` and add the `[tool.*]` blocks:
 
@@ -103,7 +119,7 @@ module = ["networkx.*", "netaddr.*"]
 ignore_missing_imports = true
 ```
 
-- [ ] **Step 4: Create package markers and a smoke test**
+- [x] **Step 4: Create package markers and a smoke test**
 
 Run:
 ```bash
@@ -121,12 +137,12 @@ def test_package_imports():
     assert digital_twin is not None
 ```
 
-- [ ] **Step 5: Verify the toolchain runs green (exit 0)**
+- [x] **Step 5: Verify the toolchain runs green (exit 0)**
 
 Run: `uv run pytest -q`
 Expected: PASS (1 passed), exit 0. (The smoke test keeps the suite non-empty so runners don't trip on pytest's exit code 5.)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -141,11 +157,13 @@ git commit -m "chore: scaffold digital-twin package (uv, py3.14, pytest/ruff/myp
 - Create: `src/digital_twin/ir/confidence.py`
 - Test: `tests/ir/test_confidence.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_confidence.py`:
 
 ```python
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from digital_twin.ir.confidence import Confidence, ConfidenceLevel, min_confidence
@@ -177,13 +195,13 @@ def test_min_requires_at_least_one_argument():
 
 def test_confidence_is_frozen():
     c = Confidence(ConfidenceLevel.MEDIUM)
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         c.level = ConfidenceLevel.HIGH  # type: ignore[misc]
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_confidence.py -v` → FAIL (`ModuleNotFoundError`).
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_confidence.py -v` → FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/confidence.py`:
 
@@ -223,9 +241,9 @@ def min_confidence(*confidences: Confidence) -> Confidence:
     return Confidence(level=lowest, reasons=reasons)
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_confidence.py -v` → PASS (5 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_confidence.py -v` → PASS (5 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/confidence.py tests/ir/test_confidence.py
@@ -240,7 +258,7 @@ git commit -m "feat(ir): confidence value object with MIN composition"
 - Create: `src/digital_twin/ir/provenance.py`
 - Test: `tests/ir/test_provenance.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_provenance.py`:
 
@@ -282,9 +300,9 @@ def test_factmeta_constructs():
     assert isinstance(m, FactMeta)
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_provenance.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_provenance.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/provenance.py`:
 
@@ -300,12 +318,12 @@ own clients) is authoritative HIGH; a single-source claim about a relationship
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .confidence import Confidence, ConfidenceLevel
 
 
-class Provenance(str, Enum):
+class Provenance(StrEnum):
     CONFIG = "config"
     DESIGNATED = "designated"
     LLDP_TWO_SIDED = "lldp_two_sided"
@@ -338,9 +356,9 @@ CONFIG_META = fact_meta(Provenance.CONFIG)
 OBSERVED_META = fact_meta(Provenance.OBSERVED)
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_provenance.py -v` → PASS (5 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_provenance.py -v` → PASS (5 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/provenance.py tests/ir/test_provenance.py
@@ -355,7 +373,7 @@ git commit -m "feat(ir): provenance + FactMeta with canonical provenance->confid
 - Create: `src/digital_twin/ir/capabilities.py`
 - Test: `tests/ir/test_capabilities.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_capabilities.py`:
 
@@ -390,9 +408,9 @@ def test_ircapability_members_are_capabilities_and_interchange_with_strings():
     assert isinstance(future, str)
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_capabilities.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_capabilities.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/capabilities.py`:
 
@@ -411,22 +429,22 @@ checks are unaffected.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 # Unified capability type: a namespaced capability string.
 Capability = str
 
 
-class IRCapability(str, Enum):
+class IRCapability(StrEnum):
     WIRED_L2 = "wired.l2"
     STP_STATE = "stp.state"
     CLIENTS_ACTIVE = "clients.active"
     L3_EXITS = "l3.exits"
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_capabilities.py -v` → PASS (3 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_capabilities.py -v` → PASS (3 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/capabilities.py tests/ir/test_capabilities.py
@@ -441,11 +459,13 @@ git commit -m "feat(ir): IRCapability domain-presence vocabulary"
 - Create: `src/digital_twin/ir/entities.py`
 - Test: `tests/ir/test_entities.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_entities.py`:
 
 ```python
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from digital_twin.ir.entities import (
@@ -525,13 +545,13 @@ def test_vlan_has_scope():
 
 def test_entities_are_frozen():
     dev = Device(id="d1", role=DeviceRole.SWITCH, site="s1")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         dev.site = "s2"  # type: ignore[misc]
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_entities.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_entities.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/entities.py`:
 
@@ -545,50 +565,50 @@ line up for diffing and future cross-vendor reconciliation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .provenance import CONFIG_META, OBSERVED_META, FactMeta
 
 
-class DeviceRole(str, Enum):
+class DeviceRole(StrEnum):
     SWITCH = "switch"
     GATEWAY = "gateway"
     AP = "ap"
     MISTEDGE = "mistedge"
 
 
-class PortMode(str, Enum):
+class PortMode(StrEnum):
     ACCESS = "access"
     TRUNK = "trunk"
 
 
-class LinkKind(str, Enum):
+class LinkKind(StrEnum):
     PHYSICAL = "physical"
     LAG = "lag"
     MCLAG = "mclag"
     VC = "vc"
 
 
-class StpMode(str, Enum):
+class StpMode(StrEnum):
     RSTP = "rstp"
     MSTP = "mstp"
     VSTP = "vstp"
     NONE = "none"
 
 
-class L3Role(str, Enum):
+class L3Role(StrEnum):
     IRB = "irb"
     SVI = "svi"
     WAN = "wan"
     LOOPBACK = "loopback"
 
 
-class ClientKind(str, Enum):
+class ClientKind(StrEnum):
     WIRED = "wired"
     WIRELESS = "wireless"
 
 
-class AttachKind(str, Enum):
+class AttachKind(StrEnum):
     PORT = "port"
     AP = "ap"
 
@@ -699,9 +719,9 @@ class Client:
         return client_id(self.mac)
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_entities.py -v` → PASS (8 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_entities.py -v` → PASS (8 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/entities.py tests/ir/test_entities.py
@@ -716,7 +736,7 @@ git commit -m "feat(ir): frozen entities with FactMeta, Link.bundle_id, stable i
 - Create: `src/digital_twin/ir/model.py`
 - Test: `tests/ir/test_model.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_model.py`:
 
@@ -861,9 +881,9 @@ def test_valid_ir_with_full_references_builds():
     assert len(ir.links) == 1
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_model.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_model.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/model.py`:
 
@@ -1013,9 +1033,9 @@ class IRBuilder:
         )
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_model.py -v` → PASS (8 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_model.py -v` → PASS (8 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/model.py tests/ir/test_model.py
@@ -1030,7 +1050,7 @@ git commit -m "feat(ir): validating IRBuilder + immutable IR container"
 - Create: `src/digital_twin/ir/diff.py`
 - Test: `tests/ir/test_diff.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_diff.py`:
 
@@ -1085,9 +1105,9 @@ def test_touches_reports_kinds():
     assert d.touches("port") is False
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_diff.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_diff.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/diff.py`:
 
@@ -1181,9 +1201,9 @@ def diff_ir(baseline: IR, proposed: IR) -> IRDiff:
     return IRDiff(tuple(added), tuple(removed), tuple(modified))
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_diff.py -v` → PASS (5 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_diff.py -v` → PASS (5 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/diff.py tests/ir/test_diff.py
@@ -1200,7 +1220,7 @@ The pure index builders the representation/analysis layers reuse instead of re-w
 - Create: `src/digital_twin/ir/indexes.py`
 - Test: `tests/ir/test_indexes.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_indexes.py`:
 
@@ -1274,9 +1294,9 @@ def test_clients_by_port_ap_and_vlan():
     assert {c.mac for c in clients_by_vlan(ir)[30]} == {"aa", "bb"}
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_indexes.py -v` → FAIL (`ModuleNotFoundError`).
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_indexes.py -v` → FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/ir/indexes.py`:
 
@@ -1302,6 +1322,11 @@ def vc_root_map(ir: IR) -> dict[str, str]:
         for member in dev.vc_members:
             root[member] = dev.id
     return root
+
+
+def node_for(vc_root: dict[str, str], dev_id: str) -> str:
+    """The graph node a device folds into (its VC root, or itself)."""
+    return vc_root.get(dev_id, dev_id)
 
 
 def ports_by_device(ir: IR) -> dict[str, list[Port]]:
@@ -1355,9 +1380,9 @@ def clients_by_vlan(ir: IR) -> dict[int, list[Client]]:
     return dict(out)
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_indexes.py -v` → PASS (5 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/ir/test_indexes.py -v` → PASS (5 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/ir/indexes.py tests/ir/test_indexes.py
@@ -1374,7 +1399,7 @@ First representation helper. An access port presents its VLAN *untagged*, so it 
 - Create: `src/digital_twin/representations/l2_graph.py`
 - Test: `tests/representations/test_l2_graph.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/representations/test_l2_graph.py`:
 
@@ -1419,9 +1444,9 @@ def test_access_joins_trunk_only_via_native_not_tagged():
     assert link_carried_vlans(access, _trunk("d2:p", 10, (30,))) == {10}
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_l2_graph.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_l2_graph.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/representations/l2_graph.py`:
 
@@ -1453,9 +1478,9 @@ def link_carried_vlans(port_a: Port, port_b: Port) -> set[int]:
     return carried
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_l2_graph.py -v` → PASS (5 passed).
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_l2_graph.py -v` → PASS (5 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/representations/l2_graph.py tests/representations/test_l2_graph.py
@@ -1467,176 +1492,227 @@ git commit -m "feat(repr): link_carried_vlans with correct access/trunk semantic
 ## Task 9: `build_l2_graph` (bundle collapse, port-aware edges, min-confidence merge)
 
 **Files:**
+- Create: `src/digital_twin/representations/graph_data.py` (typed `L2Edge`/`VlanNode` payloads)
 - Modify: `src/digital_twin/representations/l2_graph.py`
 - Test: `tests/representations/test_l2_graph.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
-Add to the **top** import section of `tests/representations/test_l2_graph.py`:
+Add to the **top** import section of `tests/representations/test_l2_graph.py` (helpers come from
+the shared `tests/factories.py`):
 
 ```python
 import networkx as nx
 
 from digital_twin.ir.confidence import ConfidenceLevel
-from digital_twin.ir.entities import Device, DeviceRole, Link, LinkKind
+from digital_twin.ir.entities import LinkKind, Port, PortMode
 from digital_twin.ir.model import IRBuilder
-from digital_twin.ir.provenance import Provenance, fact_meta
-from digital_twin.representations.l2_graph import build_l2_graph
+from digital_twin.ir.provenance import Provenance
+from digital_twin.representations.graph_data import L2Edge
+from digital_twin.representations.l2_graph import build_l2_graph, link_carried_vlans
+from tests.factories import link, sw, trunk_port
 ```
 
-Then append below the existing tests:
+Then append below the existing tests (typed `.data` access — see banner):
 
 ```python
-def _sw(did: str) -> Device:
-    return Device(id=did, role=DeviceRole.SWITCH, site="s1")
-
-
-def _tp(did: str, name: str, tagged: tuple[int, ...]) -> Port:
-    return Port(id=f"{did}:{name}", device_id=did, name=name, mode=PortMode.TRUNK,
-                native_vlan=None, tagged_vlans=tagged)
-
-
-def _link(pa: str, pb: str, kind: LinkKind, bundle: str | None = None,
-          prov: Provenance = Provenance.LLDP_TWO_SIDED) -> Link:
-    return Link(id=f"{pa}__{pb}", a_port=pa, b_port=pb, kind=kind, bundle_id=bundle,
-                meta=fact_meta(prov))
-
-
-def _edge(g: nx.MultiGraph, u: str, v: str) -> dict:
-    return next(iter(g.get_edge_data(u, v).values()))
+def _edge(g: nx.MultiGraph, u: str, v: str) -> L2Edge:
+    return next(iter(g.get_edge_data(u, v).values()))["data"]
 
 
 def test_single_trunk_one_edge_with_ports_and_vlans():
-    pa, pb = _tp("d1", "ge-0/0/1", (30,)), _tp("d2", "ge-0/0/1", (30,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2")).add_port(pa).add_port(pb)
-          .add_link(_link(pa.id, pb.id, LinkKind.PHYSICAL)).build())
+    pa, pb = trunk_port("d1", "ge-0/0/1", (30,)), trunk_port("d2", "ge-0/0/1", (30,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2")).add_port(pa).add_port(pb)
+          .add_link(link(pa.id, pb.id)).build())
     g = build_l2_graph(ir)
     assert g.number_of_edges() == 1
-    data = _edge(g, "d1", "d2")
-    assert data["vlans"] == {30}
-    assert set(data["member_ports"]) == {pa.id, pb.id}
+    e = _edge(g, "d1", "d2")
+    assert e.vlans == {30}
+    assert set(e.member_ports) == {pa.id, pb.id}
 
 
 def test_two_independent_physical_links_parallel():
-    pa1, pb1 = _tp("d1", "ge-0/0/1", (30,)), _tp("d2", "ge-0/0/1", (30,))
-    pa2, pb2 = _tp("d1", "ge-0/0/2", (30,)), _tp("d2", "ge-0/0/2", (30,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
+    pa1, pb1 = trunk_port("d1", "ge-0/0/1", (30,)), trunk_port("d2", "ge-0/0/1", (30,))
+    pa2, pb2 = trunk_port("d1", "ge-0/0/2", (30,)), trunk_port("d2", "ge-0/0/2", (30,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
           .add_port(pa1).add_port(pb1).add_port(pa2).add_port(pb2)
-          .add_link(_link(pa1.id, pb1.id, LinkKind.PHYSICAL))
-          .add_link(_link(pa2.id, pb2.id, LinkKind.PHYSICAL)).build())
+          .add_link(link(pa1.id, pb1.id)).add_link(link(pa2.id, pb2.id)).build())
     assert build_l2_graph(ir).number_of_edges() == 2
 
 
 def test_one_lag_bundle_collapses_unions_vlans_mins_confidence():
-    pa1, pb1 = _tp("d1", "ae0a", (30,)), _tp("d2", "ae0a", (30,))
-    pa2, pb2 = _tp("d1", "ae0b", (40,)), _tp("d2", "ae0b", (40,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
+    pa1, pb1 = trunk_port("d1", "ae0a", (30,)), trunk_port("d2", "ae0a", (30,))
+    pa2, pb2 = trunk_port("d1", "ae0b", (40,)), trunk_port("d2", "ae0b", (40,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
           .add_port(pa1).add_port(pb1).add_port(pa2).add_port(pb2)
-          .add_link(_link(pa1.id, pb1.id, LinkKind.LAG, "ae0", Provenance.LLDP_TWO_SIDED))
-          .add_link(_link(pa2.id, pb2.id, LinkKind.LAG, "ae0", Provenance.LLDP_ONE_SIDED))
+          .add_link(link(pa1.id, pb1.id, LinkKind.LAG, "ae0", Provenance.LLDP_TWO_SIDED))
+          .add_link(link(pa2.id, pb2.id, LinkKind.LAG, "ae0", Provenance.LLDP_ONE_SIDED))
           .build())
     g = build_l2_graph(ir)
     assert g.number_of_edges() == 1
-    data = _edge(g, "d1", "d2")
-    assert data["vlans"] == {30, 40}
-    assert data["confidence"].level is ConfidenceLevel.LOW
+    e = _edge(g, "d1", "d2")
+    assert e.vlans == {30, 40}
+    assert e.confidence.level is ConfidenceLevel.LOW
+
+
+def test_mclag_bundle_preserves_kind():
+    pa, pb = trunk_port("d1", "ae0a", (30,)), trunk_port("d2", "ae0a", (30,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2")).add_port(pa).add_port(pb)
+          .add_link(link(pa.id, pb.id, LinkKind.MCLAG, "ae0")).build())
+    assert _edge(build_l2_graph(ir), "d1", "d2").kind == "mclag"
 
 
 def test_two_independent_lags_same_pair_stay_two_edges():
-    pa1, pb1 = _tp("d1", "ae0a", (30,)), _tp("d2", "ae0a", (30,))
-    pa2, pb2 = _tp("d1", "ae1a", (30,)), _tp("d2", "ae1a", (30,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
+    pa1, pb1 = trunk_port("d1", "ae0a", (30,)), trunk_port("d2", "ae0a", (30,))
+    pa2, pb2 = trunk_port("d1", "ae1a", (30,)), trunk_port("d2", "ae1a", (30,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
           .add_port(pa1).add_port(pb1).add_port(pa2).add_port(pb2)
-          .add_link(_link(pa1.id, pb1.id, LinkKind.LAG, "ae0"))
-          .add_link(_link(pa2.id, pb2.id, LinkKind.LAG, "ae1")).build())
+          .add_link(link(pa1.id, pb1.id, LinkKind.LAG, "ae0"))
+          .add_link(link(pa2.id, pb2.id, LinkKind.LAG, "ae1")).build())
     assert build_l2_graph(ir).number_of_edges() == 2
 
 
 def test_vc_internal_link_dropped_and_member_folded():
-    vc = Device(id="d1", role=DeviceRole.SWITCH, site="s1", vc_members=("d1b",))
-    member = Device(id="d1b", role=DeviceRole.SWITCH, site="s1")
-    pa, pb = _tp("d1", "vcp0", (30,)), _tp("d1b", "vcp1", (30,))
-    ir = (IRBuilder().add_device(vc).add_device(member).add_port(pa).add_port(pb)
-          .add_link(_link(pa.id, pb.id, LinkKind.VC)).build())
+    pa, pb = trunk_port("d1", "vcp0", (30,)), trunk_port("d1b", "vcp1", (30,))
+    ir = (IRBuilder().add_device(sw("d1", vc_members=("d1b",))).add_device(sw("d1b"))
+          .add_port(pa).add_port(pb).add_link(link(pa.id, pb.id, LinkKind.VC)).build())
     g = build_l2_graph(ir)
     assert g.number_of_edges() == 0
     assert "d1" in g.nodes and "d1b" not in g.nodes
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_l2_graph.py -v` → FAIL (`ImportError`).
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_l2_graph.py -v` → FAIL (`ImportError`).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
-Update the imports at the **top** of `src/digital_twin/representations/l2_graph.py` so they read exactly:
+**(As-built)** First create `src/digital_twin/representations/graph_data.py` — the typed payloads
+stored under each edge/node's `data` key, so the attribute schema lives in ONE place and consumers
+get mypy-checked access instead of stringly-typed dicts:
+
+```python
+"""Typed payloads carried on graph edges/nodes."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from digital_twin.ir.confidence import Confidence
+
+
+@dataclass
+class L2Edge:
+    """The payload on an L2-graph edge (one logical link)."""
+
+    vlans: set[int]
+    kind: str  # LinkKind value: "physical" | "lag" | "mclag"
+    bundle_id: str | None
+    link_ids: list[str]
+    member_ports: list[str]
+    confidence: Confidence
+
+    def copy(self) -> L2Edge:
+        return L2Edge(
+            vlans=set(self.vlans),
+            kind=self.kind,
+            bundle_id=self.bundle_id,
+            link_ids=list(self.link_ids),
+            member_ports=list(self.member_ports),
+            confidence=self.confidence,
+        )
+
+
+@dataclass
+class VlanNode:
+    """The payload on a per-VLAN-graph node (a participating device)."""
+
+    access_ports: list[str] = field(default_factory=list)
+    exits: list[str] = field(default_factory=list)
+
+    @property
+    def is_member(self) -> bool:
+        return bool(self.access_ports)
+
+    @property
+    def is_exit(self) -> bool:
+        return bool(self.exits)
+```
+
+Then update the imports at the **top** of `src/digital_twin/representations/l2_graph.py`:
 
 ```python
 from __future__ import annotations
 
 import networkx as nx
 
-from digital_twin.ir.confidence import Confidence, min_confidence
-from digital_twin.ir.entities import LinkKind, Port, PortMode
-from digital_twin.ir.indexes import vc_root_map
+from digital_twin.ir.confidence import min_confidence
+from digital_twin.ir.entities import Link, LinkKind, Port, PortMode
+from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.ir.model import IR
+
+from .graph_data import L2Edge
 ```
 
-Then append:
+And append:
 
 ```python
-def _node_for(dev_id: str, vc_root: dict[str, str]) -> str:
-    return vc_root.get(dev_id, dev_id)
+def _bundle_key(link: Link, na: str, nb: str) -> tuple[frozenset[str], str] | None:
+    """A stable key for a LAG/MCLAG bundle on a node pair, or None for standalone links."""
+    if link.kind in (LinkKind.LAG, LinkKind.MCLAG) and link.bundle_id is not None:
+        return (frozenset((na, nb)), link.bundle_id)
+    return None
+
+
+def _edge_data(link: Link, pa: Port, pb: Port, vlans: set[int]) -> L2Edge:
+    return L2Edge(
+        vlans=set(vlans),
+        kind=link.kind.value,
+        bundle_id=link.bundle_id,
+        link_ids=[link.id],
+        member_ports=[pa.id, pb.id],
+        confidence=link.meta.confidence,
+    )
 
 
 def build_l2_graph(ir: IR) -> nx.MultiGraph:
-    """Device-level L2 multigraph with port-derived edges.
+    """Device-level L2 multigraph with port-derived edges (payload: ``data`` -> L2Edge).
 
-    LAG/MCLAG links sharing (node-pair, bundle_id) collapse to ONE logical edge
-    (vlans unioned, confidence = min over members, member_ports accumulated);
-    standalone links each get their own edge (parallel = a cycle); VC-internal
-    links are dropped (VC is one node).
-
-    Edge attrs: vlans:set[int], kind:str, bundle_id:str|None, link_ids:list[str],
-    member_ports:list[str], confidence:Confidence.
+    LAG/MCLAG links sharing (node-pair, bundle_id) collapse to ONE logical edge (vlans
+    unioned, confidence = min over members, member_ports accumulated); standalone links
+    each get their own edge (parallel = a cycle); VC-internal links are dropped.
     """
     g: nx.MultiGraph = nx.MultiGraph()
     vc_root = vc_root_map(ir)
     for dev in ir.devices.values():
-        if dev.id not in vc_root:
+        if dev.id not in vc_root:  # members fold into their VC root
             g.add_node(dev.id)
 
     bundle_keys: dict[tuple[frozenset[str], str], object] = {}
     for link in ir.links:
         pa, pb = ir.port(link.a_port), ir.port(link.b_port)
-        na, nb = _node_for(pa.device_id, vc_root), _node_for(pb.device_id, vc_root)
+        na, nb = node_for(vc_root, pa.device_id), node_for(vc_root, pb.device_id)
         if na == nb:
-            continue
+            continue  # VC-internal / self
         vlans = link_carried_vlans(pa, pb)
-        conf: Confidence = link.meta.confidence
-        is_bundle = link.kind in (LinkKind.LAG, LinkKind.MCLAG) and link.bundle_id is not None
-        if is_bundle:
-            assert link.bundle_id is not None
-            ckey = (frozenset((na, nb)), link.bundle_id)
-            existing = bundle_keys.get(ckey)
-            if existing is not None:
-                data = g[na][nb][existing]
-                data["vlans"] |= vlans
-                data["link_ids"].append(link.id)
-                data["member_ports"].extend((pa.id, pb.id))
-                data["confidence"] = min_confidence(data["confidence"], conf)
-                continue
-            key = g.add_edge(na, nb, vlans=set(vlans), kind=link.kind.value,
-                             bundle_id=link.bundle_id, link_ids=[link.id],
-                             member_ports=[pa.id, pb.id], confidence=conf)
-            bundle_keys[ckey] = key
-        else:
-            g.add_edge(na, nb, vlans=set(vlans), kind=link.kind.value, bundle_id=link.bundle_id,
-                       link_ids=[link.id], member_ports=[pa.id, pb.id], confidence=conf)
+        bkey = _bundle_key(link, na, nb)
+        if bkey is not None and bkey in bundle_keys:
+            edge: L2Edge = g[na][nb][bundle_keys[bkey]]["data"]
+            edge.vlans |= vlans
+            edge.link_ids.append(link.id)
+            edge.member_ports.extend((pa.id, pb.id))
+            edge.confidence = min_confidence(edge.confidence, link.meta.confidence)
+            continue
+        key = g.add_edge(na, nb, data=_edge_data(link, pa, pb, vlans))
+        if bkey is not None:
+            bundle_keys[bkey] = key
     return g
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_l2_graph.py -v` → PASS (all l2_graph tests).
+(Tests read edges via `next(iter(g.get_edge_data(u, v).values()))["data"]` → an `L2Edge` with
+`.vlans`/`.member_ports`/`.confidence` — see `tests/representations/test_l2_graph.py`.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_l2_graph.py -v` → PASS (all l2_graph tests).
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/representations/l2_graph.py tests/representations/test_l2_graph.py
@@ -1653,7 +1729,7 @@ The per-VLAN subgraph. Includes only participating nodes — carrying a VLAN edg
 - Create: `src/digital_twin/representations/vlan_graph.py`
 - Test: `tests/representations/test_vlan_graph.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/representations/test_vlan_graph.py`:
 
@@ -1661,102 +1737,79 @@ Create `tests/representations/test_vlan_graph.py`:
 import networkx as nx
 
 from digital_twin.ir.confidence import Confidence, ConfidenceLevel
-from digital_twin.ir.entities import (
-    Device,
-    DeviceRole,
-    L3Intf,
-    L3Role,
-    Link,
-    LinkKind,
-    Port,
-    PortMode,
-)
+from digital_twin.ir.confidence import ConfidenceLevel
 from digital_twin.ir.model import IRBuilder
-from digital_twin.ir.provenance import Provenance, fact_meta
+from digital_twin.representations.graph_data import L2Edge, VlanNode
 from digital_twin.representations.l2_graph import build_l2_graph
 from digital_twin.representations.vlan_graph import build_vlan_graph
-
-
-def _sw(did: str) -> Device:
-    return Device(id=did, role=DeviceRole.SWITCH, site="s1")
-
-
-def _tp(did: str, name: str, tagged: tuple[int, ...]) -> Port:
-    return Port(id=f"{did}:{name}", device_id=did, name=name, mode=PortMode.TRUNK,
-                native_vlan=None, tagged_vlans=tagged)
-
-
-def _access(did: str, name: str, vlan: int) -> Port:
-    return Port(id=f"{did}:{name}", device_id=did, name=name, mode=PortMode.ACCESS,
-                native_vlan=vlan)
-
-
-def _link(pa: str, pb: str) -> Link:
-    return Link(id=f"{pa}__{pb}", a_port=pa, b_port=pb, kind=LinkKind.PHYSICAL,
-                meta=fact_meta(Provenance.LLDP_TWO_SIDED))
+from tests.factories import access_port, irb, link, sw, trunk_port
 
 
 def _cyclomatic(g: nx.MultiGraph) -> int:
     return g.number_of_edges() - g.number_of_nodes() + nx.number_connected_components(g)
 
 
+def _node(g: nx.MultiGraph, n: str) -> VlanNode:
+    return g.nodes[n]["data"]
+
+
 def test_excludes_pure_non_member_nodes():
-    pa, pb = _tp("d1", "u1", (30,)), _tp("d2", "u1", (30,))
-    pc, pd = _tp("d1", "u2", (40,)), _tp("d3", "u1", (40,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2")).add_device(_sw("d3"))
+    pa, pb = trunk_port("d1", "u1", (30,)), trunk_port("d2", "u1", (30,))
+    pc, pd = trunk_port("d1", "u2", (40,)), trunk_port("d3", "u1", (40,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2")).add_device(sw("d3"))
           .add_port(pa).add_port(pb).add_port(pc).add_port(pd)
-          .add_link(_link(pa.id, pb.id)).add_link(_link(pc.id, pd.id)).build())
+          .add_link(link(pa.id, pb.id)).add_link(link(pc.id, pd.id)).build())
     v30 = build_vlan_graph(ir, build_l2_graph(ir), 30)
     assert set(v30.nodes) == {"d1", "d2"}
 
 
 def test_annotates_access_ports_and_exits():
-    acc = _access("d2", "ge-0/0/9", 30)
-    irb = L3Intf(device_id="d1", role=L3Role.IRB, vlan_id=30, subnet="10.0.30.0/24")
-    pa, pb = _tp("d1", "u1", (30,)), _tp("d2", "u1", (30,))
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
-          .add_port(pa).add_port(pb).add_port(acc).add_l3intf(irb)
-          .add_link(_link(pa.id, pb.id)).build())
+    acc = access_port("d2", "ge-0/0/9", 30)
+    i = irb("d1", 30, "10.0.30.0/24")
+    pa, pb = trunk_port("d1", "u1", (30,)), trunk_port("d2", "u1", (30,))
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
+          .add_port(pa).add_port(pb).add_port(acc).add_l3intf(i)
+          .add_link(link(pa.id, pb.id)).build())
     v30 = build_vlan_graph(ir, build_l2_graph(ir), 30)
-    assert v30.nodes["d2"]["access_ports"] == [acc.id]
-    assert v30.nodes["d2"]["is_member"] is True
-    assert v30.nodes["d1"]["exits"] == [irb.id]
-    assert v30.nodes["d1"]["is_exit"] is True
+    assert _node(v30, "d2").access_ports == [acc.id]
+    assert _node(v30, "d2").is_member is True
+    assert _node(v30, "d1").exits == [i.id]
+    assert _node(v30, "d1").is_exit is True
 
 
 def test_isolated_member_included_and_marked():
-    acc = _access("d2", "ge-0/0/9", 30)
-    ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
-          .add_port(_tp("d1", "u1", (30,))).add_port(acc).build())
+    acc = access_port("d2", "ge-0/0/9", 30)
+    ir = (IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
+          .add_port(trunk_port("d1", "u1", (30,))).add_port(acc).build())
     v30 = build_vlan_graph(ir, build_l2_graph(ir), 30)
     assert "d2" in v30.nodes
-    assert v30.nodes["d2"]["is_member"] is True
-    assert v30.degree("d2") == 0
+    assert _node(v30, "d2").is_member is True
+    assert v30.degree("d2") == 0  # isolated -> blackhole candidate for later checks
 
 
-def test_edge_attrs_preserved_and_ring_is_a_cycle():
+def test_edge_payload_preserved_and_ring_is_a_cycle():
     ports = {
-        ("d1", "a"): _tp("d1", "a", (30,)), ("d2", "a"): _tp("d2", "a", (30,)),
-        ("d2", "b"): _tp("d2", "b", (30,)), ("d3", "a"): _tp("d3", "a", (30,)),
-        ("d3", "b"): _tp("d3", "b", (30,)), ("d1", "b"): _tp("d1", "b", (30,)),
+        ("d1", "a"): trunk_port("d1", "a", (30,)), ("d2", "a"): trunk_port("d2", "a", (30,)),
+        ("d2", "b"): trunk_port("d2", "b", (30,)), ("d3", "a"): trunk_port("d3", "a", (30,)),
+        ("d3", "b"): trunk_port("d3", "b", (30,)), ("d1", "b"): trunk_port("d1", "b", (30,)),
     }
-    b = IRBuilder().add_device(_sw("d1")).add_device(_sw("d2")).add_device(_sw("d3"))
+    b = IRBuilder().add_device(sw("d1")).add_device(sw("d2")).add_device(sw("d3"))
     for p in ports.values():
         b.add_port(p)
-    b.add_link(_link(ports[("d1", "a")].id, ports[("d2", "a")].id))
-    b.add_link(_link(ports[("d2", "b")].id, ports[("d3", "a")].id))
-    b.add_link(_link(ports[("d3", "b")].id, ports[("d1", "b")].id))
+    b.add_link(link(ports[("d1", "a")].id, ports[("d2", "a")].id))
+    b.add_link(link(ports[("d2", "b")].id, ports[("d3", "a")].id))
+    b.add_link(link(ports[("d3", "b")].id, ports[("d1", "b")].id))
     ir = b.build()
     v30 = build_vlan_graph(ir, build_l2_graph(ir), 30)
     assert _cyclomatic(v30) == 1
-    some_edge = next(iter(v30.edges(data=True)))[2]
-    assert isinstance(some_edge["confidence"], Confidence)
-    assert some_edge["confidence"].level is ConfidenceLevel.HIGH
+    edge = next(iter(v30.edges(data=True)))[2]["data"]
+    assert isinstance(edge, L2Edge)
+    assert edge.confidence.level is ConfidenceLevel.HIGH
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_vlan_graph.py -v` → FAIL.
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/representations/test_vlan_graph.py -v` → FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/digital_twin/representations/vlan_graph.py`:
 
@@ -1765,7 +1818,8 @@ Create `src/digital_twin/representations/vlan_graph.py`:
 
 Pure structural view. Includes a node iff it participates in the VLAN — carries a
 VLAN-bearing edge, OR holds a member access port (index), OR holds an exit (index).
-Each node is annotated access_ports/exits/is_member/is_exit. No severity.
+Each node carries a ``VlanNode`` payload; each edge carries the L2 edge's ``L2Edge``
+(copied). No severity.
 """
 
 from __future__ import annotations
@@ -1774,8 +1828,10 @@ from collections import defaultdict
 
 import networkx as nx
 
-from digital_twin.ir.indexes import access_ports_by_vlan, exits_by_vlan, vc_root_map
+from digital_twin.ir.indexes import access_ports_by_vlan, exits_by_vlan, node_for, vc_root_map
 from digital_twin.ir.model import IR
+
+from .graph_data import L2Edge, VlanNode
 
 
 def build_vlan_graph(ir: IR, l2: nx.MultiGraph, vlan_id: int) -> nx.MultiGraph:
@@ -1783,36 +1839,40 @@ def build_vlan_graph(ir: IR, l2: nx.MultiGraph, vlan_id: int) -> nx.MultiGraph:
 
     access_by_node: dict[str, list[str]] = defaultdict(list)
     for p in access_ports_by_vlan(ir).get(vlan_id, []):
-        access_by_node[vc_root.get(p.device_id, p.device_id)].append(p.id)
+        access_by_node[node_for(vc_root, p.device_id)].append(p.id)
 
     exits_by_node: dict[str, list[str]] = defaultdict(list)
     for intf in exits_by_vlan(ir).get(vlan_id, []):
-        exits_by_node[vc_root.get(intf.device_id, intf.device_id)].append(intf.id)
+        exits_by_node[node_for(vc_root, intf.device_id)].append(intf.id)
 
-    carrying = [
-        (u, v, key, data)
+    carrying: list[tuple[str, str, object, L2Edge]] = [
+        (u, v, key, data["data"])
         for u, v, key, data in l2.edges(keys=True, data=True)
-        if vlan_id in data["vlans"]
+        if vlan_id in data["data"].vlans
     ]
     carrying_nodes = {n for u, v, _, _ in carrying for n in (u, v)}
     participating = carrying_nodes | set(access_by_node) | set(exits_by_node)
 
     h: nx.MultiGraph = nx.MultiGraph()
     for node in participating:
-        access = access_by_node.get(node, [])
-        exits = exits_by_node.get(node, [])
-        h.add_node(node, access_ports=list(access), exits=list(exits),
-                   is_member=bool(access), is_exit=bool(exits))
-    for u, v, key, data in carrying:
-        h.add_edge(u, v, key=key, vlans=set(data["vlans"]), kind=data["kind"],
-                   bundle_id=data["bundle_id"], link_ids=list(data["link_ids"]),
-                   member_ports=list(data["member_ports"]), confidence=data["confidence"])
+        h.add_node(
+            node,
+            data=VlanNode(
+                access_ports=access_by_node.get(node, []),
+                exits=exits_by_node.get(node, []),
+            ),
+        )
+    for u, v, key, edge in carrying:
+        h.add_edge(u, v, key=key, data=edge.copy())
     return h
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_vlan_graph.py -v` → PASS.
+(Tests read nodes via `g.nodes[n]["data"]` → a `VlanNode` with `.access_ports`/`.is_member`/
+`.is_exit` — see `tests/representations/test_vlan_graph.py`.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/representations/test_vlan_graph.py -v` → PASS.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/representations/vlan_graph.py tests/representations/test_vlan_graph.py
@@ -1827,7 +1887,7 @@ git commit -m "feat(repr): build_vlan_graph (participating nodes + member/exit a
 - Modify: `src/digital_twin/ir/__init__.py`, `src/digital_twin/representations/__init__.py`
 - Test: `tests/test_public_api.py` (create)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_public_api.py`:
 
@@ -1875,9 +1935,9 @@ def test_representations_public_api():
     assert all(callable(f) for f in (build_l2_graph, build_vlan_graph, link_carried_vlans))
 ```
 
-- [ ] **Step 2: Run to verify fail** — `uv run pytest tests/test_public_api.py -v` → FAIL (`ImportError`).
+- [x] **Step 2: Run to verify fail** — `uv run pytest tests/test_public_api.py -v` → FAIL (`ImportError`).
 
-- [ ] **Step 3: Write the implementations**
+- [x] **Step 3: Write the implementations**
 
 Overwrite `src/digital_twin/ir/__init__.py`:
 
@@ -1912,10 +1972,11 @@ from .indexes import (
     clients_by_port,
     clients_by_vlan,
     exits_by_vlan,
+    node_for,
     ports_by_device,
     vc_root_map,
 )
-from .model import IR_VERSION, IR, IRBuilder, IRValidationError
+from .model import IR, IR_VERSION, IRBuilder, IRValidationError
 from .provenance import CONFIG_META, OBSERVED_META, FactMeta, Provenance, fact_meta
 
 __all__ = [
@@ -1927,7 +1988,7 @@ __all__ = [
     "StpMode",
     "device_id", "port_id", "link_id", "client_id",
     "EntityRef", "Modified", "IRDiff", "diff_ir",
-    "vc_root_map", "ports_by_device", "access_ports_by_vlan", "exits_by_vlan",
+    "vc_root_map", "node_for", "ports_by_device", "access_ports_by_vlan", "exits_by_vlan",
     "clients_by_port", "clients_by_ap", "clients_by_vlan",
 ]
 ```
@@ -1937,15 +1998,16 @@ Overwrite `src/digital_twin/representations/__init__.py`:
 ```python
 """Structural representations (views) over the IR — pure, no severity."""
 
+from .graph_data import L2Edge, VlanNode
 from .l2_graph import build_l2_graph, link_carried_vlans
 from .vlan_graph import build_vlan_graph
 
-__all__ = ["build_l2_graph", "build_vlan_graph", "link_carried_vlans"]
+__all__ = ["build_l2_graph", "build_vlan_graph", "link_carried_vlans", "L2Edge", "VlanNode"]
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/test_public_api.py -v` → PASS.
+- [x] **Step 4: Run to verify pass** — `uv run pytest tests/test_public_api.py -v` → PASS.
 
-- [ ] **Step 5: Run the full quality gate**
+- [x] **Step 5: Run the full quality gate**
 
 Run:
 ```bash
@@ -1957,7 +2019,7 @@ uv run pytest -q
 ```
 Expected: `ruff format` normalizes wrapping; `ruff check --fix` fixes import ordering; the second `ruff check` is clean; `mypy` reports no issues; all tests pass. Fix any remaining findings by hand until all are green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1966,11 +2028,11 @@ git commit -m "feat(ir,repr): public API re-exports; green format/lint/type/test
 
 ---
 
-## Done criteria for Plan 1
+## Done criteria for Plan 1 — ✅ all met (commit `c79553d`)
 
-- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy`, `uv run pytest -q` — all green.
+- `uv run ruff format --check .`, `uv run ruff check .`, `uv run mypy`, `uv run pytest -q` — all green (**66 tests**, mypy strict over 13 source files).
 - **Layers respected:** `ir/` (pure model + indexes), `representations/` (pure structural views). No algorithm-with-severity anywhere; representations carry confidence, never severity.
-- `digital_twin.ir`: entities (each with `FactMeta`), validating `IRBuilder`/`IR` (dup-id + dangling-ref rejected), canonical provenance table, capabilities, `IRDiff`/`diff_ir`, pure indexes.
-- `digital_twin.representations`: `link_carried_vlans` (correct access/trunk semantics), `build_l2_graph` (port-derived edges; LAG/MCLAG collapse by `bundle_id`; independent links/bundles stay parallel = cycle; VC folded; merged confidence = `min`), `build_vlan_graph` (participating nodes via indexes; member/exit annotations; isolated members marked).
+- `digital_twin.ir`: entities (each with `FactMeta`; `Port.stp_meta` field-specific), validating `IRBuilder`/`IR` (dup-id for every entity type + dangling-ref + wireless→AP-role rejected), canonical provenance table, `Capability`/`IRCapability`, `IRDiff`/`diff_ir` (registry-extensible), pure indexes (incl. `node_for`, `clients_by_ap`).
+- `digital_twin.representations`: typed `L2Edge`/`VlanNode` payloads (`graph_data.py`); `link_carried_vlans` (correct access/trunk semantics); `build_l2_graph` (port-derived edges; LAG/MCLAG collapse by `bundle_id` with kind preserved; independent links/bundles stay parallel = cycle; VC folded; merged confidence = `min`); `build_vlan_graph` (participating nodes via indexes; member/exit annotations; isolated members marked).
 
 **Next:** Plan 2 — StateProvider + ingester registry + Mist switch-ingester + compiler + the equivalence gate + capability wiring.
