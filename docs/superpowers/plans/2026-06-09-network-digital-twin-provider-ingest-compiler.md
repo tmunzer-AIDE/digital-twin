@@ -11,8 +11,11 @@
 This is **Plan 2 of 5**. Plan 1 (IR + representations) is implemented (`c79553d`, hardened `b5e7df9`). Later: (3) scope gates + L0 + apply; (4) analysis + checks + verdict; (5) drivers + observability + golden scenarios.
 
 **Decisions locked for this plan:**
-- **Fetch via the `mistapi` SDK** (env: `MIST_HOST`, `MIST_APITOKEN`). All SDK calls isolated in `providers/mist_api.py` behind small private helpers; a probe script validates exact call/field names against a real org before the gate runs.
-- **Compile chain (M1):** org `networktemplate` → site `setting` (site wins) → per-device config; `{{vars}}` resolved after merge. The site-level merge is oracle-checked; the device layer has **no oracle** (derived is site-level) and is covered by unit tests only — stated honestly.
+- **Fetch via the `mistapi` SDK** (env: `MIST_HOST`, `MIST_APITOKEN`). All SDK calls isolated in `providers/mist_api.py` behind small private helpers; a probe script validates exact call/field names against a real org before the gate runs. **Total fetch failure is a value, not an exception** (`fetch_site -> RawSiteState | FetchError`); Plan 3 maps `FetchError` → `UNKNOWN`.
+- **Compile chain (M1):** org `networktemplate` → site `setting` (site wins) → per-device config; `{{vars}}` resolved **once, after the device overlay** (device-level config can reference site vars). **Confirmed (user): `getSiteSettingDerived` does NOT resolve `{{vars}}`** — the Tier-2 gate therefore compares the *pre-vars* merge output (`merge_site_effective`). Devices do not carry their own vars. The site-level merge is oracle-checked; the device layer has **no oracle** (derived is site-level) and is covered by unit tests only — stated honestly.
+- **Capabilities are earned, not declared:** ingesters return the capabilities they *actually* produced from `ingest()` (gated on fetch success and/or data presence per capability); the registry collects those returns. The static `produces()` remains the *potential*-supply declaration used by `capability_check`.
+- **Unmanaged LLDP neighbors are edge devices = wired clients (user decision):** a neighbor MAC that is not a Mist device becomes a wired `Client` attached to the local switch port — it stays in the impact surface (VLAN continuity, DHCP, routing, FW), instead of vanishing or polluting the device model.
+- **OAS verified against the real spec** (`tmunzer/mist_openapi`, `mist.openapi.json`, 2,650 schemas): component names are exactly `site_setting`, `network_template`, `device_switch` (a `site_setting_derived` also exists). Their `$ref` closures contain `anyOf` (13/9/11 — mostly `vlan_id_with_variable` int-or-`{{var}}` unions), 1–2 `oneOf`, ~110 enums, and 434 `default`s — the generator must handle `allOf`/`anyOf`/`oneOf` and **fail loudly** on anything else.
 - **Two-tier equivalence gate:**
   - **Tier 1 (offline, committed):** OAS-schema-driven tests generate payloads covering **every attribute** (incl. features no org has configured) and assert our merge precedence per leaf. Validates our semantics for self-consistency and full coverage.
   - **Tier 2 (live):** ours vs `getSiteSettingDerived` per real site. Validates our semantics **against Mist's engine**. Emits an **attribute-coverage report** (which schema leaves were exercised by real data) so a green gate carries explicit coverage, never false confidence.
@@ -222,9 +225,25 @@ def test_raw_site_state_holds_vendor_payloads():
     assert raw.derived_setting is None
 
 
+def test_total_fetch_failure_is_a_value_not_an_exception():
+    from digital_twin.providers.base import FetchError
+
+    err = FetchError(
+        scope=SiteScope(org_id="o1", site_id="s1"),
+        failures=(FetchFailure(object="setting", error="503"),),
+        acquired_at=datetime.now(UTC),
+        host="api.eu.mist.com",
+    )
+    assert err.failures[0].object == "setting"
+
+
 def test_state_provider_is_a_protocol():
+    from digital_twin.providers.base import FetchError
+
     class Fake:
-        def fetch_site(self, scope: SiteScope, *, include_derived: bool = False) -> RawSiteState:
+        def fetch_site(
+            self, scope: SiteScope, *, include_derived: bool = False
+        ) -> RawSiteState | FetchError:
             raise NotImplementedError
 
     provider: StateProvider = Fake()
@@ -294,8 +313,24 @@ class RawSiteState:
     meta: StateMeta
 
 
+@dataclass(frozen=True)
+class FetchError:
+    """Total fetch failure — no usable baseline (site/setting could not be read).
+
+    A VALUE, not an exception: callers must narrow `RawSiteState | FetchError`,
+    and Plan 3's pipeline maps this to decision UNKNOWN.
+    """
+
+    scope: SiteScope
+    failures: tuple[FetchFailure, ...]
+    acquired_at: datetime
+    host: str
+
+
 class StateProvider(Protocol):
-    def fetch_site(self, scope: SiteScope, *, include_derived: bool = False) -> RawSiteState: ...
+    def fetch_site(
+        self, scope: SiteScope, *, include_derived: bool = False
+    ) -> RawSiteState | FetchError: ...
 ```
 
 - [ ] **Step 4: Run to verify pass** — `uv run pytest tests/providers/test_base.py -q` → PASS (4).
@@ -568,7 +603,7 @@ git add -A && git commit -m "feat(compile): {{var}} resolution with unresolved-v
 Create `tests/adapters/mist/test_compile_switch.py`:
 
 ```python
-from digital_twin.adapters.mist.compile.switch import compile_device, compile_site
+from digital_twin.adapters.mist.compile.switch import compile_device, compile_site, merge_only
 
 
 def test_compile_site_merges_then_resolves_vars():
@@ -579,27 +614,42 @@ def test_compile_site_merges_then_resolves_vars():
     assert eff["port_usages"]["office"]["mode"] == "access"
 
 
+def test_merge_only_keeps_vars_unresolved_for_the_oracle():
+    # getSiteSettingDerived does NOT resolve vars (confirmed) — the Tier-2 gate
+    # compares this artifact, with {{...}} intact.
+    tpl = {"networks": {"corp": {"vlan_id": "{{corp_vlan}}"}}}
+    merged = merge_only(tpl, {"vars": {"corp_vlan": "30"}})
+    assert merged["networks"]["corp"]["vlan_id"] == "{{corp_vlan}}"
+
+
 def test_compile_site_without_vars_skips_resolution():
     eff = compile_site(None, {"networks": {"corp": {"vlan_id": 30}}})
     assert eff["networks"]["corp"]["vlan_id"] == 30
 
 
-def test_compile_device_layers_device_overrides_on_site_effective():
-    site_eff = {
-        "networks": {"corp": {"vlan_id": 30}},
-        "port_usages": {"office": {"mode": "access", "port_network": "corp"}},
-    }
+def test_compile_device_layers_overrides_then_resolves_site_vars():
+    # device-level config can reference SITE vars; resolution happens ONCE,
+    # after the device overlay (devices have no vars of their own).
+    tpl = {"networks": {"corp": {"vlan_id": "{{corp_vlan}}"}}}
+    setting = {"vars": {"corp_vlan": "30"},
+               "port_usages": {"office": {"mode": "access", "port_network": "corp"}}}
     device = {
         "mac": "aabbcc001122",
-        "port_config": {"ge-0/0/1": {"usage": "office"}},
-        "networks": {"lab": {"vlan_id": 99}},  # device-local addition
+        "port_config": {"ge-0/0/1": {"usage": "office", "description": "desk-{{corp_vlan}}"}},
+        "networks": {"lab": {"vlan_id": "{{lab_vlan}}"}},
     }
-    dev_eff = compile_device(site_eff, device)
-    assert dev_eff["port_config"] == {"ge-0/0/1": {"usage": "office"}}
-    assert dev_eff["networks"]["corp"]["vlan_id"] == 30
-    assert dev_eff["networks"]["lab"]["vlan_id"] == 99  # device wins per key
-    # site-level effective is untouched
-    assert "lab" not in site_eff["networks"]
+    setting["vars"]["lab_vlan"] = "99"
+    dev_eff = compile_device(tpl, setting, device)
+    assert dev_eff["networks"]["corp"]["vlan_id"] == "30"  # site leaf resolved
+    assert dev_eff["networks"]["lab"]["vlan_id"] == "99"  # device leaf resolved w/ site vars
+    assert dev_eff["port_config"]["ge-0/0/1"]["description"] == "desk-30"
+
+
+def test_compile_device_does_not_mutate_inputs():
+    setting = {"networks": {"corp": {"vlan_id": 30}}}
+    device = {"networks": {"lab": {"vlan_id": 99}}}
+    compile_device(None, setting, device)
+    assert "lab" not in setting["networks"]
 ```
 
 - [ ] **Step 2: Run to verify fail** — `uv run pytest tests/adapters/mist/test_compile_switch.py -q` → FAIL.
@@ -611,13 +661,16 @@ Create `src/digital_twin/adapters/mist/compile/switch.py`:
 ```python
 """Switch effective-config compilation (M1 chain).
 
-compile_site: networktemplate + site_setting (site wins) -> {{vars}} -> FULL
-site-level effective config. This is the artifact the Tier-2 gate compares to
-Mist's getSiteSettingDerived, and (in Plan 3) the derived-impact gate diffs.
-
-compile_device: device config layered on the site effective (per-key, device
-wins). NO ORACLE exists for this layer (derived is site-level) — covered by
-unit tests only.
+merge_only:     networktemplate + site_setting (site wins), {{vars}} UNRESOLVED.
+                This is the Tier-2 gate artifact — getSiteSettingDerived does NOT
+                resolve vars (confirmed), so the oracle comparison uses this.
+compile_site:   merge_only + {{vars}} resolved — the site-level live artifact
+                (VLAN ids etc. usable by ingest).
+compile_device: device config layered on the UNRESOLVED merge (per-key, device
+                wins), THEN {{vars}} resolved once — device-level config can
+                reference site vars; devices have no vars of their own.
+                NO ORACLE exists for this layer (derived is site-level) —
+                covered by unit tests only.
 """
 
 from __future__ import annotations
@@ -634,17 +687,27 @@ _DEVICE_DICT_MERGE_FIELDS = ("networks", "port_usages")
 _DEVICE_OWN_FIELDS = ("port_config", "ip_config", "other_ip_configs")
 
 
-def compile_site(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
-    effective = merge_site_effective(networktemplate, site_setting)
+def merge_only(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
+    """Site-level merge with {{vars}} left intact (the oracle-comparison artifact)."""
+    return merge_site_effective(networktemplate, site_setting)
+
+
+def _resolve(effective: JsonObj) -> JsonObj:
     variables = effective.get("vars") or {}
-    if variables:
-        effective = resolve_vars(effective, {str(k): str(v) for k, v in variables.items()})
-    return effective
+    if not variables:
+        return effective
+    return resolve_vars(effective, {str(k): str(v) for k, v in variables.items()})
 
 
-def compile_device(site_effective: JsonObj, device: JsonObj) -> JsonObj:
-    """Per-device effective: site effective + device-local overrides (device wins)."""
-    out = copy.deepcopy(site_effective)
+def compile_site(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
+    return _resolve(merge_only(networktemplate, site_setting))
+
+
+def compile_device(
+    networktemplate: JsonObj | None, site_setting: JsonObj, device: JsonObj
+) -> JsonObj:
+    """Per-device effective: unresolved site merge + device overlay, then vars once."""
+    out = merge_only(networktemplate, site_setting)
     for field in _DEVICE_DICT_MERGE_FIELDS:
         dev_val = device.get(field)
         if isinstance(dev_val, dict):
@@ -654,7 +717,7 @@ def compile_device(site_effective: JsonObj, device: JsonObj) -> JsonObj:
     for field in _DEVICE_OWN_FIELDS:
         if field in device:
             out[field] = copy.deepcopy(device[field])
-    return out
+    return _resolve(out)
 ```
 
 - [ ] **Step 4: Run to verify pass** — `uv run pytest tests/adapters/mist/test_compile_switch.py -q` → PASS (3).
@@ -698,8 +761,8 @@ from pathlib import Path
 from typing import Any
 
 OUT_DIR = Path("src/digital_twin/adapters/mist/oas")
-# OAS component name -> output file. Adjust names after inspecting the spec
-# (component naming varies between OAS releases).
+# OAS component name -> output file. Names VERIFIED against mist.openapi.json
+# (2,650 components; a `site_setting_derived` schema also exists if ever needed).
 WANTED = {
     "site_setting": "site_setting.schema.json",
     "network_template": "networktemplate.schema.json",
@@ -788,6 +851,46 @@ def _load(name: str) -> dict[str, Any]:
     return json.loads((OAS / name).read_text())  # type: ignore[no-any-return]
 
 
+class UnsupportedSchema(ValueError):
+    """An OAS construct the generator does not understand — FAIL LOUDLY rather
+    than silently under-generating (which would fake full coverage)."""
+
+
+_KNOWN_KEYS = {"type", "properties", "additionalProperties", "items", "enum", "default",
+               "description", "format", "minimum", "maximum", "minLength", "maxLength",
+               "pattern", "example", "examples", "required", "nullable", "deprecated",
+               "readOnly", "writeOnly", "title", "minItems", "maxItems", "uniqueItems",
+               "allOf", "anyOf", "oneOf", "const", "exclusiveMinimum", "exclusiveMaximum",
+               "multipleOf", "x-deprecation-note"}
+
+
+def _norm_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Normalize composition: merge allOf; pick the FIRST variant of anyOf/oneOf
+    (the Mist OAS uses these mostly for int-or-{{var}} unions). Reject unknown
+    constructs loudly."""
+    unknown = set(schema) - _KNOWN_KEYS
+    if unknown:
+        raise UnsupportedSchema(f"unsupported OAS constructs: {sorted(unknown)}")
+    if "allOf" in schema:
+        merged: dict[str, Any] = {}
+        props: dict[str, Any] = {}
+        for sub in schema["allOf"]:
+            sub = _norm_schema(sub)
+            props.update(sub.get("properties") or {})
+            merged.update({k: v for k, v in sub.items() if k != "properties"})
+        if props:
+            merged["properties"] = props
+        return _norm_schema({**merged, **{k: v for k, v in schema.items() if k != "allOf"}})
+    for comb in ("anyOf", "oneOf"):
+        if comb in schema:
+            return _norm_schema(schema[comb][0])  # first variant, deterministic
+    t = schema.get("type")
+    if isinstance(t, list):  # nullable type arrays, e.g. ["integer", "null"]
+        non_null = [x for x in t if x != "null"]
+        return {**schema, "type": non_null[0] if non_null else "string"}
+    return schema
+
+
 def _marker(schema: dict[str, Any], tag: str) -> Any:
     """A type-valid value for a leaf schema, distinguishable by `tag`."""
     t = schema.get("type")
@@ -807,6 +910,7 @@ def _gen(schema: dict[str, Any], tag: str, depth: int = 0) -> Any:
     """Generate a payload populating EVERY property of the schema."""
     if depth > 12:
         return _marker({"type": "string"}, tag)
+    schema = _norm_schema(schema)
     t = schema.get("type")
     if t == "object" or "properties" in schema or "additionalProperties" in schema:
         out: dict[str, Any] = {}
@@ -899,16 +1003,20 @@ from digital_twin.providers.base import RawSiteState
 
 
 class FakeIngester:
+    """Earns its capability only when its source data is actually present."""
+
     name = "fake"
 
-    def produces(self) -> frozenset[str]:
+    def produces(self) -> frozenset[str]:  # POTENTIAL supply (for capability_check)
         return frozenset({IRCapability.WIRED_L2})
 
-    def ingest(self, ctx: IngestContext) -> None:
-        ctx.builder.with_capability(IRCapability.WIRED_L2)
+    def ingest(self, ctx: IngestContext) -> frozenset[str]:  # ACTUALLY produced
+        if "devices" not in ctx.raw.meta.fetched:
+            return frozenset()
+        return frozenset({IRCapability.WIRED_L2})
 
 
-def _raw() -> RawSiteState:  # minimal stub
+def _raw(fetched: tuple[str, ...] = ()) -> RawSiteState:  # minimal stub
     from datetime import UTC, datetime
 
     from digital_twin.providers.base import SiteScope, StateMeta
@@ -917,17 +1025,27 @@ def _raw() -> RawSiteState:  # minimal stub
         scope=SiteScope(org_id="o", site_id="s"), site={}, setting={}, networktemplate=None,
         devices=(), device_stats=(), port_stats=(), wireless_clients=(), wired_clients=(),
         derived_setting=None,
-        meta=StateMeta(acquired_at=datetime.now(UTC), host="h", fetched=(), failures=()),
+        meta=StateMeta(acquired_at=datetime.now(UTC), host="h", fetched=fetched, failures=()),
     )
 
 
-def test_registry_runs_ingesters_and_collects_capabilities():
+def test_registry_collects_capabilities_actually_earned():
     reg = IngesterRegistry([FakeIngester()])
     builder = IRBuilder()
-    produced = reg.run(IngestContext(raw=_raw(), site_effective={}, device_effective={},
-                                     builder=builder))
+    produced = reg.run(IngestContext(raw=_raw(fetched=("devices",)), site_effective={},
+                                     device_effective={}, builder=builder))
     assert IRCapability.WIRED_L2 in produced
     assert builder.build().has(IRCapability.WIRED_L2)
+
+
+def test_capability_not_claimed_when_source_data_missing():
+    # the fetch failed -> the ingester earns nothing -> the IR must NOT claim it
+    reg = IngesterRegistry([FakeIngester()])
+    builder = IRBuilder()
+    produced = reg.run(IngestContext(raw=_raw(fetched=()), site_effective={},
+                                     device_effective={}, builder=builder))
+    assert produced == frozenset()
+    assert not builder.build().has(IRCapability.WIRED_L2)
 
 
 def test_ingester_satisfies_protocol():
@@ -944,8 +1062,11 @@ Create `src/digital_twin/adapters/mist/ingest/base.py`:
 ```python
 """Ingester seam: one domain turns raw/effective Mist data into an IR slice.
 
-Each ingester declares the capabilities it produces; the registry runs them and
-collects the produced set (validated against consumers by engine.capability_check).
+Capabilities are EARNED, not declared: produces() states the POTENTIAL supply
+(consumed by engine.capability_check for wiring validation), while ingest()
+returns what was ACTUALLY produced — gated on fetch success and/or data
+presence — and only those reach the IR. A failed fetch can therefore never
+masquerade as a populated domain (the no-silent-blind-spot contract).
 Adding a domain (gateway/wlan/wan) = adding one Ingester, nothing else changes.
 """
 
@@ -954,7 +1075,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from digital_twin.ir import IRBuilder
+from digital_twin.ir import Capability, IRBuilder
 from digital_twin.providers.base import RawSiteState
 
 
@@ -969,17 +1090,23 @@ class IngestContext:
 class Ingester(Protocol):
     name: str
 
-    def produces(self) -> frozenset[str]: ...
+    def produces(self) -> frozenset[Capability]:
+        """POTENTIAL supply — what this ingester can produce when data is present."""
+        ...
 
-    def ingest(self, ctx: IngestContext) -> None: ...
+    def ingest(self, ctx: IngestContext) -> frozenset[Capability]:
+        """Populate the IR slice; return the capabilities ACTUALLY earned."""
+        ...
 ```
 
 Create `src/digital_twin/adapters/mist/ingest/registry.py`:
 
 ```python
-"""Run registered domain ingesters in order; collect produced capabilities."""
+"""Run registered domain ingesters in order; collect the capabilities EARNED."""
 
 from __future__ import annotations
+
+from digital_twin.ir import Capability
 
 from .base import IngestContext, Ingester
 
@@ -988,11 +1115,17 @@ class IngesterRegistry:
     def __init__(self, ingesters: list[Ingester]) -> None:
         self._ingesters = list(ingesters)
 
-    def run(self, ctx: IngestContext) -> frozenset[str]:
-        produced: set[str] = set()
+    def potential_supply(self) -> frozenset[Capability]:
+        """Union of declared produces() — for capability_check wiring validation."""
+        out: set[Capability] = set()
         for ingester in self._ingesters:
-            ingester.ingest(ctx)
-            produced |= ingester.produces()
+            out |= ingester.produces()
+        return frozenset(out)
+
+    def run(self, ctx: IngestContext) -> frozenset[Capability]:
+        produced: set[Capability] = set()
+        for ingester in self._ingesters:
+            produced |= ingester.ingest(ctx)  # earned, not declared
         for cap in produced:
             ctx.builder.with_capability(cap)
         return frozenset(produced)
@@ -1055,12 +1188,17 @@ AP_1: dict[str, Any] = {"mac": "cc0000000001", "id": "dev-ap1", "type": "ap", "m
                         "name": "ap-1"}
 
 
+ALL_FETCHED = ("site", "setting", "networktemplate", "devices", "device_stats",
+               "port_stats", "wireless_clients", "wired_clients")
+
+
 def raw_site(
     devices: tuple[dict[str, Any], ...] = (SWITCH_A, AP_1),
     port_stats: tuple[dict[str, Any], ...] = (),
     device_stats: tuple[dict[str, Any], ...] = (),
     wireless_clients: tuple[dict[str, Any], ...] = (),
     wired_clients: tuple[dict[str, Any], ...] = (),
+    fetched: tuple[str, ...] = ALL_FETCHED,
 ) -> RawSiteState:
     return RawSiteState(
         scope=SiteScope(org_id="o1", site_id="s1"),
@@ -1073,7 +1211,7 @@ def raw_site(
         wireless_clients=wireless_clients,
         wired_clients=wired_clients,
         derived_setting=None,
-        meta=StateMeta(acquired_at=datetime.now(UTC), host="test", fetched=(), failures=()),
+        meta=StateMeta(acquired_at=datetime.now(UTC), host="test", fetched=fetched, failures=()),
     )
 ```
 
@@ -1109,6 +1247,19 @@ def test_usage_vlans_trunk_with_named_networks():
 def test_usage_vlans_trunk_all_networks():
     native, tagged = usage_vlans(SITE_EFFECTIVE["port_usages"]["all"], SITE_EFFECTIVE["networks"])
     assert native is None and set(tagged) == {10, 30}
+
+
+def test_native_is_excluded_from_tagged_with_all_networks():
+    # the native network is carried UNTAGGED — it must not also appear tagged
+    usage = {"mode": "trunk", "all_networks": True, "port_network": "corp"}
+    native, tagged = usage_vlans(usage, SITE_EFFECTIVE["networks"])
+    assert native == 10 and tagged == (30,)
+
+
+def test_native_is_excluded_from_tagged_with_named_networks():
+    usage = {"mode": "trunk", "port_network": "corp", "networks": ["corp", "voice"]}
+    native, tagged = usage_vlans(usage, SITE_EFFECTIVE["networks"])
+    assert native == 10 and tagged == (30,)
 ```
 
 Create `tests/adapters/mist/test_ingest_switch.py`:
@@ -1150,9 +1301,29 @@ def test_vlans_and_irb_exits_created():
     assert len(irbs) == 1 and irbs[0].vlan_id == 10 and irbs[0].device_id == "aa0000000001"
 
 
-def test_produces_declares_capabilities():
+def test_device_local_network_also_creates_vlan_entity():
+    dev_eff = {**SITE_EFFECTIVE, **SWITCH_A,
+               "networks": {**SITE_EFFECTIVE["networks"], "lab": {"vlan_id": 99}}}
+    ctx = IngestContext(raw=raw_site(), site_effective=dict(SITE_EFFECTIVE),
+                        device_effective={"aa0000000001": dev_eff}, builder=IRBuilder())
+    SwitchIngester().ingest(ctx)
+    assert ctx.builder.build().vlans[99].name == "lab"
+
+
+def test_produces_declares_potential_capabilities():
     caps = SwitchIngester().produces()
     assert IRCapability.WIRED_L2 in caps and IRCapability.L3_EXITS in caps
+
+
+def test_capabilities_earned_only_when_devices_fetched():
+    ok = IngestContext(raw=raw_site(), site_effective=dict(SITE_EFFECTIVE),
+                       device_effective={}, builder=IRBuilder())
+    assert IRCapability.WIRED_L2 in SwitchIngester().ingest(ok)
+
+    failed = IngestContext(raw=raw_site(fetched=("site", "setting")),
+                           site_effective=dict(SITE_EFFECTIVE),
+                           device_effective={}, builder=IRBuilder())
+    assert SwitchIngester().ingest(failed) == frozenset()
 ```
 
 - [ ] **Step 2: Run to verify fail** — FAIL.
@@ -1194,7 +1365,13 @@ def expand_port_members(key: str) -> list[str]:
 def usage_vlans(
     usage: dict[str, Any], networks: dict[str, Any]
 ) -> tuple[int | None, tuple[int, ...]]:
-    """(native_vlan, tagged_vlans) for a port usage, resolved via `networks`."""
+    """(native_vlan, tagged_vlans) for a port usage, resolved via `networks`.
+
+    The native network is carried UNTAGGED, so it is always excluded from the
+    tagged set (Plan 1's link_carried_vlans handles the native via the
+    matching-natives path; double-listing it would carry it through the tagged
+    path even on a native mismatch).
+    """
 
     def vlan_of(name: str | None) -> int | None:
         if not name or name not in networks:
@@ -1205,11 +1382,9 @@ def usage_vlans(
     native = vlan_of(usage.get("port_network"))
     if usage.get("mode") != "trunk":
         return native, ()
-    if usage.get("all_networks"):
-        tagged = tuple(sorted(v for v in (vlan_of(n) for n in networks) if v is not None))
-        return native, tagged
+    names = list(networks) if usage.get("all_networks") else list(usage.get("networks") or [])
     tagged = tuple(
-        sorted(v for v in (vlan_of(n) for n in usage.get("networks") or []) if v is not None)
+        sorted(v for v in (vlan_of(n) for n in names) if v is not None and v != native)
     )
     return native, tagged
 ```
@@ -1250,15 +1425,18 @@ _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole
 class SwitchIngester:
     name = "switch"
 
-    def produces(self) -> frozenset[str]:
+    def produces(self) -> frozenset[str]:  # potential supply
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
-    def ingest(self, ctx: IngestContext) -> None:
+    def ingest(self, ctx: IngestContext) -> frozenset[str]:
+        if "devices" not in ctx.raw.meta.fetched:
+            return frozenset()  # no device data -> nothing earned, nothing claimed
         self._devices(ctx)
         self._vlans(ctx)
         for dev in ctx.raw.devices:
             if dev.get("type") == "switch":
                 self._switch_ports_and_l3(ctx, dev)
+        return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def _devices(self, ctx: IngestContext) -> None:
         for dev in ctx.raw.devices:
@@ -1271,13 +1449,19 @@ class SwitchIngester:
             )
 
     def _vlans(self, ctx: IngestContext) -> None:
-        networks: dict[str, Any] = ctx.site_effective.get("networks") or {}
-        for name, net in networks.items():
-            vid = net.get("vlan_id")
-            if vid is not None:
-                ctx.builder.add_vlan(
-                    Vlan(vlan_id=int(vid), name=name, scope=ctx.raw.scope.site_id)
-                )
+        # VLANs come from the site effective AND every device effective — a
+        # device-local network must still yield a Vlan entity (per-VLAN graphs
+        # enumerate ir.vlans; a missing entity would hide it from analysis).
+        seen: set[int] = set()
+        sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
+        for eff in sources:
+            for name, net in (eff.get("networks") or {}).items():
+                vid = net.get("vlan_id")
+                if vid is not None and int(vid) not in seen:
+                    seen.add(int(vid))
+                    ctx.builder.add_vlan(
+                        Vlan(vlan_id=int(vid), name=name, scope=ctx.raw.scope.site_id)
+                    )
 
     def _switch_ports_and_l3(self, ctx: IngestContext, dev: dict[str, Any]) -> None:
         did = device_id(str(dev["mac"]))
@@ -1350,6 +1534,9 @@ Append to `IRBuilder` in `src/digital_twin/ir/model.py`:
     def has_port(self, pid: str) -> bool:
         return pid in self._ports
 
+    def has_client(self, mac: str) -> bool:
+        return client_id(mac) in self._client_ids
+
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]
 
@@ -1361,6 +1548,8 @@ Append to `IRBuilder` in `src/digital_twin/ir/model.py`:
         self._ports[port.id] = port
         return self
 ```
+
+(Also add `client_id` to the existing `from .entities import ...` line in `model.py`.)
 
 Run: `uv run pytest tests/ir/test_model.py -q` → PASS.
 
@@ -1448,6 +1637,56 @@ def test_ap_uplink_link_from_ap_lldp_stat():
     ir = ctx.builder.build()
     ap_links = [link for link in ir.links if "cc0000000001" in link.id]
     assert len(ap_links) == 1
+
+
+def test_unmanaged_lldp_neighbor_becomes_wired_edge_client_not_link():
+    # a printer/unmanaged router reported by LLDP: no Link (device unknown),
+    # but a wired Client on the local port — it stays in the impact surface
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True,
+              "neighbor_mac": "99eeddccbbaa", "neighbor_port_id": "p1"}]
+    ir = _ctx(stats).builder.build()  # build() must NOT crash
+    assert ir.links == ()
+    edge = [c for c in ir.clients if c.mac == "99eeddccbbaa"]
+    assert len(edge) == 1
+    assert edge[0].attach_id == "aa0000000001:ge-0/0/10"
+    assert "unmanaged LLDP neighbor" in edge[0].meta.confidence.reasons[0]
+
+
+def test_ap_corroboration_requires_the_switch_to_name_that_ap():
+    # the switch port reports SOME neighbor, but not the AP -> AP link stays LOW
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True,
+              "neighbor_mac": "bb0000000002", "neighbor_port_id": "ge-0/0/47"}]
+    device_stats = [{"mac": "cc0000000001", "type": "ap",
+                     "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/10"}}]
+    ir = _ctx(stats, device_stats).builder.build()
+    ap_link = next(link for link in ir.links if "cc0000000001" in link.id)
+    assert ap_link.meta.confidence.level is ConfidenceLevel.LOW
+
+
+def test_switch_reporting_ap_yields_one_link_not_duplicates():
+    # both the switch port-stat claim AND the AP lldp_stat describe the same
+    # physical link -> exactly ONE Link entity (no duplicate-id crash)
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True,
+              "neighbor_mac": "cc0000000001", "neighbor_port_id": "eth0"}]
+    device_stats = [{"mac": "cc0000000001", "type": "ap",
+                     "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/10"}}]
+    ir = _ctx(stats, device_stats).builder.build()
+    ap_links = [link for link in ir.links if "cc0000000001" in link.id]
+    assert len(ap_links) == 1
+
+
+def test_stp_capability_earned_only_when_stp_rows_seen():
+    from digital_twin.ir import IRCapability
+
+    # _ctx runs LldpIngester once internally; ingest() is re-run here purely to
+    # capture the return value (idempotent on these inputs: stats unchanged).
+    no_stp = _ctx([{"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True}])
+    assert IRCapability.STP_STATE not in LldpIngester().ingest(no_stp)
+
+    with_stp = _ctx([{"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True,
+                      "stp_state": "forwarding"}])
+    assert IRCapability.STP_STATE in LldpIngester().ingest(with_stp)
+    assert with_stp.builder.build().port("aa0000000001:ge-0/0/10").stp_state == "forwarding"
 ```
 
 - [ ] **Step 2: Run to verify fail** — FAIL.
@@ -1459,13 +1698,17 @@ Create `src/digital_twin/adapters/mist/ingest/lldp.py`:
 ```python
 """LLDP-domain ingester: links from port stats + AP lldp_stat, with honesty rules.
 
-- Both ends report each other  -> one Link, provenance LLDP_TWO_SIDED (HIGH).
-- Only one end reports         -> one Link, provenance LLDP_ONE_SIDED (LOW).
-- aggregated/lag_name          -> LinkKind.LAG with bundle_id.
-- stp_state/stp_role on a port -> Port.stp_state + stp_meta (OBSERVED); absent
-  stats leave stp_meta=None (unknown -> later INSUFFICIENT_DATA).
-- AP lldp_stat names its switch + port -> AP uplink link. The AP reports about
-  itself+its uplink; if the switch port stats corroborate, it is two-sided.
+- Both ends report each other        -> one Link, LLDP_TWO_SIDED (HIGH).
+- Only one MANAGED end reports       -> one Link, LLDP_ONE_SIDED (LOW).
+- Neighbor is NOT a Mist device      -> NO Link; the neighbor becomes a wired
+  edge-device Client on the local port (user decision: printers/unmanaged
+  routers stay in the impact surface — VLAN continuity, DHCP, routing, FW).
+- aggregated/lag_name                -> LinkKind.LAG with bundle_id.
+- stp_state on a port                -> Port.stp_state + stp_meta (OBSERVED);
+  stp.state capability is EARNED only if >=1 such row was applied.
+- AP lldp_stat names switch + port   -> AP uplink link; two-sided only when the
+  switch's own claims name THAT AP back (not just any neighbor). A shared
+  emitted-set prevents the same physical link being added twice.
 
 Ports referenced by stats but absent from config are added as minimal OBSERVED
 trunk ports (cannot invent VLANs). Stat shapes pinned by tools/probe_fetch.py.
@@ -1477,12 +1720,16 @@ from dataclasses import replace
 from typing import Any
 
 from digital_twin.ir import (
+    AttachKind,
+    Client,
+    ClientKind,
     IRCapability,
     Link,
     LinkKind,
     Port,
     PortMode,
     Provenance,
+    client_id,
     device_id,
     fact_meta,
     link_id,
@@ -1497,14 +1744,16 @@ _Json = dict[str, Any]
 class LldpIngester:
     name = "lldp"
 
-    def produces(self) -> frozenset[str]:
+    def produces(self) -> frozenset[str]:  # potential supply
         return frozenset({IRCapability.STP_STATE})
 
-    def ingest(self, ctx: IngestContext) -> None:
+    def ingest(self, ctx: IngestContext) -> frozenset[str]:
         claims = self._claims(ctx)
-        self._apply_stp(ctx)
-        self._emit_links(ctx, claims)
-        self._emit_ap_uplinks(ctx, claims)
+        stp_seen = self._apply_stp(ctx)
+        emitted: set[str] = set()
+        self._emit_links(ctx, claims, emitted)
+        self._emit_ap_uplinks(ctx, claims, emitted)
+        return frozenset({IRCapability.STP_STATE}) if stp_seen else frozenset()
 
     # -- claims ---------------------------------------------------------------
     def _claims(self, ctx: IngestContext) -> dict[tuple[str, str], _Json]:
@@ -1520,7 +1769,8 @@ class LldpIngester:
         return out
 
     # -- STP ------------------------------------------------------------------
-    def _apply_stp(self, ctx: IngestContext) -> None:
+    def _apply_stp(self, ctx: IngestContext) -> bool:
+        seen = False
         for row in ctx.raw.port_stats:
             if row.get("stp_state") is None or not row.get("port_id"):
                 continue
@@ -1530,15 +1780,21 @@ class LldpIngester:
                 ctx.builder.get_port(pid), stp_state=str(row["stp_state"]),
                 stp_enabled=True, stp_meta=fact_meta(Provenance.OBSERVED),
             ))
+            seen = True
+        return seen
 
     # -- links ----------------------------------------------------------------
-    def _emit_links(self, ctx: IngestContext, claims: dict[tuple[str, str], _Json]) -> None:
-        done: set[str] = set()
+    def _emit_links(self, ctx: IngestContext, claims: dict[tuple[str, str], _Json],
+                    emitted: set[str]) -> None:
         for (src, dst), row in claims.items():
-            lid = link_id(src, dst)
-            if lid in done:
+            neighbor_dev = dst.partition(":")[0]
+            if not ctx.builder.has_device(neighbor_dev):
+                self._edge_device_client(ctx, src, neighbor_dev)
                 continue
-            done.add(lid)
+            lid = link_id(src, dst)
+            if lid in emitted:
+                continue
+            emitted.add(lid)
             two_sided = (dst, src) in claims
             prov = Provenance.LLDP_TWO_SIDED if two_sided else Provenance.LLDP_ONE_SIDED
             reasons = () if two_sided else (f"link {lid} seen from {src} only",)
@@ -1548,13 +1804,25 @@ class LldpIngester:
             ctx.builder.add_link(Link(id=lid, a_port=src, b_port=dst, kind=kind,
                                       bundle_id=bundle, meta=fact_meta(prov, reasons)))
 
+    def _edge_device_client(self, ctx: IngestContext, local_port: str, mac: str) -> None:
+        """An unmanaged LLDP neighbor is an EDGE DEVICE = wired client on this port
+        (its VLAN continuity / DHCP / routing / FW exposure must stay visible)."""
+        if ctx.builder.has_client(mac):
+            return
+        ctx.builder.add_client(Client(
+            mac=client_id(mac), kind=ClientKind.WIRED, attach_kind=AttachKind.PORT,
+            attach_id=local_port,
+            meta=fact_meta(Provenance.OBSERVED, ("unmanaged LLDP neighbor (edge device)",)),
+        ))
+
     def _kind(self, a: _Json, b: _Json | None) -> tuple[LinkKind, str | None]:
         for row in (a, b or {}):
             if row.get("aggregated") or row.get("lag_name"):
                 return LinkKind.LAG, str(row.get("lag_name") or "lag")
         return LinkKind.PHYSICAL, None
 
-    def _emit_ap_uplinks(self, ctx: IngestContext, claims: dict[tuple[str, str], _Json]) -> None:
+    def _emit_ap_uplinks(self, ctx: IngestContext, claims: dict[tuple[str, str], _Json],
+                         emitted: set[str]) -> None:
         switch_by_name = {str(d.get("name")): device_id(str(d["mac"]))
                           for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")}
         for stat in ctx.raw.device_stats:
@@ -1568,13 +1836,21 @@ class LldpIngester:
             ap_id = device_id(str(stat["mac"]))
             ap_port = port_id(ap_id, "eth0")
             sw_port = port_id(sw_id, str(sw_port_name))
-            corroborated = any(src == sw_port for (src, _dst) in claims)
+            lid = link_id(ap_port, sw_port)
+            if lid in emitted or any(  # switch-side claim already produced this link
+                link_id(src, dst) == lid for (src, dst) in claims if src == sw_port
+            ):
+                continue
+            emitted.add(lid)
+            # two-sided only if the switch's claim names THIS AP (not just anyone)
+            corroborated = any(
+                src == sw_port and dst.partition(":")[0] == ap_id for (src, dst) in claims
+            )
             prov = Provenance.LLDP_TWO_SIDED if corroborated else Provenance.LLDP_ONE_SIDED
             for pid, did, name in ((ap_port, ap_id, "eth0"), (sw_port, sw_id, str(sw_port_name))):
                 self._ensure_port(ctx, pid, did, name)
-            ctx.builder.add_link(Link(id=link_id(ap_port, sw_port), a_port=ap_port,
-                                      b_port=sw_port, kind=LinkKind.PHYSICAL,
-                                      meta=fact_meta(prov)))
+            ctx.builder.add_link(Link(id=lid, a_port=ap_port, b_port=sw_port,
+                                      kind=LinkKind.PHYSICAL, meta=fact_meta(prov)))
 
     # -- helpers ----------------------------------------------------------------
     def _ensure_port(self, ctx: IngestContext, pid: str,
@@ -1648,6 +1924,22 @@ def test_client_referencing_unknown_attachment_is_skipped_not_fatal():
     assert ir.clients == ()
 
 
+def test_capability_earned_only_when_both_client_fetches_succeeded():
+    ctx = IngestContext(
+        raw=raw_site(fetched=("site", "setting", "devices", "wireless_clients")),  # wired missing
+        site_effective=dict(SITE_EFFECTIVE), device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    assert ClientsIngester().ingest(ctx) == frozenset()
+
+
+def test_zero_clients_with_successful_fetches_still_earns_capability():
+    ctx = IngestContext(raw=raw_site(), site_effective=dict(SITE_EFFECTIVE),
+                        device_effective={}, builder=IRBuilder())
+    SwitchIngester().ingest(ctx)
+    assert IRCapability.CLIENTS_ACTIVE in ClientsIngester().ingest(ctx)
+
+
 def test_produces_capability():
     assert IRCapability.CLIENTS_ACTIVE in ClientsIngester().produces()
 ```
@@ -1661,13 +1953,26 @@ Create `src/digital_twin/adapters/mist/ingest/clients.py`:
 ```python
 """Clients-domain ingester: observed wired + wireless clients (active now).
 
-A client referencing an unknown AP/port is SKIPPED with a note (stale stats are
-not fatal) — the IRBuilder would rightly reject the dangling reference otherwise.
+- A client referencing an unknown AP/port is SKIPPED (stale stats are not fatal)
+  — the IRBuilder would rightly reject the dangling reference otherwise.
+- A MAC already present (e.g. added by LldpIngester as an unmanaged edge device)
+  is skipped — first writer wins, no duplicate-id crash.
+- clients.active is EARNED only if BOTH client fetches succeeded: an empty site
+  with successful fetches legitimately knows "no clients"; a failed fetch must
+  not masquerade as that knowledge.
 """
 
 from __future__ import annotations
 
-from digital_twin.ir import AttachKind, Client, ClientKind, IRCapability, client_id, device_id, port_id
+from digital_twin.ir import (
+    AttachKind,
+    Client,
+    ClientKind,
+    IRCapability,
+    client_id,
+    device_id,
+    port_id,
+)
 
 from .base import IngestContext
 
@@ -1675,16 +1980,19 @@ from .base import IngestContext
 class ClientsIngester:
     name = "clients"
 
-    def produces(self) -> frozenset[str]:
+    def produces(self) -> frozenset[str]:  # potential supply
         return frozenset({IRCapability.CLIENTS_ACTIVE})
 
-    def ingest(self, ctx: IngestContext) -> None:
+    def ingest(self, ctx: IngestContext) -> frozenset[str]:
+        fetched = ctx.raw.meta.fetched
+        if "wireless_clients" not in fetched or "wired_clients" not in fetched:
+            return frozenset()  # failed fetch -> no claim (zero clients != unknown)
         for w in ctx.raw.wireless_clients:
             if not w.get("mac") or not w.get("ap_mac"):
                 continue
             ap = device_id(str(w["ap_mac"]))
-            if not ctx.builder.has_device(ap):
-                continue  # stale stat; skip rather than poison the IR
+            if not ctx.builder.has_device(ap) or ctx.builder.has_client(str(w["mac"])):
+                continue  # stale stat / already known edge device
             vlan = w.get("vlan_id")
             ctx.builder.add_client(Client(
                 mac=client_id(str(w["mac"])), kind=ClientKind.WIRELESS,
@@ -1694,13 +2002,14 @@ class ClientsIngester:
             if not w.get("mac") or not w.get("device_mac") or not w.get("port_id"):
                 continue
             pid = port_id(device_id(str(w["device_mac"])), str(w["port_id"]))
-            if not ctx.builder.has_port(pid):
+            if not ctx.builder.has_port(pid) or ctx.builder.has_client(str(w["mac"])):
                 continue
             vlan = w.get("vlan")
             ctx.builder.add_client(Client(
                 mac=client_id(str(w["mac"])), kind=ClientKind.WIRED,
                 attach_kind=AttachKind.PORT, attach_id=pid,
                 vlan=int(vlan) if vlan is not None else None, ip=w.get("ip")))
+        return frozenset({IRCapability.CLIENTS_ACTIVE})
 ```
 
 - [ ] **Step 4: Run to verify pass** — PASS (4).
@@ -1809,8 +2118,9 @@ Create `src/digital_twin/providers/mist_api.py`:
 
 Every endpoint call is isolated in a small private method so the probe script
 (tools/probe_fetch.py) can validate exact SDK call names / response shapes per
-SDK release, and a fix is a one-liner. Partial failures are RECORDED, never
-raised — except the site/setting fetches, without which there is no baseline.
+SDK release, and a fix is a one-liner. Partial failures are RECORDED in
+StateMeta; a failed BASELINE fetch (site/setting) returns a FetchError VALUE —
+this provider never raises for fetch problems.
 """
 
 from __future__ import annotations
@@ -1822,7 +2132,7 @@ from typing import Any
 
 import mistapi
 
-from .base import FetchFailure, RawSiteState, SiteScope, StateMeta, StateProvider
+from .base import FetchError, FetchFailure, RawSiteState, SiteScope, StateMeta, StateProvider
 
 _Json = dict[str, Any]
 
@@ -1834,7 +2144,9 @@ class MistApiProvider(StateProvider):
             host=self._host, apitoken=apitoken or os.environ["MIST_APITOKEN"]
         )
 
-    def fetch_site(self, scope: SiteScope, *, include_derived: bool = False) -> RawSiteState:
+    def fetch_site(
+        self, scope: SiteScope, *, include_derived: bool = False
+    ) -> RawSiteState | FetchError:
         fetched: list[str] = []
         failures: list[FetchFailure] = []
 
@@ -1847,9 +2159,12 @@ class MistApiProvider(StateProvider):
                 failures.append(FetchFailure(object=name, error=str(e)))
                 return default
 
-        site = self._site(scope)  # raises: no baseline without it
-        setting = self._setting(scope)  # raises: ditto
-        fetched += ["site", "setting"]
+        # baseline: without site+setting there is nothing to simulate against
+        site = attempt("site", lambda: self._site(scope), None)
+        setting = attempt("setting", lambda: self._setting(scope), None)
+        if site is None or setting is None:
+            return FetchError(scope=scope, failures=tuple(failures),
+                              acquired_at=datetime.now(UTC), host=self._host)
 
         nt_id = site.get("networktemplate_id")
         networktemplate = (
@@ -1949,7 +2264,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from digital_twin.providers.base import SiteScope
+from digital_twin.providers.base import FetchError, SiteScope
 from digital_twin.providers.mist_api import MistApiProvider
 
 OUT = Path(".cache/probe")
@@ -1958,6 +2273,8 @@ OUT = Path(".cache/probe")
 def main() -> None:
     org_id, site_id = sys.argv[1], sys.argv[2]
     raw = MistApiProvider().fetch_site(SiteScope(org_id, site_id), include_derived=True)
+    if isinstance(raw, FetchError):
+        sys.exit(f"baseline fetch failed: {[f'{f.object}: {f.error}' for f in raw.failures]}")
     OUT.mkdir(parents=True, exist_ok=True)
     for name in ("site", "setting", "networktemplate", "devices", "device_stats",
                  "port_stats", "wireless_clients", "wired_clients", "derived_setting"):
@@ -1993,11 +2310,13 @@ requires_env = pytest.mark.skipif(
 
 @requires_env
 def test_fetch_site_returns_baseline_and_meta():
+    from digital_twin.providers.base import RawSiteState
     from digital_twin.providers.mist_api import MistApiProvider
 
     org_id = os.environ["DT_GATE_ORG_ID"]
     site_id = os.environ["DT_GATE_SITE_IDS"].split(",")[0]
     raw = MistApiProvider().fetch_site(SiteScope(org_id, site_id))
+    assert isinstance(raw, RawSiteState), f"baseline fetch failed: {raw}"
     assert raw.setting is not None
     assert "site" in raw.meta.fetched and "setting" in raw.meta.fetched
 ```
@@ -2064,6 +2383,18 @@ def test_catalogued_divergence_is_separated_not_failed():
     assert r.diffs == () and [d.path for d in r.catalogued_diffs] == ["x"]
 
 
+def test_divergence_entries_without_reason_are_rejected(tmp_path, monkeypatch):
+    import digital_twin.adapters.mist.compile.equivalence as eq
+
+    bad = tmp_path / "divergences.json"
+    bad.write_text('{"entries": [{"path": "x"}]}')
+    monkeypatch.setattr(eq, "_DIVERGENCES", bad)
+    import pytest
+
+    with pytest.raises(ValueError, match="without a reason"):
+        eq.load_catalogued()
+
+
 def test_attribute_coverage_lists_exercised_and_missing_leaves():
     schema = {"type": "object", "properties": {
         "a": {"type": "string"},
@@ -2079,14 +2410,18 @@ def test_attribute_coverage_lists_exercised_and_missing_leaves():
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/digital_twin/adapters/mist/compile/divergences.json`:
+Create `src/digital_twin/adapters/mist/compile/divergences.json` — entries are
+**records with a mandatory reason**, never bare paths:
 
 ```json
 {
-  "_comment": "Catalogued, justified divergences between our compile_site and getSiteSettingDerived. Every entry needs a reason. An UNCATALOGUED diff fails the gate.",
-  "paths": []
+  "_comment": "Catalogued, justified divergences between our merge and getSiteSettingDerived. Every entry MUST carry a reason. An UNCATALOGUED diff fails the gate.",
+  "entries": []
 }
 ```
+
+(Example entry shape, added during gate iteration:
+`{"path": "modified_time", "reason": "server-side timestamp, not config"}`.)
 
 Create `src/digital_twin/adapters/mist/compile/equivalence.py`:
 
@@ -2133,7 +2468,12 @@ class Coverage:
 
 
 def load_catalogued() -> tuple[str, ...]:
-    return tuple(json.loads(_DIVERGENCES.read_text())["paths"])
+    """Paths of catalogued divergences; every entry must carry a reason."""
+    entries = json.loads(_DIVERGENCES.read_text())["entries"]
+    missing = [e for e in entries if not e.get("reason")]
+    if missing:
+        raise ValueError(f"divergence entries without a reason: {missing}")
+    return tuple(e["path"] for e in entries)
 
 
 def _norm(v: Any) -> Any:
@@ -2253,8 +2593,8 @@ import sys
 from pathlib import Path
 
 from digital_twin.adapters.mist.compile.equivalence import attribute_coverage, compare_effective
-from digital_twin.adapters.mist.compile.switch import compile_site
-from digital_twin.providers.base import SiteScope
+from digital_twin.adapters.mist.compile.switch import merge_only
+from digital_twin.providers.base import FetchError, SiteScope
 from digital_twin.providers.mist_api import MistApiProvider
 
 OAS = Path("src/digital_twin/adapters/mist/oas/site_setting.schema.json")
@@ -2269,12 +2609,19 @@ def main() -> None:
 
     for site_id in site_ids:
         raw = provider.fetch_site(SiteScope(org_id, site_id), include_derived=True)
+        if isinstance(raw, FetchError):
+            print(f"[FAIL] {site_id}: baseline fetch failed: "
+                  f"{[f.error for f in raw.failures]}")
+            failures += 1
+            continue
         if raw.derived_setting is None:
             print(f"[FAIL] {site_id}: derived_setting fetch failed: "
                   f"{[f.error for f in raw.meta.failures]}")
             failures += 1
             continue
-        ours = compile_site(dict(raw.networktemplate or {}) or None, dict(raw.setting))
+        # derived does NOT resolve {{vars}} (confirmed) -> compare the pre-vars merge
+        ours = merge_only(dict(raw.networktemplate) if raw.networktemplate else None,
+                          dict(raw.setting))
         derived = dict(raw.derived_setting)
         derived_samples.append(derived)
         result = compare_effective(ours, derived)
@@ -2310,8 +2657,7 @@ uv run python tools/equivalence_gate.py
 Expected: `[ OK ]` for every configured site, plus the coverage report. For each `[FAIL]`:
 1. If our merge rule is wrong → fix `_POLICY` in `merge.py` (or `compile_site`), re-run Tier-1 + gate.
 2. If Mist's derived adds server-side noise (timestamps, computed defaults) → add the path to `divergences.json` **with a reason** in `_comment` form, re-run.
-3. Probe-confirm whether `getSiteSettingDerived` resolves `{{vars}}`; if it does NOT, change the gate to compare the **pre-vars** merge output (one-line change in this runner: use `merge_site_effective` instead of `compile_site`) and document it here.
-4. If derived systematically materializes **schema defaults** for fields we leave absent (the spec's "defaults" rule), don't catalogue them one-by-one: add a small `apply_schema_defaults(config, schema)` step in `equivalence.py` that fills `default`-annotated leaves from the OAS schema on *both* sides before comparing, with a test.
+3. If derived systematically materializes **schema defaults** for fields we leave absent (the spec's "defaults" rule — the `site_setting` closure carries 434 `default` annotations, so expect this), don't catalogue them one-by-one: add a small `apply_schema_defaults(config, schema)` step in `equivalence.py` that fills `default`-annotated leaves from the OAS schema on *both* sides before comparing, with a test.
 
 Iterate until green on all configured sites across at least two orgs. **This is the Plan-2 exit gate.**
 
@@ -2340,11 +2686,19 @@ def test_plan2_public_api():
         SwitchIngester,
         compile_device,
         compile_site,
+        merge_only,
     )
     from digital_twin.engine import validate_supply
-    from digital_twin.providers import MistApiProvider, RawSiteState, SiteScope, StateProvider
+    from digital_twin.providers import (
+        FetchError,
+        MistApiProvider,
+        RawSiteState,
+        SiteScope,
+        StateProvider,
+    )
 
-    assert all(callable(f) for f in (compile_site, compile_device, validate_supply))
+    assert all(callable(f) for f in (compile_site, compile_device, merge_only, validate_supply))
+    assert FetchError is not None
     assert all(x is not None for x in (SwitchIngester, LldpIngester, ClientsIngester,
                                        IngesterRegistry, MistApiProvider, RawSiteState,
                                        SiteScope, StateProvider))
@@ -2357,11 +2711,11 @@ def test_plan2_public_api():
 ```python
 """State providers (effectful): fetch raw vendor state for a scope."""
 
-from .base import FetchFailure, RawSiteState, SiteScope, StateMeta, StateProvider
+from .base import FetchError, FetchFailure, RawSiteState, SiteScope, StateMeta, StateProvider
 from .mist_api import MistApiProvider
 
-__all__ = ["FetchFailure", "RawSiteState", "SiteScope", "StateMeta", "StateProvider",
-           "MistApiProvider"]
+__all__ = ["FetchError", "FetchFailure", "RawSiteState", "SiteScope", "StateMeta",
+           "StateProvider", "MistApiProvider"]
 ```
 
 `src/digital_twin/adapters/mist/__init__.py`:
@@ -2369,13 +2723,13 @@ __all__ = ["FetchFailure", "RawSiteState", "SiteScope", "StateMeta", "StateProvi
 ```python
 """Mist vendor adapter: compile (raw -> effective) + ingest (effective -> IR)."""
 
-from .compile.switch import compile_device, compile_site
+from .compile.switch import compile_device, compile_site, merge_only
 from .ingest.clients import ClientsIngester
 from .ingest.lldp import LldpIngester
 from .ingest.registry import IngesterRegistry
 from .ingest.switch import SwitchIngester
 
-__all__ = ["compile_site", "compile_device", "IngesterRegistry",
+__all__ = ["compile_site", "compile_device", "merge_only", "IngesterRegistry",
            "SwitchIngester", "LldpIngester", "ClientsIngester"]
 ```
 
