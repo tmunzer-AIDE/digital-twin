@@ -503,7 +503,7 @@ So growth (Aruba, L3, NAC) is additive and never silently breaks a check, every 
 class IR:
     ir_version: str                # semver of the IR schema; engine rejects an incompatible major
     capabilities: set[IRCapability]   # what THIS instance actually populated, e.g.
-                                   #   {wired.l2, links.bidirectional, clients.active}
+                                   #   {wired.l2, stp.state, clients.active, l3.exits}
                                    #   (a wired-only ingest does NOT include {wan, nac, l3.routes})
     ...
 ```

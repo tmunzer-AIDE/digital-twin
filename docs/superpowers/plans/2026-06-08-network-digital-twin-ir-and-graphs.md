@@ -443,13 +443,13 @@ from digital_twin.ir.entities import (
     Port,
     PortMode,
     StpMode,
-    StpProvenance,
     Vlan,
     client_id,
     device_id,
     link_id,
     port_id,
 )
+from digital_twin.ir.confidence import ConfidenceLevel
 from digital_twin.ir.provenance import CONFIG_META, OBSERVED_META, Provenance, fact_meta
 
 
@@ -472,12 +472,20 @@ def test_link_has_bundle_id_and_meta_not_separate_source():
     assert not hasattr(link, "source")
 
 
-def test_port_keeps_stp_fields():
+def test_port_stp_is_a_field_specific_fact():
+    # STP carries its own meta (a live fact), separate from the port's config meta.
     port = Port(id="d1:ge-0/0/1", device_id="d1", name="ge-0/0/1", mode=PortMode.TRUNK,
                 tagged_vlans=(10, 30), stp_enabled=True, stp_mode=StpMode.RSTP,
-                stp_provenance=StpProvenance.OBSERVED)
+                stp_meta=fact_meta(Provenance.OBSERVED))
     assert port.tagged_vlans == (10, 30)
-    assert port.stp_provenance is StpProvenance.OBSERVED
+    assert port.meta is CONFIG_META  # config provenance
+    assert port.stp_meta is not None
+    assert port.stp_meta.confidence.level is ConfidenceLevel.HIGH  # observed self-report
+
+
+def test_port_stp_unknown_by_default():
+    port = Port(id="d1:p", device_id="d1", name="p", mode=PortMode.TRUNK)
+    assert port.stp_meta is None  # unknown -> loop check INSUFFICIENT_DATA
 
 
 def test_l3intf_auto_derives_stable_id():
@@ -550,12 +558,6 @@ class StpMode(str, Enum):
     NONE = "none"
 
 
-class StpProvenance(str, Enum):
-    OBSERVED = "observed"
-    CONFIG = "config"
-    UNKNOWN = "unknown"
-
-
 class L3Role(str, Enum):
     IRB = "irb"
     SVI = "svi"
@@ -618,7 +620,9 @@ class Port:
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None
-    stp_provenance: StpProvenance = StpProvenance.UNKNOWN
+    # STP is a LIVE fact with its own provenance, distinct from the port's config `meta`.
+    # None = STP state unknown (drives the loop check to INSUFFICIENT_DATA / LOW confidence).
+    stp_meta: FactMeta | None = None
     meta: FactMeta = CONFIG_META
 
 
@@ -704,6 +708,8 @@ from digital_twin.ir.entities import (
     ClientKind,
     Device,
     DeviceRole,
+    L3Intf,
+    L3Role,
     Link,
     LinkKind,
     Port,
@@ -748,6 +754,32 @@ def test_duplicate_device_id_rejected():
     b = IRBuilder().add_device(_sw("d1"))
     with pytest.raises(IRValidationError):
         b.add_device(_sw("d1"))
+
+
+def test_duplicate_link_id_rejected():
+    b = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
+         .add_port(_port("d1", "a")).add_port(_port("d2", "a")))
+    link = Link(id="l1", a_port="d1:a", b_port="d2:a", kind=LinkKind.PHYSICAL)
+    b.add_link(link)
+    with pytest.raises(IRValidationError):
+        b.add_link(link)
+
+
+def test_duplicate_l3intf_id_rejected():
+    b = IRBuilder().add_device(_sw("d1")).add_l3intf(
+        L3Intf(device_id="d1", role=L3Role.IRB, vlan_id=30))
+    with pytest.raises(IRValidationError):
+        b.add_l3intf(L3Intf(device_id="d1", role=L3Role.IRB, vlan_id=30))  # same auto id
+
+
+def test_duplicate_client_id_rejected():
+    # client ids normalize the MAC, so different formatting still collides
+    b = (IRBuilder().add_device(_sw("d1")).add_port(_port("d1", "a"))
+         .add_client(Client(mac="aa:bb", kind=ClientKind.WIRED,
+                            attach_kind=AttachKind.PORT, attach_id="d1:a")))
+    with pytest.raises(IRValidationError):
+        b.add_client(Client(mac="AA:BB", kind=ClientKind.WIRED,
+                           attach_kind=AttachKind.PORT, attach_id="d1:a"))
 
 
 def test_port_with_unknown_device_rejected_at_build():
@@ -836,9 +868,12 @@ class IRBuilder:
         self._devices: dict[str, Device] = {}
         self._ports: dict[str, Port] = {}
         self._links: list[Link] = []
+        self._link_ids: set[str] = set()
         self._vlans: dict[int, Vlan] = {}
         self._l3intfs: list[L3Intf] = []
+        self._l3intf_ids: set[str] = set()
         self._clients: list[Client] = []
+        self._client_ids: set[str] = set()
         self._capabilities: set[IRCapability] = set()
 
     def add_device(self, device: Device) -> IRBuilder:
@@ -854,6 +889,9 @@ class IRBuilder:
         return self
 
     def add_link(self, link: Link) -> IRBuilder:
+        if link.id in self._link_ids:
+            raise IRValidationError(f"duplicate link id {link.id}")
+        self._link_ids.add(link.id)
         self._links.append(link)
         return self
 
@@ -864,10 +902,16 @@ class IRBuilder:
         return self
 
     def add_l3intf(self, intf: L3Intf) -> IRBuilder:
+        if intf.id in self._l3intf_ids:
+            raise IRValidationError(f"duplicate l3intf id {intf.id}")
+        self._l3intf_ids.add(intf.id)
         self._l3intfs.append(intf)
         return self
 
     def add_client(self, client: Client) -> IRBuilder:
+        if client.id in self._client_ids:
+            raise IRValidationError(f"duplicate client id {client.id}")
+        self._client_ids.add(client.id)
         self._clients.append(client)
         return self
 
@@ -1006,7 +1050,9 @@ from typing import Any
 
 from .model import IR
 
-_IGNORED_FIELDS = {"meta"}
+# Provenance/confidence wrappers are not config changes; the underlying facts
+# (stp_enabled/stp_state/...) ARE compared, so a real STP change is still detected.
+_IGNORED_FIELDS = {"meta", "stp_meta"}
 
 
 @dataclass(frozen=True)
@@ -1775,7 +1821,6 @@ from .entities import (
     Port,
     PortMode,
     StpMode,
-    StpProvenance,
     Vlan,
     client_id,
     device_id,
@@ -1799,7 +1844,7 @@ __all__ = [
     "Provenance", "FactMeta", "fact_meta", "CONFIG_META", "OBSERVED_META",
     "Device", "DeviceRole", "Port", "PortMode", "Link", "LinkKind",
     "Vlan", "L3Intf", "L3Role", "Client", "ClientKind", "AttachKind",
-    "StpMode", "StpProvenance",
+    "StpMode",
     "device_id", "port_id", "link_id", "client_id",
     "EntityRef", "Modified", "IRDiff", "diff_ir",
     "vc_root_map", "ports_by_device", "access_ports_by_vlan", "exits_by_vlan",
