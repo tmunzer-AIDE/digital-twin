@@ -378,6 +378,16 @@ def test_capabilities_are_set_members():
     caps = {IRCapability.WIRED_L2, IRCapability.STP_STATE}
     assert IRCapability.WIRED_L2 in caps
     assert IRCapability.CLIENTS_ACTIVE not in caps
+
+
+def test_ircapability_members_are_capabilities_and_interchange_with_strings():
+    from digital_twin.ir.capabilities import Capability
+
+    cap: Capability = IRCapability.WIRED_L2  # enum member IS a Capability (str)
+    assert cap == "wired.l2"
+    assert IRCapability.WIRED_L2 in {"wired.l2"}  # equality/hash match the value
+    future: Capability = "analysis.reachability"  # later capabilities are the same type
+    assert isinstance(future, str)
 ```
 
 - [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_capabilities.py -v` → FAIL.
@@ -387,7 +397,12 @@ def test_capabilities_are_set_members():
 Create `src/digital_twin/ir/capabilities.py`:
 
 ```python
-"""IRCapability: coarse domain-presence flags an IR instance declares.
+"""Capability: the unified, namespaced capability vocabulary, plus the M1 constants.
+
+A Capability is a namespaced string (e.g. "wired.l2", later "analysis.reachability").
+Producers/consumers across every layer type over `Capability`, so analysis-derived
+capabilities slot in later with no type change. IRCapability provides the M1 IR-domain
+constants (its members ARE Capabilities, being str-enum values).
 
 Presence flags (was this domain populated at all), NOT quality — quality lives in
 per-fact confidence and per-check coverage. New domains ADD capabilities; existing
@@ -397,6 +412,9 @@ checks are unaffected.
 from __future__ import annotations
 
 from enum import Enum
+
+# Unified capability type: a namespaced capability string.
+Capability = str
 
 
 class IRCapability(str, Enum):
@@ -643,6 +661,10 @@ class Vlan:
     scope: str = "site"
     meta: FactMeta = CONFIG_META
 
+    @property
+    def id(self) -> str:
+        return str(self.vlan_id)
+
 
 @dataclass(frozen=True)
 class L3Intf:
@@ -805,6 +827,32 @@ def test_wired_client_with_unknown_port_rejected_at_build():
         b.build()
 
 
+def test_wireless_client_must_attach_to_an_ap_role_device():
+    # attaching a wireless client to a switch (not an AP) is rejected
+    b = (IRBuilder().add_device(_sw("d1"))
+         .add_client(Client(mac="bb", kind=ClientKind.WIRELESS,
+                            attach_kind=AttachKind.AP, attach_id="d1")))
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "not an AP" in str(e.value)
+
+
+def test_wireless_client_to_real_ap_builds():
+    ap = Device(id="ap1", role=DeviceRole.AP, site="s1")
+    ir = (IRBuilder().add_device(ap)
+          .add_client(Client(mac="cc", kind=ClientKind.WIRELESS,
+                             attach_kind=AttachKind.AP, attach_id="ap1")).build())
+    assert len(ir.clients) == 1
+
+
+def test_kind_attachment_mismatch_rejected():
+    b = (IRBuilder().add_device(_sw("d1")).add_port(_port("d1", "a"))
+         .add_client(Client(mac="dd", kind=ClientKind.WIRELESS,
+                            attach_kind=AttachKind.PORT, attach_id="d1:a")))
+    with pytest.raises(IRValidationError):
+        b.build()
+
+
 def test_valid_ir_with_full_references_builds():
     ir = (IRBuilder().add_device(_sw("d1")).add_device(_sw("d2"))
           .add_port(_port("d1", "ge-0/0/1")).add_port(_port("d2", "ge-0/0/5"))
@@ -832,8 +880,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .capabilities import IRCapability
-from .entities import AttachKind, Client, Device, L3Intf, Link, Port, Vlan
+from .capabilities import Capability
+from .entities import AttachKind, Client, ClientKind, Device, DeviceRole, L3Intf, Link, Port, Vlan
 
 IR_VERSION = "1.0"
 
@@ -845,7 +893,7 @@ class IRValidationError(ValueError):
 @dataclass(frozen=True)
 class IR:
     ir_version: str
-    capabilities: frozenset[IRCapability]
+    capabilities: frozenset[Capability]
     devices: Mapping[str, Device]
     ports: Mapping[str, Port]
     links: tuple[Link, ...]
@@ -859,7 +907,7 @@ class IR:
     def port(self, pid: str) -> Port:
         return self.ports[pid]
 
-    def has(self, cap: IRCapability) -> bool:
+    def has(self, cap: Capability) -> bool:
         return cap in self.capabilities
 
 
@@ -874,7 +922,7 @@ class IRBuilder:
         self._l3intf_ids: set[str] = set()
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
-        self._capabilities: set[IRCapability] = set()
+        self._capabilities: set[Capability] = set()
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -915,7 +963,7 @@ class IRBuilder:
         self._clients.append(client)
         return self
 
-    def with_capability(self, cap: IRCapability) -> IRBuilder:
+    def with_capability(self, cap: Capability) -> IRBuilder:
         self._capabilities.add(cap)
         return self
 
@@ -932,10 +980,18 @@ class IRBuilder:
             if intf.device_id not in self._devices:
                 errors.append(f"l3intf {intf.id} references unknown device {intf.device_id}")
         for c in self._clients:
+            if c.kind is ClientKind.WIRELESS and c.attach_kind is not AttachKind.AP:
+                errors.append(f"wireless client {c.mac} must attach to an AP")
+            if c.kind is ClientKind.WIRED and c.attach_kind is not AttachKind.PORT:
+                errors.append(f"wired client {c.mac} must attach to a port")
             if c.attach_kind is AttachKind.PORT and c.attach_id not in self._ports:
                 errors.append(f"client {c.mac} references unknown port {c.attach_id}")
-            if c.attach_kind is AttachKind.AP and c.attach_id not in self._devices:
-                errors.append(f"client {c.mac} references unknown ap {c.attach_id}")
+            if c.attach_kind is AttachKind.AP:
+                ap = self._devices.get(c.attach_id)
+                if ap is None:
+                    errors.append(f"client {c.mac} references unknown ap {c.attach_id}")
+                elif ap.role is not DeviceRole.AP:
+                    errors.append(f"client {c.mac} attaches to {c.attach_id} which is not an AP")
         for d in self._devices.values():
             for member in d.vc_members:
                 if member not in self._devices:
@@ -1044,7 +1100,7 @@ the per-fact `meta` is excluded — a confidence change is not a config change.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, fields
 from typing import Any
 
@@ -1053,6 +1109,17 @@ from .model import IR
 # Provenance/confidence wrappers are not config changes; the underlying facts
 # (stp_enabled/stp_state/...) ARE compared, so a real STP change is still detected.
 _IGNORED_FIELDS = {"meta", "stp_meta"}
+
+# Entity kinds the diff walks. Adding a domain (WAN/NAC/routing) = append ONE line
+# here (every entity exposes a stable `.id`); the diff then extends automatically.
+_ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
+    ("device", lambda ir: ir.devices.values()),
+    ("port", lambda ir: ir.ports.values()),
+    ("link", lambda ir: ir.links),
+    ("vlan", lambda ir: ir.vlans.values()),
+    ("l3intf", lambda ir: ir.l3intfs),
+    ("client", lambda ir: ir.clients),
+]
 
 
 @dataclass(frozen=True)
@@ -1085,18 +1152,9 @@ class IRDiff:
 
 def _index(ir: IR) -> dict[tuple[str, str], Any]:
     out: dict[tuple[str, str], Any] = {}
-    for d in ir.devices.values():
-        out[("device", d.id)] = d
-    for p in ir.ports.values():
-        out[("port", p.id)] = p
-    for link in ir.links:
-        out[("link", link.id)] = link
-    for v in ir.vlans.values():
-        out[("vlan", str(v.vlan_id))] = v
-    for intf in ir.l3intfs:
-        out[("l3intf", intf.id)] = intf
-    for c in ir.clients:
-        out[("client", c.id)] = c
+    for kind, extract in _ENTITY_KINDS:
+        for entity in extract(ir):
+            out[(kind, entity.id)] = entity
     return out
 
 
@@ -1160,6 +1218,7 @@ from digital_twin.ir.entities import (
 )
 from digital_twin.ir.indexes import (
     access_ports_by_vlan,
+    clients_by_ap,
     clients_by_port,
     clients_by_vlan,
     exits_by_vlan,
@@ -1201,13 +1260,18 @@ def test_exits_by_vlan_indexes_irb_and_svi():
     assert [i.id for i in exits_by_vlan(ir)[30]] == [irb.id]  # WAN is not an exit
 
 
-def test_clients_by_port_and_vlan():
+def test_clients_by_port_ap_and_vlan():
     p = Port(id="d1:a", device_id="d1", name="a", mode=PortMode.ACCESS, native_vlan=30)
+    ap = Device(id="ap1", role=DeviceRole.AP, site="s1")
     wired = Client(mac="aa", kind=ClientKind.WIRED, attach_kind=AttachKind.PORT,
                    attach_id="d1:a", vlan=30)
-    ir = IRBuilder().add_device(_sw("d1")).add_port(p).add_client(wired).build()
+    wireless = Client(mac="bb", kind=ClientKind.WIRELESS, attach_kind=AttachKind.AP,
+                      attach_id="ap1", vlan=30)
+    ir = (IRBuilder().add_device(_sw("d1")).add_device(ap).add_port(p)
+          .add_client(wired).add_client(wireless).build())
     assert [c.mac for c in clients_by_port(ir)["d1:a"]] == ["aa"]
-    assert [c.mac for c in clients_by_vlan(ir)[30]] == ["aa"]
+    assert [c.mac for c in clients_by_ap(ir)["ap1"]] == ["bb"]
+    assert {c.mac for c in clients_by_vlan(ir)[30]} == {"aa", "bb"}
 ```
 
 - [ ] **Step 2: Run to verify fail** — `uv run pytest tests/ir/test_indexes.py -v` → FAIL (`ModuleNotFoundError`).
@@ -1266,9 +1330,19 @@ def exits_by_vlan(ir: IR) -> dict[int, list[L3Intf]]:
 
 
 def clients_by_port(ir: IR) -> dict[str, list[Client]]:
+    """Wired clients keyed by their attach port id."""
     out: dict[str, list[Client]] = defaultdict(list)
     for c in ir.clients:
         if c.attach_kind is AttachKind.PORT:
+            out[c.attach_id].append(c)
+    return dict(out)
+
+
+def clients_by_ap(ir: IR) -> dict[str, list[Client]]:
+    """Wireless clients keyed by their AP device id (for Wi-Fi-aware client impact)."""
+    out: dict[str, list[Client]] = defaultdict(list)
+    for c in ir.clients:
+        if c.attach_kind is AttachKind.AP:
             out[c.attach_id].append(c)
     return dict(out)
 
@@ -1550,8 +1624,9 @@ def build_l2_graph(ir: IR) -> nx.MultiGraph:
                 data["member_ports"].extend((pa.id, pb.id))
                 data["confidence"] = min_confidence(data["confidence"], conf)
                 continue
-            key = g.add_edge(na, nb, vlans=set(vlans), kind="lag", bundle_id=link.bundle_id,
-                             link_ids=[link.id], member_ports=[pa.id, pb.id], confidence=conf)
+            key = g.add_edge(na, nb, vlans=set(vlans), kind=link.kind.value,
+                             bundle_id=link.bundle_id, link_ids=[link.id],
+                             member_ports=[pa.id, pb.id], confidence=conf)
             bundle_keys[ckey] = key
         else:
             g.add_edge(na, nb, vlans=set(vlans), kind=link.kind.value, bundle_id=link.bundle_id,
@@ -1760,6 +1835,7 @@ Create `tests/test_public_api.py`:
 def test_ir_public_api():
     from digital_twin.ir import (
         IR,
+        Capability,
         Client,
         Confidence,
         Device,
@@ -1772,6 +1848,7 @@ def test_ir_public_api():
         Provenance,
         Vlan,
         access_ports_by_vlan,
+        clients_by_ap,
         diff_ir,
         exits_by_vlan,
         fact_meta,
@@ -1780,10 +1857,12 @@ def test_ir_public_api():
     )
 
     assert IRBuilder().build().ir_version
-    assert all(callable(f) for f in (diff_ir, min_confidence, fact_meta,
-                                     vc_root_map, access_ports_by_vlan, exits_by_vlan))
+    assert all(callable(f) for f in (diff_ir, min_confidence, fact_meta, vc_root_map,
+                                     access_ports_by_vlan, exits_by_vlan, clients_by_ap))
     assert all(x is not None for x in (IR, Client, Confidence, Device, FactMeta,
                                        IRCapability, IRDiff, Link, Port, Provenance, Vlan))
+    cap: Capability = IRCapability.WIRED_L2  # IRCapability member is a Capability
+    assert cap == "wired.l2"
 
 
 def test_representations_public_api():
@@ -1805,7 +1884,7 @@ Overwrite `src/digital_twin/ir/__init__.py`:
 ```python
 """Vendor-neutral Intermediate Representation (IR)."""
 
-from .capabilities import IRCapability
+from .capabilities import Capability, IRCapability
 from .confidence import Confidence, ConfidenceLevel, min_confidence
 from .diff import EntityRef, IRDiff, Modified, diff_ir
 from .entities import (
@@ -1829,6 +1908,7 @@ from .entities import (
 )
 from .indexes import (
     access_ports_by_vlan,
+    clients_by_ap,
     clients_by_port,
     clients_by_vlan,
     exits_by_vlan,
@@ -1839,7 +1919,7 @@ from .model import IR_VERSION, IR, IRBuilder, IRValidationError
 from .provenance import CONFIG_META, OBSERVED_META, FactMeta, Provenance, fact_meta
 
 __all__ = [
-    "IR", "IR_VERSION", "IRBuilder", "IRValidationError", "IRCapability",
+    "IR", "IR_VERSION", "IRBuilder", "IRValidationError", "IRCapability", "Capability",
     "Confidence", "ConfidenceLevel", "min_confidence",
     "Provenance", "FactMeta", "fact_meta", "CONFIG_META", "OBSERVED_META",
     "Device", "DeviceRole", "Port", "PortMode", "Link", "LinkKind",
@@ -1848,7 +1928,7 @@ __all__ = [
     "device_id", "port_id", "link_id", "client_id",
     "EntityRef", "Modified", "IRDiff", "diff_ir",
     "vc_root_map", "ports_by_device", "access_ports_by_vlan", "exits_by_vlan",
-    "clients_by_port", "clients_by_vlan",
+    "clients_by_port", "clients_by_ap", "clients_by_vlan",
 ]
 ```
 

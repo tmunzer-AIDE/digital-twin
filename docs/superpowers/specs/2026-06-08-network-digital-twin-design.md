@@ -324,7 +324,7 @@ noted — they become verdict outcomes (`UNKNOWN`/`REVIEW`), never an unhandled 
 | `ir/diff.diff_ir` | `IR`, `IR'` | neutral `IRDiff` (for checks) | — (pure) |
 | `scope/derived_gate` (post-compile) | `effective`, `effective'`, effective allowlist | in/out verdict | out-of-scope *effective* field → `UNKNOWN` |
 | `analysis/AnalysisContext` | `IR` | memoized representations + analysis (carry confidence) | missing capability → analysis absent → check `INSUFFICIENT_DATA` |
-| `checks/registry` | `IR`, `IRDiff`, `AnalysisContext` | `list[CheckResult]` | per-check crash isolated → `CHECK_ERROR` |
+| `checks/registry` | `IRDiff` + baseline/proposed `AnalysisContext` | `list[CheckResult]` | per-check crash isolated → `CHECK_ERROR` |
 | `verdict/verdict` (+`decision`) | all findings + coverage + `state_meta` | `verdict` (+ `decision`) | — (pure aggregation) |
 | `ReplayStore` | `(raw, ChangePlan, verdict)` | redacted fixture on disk | write failure logged; never blocks a run |
 | CLI driver | `ChangePlan` (file/stdin) | verdict JSON / human summary | distinct exit code per decision (below) |
@@ -459,7 +459,7 @@ core domain (Milestone 1):
   L3Intf    id(auto), device_id, role(irb|svi|wan|loopback), vlan_id|port, subnet, ip, meta
   Client    id(=mac), mac, kind(wired|wireless), attach_kind(port|ap), attach_id, vlan, ip, active, meta
 
-future domains (entity types only, added later, zero change to the above):
+future domains (added later — additive; existing entities/checks untouched, see Extensibility):
   wan/    Tunnel, Peer, Path        policy/  Acl, FwRule, Service
   nac/    AuthPolicy, AuthServer    svc/     DhcpServer, RadSec
   routing/ OspfAdj, BgpPeer, StpInfo, IpsecSa
@@ -489,11 +489,22 @@ changes its edge and is detected.
    structural delta, and `IRBuilder` rejects duplicate ids and dangling refs.
 3. **Immutable snapshots.** Frozen IRs make runs reproducible and replayable.
 
-### Extensibility
+### Extensibility (additive, not zero-touch — be honest about the seams)
 
-Adding WAN/NAC later adds new entity types and new derived graphs; it never modifies core
-entities or existing checks. A WAN check simply asks the IR for `Tunnel`/`BgpPeer` facts that a
-wired-only ingest does not populate.
+Adding a domain (WAN/NAC/routing) is **additive**: a new `ir/entities_<domain>.py`, a new collection
+on `IR` + `add_*`/dup-check on `IRBuilder`, a new `ir/indexes` module, and a new `representations/`
+view. It is **not literally zero-change** to the `IR` container — that container grows by one
+collection per domain — but the change is mechanical and bounded:
+
+- **Existing entities and existing checks are never modified or broken.** A WAN check asks the IR
+  for `Tunnel`/`BgpPeer` facts a wired-only ingest didn't populate; it self-gates to
+  `INSUFFICIENT_DATA` via `requires()` when absent.
+- **`diff_ir` extends by one line** — entity kinds are a declared registry, not hard-coded in the
+  diff body, so a new kind is one entry.
+
+This honest framing (vs "zero change") is deliberate: a generic untyped entity registry was
+considered and rejected — it would trade the typed `ir.ports`/`ir.links` accessors (which the checks
+and indexes rely on) for dynamic lookups, a bad trade for the small cost of a per-domain collection.
 
 ### IR versioning & capability negotiation
 
