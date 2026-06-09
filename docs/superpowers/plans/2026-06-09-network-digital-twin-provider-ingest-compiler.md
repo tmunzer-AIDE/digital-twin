@@ -37,7 +37,8 @@ src/digital_twin/
 │   ├── __init__.py
 │   └── mist/
 │       ├── __init__.py
-│       ├── oas/             # extracted OAS schemas (small JSON files, committed) + VERSION
+│       ├── oas/             # extracted OAS schemas (JSON, committed) + VERSION
+│       │   └── __init__.py  # norm_schema()/UnsupportedSchema — SHARED by Tier-1 gen + Tier-2 coverage
 │       ├── ingest/
 │       │   ├── __init__.py
 │       │   ├── base.py      # Ingester protocol (produces() -> caps; ingest(...))
@@ -152,7 +153,8 @@ mkdir -p src/digital_twin/providers src/digital_twin/adapters/mist/oas \
          tests/adapters/mist tests/providers tests/engine
 touch src/digital_twin/providers/__init__.py src/digital_twin/adapters/__init__.py \
       src/digital_twin/adapters/mist/__init__.py src/digital_twin/adapters/mist/ingest/__init__.py \
-      src/digital_twin/adapters/mist/compile/__init__.py src/digital_twin/engine/__init__.py \
+      src/digital_twin/adapters/mist/compile/__init__.py src/digital_twin/adapters/mist/oas/__init__.py \
+      src/digital_twin/engine/__init__.py \
       tests/adapters/__init__.py tests/adapters/mist/__init__.py \
       tests/providers/__init__.py tests/engine/__init__.py
 ```
@@ -821,7 +823,72 @@ echo "<spec version / git sha used>" > src/digital_twin/adapters/mist/oas/VERSIO
 
 Expected: three `*.schema.json` files written. If `WANTED` names don't match the spec's component names, the error lists candidates — fix the mapping and re-run. Commit the extracted schemas (they are small and synthetic — no org data).
 
-- [ ] **Step 3: Write the Tier-1 schema-driven tests**
+- [ ] **Step 3: Write the shared schema-normalization module**
+
+Create (overwrite the empty) `src/digital_twin/adapters/mist/oas/__init__.py` — **shared** by the
+Tier-1 generator and Tier-2 `attribute_coverage`, so both see the same leaves behind composed
+schemas:
+
+```python
+"""Extracted Mist OAS schemas (data) + shared schema-normalization helpers.
+
+norm_schema() resolves composition so BOTH the Tier-1 payload generator and the
+Tier-2 attribute-coverage walker see the same leaves: allOf is merged, the FIRST
+variant of anyOf/oneOf is taken (the Mist OAS uses these mostly for
+int-or-{{var}} unions), nullable type-arrays collapse to their non-null type.
+Unknown constructs raise UnsupportedSchema LOUDLY — silently under-generating
+would fake full coverage.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+_DIR = Path(__file__).parent
+
+_KNOWN_KEYS = {"type", "properties", "additionalProperties", "items", "enum", "default",
+               "description", "format", "minimum", "maximum", "minLength", "maxLength",
+               "pattern", "example", "examples", "required", "nullable", "deprecated",
+               "readOnly", "writeOnly", "title", "minItems", "maxItems", "uniqueItems",
+               "allOf", "anyOf", "oneOf", "const", "exclusiveMinimum", "exclusiveMaximum",
+               "multipleOf", "x-deprecation-note"}
+
+
+class UnsupportedSchema(ValueError):
+    """An OAS construct the tooling does not understand — fail loudly."""
+
+
+def load_schema(filename: str) -> dict[str, Any]:
+    return json.loads((_DIR / filename).read_text())  # type: ignore[no-any-return]
+
+
+def norm_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    unknown = set(schema) - _KNOWN_KEYS
+    if unknown:
+        raise UnsupportedSchema(f"unsupported OAS constructs: {sorted(unknown)}")
+    if "allOf" in schema:
+        merged: dict[str, Any] = {}
+        props: dict[str, Any] = {}
+        for sub in schema["allOf"]:
+            sub = norm_schema(sub)
+            props.update(sub.get("properties") or {})
+            merged.update({k: v for k, v in sub.items() if k != "properties"})
+        if props:
+            merged["properties"] = props
+        return norm_schema({**merged, **{k: v for k, v in schema.items() if k != "allOf"}})
+    for comb in ("anyOf", "oneOf"):
+        if comb in schema:
+            return norm_schema(schema[comb][0])  # first variant, deterministic
+    t = schema.get("type")
+    if isinstance(t, list):  # nullable type arrays, e.g. ["integer", "null"]
+        non_null = [x for x in t if x != "null"]
+        return {**schema, "type": non_null[0] if non_null else "string"}
+    return schema
+```
+
+- [ ] **Step 4: Write the Tier-1 schema-driven tests**
 
 Create `tests/adapters/mist/test_oas_coverage.py`:
 
@@ -836,59 +903,16 @@ for self-consistency; Tier 2 (live gate) validates them against Mist's engine.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from digital_twin.adapters.mist.compile.merge import MergePolicy, merge_site_effective
-
-OAS = Path("src/digital_twin/adapters/mist/oas")
+from digital_twin.adapters.mist.oas import load_schema, norm_schema
 
 
 def _load(name: str) -> dict[str, Any]:
-    return json.loads((OAS / name).read_text())  # type: ignore[no-any-return]
-
-
-class UnsupportedSchema(ValueError):
-    """An OAS construct the generator does not understand — FAIL LOUDLY rather
-    than silently under-generating (which would fake full coverage)."""
-
-
-_KNOWN_KEYS = {"type", "properties", "additionalProperties", "items", "enum", "default",
-               "description", "format", "minimum", "maximum", "minLength", "maxLength",
-               "pattern", "example", "examples", "required", "nullable", "deprecated",
-               "readOnly", "writeOnly", "title", "minItems", "maxItems", "uniqueItems",
-               "allOf", "anyOf", "oneOf", "const", "exclusiveMinimum", "exclusiveMaximum",
-               "multipleOf", "x-deprecation-note"}
-
-
-def _norm_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Normalize composition: merge allOf; pick the FIRST variant of anyOf/oneOf
-    (the Mist OAS uses these mostly for int-or-{{var}} unions). Reject unknown
-    constructs loudly."""
-    unknown = set(schema) - _KNOWN_KEYS
-    if unknown:
-        raise UnsupportedSchema(f"unsupported OAS constructs: {sorted(unknown)}")
-    if "allOf" in schema:
-        merged: dict[str, Any] = {}
-        props: dict[str, Any] = {}
-        for sub in schema["allOf"]:
-            sub = _norm_schema(sub)
-            props.update(sub.get("properties") or {})
-            merged.update({k: v for k, v in sub.items() if k != "properties"})
-        if props:
-            merged["properties"] = props
-        return _norm_schema({**merged, **{k: v for k, v in schema.items() if k != "allOf"}})
-    for comb in ("anyOf", "oneOf"):
-        if comb in schema:
-            return _norm_schema(schema[comb][0])  # first variant, deterministic
-    t = schema.get("type")
-    if isinstance(t, list):  # nullable type arrays, e.g. ["integer", "null"]
-        non_null = [x for x in t if x != "null"]
-        return {**schema, "type": non_null[0] if non_null else "string"}
-    return schema
+    return load_schema(name)
 
 
 def _marker(schema: dict[str, Any], tag: str) -> Any:
@@ -910,7 +934,7 @@ def _gen(schema: dict[str, Any], tag: str, depth: int = 0) -> Any:
     """Generate a payload populating EVERY property of the schema."""
     if depth > 12:
         return _marker({"type": "string"}, tag)
-    schema = _norm_schema(schema)
+    schema = norm_schema(schema)
     t = schema.get("type")
     if t == "object" or "properties" in schema or "additionalProperties" in schema:
         out: dict[str, Any] = {}
@@ -974,13 +998,13 @@ def test_dict_merge_unions_keys_from_both_sides(schemas):
             assert out[field]["key_shared"] == site[field]["key_shared"], f"{field}: site must win"
 ```
 
-- [ ] **Step 4: Run to verify pass** — `uv run pytest tests/adapters/mist/test_oas_coverage.py -q`
+- [ ] **Step 5: Run to verify pass** — `uv run pytest tests/adapters/mist/test_oas_coverage.py -q`
 Expected: PASS. If a leaf assertion fails, it has found a real precedence bug or a field needing a `_POLICY` entry — fix the policy table (that is this tier doing its job).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add -A && git commit -m "feat(compile): OAS extraction + Tier-1 full-attribute precedence tests"
+git add -A && git commit -m "feat(compile): OAS extraction + shared schema norm + Tier-1 precedence tests"
 ```
 
 ---
@@ -1032,9 +1056,10 @@ def _raw(fetched: tuple[str, ...] = ()) -> RawSiteState:  # minimal stub
 def test_registry_collects_capabilities_actually_earned():
     reg = IngesterRegistry([FakeIngester()])
     builder = IRBuilder()
-    produced = reg.run(IngestContext(raw=_raw(fetched=("devices",)), site_effective={},
-                                     device_effective={}, builder=builder))
-    assert IRCapability.WIRED_L2 in produced
+    report = reg.run(IngestContext(raw=_raw(fetched=("devices",)), site_effective={},
+                                   device_effective={}, builder=builder))
+    assert report.ok
+    assert IRCapability.WIRED_L2 in report.produced
     assert builder.build().has(IRCapability.WIRED_L2)
 
 
@@ -1042,10 +1067,31 @@ def test_capability_not_claimed_when_source_data_missing():
     # the fetch failed -> the ingester earns nothing -> the IR must NOT claim it
     reg = IngesterRegistry([FakeIngester()])
     builder = IRBuilder()
-    produced = reg.run(IngestContext(raw=_raw(fetched=()), site_effective={},
-                                     device_effective={}, builder=builder))
-    assert produced == frozenset()
+    report = reg.run(IngestContext(raw=_raw(fetched=()), site_effective={},
+                                   device_effective={}, builder=builder))
+    assert report.produced == frozenset()
     assert not builder.build().has(IRCapability.WIRED_L2)
+
+
+def test_crashing_ingester_becomes_a_named_failure_value_not_an_exception():
+    class Crasher:
+        name = "crasher"
+
+        def produces(self) -> frozenset[str]:
+            return frozenset({IRCapability.STP_STATE})
+
+        def ingest(self, ctx: IngestContext) -> frozenset[str]:
+            raise RuntimeError("boom")
+
+    reg = IngesterRegistry([Crasher(), FakeIngester()])
+    builder = IRBuilder()
+    report = reg.run(IngestContext(raw=_raw(fetched=("devices",)), site_effective={},
+                                   device_effective={}, builder=builder))
+    assert not report.ok
+    assert report.failures[0].ingester == "crasher" and "boom" in report.failures[0].error
+    # the crash is isolated: the other ingester still ran, the crasher earned nothing
+    assert IRCapability.WIRED_L2 in report.produced
+    assert IRCapability.STP_STATE not in report.produced
 
 
 def test_ingester_satisfies_protocol():
@@ -1102,13 +1148,37 @@ class Ingester(Protocol):
 Create `src/digital_twin/adapters/mist/ingest/registry.py`:
 
 ```python
-"""Run registered domain ingesters in order; collect the capabilities EARNED."""
+"""Run registered domain ingesters in order; collect the capabilities EARNED.
+
+A crashing ingester is ISOLATED into a value (IngestFailure) — per the spec's
+component contract, a domain ingester failure becomes a named UNKNOWN (mapped
+by the Plan-3+ pipeline), never an unhandled exception. A failed ingester
+contributes no capabilities.
+"""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from digital_twin.ir import Capability
 
 from .base import IngestContext, Ingester
+
+
+@dataclass(frozen=True)
+class IngestFailure:
+    ingester: str
+    error: str
+
+
+@dataclass(frozen=True)
+class IngestReport:
+    produced: frozenset[Capability]
+    failures: tuple[IngestFailure, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
 
 
 class IngesterRegistry:
@@ -1122,13 +1192,17 @@ class IngesterRegistry:
             out |= ingester.produces()
         return frozenset(out)
 
-    def run(self, ctx: IngestContext) -> frozenset[Capability]:
+    def run(self, ctx: IngestContext) -> IngestReport:
         produced: set[Capability] = set()
+        failures: list[IngestFailure] = []
         for ingester in self._ingesters:
-            produced |= ingester.ingest(ctx)  # earned, not declared
+            try:
+                produced |= ingester.ingest(ctx)  # earned, not declared
+            except Exception as e:  # noqa: BLE001 — isolated into a value (spec contract)
+                failures.append(IngestFailure(ingester=ingester.name, error=str(e)))
         for cap in produced:
             ctx.builder.with_capability(cap)
-        return frozenset(produced)
+        return IngestReport(produced=frozenset(produced), failures=tuple(failures))
 ```
 
 - [ ] **Step 4: Run to verify pass** — PASS (2).
@@ -2302,9 +2376,10 @@ from digital_twin.providers.base import SiteScope
 
 pytestmark = pytest.mark.live
 
+_REQUIRED_ENV = ("MIST_HOST", "MIST_APITOKEN", "DT_GATE_ORG_ID", "DT_GATE_SITE_IDS")
 requires_env = pytest.mark.skipif(
-    not (os.environ.get("MIST_APITOKEN") and os.environ.get("DT_GATE_SITE_IDS")),
-    reason="MIST_* env not configured",
+    not all(os.environ.get(v) for v in _REQUIRED_ENV),
+    reason=f"live env not configured (need {', '.join(_REQUIRED_ENV)})",
 )
 
 
@@ -2404,6 +2479,17 @@ def test_attribute_coverage_lists_exercised_and_missing_leaves():
     cov = attribute_coverage(schema, [{"a": "x", "b": {"c": 1}}])
     assert "a" in cov.covered and "b.c" in cov.covered
     assert "d" in cov.uncovered
+
+
+def test_attribute_coverage_sees_leaves_behind_composition():
+    # same normalization as the Tier-1 generator: anyOf/allOf leaves still count
+    schema = {"type": "object", "properties": {
+        "vlan": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+        "extra": {"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]},
+    }}
+    cov = attribute_coverage(schema, [{"vlan": 30}])
+    assert "vlan" in cov.covered
+    assert "extra.x" in cov.uncovered  # visible despite the allOf wrapper
 ```
 
 - [ ] **Step 2: Run to verify fail** — FAIL.
@@ -2426,12 +2512,14 @@ Create `src/digital_twin/adapters/mist/compile/divergences.json` — entries are
 Create `src/digital_twin/adapters/mist/compile/equivalence.py`:
 
 ```python
-"""Tier-2 equivalence: our compile_site vs Mist's getSiteSettingDerived.
+"""Tier-2 equivalence: our merge_only() site-level merge vs getSiteSettingDerived.
 
-Comparison rules (from the spec): canonical normalization (numeric strings,
-absent==null==empty), per-path diff reporting, a catalogued-divergence list
-(data: divergences.json — every entry justified), and an attribute-coverage
-report so a green gate states explicitly which schema leaves real data exercised.
+(merge_only, NOT compile_site: derived does not resolve {{vars}}, so the oracle
+comparison uses the pre-vars artifact.) Comparison rules (from the spec):
+canonical normalization (numeric strings, absent==null==empty), per-path diff
+reporting, a catalogued-divergence list (data: divergences.json — every entry
+justified), and an attribute-coverage report so a green gate states explicitly
+which schema leaves real data exercised.
 """
 
 from __future__ import annotations
@@ -2440,6 +2528,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from digital_twin.adapters.mist.oas import norm_schema
 
 _DIVERGENCES = Path(__file__).parent / "divergences.json"
 
@@ -2513,6 +2603,8 @@ def compare_effective(
 def _schema_leaves(schema: dict[str, Any], path: str = "", depth: int = 0) -> set[str]:
     if depth > 12:
         return {path} if path else set()
+    schema = norm_schema(schema)  # SAME normalization as the Tier-1 generator —
+    # leaves hidden behind allOf/anyOf/oneOf must count in coverage too
     props = schema.get("properties")
     if props:
         out: set[str] = set()
@@ -2573,12 +2665,14 @@ git add -A && git commit -m "feat(compile): equivalence compare (normalize, cata
 Create `tools/equivalence_gate.py`:
 
 ```python
-"""Tier-2 equivalence gate: our compile_site vs getSiteSettingDerived, per real site.
+"""Tier-2 equivalence gate: our merge_only() vs getSiteSettingDerived, per real site.
+
+(merge_only, NOT compile_site: derived does not resolve {{vars}} — confirmed.)
 
 Usage:  uv run python tools/equivalence_gate.py
 Env:    MIST_HOST, MIST_APITOKEN, DT_GATE_ORG_ID, DT_GATE_SITE_IDS (comma-separated)
 
-Per site: fetch raw + derived, compile ours, compare. Exit 0 only if EVERY site
+Per site: fetch raw + derived, merge ours, compare. Exit 0 only if EVERY site
 has zero uncatalogued diffs. Always prints the attribute-coverage report — a
 green gate explicitly states what real data did NOT exercise (Tier 1 covers it).
 
@@ -2682,12 +2776,15 @@ def test_plan2_public_api():
     from digital_twin.adapters.mist import (
         ClientsIngester,
         IngesterRegistry,
+        IngestReport,
         LldpIngester,
         SwitchIngester,
         compile_device,
         compile_site,
         merge_only,
     )
+
+    assert IngestReport is not None
     from digital_twin.engine import validate_supply
     from digital_twin.providers import (
         FetchError,
@@ -2726,10 +2823,11 @@ __all__ = ["FetchError", "FetchFailure", "RawSiteState", "SiteScope", "StateMeta
 from .compile.switch import compile_device, compile_site, merge_only
 from .ingest.clients import ClientsIngester
 from .ingest.lldp import LldpIngester
-from .ingest.registry import IngesterRegistry
+from .ingest.registry import IngesterRegistry, IngestFailure, IngestReport
 from .ingest.switch import SwitchIngester
 
-__all__ = ["compile_site", "compile_device", "merge_only", "IngesterRegistry",
+__all__ = ["compile_site", "compile_device", "merge_only",
+           "IngesterRegistry", "IngestReport", "IngestFailure",
            "SwitchIngester", "LldpIngester", "ClientsIngester"]
 ```
 
@@ -2766,7 +2864,7 @@ git add -A && git commit -m "feat: plan 2 public API re-exports; green gates"
 - Offline suite green (ruff format/check, mypy strict, pytest) — Phase A is fully unit-tested with synthetic Mist-shaped data; **Tier-1 OAS tests cover every schema attribute** of the merge.
 - `tools/probe_fetch.py` ran against a real org; SDK call names and stat field shapes pinned (corrections applied to `mist_api.py` / `lldp.py` / `clients.py`).
 - **Tier-2 equivalence gate green** on all configured sites across ≥2 read-only orgs: zero uncatalogued diffs; every catalogued divergence justified in `divergences.json`; attribute-coverage report printed and reviewed (uncovered leaves are consciously delegated to Tier 1).
-- A real site round-trips end-to-end offline→IR: `fetch_site` → `compile_site`/`compile_device` → `IngesterRegistry.run` → valid `IR` with `wired.l2`, `l3.exits`, `stp.state`, `clients.active` capabilities (spot-checked manually via a throwaway script or REPL).
+- A real site round-trips end-to-end offline→IR: `fetch_site` → `compile_site`/`compile_device` → `IngesterRegistry.run` → valid `IR` claiming `wired.l2`, `l3.exits`, `clients.active` (spot-checked via a throwaway script or REPL). `stp.state` is **earned only if the site's port stats expose STP** — prefer at least one gate site that does; on a site without STP stats its *absence* is the correct, honest outcome (later: loop check → `INSUFFICIENT_DATA`).
 - No real org data committed (`.cache/` git-ignored).
 
 **Next:** Plan 3 — scope gates (object/field/derived-impact) + L0 OAS validation + apply (ordered rolling state).
