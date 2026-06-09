@@ -57,7 +57,10 @@ The narrowest slice that proves the full loop end-to-end and is still genuinely 
 - **On-demand data.** Each simulate call fetches current Mist state for the affected scope,
   builds the IR fresh, applies the delta in memory, runs checks, discards.
 - **Drivers:** CLI (for testing) + MCP tool (for the agent loop).
-- **~4 checks:** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`.
+- **~4 topology checks (L2):** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`.
+- **Thin schema validation (L0):** basic structural validation of the delta payload against the
+  Mist OAS (types, enums, required, machine-readable conditionals), plus the two-source verdict
+  plumbing. Deterministic, HIGH confidence.
 
 ### Explicit non-goals (deferred, behind existing seams)
 
@@ -68,6 +71,13 @@ The narrowest slice that proves the full loop end-to-end and is still genuinely 
 - Deep L3 / route computation (OSPF/BGP/forwarding). **No Batfish, no Junos-CLI translation in
   Milestone 1** — loop/blackhole/client-impact are pure graph reasoning on the IR.
 - WAN/SDWAN/SASE, NAC, firewall/ACL, DHCP/RadSec service checks.
+- **L1 semantic / conditional config rules** ("xyz required if abc==true" when the constraint is
+  prose rather than machine-readable in the OAS). Deferred — assessing how much of Mist's OAS
+  encodes conditionals machine-readably vs in prose is its own investigation, kept off the M1
+  critical path. The *declarative rule layer* that will host these is designed-for below.
+- **L3 requirement/reachability rules** (e.g. "AP↔Mist Edge on UDP 500/4500 if the Mx tunnel uses
+  IPSec"). Deferred — these need IR domains (WAN, Mist Edge, security, L3 reachability) that M1
+  does not populate. Such a rule is *expressible* today and self-reports `INSUFFICIENT_DATA`.
 - Snapshot/persisted state store, web UI.
 - A second vendor adapter (Aruba). Only the *seams* for it are built now.
 
@@ -83,23 +93,31 @@ stage is a swappable seam:
 ```
                   ┌─────────────────────────────────────────────────────────┐
    delta JSON ──▶ │                    SIMULATION ENGINE                     │ ──▶ verdict doc
- [{action,order,  │  1. ScopeResolver    what objects/sites does δ touch?    │   (severity +
-  object_type,    │  2. StateProvider    fetch raw vendor state for scope    │    per-check evidence
-  object_id,      │  3. VendorAdapter.ingest   raw → IR  (baseline)          │    + coverage map
-  payload}]       │  4. VendorAdapter.apply    raw + δ → raw'                │    + confidence summary
-                  │  5. VendorAdapter.ingest   raw' → IR' (proposed)         │    + IR diff + trace)
-                  │  6. IRDiff           IR vs IR'                            │
-                  │  7. CheckRegistry    run every check on (IR, IR', δ)      │
-                  │  8. VerdictBuilder   aggregate evidence + coverage        │
+ [{action,order,  │  1. ScopeResolver     what objects/sites does δ touch?   │   (severity +
+  object_type,    │  2. Adapter.validate  L0/L1 payload validation (vendor)  │    per-check evidence
+  object_id,      │       └─ structurally-fatal → short-circuit verdict      │    + coverage map
+  payload}]       │  3. StateProvider     fetch raw vendor state for scope   │    + confidence summary
+                  │  4. Adapter.ingest    raw → IR  (baseline)               │    + IR diff + trace)
+                  │  5. Adapter.apply     raw + δ → raw'                      │
+                  │  6. Adapter.ingest    raw' → IR' (proposed)              │
+                  │  7. IRDiff            IR vs IR'                           │
+                  │  8. CheckRegistry     run L2/L3 checks on (IR, IR', δ)    │
+                  │  9. VerdictBuilder    aggregate findings from BOTH        │
+                  │                       sources (validate + checks)        │
                   └─────────────────────────────────────────────────────────┘
 ```
+
+The verdict has **two finding sources**, both using the same `Finding`/severity/confidence model:
+the vendor adapter's payload validation (L0/L1, step 2) and the neutral check registry (L2/L3,
+step 8). This keeps schema/semantic validation — which is vendor-specific and reads raw payload —
+out of the neutral check layer, while still surfacing it in one unified verdict.
 
 ### Seams (this is where modularity lives)
 
 | Seam | Responsibility | Milestone 1 impl | Swappable to |
 |---|---|---|---|
 | `StateProvider` | raw vendor state for a scope | `MistApiProvider` (on-demand) | `SnapshotProvider` |
-| `VendorAdapter` | `ingest(raw)→IR`, `apply(raw,δ)→raw'` | `MistAdapter` | `ArubaAdapter` |
+| `VendorAdapter` | `validate(δ)`, `ingest(raw)→IR`, `apply(raw,δ)→raw'` | `MistAdapter` | `ArubaAdapter` |
 | `Check` | inspect `(IR, IR', δ)` → evidence | wired/Wi-Fi-aware checks | any new "test scope" |
 | `Driver` | drive the engine | `cli` + `mcp` | `http` / `ui` |
 
@@ -127,8 +145,9 @@ digital_twin/
 ├── engine/          # pipeline orchestration, run lifecycle, trace
 ├── ir/              # vendor-neutral model: devices, ports, links, vlans, l3, clients (+ graphs)
 ├── providers/       # StateProvider interface + MistApiProvider
-├── adapters/mist/   # ingest (raw→IR), compiler (template inheritance), apply (raw+δ→raw')
-├── checks/          # Check interface + registry + wired/ checks (plugins)
+├── adapters/mist/   # validate (L0/L1 OAS), ingest (raw→IR), compiler (inheritance), apply (raw+δ→raw')
+├── checks/          # Check interface + registry + wired/ checks (L2/L3 plugins)
+├── rules/           # declarative rule engine (L1/L3 "when <cond> then <require>") + rule catalog
 ├── verdict/         # evidence model, coverage, confidence, severity aggregation, IR diff
 ├── drivers/         # cli.py, mcp_server.py
 └── observability/   # structured logging, run trace, replay store
@@ -287,9 +306,54 @@ verdict = {
 
 ---
 
+## Validation taxonomy
+
+All validation, regardless of layer, produces the same `Finding`/severity/coverage/confidence and
+flows into one verdict. Layers differ by *what* they read and *where* they live:
+
+| Layer | Validates | Reads | Lives in | Form | Milestone |
+|---|---|---|---|---|---|
+| **L0 — Schema** | payload conforms to Mist OAS (types, enums, required, machine-readable `if/then`) | delta payload | adapter (`validate`) | OAS-driven validator | **M1 (thin)** |
+| **L1 — Semantic** | config rules not in raw schema; prose conditionals; value consistency | payload + config | adapter (`validate`) + `rules/` | declarative rules | deferred |
+| **L2 — Topology** | loop / blackhole / segmentation / client impact | **IR only** | `checks/` | code plugins | **M1** |
+| **L3 — Requirement/reachability** | config triggers a requirement, asserted against the modeled network | **IR only** | `checks/` + `rules/` | declarative rules | deferred |
+
+**Placement rule:** L0/L1 are vendor-specific and read raw payload/config, so they live in the
+**adapter**, never in the neutral `checks/` layer. L2/L3 read only the IR and are **vendor-neutral**.
+
+**L0 (M1, thin):** structural validation against the Mist OAS — types, enums, `required`, and
+conditionals that the OAS encodes machine-readably (`if/then/else`, `dependentRequired`).
+Deterministic → HIGH confidence; coverage bounded by what the OAS encodes. Runs first; a
+structurally-fatal payload short-circuits the run with a clear verdict before `apply`.
+
+**Declarative rule layer (designed-for now, populated later):** L1 and L3 are a **rule catalog that
+will grow large**, and most rules are declarative — e.g.
+`when tunnel.ipsec then require reachable(ap → me.cluster_ips, udp[500,4500])`. They are expressed
+as **data over IR/payload primitives**, not bespoke code per rule. M1 ships the rule-engine seam
+and (optionally) one example L3 rule that correctly self-reports `INSUFFICIENT_DATA` because the IR
+does not yet populate WAN/Mist-Edge/security/reachability facts. L2 graph logic stays as code
+plugins; only the rule-shaped layers are declarative.
+
+### Requirement-derivation rules (named pattern)
+
+A first-class check/rule pattern for L3: **config fires a trigger → derives a requirement →
+asserts it against the IR.** Steps: (1) match a config condition (`tunnel.mode == ipsec`),
+(2) derive a concrete requirement (`reachable(ap, me.cluster_ips, [udp/500, udp/4500])`),
+(3) evaluate it against modeled reachability/policy facts. When the IR lacks the facts to
+evaluate step 3, the rule returns `INSUFFICIENT_DATA` per the check contract — never a fake pass.
+This generalizes across many Mist features ("X requires reachability to Y on port Z").
+
 ## The Mist adapter
 
 The vendor-specific heavy lifting, and the part the prior project struggled most with.
+
+### validate (L0/L1 — payload validation, pre-IR)
+
+Validates each delta payload against the Mist OAS before the IR is built. M1 implements the **thin
+structural** subset (types, enums, `required`, machine-readable conditionals). Structurally-fatal
+violations short-circuit with a clear verdict; semantic violations become findings and the run
+continues. Emits findings into the shared verdict (source = adapter). L1 prose-conditional rules
+are deferred to the declarative `rules/` layer.
 
 ### ingest (raw → IR)
 
@@ -361,6 +425,10 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
 
 - **Compiler equivalence (foundation gate):** no-op delta → our derive == `getSiteSettingDerived`
   across many real sites.
+- **L0 schema validation:** payloads with type/enum/required/conditional violations → correct
+  findings; a valid payload → no L0 findings; a structurally-fatal payload → short-circuit verdict.
+- **Two-source verdict:** assert findings from both `adapter.validate` and the check registry land
+  in one verdict with correct aggregation.
 - **Unit tests per check:** synthetic IRs with known issues; assert status, severity, findings,
   coverage, and confidence (including the `INSUFFICIENT_DATA` and no-false-positive cases).
 - **Unit tests for `apply`:** PUT/merge semantics per object type.
@@ -378,12 +446,15 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
 3. **Mist ingest** (current state → IR) + **compiler equivalence gate** against
    `getSiteSettingDerived`. *Do not proceed past this until the gate passes.*
 4. **apply** (raw + δ → raw') with per-object-type PUT/merge tests.
-5. **Check engine + registry + verdict/coverage/confidence aggregation** with isolation.
-6. **The four checks:** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`
+5. **Check engine + registry + verdict/coverage/confidence aggregation** with isolation, and the
+   **two-source verdict** (adapter `validate` findings + check findings).
+6. **Thin L0 schema validation** (`adapters/mist/validate.py`) driven by the Mist OAS, plus the
+   `rules/` engine seam (no L1/L3 rules populated; optionally one self-`INSUFFICIENT_DATA` example).
+7. **The four L2 checks:** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`
    (Wi-Fi-aware via live wireless clients).
-7. **Drivers:** CLI, then MCP tool.
-8. **Observability:** trace + evidence + replay store (wired in from step 5 onward).
-9. **Golden scenarios GS1–GS7 green** against real org data.
+8. **Drivers:** CLI, then MCP tool.
+9. **Observability:** trace + evidence + replay store (wired in from step 5 onward).
+10. **Golden scenarios GS1–GS7 green** against real org data.
 
 ---
 
@@ -394,3 +465,8 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
   gateway (out of M1 compile scope) — likely model the upstream uplink port as the exit.
 - STP state availability from Mist live data (drives loop-check confidence: HIGH vs MEDIUM).
 - The minimal set of Mist API calls required (config, derived, device stats, client list).
+- **OAS conditional coverage (drives L1 scope):** how much of "xyz required if abc==true" is
+  machine-readable in Mist's OAS vs prose-only. This investigation gates how much L1 can be
+  OAS-driven vs hand-authored declarative rules — deliberately kept off the M1 critical path.
+- Source/format of the Mist OAS used by L0 (bundled spec version vs fetched), and how schema
+  drift is handled when Mist updates the API.
