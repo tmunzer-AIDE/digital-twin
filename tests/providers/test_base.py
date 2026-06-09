@@ -1,7 +1,10 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from digital_twin.providers.base import (
+    FetchError,
     FetchFailure,
+    OrgScope,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -58,13 +61,24 @@ def test_total_fetch_failure_is_a_value_not_an_exception():
 
 
 def test_state_provider_is_a_protocol():
-    from digital_twin.providers.base import FetchError
-
     class Fake:
         def fetch_site(
             self, scope: SiteScope, *, include_derived: bool = False
         ) -> RawSiteState | FetchError:
             raise NotImplementedError
 
+        def fetch_sites(
+            self,
+            scope: OrgScope,
+            site_ids: Sequence[str] | None = None,
+            *,
+            include_derived: bool = False,
+        ) -> dict[str, RawSiteState | FetchError]:
+            raise NotImplementedError
+
     provider: StateProvider = Fake()
     assert provider is not None
+
+
+def test_org_scope_construct():
+    assert OrgScope(org_id="o1").org_id == "o1"

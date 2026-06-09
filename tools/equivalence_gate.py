@@ -27,7 +27,7 @@ from digital_twin.adapters.mist.compile.equivalence import (
     restrict_to_scope,
 )
 from digital_twin.adapters.mist.compile.switch import merge_only
-from digital_twin.providers.base import FetchError, SiteScope
+from digital_twin.providers.base import FetchError, OrgScope, RawSiteState
 from digital_twin.providers.mist_api import MistApiProvider
 
 OAS = Path("src/digital_twin/adapters/mist/oas/site_setting.schema.json")
@@ -40,10 +40,16 @@ def main() -> None:
     failures = 0
     derived_samples: list[dict] = []
 
+    # one org-batched fetch (ports/wired-clients/site-list batched, rest per-site)
+    states = provider.fetch_sites(OrgScope(org_id), site_ids, include_derived=True)
+
     for site_id in site_ids:
-        raw = provider.fetch_site(SiteScope(org_id, site_id), include_derived=True)
-        if isinstance(raw, FetchError):
-            print(f"[FAIL] {site_id}: baseline fetch failed: {[f.error for f in raw.failures]}")
+        raw = states.get(site_id)
+        if not isinstance(raw, RawSiteState):
+            errs = (
+                [f.error for f in raw.failures] if isinstance(raw, FetchError) else ["not returned"]
+            )
+            print(f"[FAIL] {site_id}: baseline fetch failed: {errs}")
             failures += 1
             continue
         if raw.derived_setting is None:

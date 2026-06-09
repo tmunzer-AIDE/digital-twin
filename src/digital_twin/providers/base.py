@@ -8,7 +8,7 @@ Total fetch failure is a VALUE (FetchError), never an exception.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -20,6 +20,11 @@ JsonObj = Mapping[str, Any]
 class SiteScope:
     org_id: str
     site_id: str
+
+
+@dataclass(frozen=True)
+class OrgScope:
+    org_id: str
 
 
 @dataclass(frozen=True)
@@ -73,3 +78,16 @@ class StateProvider(Protocol):
     def fetch_site(
         self, scope: SiteScope, *, include_derived: bool = False
     ) -> RawSiteState | FetchError: ...
+
+    def fetch_sites(
+        self,
+        scope: OrgScope,
+        site_ids: Sequence[str] | None = None,
+        *,
+        include_derived: bool = False,
+    ) -> dict[str, RawSiteState | FetchError]:
+        """Fetch many sites of an org. `site_ids=None` means all sites in the org.
+        Returns a per-site result map; one site's failure never sinks the others.
+        Implementations SHOULD batch org-level endpoints where the payload is
+        identical to the per-site call (see MistApiProvider)."""
+        ...
