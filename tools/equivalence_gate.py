@@ -1,13 +1,21 @@
-"""Tier-2 equivalence gate: our merge_only() vs getSiteSettingDerived, per real site.
+"""Tier-2 live gate: validate the compiler against Mist's own reality, per site.
 
-(merge_only, NOT compile_site: derived does not resolve {{vars}} — confirmed.)
+Two independent checks (both must pass for exit 0):
+
+1. CONFIG EQUIVALENCE — our merge_only() vs getSiteSettingDerived, restricted to
+   the M1 in-scope SITE fields (networks/port_usages/vars). (merge_only, NOT
+   compile_site: derived does not resolve {{vars}}.) This proves the site-level
+   inputs the compiler consumes match Mist's derivation.
+
+2. PORT-PROJECTION CROSS-CHECK — our compiled per-port usage vs the OBSERVED
+   `port_usage` in port_stats. This is the ONLY oracle for the device-level port
+   projection: port_config is device-level and absent from getSiteSettingDerived,
+   and there is no structured device-derived endpoint. Scoped to STATIC ports we
+   model (in device port_config, dynamic_usage off); dynamic_usage ports reflect
+   runtime, and switch_matching-assigned ports are not yet modeled.
 
 Usage:  uv run python tools/equivalence_gate.py
 Env:    MIST_HOST, MIST_APITOKEN, DT_GATE_ORG_ID, DT_GATE_SITE_IDS (comma-separated)
-
-Per site: fetch raw + derived, merge ours, compare. Exit 0 only if EVERY site
-has zero uncatalogued diffs. Always prints the attribute-coverage report — a
-green gate explicitly states what real data did NOT exercise (Tier 1 covers it).
 
 GATE RULE: do not build Plans 3-5 on top until this passes on the target orgs.
 """
@@ -26,11 +34,49 @@ from digital_twin.adapters.mist.compile.equivalence import (
     restrict_schema_to_scope,
     restrict_to_scope,
 )
-from digital_twin.adapters.mist.compile.switch import merge_only
+from digital_twin.adapters.mist.compile.switch import compile_device, merge_only
+from digital_twin.adapters.mist.ingest.ports import expand_port_members, resolve_effective_ports
 from digital_twin.providers.base import FetchError, OrgScope, RawSiteState
 from digital_twin.providers.mist_api import MistApiProvider
 
 OAS = Path("src/digital_twin/adapters/mist/oas/site_setting.schema.json")
+
+_Mismatch = tuple[str, str, str, str | None, str]  # (site, device, port, ours, observed)
+
+
+def _port_usage_crosscheck(raw: RawSiteState) -> tuple[int, list[tuple[str, str, str | None, str]]]:
+    """Compiled per-port usage vs OBSERVED port_usage, for STATIC ports only."""
+    nt = dict(raw.networktemplate) if raw.networktemplate else None
+    setting = dict(raw.setting)
+    matched = 0
+    mismatches: list[tuple[str, str, str | None, str]] = []
+    for d in raw.devices:
+        if d.get("type") != "switch" or not d.get("mac"):
+            continue
+        static: set[str] = set()
+        for key, cfg in (d.get("port_config") or {}).items():
+            if (cfg or {}).get("dynamic_usage") == "dynamic":
+                continue  # dynamic ports' observed usage is runtime, not config
+            static.update(expand_port_members(key))
+        compiled = {
+            member: name
+            for member, _usage, name in resolve_effective_ports(
+                compile_device(nt, setting, dict(d))
+            )
+        }
+        observed = {
+            str(p["port_id"]): str(p["port_usage"])
+            for p in raw.port_stats
+            if str(p.get("mac")) == str(d["mac"]) and p.get("port_usage")
+        }
+        for member in static & observed.keys():
+            if compiled.get(member) == observed[member]:
+                matched += 1
+            else:
+                mismatches.append(
+                    (str(d.get("name")), member, compiled.get(member), observed[member])
+                )
+    return matched, mismatches
 
 
 def main() -> None:
@@ -39,8 +85,10 @@ def main() -> None:
     provider = MistApiProvider()
     failures = 0
     derived_samples: list[dict] = []
+    xc_matched = 0
+    xc_mismatches: list[_Mismatch] = []
 
-    # one org-batched fetch (ports/wired-clients/site-list batched, rest per-site)
+    # one org-batched fetch (ports/wired-clients/device-stats/site-list batched)
     states = provider.fetch_sites(OrgScope(org_id), site_ids, include_derived=True)
 
     for site_id in site_ids:
@@ -59,7 +107,7 @@ def main() -> None:
             )
             failures += 1
             continue
-        # derived does NOT resolve {{vars}} (confirmed) -> compare the pre-vars merge,
+        # (1) config equivalence — derived does NOT resolve {{vars}} -> pre-vars merge,
         # restricted to the M1 in-scope fields (out-of-scope domains = Tier-1's job).
         ours = restrict_to_scope(
             merge_only(
@@ -79,6 +127,10 @@ def main() -> None:
             print(f"[FAIL] {site_id}: {len(result.diffs)} uncatalogued in-scope diff(s):")
             for d in result.diffs[:25]:
                 print(f"         {d.path}: ours={d.ours!r} derived={d.derived!r}")
+        # (2) port-projection cross-check
+        matched, mismatches = _port_usage_crosscheck(raw)
+        xc_matched += matched
+        xc_mismatches.extend((site_id, *m) for m in mismatches)
 
     if OAS.exists() and derived_samples:
         schema = restrict_schema_to_scope(json.loads(OAS.read_text()))
@@ -87,6 +139,19 @@ def main() -> None:
         print(f"\nin-scope attribute coverage: {len(cov.covered)}/{total} schema leaves exercised")
         for leaf in sorted(cov.uncovered)[:40]:
             print(f"  uncovered: {leaf}   (validated by Tier-1 OAS tests only)")
+
+    print(
+        f"\nport-usage cross-check (compiled vs observed, static ports): "
+        f"{xc_matched} matched, {len(xc_mismatches)} mismatched"
+    )
+    for site_id, name, member, ours_u, obs_u in xc_mismatches[:25]:
+        print(f"  MISMATCH {site_id} {name} {member}: ours={ours_u!r} observed={obs_u!r}")
+    if xc_mismatches:
+        failures += 1
+    print(
+        "  scope: STATIC ports we model only — dynamic_usage ports are runtime and\n"
+        "         switch_matching-assigned ports are NOT YET modeled (compiler gap)."
+    )
 
     sys.exit(1 if failures else 0)
 

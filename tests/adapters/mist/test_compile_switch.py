@@ -46,3 +46,24 @@ def test_compile_device_does_not_mutate_inputs():
     device = {"networks": {"lab": {"vlan_id": 99}}}
     compile_device(None, setting, device)
     assert "lab" not in setting["networks"]
+
+
+def test_compile_device_merges_port_config_per_key_not_wholesale():
+    # a device overriding ONE port range must not wipe the inherited assignments
+    setting = {"port_config": {"ge-0/0/0": {"usage": "a"}, "ge-0/0/1": {"usage": "b"}}}
+    device = {"port_config": {"ge-0/0/1": {"usage": "c"}}}
+    eff = compile_device(None, setting, device)
+    assert eff["port_config"]["ge-0/0/0"] == {"usage": "a"}  # inherited key survives
+    assert eff["port_config"]["ge-0/0/1"] == {"usage": "c"}  # device wins its key
+
+
+def test_compile_device_carries_local_and_overwrite_maps():
+    # old code dropped these device fields entirely -> the resolver never saw them
+    device = {
+        "port_config": {"ge-0/0/0": {"usage": "office"}},
+        "local_port_config": {"ge-0/0/0": {"usage": "uplink"}},
+        "port_config_overwrite": {"ge-0/0/0": {"port_network": "voice"}},
+    }
+    eff = compile_device(None, {}, device)
+    assert eff["local_port_config"]["ge-0/0/0"]["usage"] == "uplink"
+    assert eff["port_config_overwrite"]["ge-0/0/0"]["port_network"] == "voice"

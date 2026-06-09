@@ -41,3 +41,7 @@ def test_fetch_sites_batches_and_partitions_correctly():
         # org-batched rows must be partitioned to the site they belong to
         assert all(p.get("site_id") == sid for p in raw.port_stats)
         assert all(c.get("site_id") == sid for c in raw.wired_clients)
+        assert all(d.get("site_id") == sid for d in raw.device_stats)
+        # fields="*" must survive the batch: APs keep lldp_stat (AP-uplink source)
+        aps = [d for d in raw.device_stats if d.get("type") == "ap"]
+        assert all("lldp_stat" in d for d in aps), f"{sid}: org device_stats lost lldp_stat"

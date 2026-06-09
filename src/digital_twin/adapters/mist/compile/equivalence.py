@@ -19,10 +19,15 @@ from digital_twin.adapters.mist.oas import norm_schema
 
 _DIVERGENCES = Path(__file__).parent / "divergences.json"
 
-# The M1 in-scope site-setting fields (the switch L2 config the compiler/IR use).
+# The M1 in-scope SITE-setting fields (the switch L2 config the compiler/IR use).
 # The gate's "100% on in-scope fields" rule (spec) applies to THESE subtrees;
 # out-of-scope domains (radio_config, marvis, password_policy, RF templates,
 # server-injected metadata/defaults) are validated by the Tier-1 OAS tests.
+#
+# NOTE: per-port assignment (port_config/local_port_config/port_config_overwrite)
+# is DEVICE-level and absent from getSiteSettingDerived, so this site oracle does
+# NOT cover the port->VLAN projection. That projection is validated separately by
+# the gate's port-usage cross-check (compiled vs observed) and by Tier-1 unit tests.
 IN_SCOPE_FIELDS: tuple[str, ...] = ("networks", "port_usages", "vars")
 
 

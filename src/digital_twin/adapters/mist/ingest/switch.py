@@ -24,7 +24,7 @@ from digital_twin.ir import (
 )
 
 from .base import IngestContext
-from .ports import expand_port_members, usage_vlans
+from .ports import resolve_effective_ports, usage_vlans
 
 _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole.GATEWAY}
 
@@ -78,23 +78,20 @@ class SwitchIngester:
         did = device_id(str(dev["mac"]))
         eff = ctx.device_effective.get(did) or ctx.site_effective
         networks: dict[str, Any] = eff.get("networks") or {}
-        usages: dict[str, Any] = eff.get("port_usages") or {}
-        for key, pc in (eff.get("port_config") or {}).items():
-            usage = usages.get(str(pc.get("usage")), {})
+        for member, usage, usage_name in resolve_effective_ports(eff):
             native, tagged = usage_vlans(usage, networks)
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
-            for member in expand_port_members(key):
-                ctx.builder.add_port(
-                    Port(
-                        id=port_id(did, member),
-                        device_id=did,
-                        name=member,
-                        mode=mode,
-                        native_vlan=native,
-                        tagged_vlans=tagged,
-                        profile=str(pc.get("usage")) if pc.get("usage") else None,
-                    )
+            ctx.builder.add_port(
+                Port(
+                    id=port_id(did, member),
+                    device_id=did,
+                    name=member,
+                    mode=mode,
+                    native_vlan=native,
+                    tagged_vlans=tagged,
+                    profile=usage_name,
                 )
+            )
         for net_name, ipc in (eff.get("other_ip_configs") or {}).items():
             vid = (networks.get(net_name) or {}).get("vlan_id")
             if vid is not None:

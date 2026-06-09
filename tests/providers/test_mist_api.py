@@ -23,6 +23,7 @@ class FakeProvider(MistApiProvider):
         sites: list[dict[str, Any]],
         ports: list[dict[str, Any]],
         wired: list[dict[str, Any]],
+        device_stats: list[dict[str, Any]] | None = None,
         templates: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._host = "test"
@@ -30,6 +31,7 @@ class FakeProvider(MistApiProvider):
         self._sites = sites
         self._ports = ports
         self._wired = wired
+        self._device_stats_rows = device_stats or []
         self._templates = templates or {}
         self.nt_calls: list[str] = []
 
@@ -42,6 +44,9 @@ class FakeProvider(MistApiProvider):
 
     def _org_wired_clients(self, s: OrgScope) -> list[dict[str, Any]]:
         return self._wired
+
+    def _org_device_stats(self, s: OrgScope) -> list[dict[str, Any]]:
+        return self._device_stats_rows
 
     # per-site
     def _setting(self, s: Any) -> dict[str, Any]:
@@ -80,6 +85,7 @@ def test_fetch_sites_partitions_org_rows_by_site():
         sites=_sites("s1", "s2"),
         ports=[{"site_id": "s1", "port_id": "ge-0/0/0"}, {"site_id": "s2", "port_id": "ge-0/0/1"}],
         wired=[{"site_id": "s2", "mac": "aa"}],
+        device_stats=[{"site_id": "s1", "mac": "d1"}, {"site_id": "s2", "mac": "d2"}],
     )
     out = p.fetch_sites(OrgScope("o1"), ["s1", "s2"])
     s1, s2 = out["s1"], out["s2"]
@@ -88,6 +94,8 @@ def test_fetch_sites_partitions_org_rows_by_site():
     assert [r["port_id"] for r in s2.port_stats] == ["ge-0/0/1"]
     assert s1.wired_clients == ()  # s2's client must not leak into s1
     assert [r["mac"] for r in s2.wired_clients] == ["aa"]
+    assert [r["mac"] for r in s1.device_stats] == ["d1"]  # device_stats batched too
+    assert [r["mac"] for r in s2.device_stats] == ["d2"]
 
 
 def test_fetch_sites_none_means_all_org_sites():

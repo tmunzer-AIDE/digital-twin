@@ -8,8 +8,14 @@ compile_site:   merge_only + {{vars}} resolved — the site-level live artifact
 compile_device: device config layered on the UNRESOLVED merge (per-key, device
                 wins), THEN {{vars}} resolved once — device-level config can
                 reference site vars; devices have no vars of their own.
-                NO ORACLE exists for this layer (derived is site-level) —
-                covered by unit tests only.
+                NO site oracle exists for this layer (derived is site-level);
+                the live gate's port-usage cross-check (compiled vs observed)
+                validates the projection, alongside unit tests.
+
+KNOWN GAPS (M1): template `switch_matching` (rule-based per-switch port_config
+assignment) is NOT evaluated — ports assigned only via those rules are missing
+from the IR. `dynamic_usage` ports keep their STATIC usage here; their runtime
+usage (driven by the connected device) is intentionally not modeled.
 """
 
 from __future__ import annotations
@@ -22,8 +28,19 @@ from .vars import resolve_vars
 
 JsonObj = dict[str, Any]
 
-_DEVICE_DICT_MERGE_FIELDS = ("networks", "port_usages")
-_DEVICE_OWN_FIELDS = ("port_config", "ip_config", "other_ip_configs")
+# Device keyed-collection fields: device overlays the inherited map PER KEY (a
+# device defining one port range must not wipe the rest). port_config and its
+# overrides are keyed by port/range; local_port_config + port_config_overwrite
+# layer on top at resolution time (see ingest.ports.resolve_effective_ports).
+_DEVICE_DICT_MERGE_FIELDS = (
+    "networks",
+    "port_usages",
+    "port_config",
+    "local_port_config",
+    "port_config_overwrite",
+)
+# Device whole-field overrides (not keyed port maps): device value wins wholesale.
+_DEVICE_OWN_FIELDS = ("ip_config", "other_ip_configs")
 
 
 def merge_only(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:

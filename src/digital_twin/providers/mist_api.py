@@ -6,11 +6,11 @@ SDK release, and a fix is a one-liner. Partial failures are RECORDED in
 StateMeta; a failed BASELINE fetch (site/setting) returns a FetchError VALUE —
 this provider never raises for fetch problems.
 
-`fetch_sites` (multi-site) batches the org-level endpoints whose payload is
-BYTE-IDENTICAL to the per-site call — `searchOrgSwOrGwPorts`, `searchOrgWiredClients`,
-`listOrgSites` — into one paged call each and partitions by `site_id`. The rest
-stay per-site ON PURPOSE: `listOrgDevices` is inventory-only (no port_config),
-`listOrgDevicesStats` drops `lldp_stat` (kills AP-uplink detection), and
+`fetch_sites` (multi-site) batches the org-level endpoints whose payload matches
+the per-site call — `searchOrgSwOrGwPorts`, `searchOrgWiredClients`, `listOrgSites`
+and `listOrgDevicesStats` (the last REQUIRES fields="*" or the rows are lean and
+drop lldp_stat) — into one paged call each and partitions by `site_id`. Two stay
+per-site ON PURPOSE: `listOrgDevices` is inventory-only (no port_config), and
 `searchOrgWirelessClients` has different shape/semantics than the per-site stats.
 Network templates are fetched once per unique id and reused across sites.
 
@@ -79,6 +79,7 @@ class MistApiProvider(StateProvider):
             site_fn=lambda: self._site(scope),
             port_stats_fn=lambda: self._port_stats(scope),
             wired_clients_fn=lambda: self._wired_clients(scope),
+            device_stats_fn=lambda: self._device_stats(scope),
             nt_cache={},
             include_derived=include_derived,
         )
@@ -98,6 +99,7 @@ class MistApiProvider(StateProvider):
         targets = [str(s) for s in site_ids] if site_ids is not None else list(sites)
         port_slice = self._org_slice(lambda: self._org_port_stats(scope))
         wired_slice = self._org_slice(lambda: self._org_wired_clients(scope))
+        device_slice = self._org_slice(lambda: self._org_device_stats(scope))
         nt_cache: dict[str, _Json | None] = {}
         out: dict[str, RawSiteState | FetchError] = {}
         for sid in targets:
@@ -106,6 +108,7 @@ class MistApiProvider(StateProvider):
                 site_fn=_site_thunk(sites, sid),
                 port_stats_fn=_slice_thunk(port_slice, sid),
                 wired_clients_fn=_slice_thunk(wired_slice, sid),
+                device_stats_fn=_slice_thunk(device_slice, sid),
                 nt_cache=nt_cache,
                 include_derived=include_derived,
             )
@@ -119,12 +122,13 @@ class MistApiProvider(StateProvider):
         site_fn: Callable[[], _Json | None],
         port_stats_fn: Callable[[], list[_Json]],
         wired_clients_fn: Callable[[], list[_Json]],
+        device_stats_fn: Callable[[], list[_Json]],
         nt_cache: dict[str, _Json | None],
         include_derived: bool,
     ) -> RawSiteState | FetchError:
-        """Assemble one site's RawSiteState. `site`, `port_stats` and `wired_clients`
-        are supplied as thunks so the per-site and org-batched callers share this
-        path; everything else is fetched here per-site."""
+        """Assemble one site's RawSiteState. `site`, `port_stats`, `wired_clients`
+        and `device_stats` are supplied as thunks so the per-site and org-batched
+        callers share this path; everything else is fetched here per-site."""
         fetched: list[str] = []
         failures: list[FetchFailure] = []
 
@@ -157,7 +161,7 @@ class MistApiProvider(StateProvider):
             setting=setting,
             networktemplate=networktemplate,
             devices=tuple(attempt("devices", lambda: self._devices(scope), [])),
-            device_stats=tuple(attempt("device_stats", lambda: self._device_stats(scope), [])),
+            device_stats=tuple(attempt("device_stats", device_stats_fn, [])),
             port_stats=tuple(attempt("port_stats", port_stats_fn, [])),
             wireless_clients=tuple(
                 attempt("wireless_clients", lambda: self._wireless_clients(scope), [])
@@ -238,32 +242,35 @@ class MistApiProvider(StateProvider):
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _port_stats(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.stats.searchSiteSwOrGwPorts(
-            self._session, s.site_id, limit=1000
-        )
-        return [dict(d) for d in (resp.data or {}).get("results", [])]
+        # get_all pages the search response — never just the first 1000 results
+        resp = mistapi.api.v1.sites.stats.searchSiteSwOrGwPorts(self._session, s.site_id)
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _wireless_clients(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.stats.listSiteWirelessClientsStats(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _wired_clients(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.wired_clients.searchSiteWiredClients(
-            self._session, s.site_id, limit=1000
-        )
-        return [dict(d) for d in (resp.data or {}).get("results", [])]
+        resp = mistapi.api.v1.sites.wired_clients.searchSiteWiredClients(self._session, s.site_id)
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     # -- org-batched endpoints (payload identical to the per-site call) --------
     def _org_sites(self, s: OrgScope) -> list[_Json]:
         resp = mistapi.api.v1.orgs.sites.listOrgSites(self._session, s.org_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
+    def _org_device_stats(self, s: OrgScope) -> list[_Json]:
+        # fields="*" is REQUIRED at org scope — without it the rows are lean and
+        # drop lldp_stat (AP-uplink detection); the per-site call returns it by default.
+        resp = mistapi.api.v1.orgs.stats.listOrgDevicesStats(
+            self._session, s.org_id, type="all", fields="*"
+        )
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
     def _org_port_stats(self, s: OrgScope) -> list[_Json]:
-        resp = mistapi.api.v1.orgs.stats.searchOrgSwOrGwPorts(self._session, s.org_id, limit=1000)
+        resp = mistapi.api.v1.orgs.stats.searchOrgSwOrGwPorts(self._session, s.org_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _org_wired_clients(self, s: OrgScope) -> list[_Json]:
-        resp = mistapi.api.v1.orgs.wired_clients.searchOrgWiredClients(
-            self._session, s.org_id, limit=1000
-        )
+        resp = mistapi.api.v1.orgs.wired_clients.searchOrgWiredClients(self._session, s.org_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
