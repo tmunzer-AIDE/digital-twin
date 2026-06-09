@@ -1,0 +1,4 @@
+{
+  "_comment": "Catalogued, justified divergences between our merge and getSiteSettingDerived. Every entry MUST carry a reason. An UNCATALOGUED diff fails the gate. Example: {\"path\": \"modified_time\", \"reason\": \"server-side timestamp, not config\"}.",
+  "entries": []
+}
