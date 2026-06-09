@@ -23,23 +23,37 @@ system is modular and can ingest additional sources (e.g. Aruba Central) later.
 
 ### Goal (product)
 
-An AI agent proposes a change as a JSON delta. **Product-vision example** (multi-object, org
-templates — *not* all supported in M1; see *Supported delta types*):
+An AI agent proposes a change as a **`ChangePlan`** — an envelope around the ordered ops, not a bare
+array. The envelope carries `source` (which vendor adapter owns these ops), `scope` (so `device`
+ops don't need their site guessed), an optional `intent`, and the `ops` list:
+
+```python
+ChangePlan = {
+  "source": "mist",                       # selects the VendorAdapter; "aruba" later
+  "scope":  { "org_id": "...", "site_id": "..." },   # explicit — no guessing a device's site
+  "intent": "optional free-text rationale, for logging/explanation only",
+  "ops": [ ChangeOp, ... ],
+}
+ChangeOp = { "action": "update", "order": 0, "object_type": "...", "object_id": "...", "payload": {...} }
+```
+
+**Product-vision example** (multi-object, org templates — *not* all supported in M1; see
+*Supported delta types*):
 
 ```json
-[
-  {"action": "update", "order": 0, "object_type": "switchtemplate", "object_id": "xxxx", "payload": { /* Mist API schema */ }},
-  {"action": "update", "order": 1, "object_type": "gatewaytemplate", "object_id": "yyyy", "payload": { /* Mist API schema */ }}
-]
+{ "source": "mist", "scope": {"org_id": "o1"}, "ops": [
+  {"action": "update", "order": 0, "object_type": "switchtemplate", "object_id": "xxxx", "payload": { } },
+  {"action": "update", "order": 1, "object_type": "gatewaytemplate", "object_id": "yyyy", "payload": { } }
+]}
 ```
 
 **M1-valid example** (single site, switch-relevant — what the MVP actually simulates):
 
 ```json
-[
-  {"action": "update", "order": 0, "object_type": "site_setting", "object_id": "<site_id>", "payload": { /* full site setting: networks, port_usages, ... */ }},
-  {"action": "update", "order": 1, "object_type": "device", "object_id": "<switch_device_id>", "payload": { /* full switch device config: port_config, ... */ }}
-]
+{ "source": "mist", "scope": {"org_id": "o1", "site_id": "s1"}, "ops": [
+  {"action": "update", "order": 0, "object_type": "site_setting", "object_id": "s1", "payload": { } },
+  {"action": "update", "order": 1, "object_type": "device", "object_id": "<switch_device_id>", "payload": { } }
+]}
 ```
 
 The twin **simulates** it against the current network state and returns a **verdict document**: a
@@ -90,26 +104,27 @@ anything outside it is rejected loudly rather than silently passed.
 | `switchtemplate`, `gatewaytemplate`, `aptemplate`, `networktemplate`, `rftemplate`, `sitetemplate` | org template id | org-level | ⛔ `UNSUPPORTED` (multi-site fan-out) |
 | any gateway/AP `device`, WLAN, or other object | — | — | ⛔ `UNSUPPORTED` (not compiled/modeled in M1) |
 
-**Field-level gate (because a delta is a *full-object* replacement).** Since `payload` replaces the
-whole object, a single op can change fields M1 cannot reason about. `ScopeResolver` diffs the
-payload against current raw state and inspects **which fields actually changed**:
+**Field-level gate (post-fetch, because a delta is a *full-object* replacement).** Since `payload`
+replaces the whole object, a single op can change fields M1 cannot reason about. After state is
+fetched (pipeline step 4), `ScopeResolver.post` computes the set of changed JSON paths
+(`payload` vs current raw) and applies a **default-deny allowlist**: a path is in-scope only if it
+matches an entry below; **any changed path not matched → `UNKNOWN`.**
 
-- **In-scope (simulated):** `site_setting.networks`, `site_setting.port_usages`,
-  switch-relevant VLAN/port fields; `device.port_config` and switch port/VLAN fields.
-- **Out-of-scope → `UNKNOWN`:** any change touching `dhcpd_config` (DHCP — explicitly out of
-  scope), WLAN/RF fields, gateway/WAN fields, NAC, or any field not in the in-scope set. The twin
-  must **not** return `SAFE` on the strength of L2 analysis alone when the same payload also
-  changed something it didn't evaluate.
-- A changed field that is purely cosmetic (e.g. `notes`, `name`) is in-scope and harmless.
+**In-scope JSON paths (the authoritative M1 allowlist — grows as scope grows):**
 
-**Gating outcomes:**
-- Unwhitelisted `object_type`, or a switch `device` that is actually a gateway/AP → `UNKNOWN`.
-- A supported object whose **changed fields** include any out-of-scope field → `UNKNOWN`
-  (`decision_reasons` names the offending field).
-- A supported op that `ScopeResolver` finds would impact **more than the one in-scope site**
-  (fan-out) → `UNKNOWN`.
+| `object_type` | In-scope changed paths (glob) |
+|---|---|
+| `site_setting` | `networks.*`, `port_usages.*`, `vars.*` |
+| `device` (switch) | `port_config.*`, `networks.*`, `port_usages.*`, `ip_config.*`, `name`, `notes` |
 
-All `UNKNOWN` outcomes carry an `UNSUPPORTED` reason and are **never a green verdict**.
+**Explicitly out-of-scope → `UNKNOWN`** (non-exhaustive; default-deny catches the rest):
+`*.dhcpd_config.*` (DHCP), `wlan*`, `*radio*`/`*rf*`, `gateway*`/`vpn*`/`tunnel*` (WAN),
+`*.acl*`/`*nac*`/`*auth*` (security), and any path absent from the allowlist above.
+
+**Gating outcomes (all carry an `UNSUPPORTED` reason; never a green verdict):**
+- Unwhitelisted `object_type`, or a `device` whose actual role is gateway/AP → `UNKNOWN` (pre-fetch).
+- More than the one in-scope site impacted (fan-out) → `UNKNOWN` (pre-fetch).
+- Any changed path outside the allowlist → `UNKNOWN` (post-fetch; `decision_reasons` names the path).
 
 ### Delta semantics (resolve before `apply` and L0)
 
@@ -151,26 +166,35 @@ A delta op is **a full-object replacement**, matching Mist's `PUT` semantics: `p
 stage is a swappable seam:
 
 ```
-                  ┌─────────────────────────────────────────────────────────┐
-   delta JSON ──▶ │                    SIMULATION ENGINE                     │ ──▶ verdict doc
- [{action,order,  │  1. ScopeResolver     supported? single-site? else       │   (decision +
-  object_type,    │       └─ UNSUPPORTED / fan-out → decision: UNKNOWN        │    severity +
-  object_id,      │  2. Adapter.validate  L0/L1 payload validation (vendor)  │    per-check evidence
-  payload}]       │       └─ structurally-fatal → short-circuit verdict      │    + coverage map
-                  │  3. StateProvider     fetch raw vendor state for scope   │    + confidence summary
-                  │  4. Adapter.ingest    raw → IR  (baseline)               │    + IR diff + trace)
-                  │  5. Adapter.apply     raw + δ → raw'                      │
-                  │  6. Adapter.ingest    raw' → IR' (proposed)              │
-                  │  7. IRDiff            IR vs IR'                           │
-                  │  8. CheckRegistry     run L2/L3 checks on (IR, IR', δ)    │
-                  │  9. VerdictBuilder    aggregate findings → decision       │
-                  └─────────────────────────────────────────────────────────┘
+                  ┌──────────────────────────────────────────────────────────────┐
+  ChangePlan ──▶  │                     SIMULATION ENGINE                         │ ──▶ verdict doc
+ {source, scope,  │  1. ScopeResolver.pre   envelope + object_type + single-site  │   (decision +
+  intent, ops:[   │       └─ unsupported type / fan-out → decision: UNKNOWN        │    severity +
+   {action,order, │  2. Adapter.validate    L0 payload validation (vendor)        │    findings +
+    object_type,  │       └─ structurally-fatal → short-circuit verdict           │    check_results +
+    object_id,    │  3. StateProvider       fetch raw vendor state for scope      │    coverage map +
+    payload}]}    │       └─ total failure → UNKNOWN; partial → state_meta        │    confidence +
+                  │  4. ScopeResolver.post  changed-field gate (δ vs current raw) │    state_meta +
+                  │       └─ out-of-scope field changed → UNKNOWN                  │    ir_diff + trace)
+                  │  5. Adapter.ingest      raw → IR  (baseline, via compiler)     │
+                  │  6. Adapter.apply       raw + δ → raw'                         │
+                  │  7. Adapter.ingest      raw' → IR' (proposed, via compiler)    │
+                  │  8. IRDiff              IR vs IR'  (neutral change set)        │
+                  │  9. CheckRegistry       run L2/L3 checks on (IR, IR', IRDiff)  │
+                  │ 10. VerdictBuilder      aggregate findings → decision          │
+                  └──────────────────────────────────────────────────────────────┘
 ```
 
-The verdict has **two finding sources**, both using the same `Finding`/severity/confidence model:
-the vendor adapter's payload validation (L0/L1, step 2) and the neutral check registry (L2/L3,
-step 8). This keeps schema/semantic validation — which is vendor-specific and reads raw payload —
-out of the neutral check layer, while still surfacing it in one unified verdict.
+`ScopeResolver` runs in **two phases**: a **pre-fetch** gate (envelope shape, object-type
+whitelist, single-site) that needs no state, and a **post-fetch** changed-field gate that diffs the
+payload against the freshly-fetched current raw config. The field gate *must* be post-fetch because
+"which fields actually changed" is only knowable against current state.
+
+The verdict has **two finding sources**, both using the same `Finding` model: the vendor adapter's
+payload validation (L0, step 2) and the neutral check registry (L2/L3, step 9). Schema validation —
+vendor-specific, reads raw payload — stays out of the neutral check layer, while still surfacing in
+one unified verdict. **Checks at step 9 receive only `(IR, IR', IRDiff)` — never the raw Mist
+payload** (see the check contract).
 
 ### Seams (this is where modularity lives)
 
@@ -178,16 +202,36 @@ out of the neutral check layer, while still surfacing it in one unified verdict.
 |---|---|---|---|
 | `StateProvider` | raw vendor state for a scope | `MistApiProvider` (on-demand) | `SnapshotProvider` |
 | `VendorAdapter` | `validate(δ)`, `ingest(raw)→IR`, `apply(raw,δ)→raw'` | `MistAdapter` | `ArubaAdapter` |
-| `Check` | inspect `(IR, IR', δ)` → evidence | wired/Wi-Fi-aware checks | any new "test scope" |
+| `Check` | inspect `(IR, IR', IRDiff)` → evidence | wired/Wi-Fi-aware checks | any new "test scope" |
 | `Driver` | drive the engine | `cli` + `mcp` | `http` / `ui` |
 
 ### Two hard rules that keep it modular
 
-1. **Checks only ever see the IR** (+ the IR diff + the delta). They never import vendor code.
-   This is what lets a second vendor reuse every check, and lets a new check be added without
-   touching the engine.
+1. **Checks only ever see the IR + the `IRDiff`** (a vendor-neutral change set). They **never** see
+   the raw Mist payload and never import vendor code. This is what lets a second vendor reuse every
+   check, and lets a new check be added without touching the engine.
 2. **Vendor specifics live only in the adapter.** `ingest`, the config compiler, and `apply` are
    the *only* places that know Mist's JSON shape and inheritance rules.
+
+### Component contracts (inputs / outputs / errors)
+
+Each component has one job and a defined failure mode. Errors are **values, not exceptions** unless
+noted — they become verdict outcomes (`UNKNOWN`/`REVIEW`), never an unhandled crash.
+
+| Component | Input | Output | On error |
+|---|---|---|---|
+| `ScopeResolver.pre` | `ChangePlan` | scope + op metadata, or reject | unsupported type / fan-out → `UNKNOWN` |
+| `StateProvider` | scope | raw vendor state + `state_meta` | total fetch fail → `UNKNOWN`; partial → recorded in `state_meta` |
+| `ScopeResolver.post` | `payload`, current raw | changed-path set, in/out-of-scope verdict | out-of-scope path → `UNKNOWN` |
+| `VendorAdapter.validate` | `ChangeOp.payload`, OAS | L0 `Finding`s | fatal schema error → short-circuit verdict |
+| `VendorAdapter.ingest` (+`Compiler`) | raw state | frozen `IR` (+ `capabilities`, `ir_version`) | compile failure → `UNKNOWN` (named in reasons) |
+| `VendorAdapter.apply` | raw, `δ` | `raw'` | unknown object/id → `UNKNOWN` |
+| `IRDiff` | `IR`, `IR'` | neutral change set | — (pure) |
+| `CheckRegistry` | `IR`, `IR'`, `IRDiff` | `list[CheckResult]` | per-check crash isolated → `CHECK_ERROR` |
+| `VerdictBuilder` | all findings + coverage + `state_meta` | `verdict` (+ `decision`) | — (pure aggregation) |
+| `ReplayStore` | `(raw, ChangePlan, verdict)` | redacted fixture on disk | write failure logged; never blocks a run |
+| CLI driver | `ChangePlan` (file/stdin) | verdict JSON / human summary | non-zero exit on `UNSAFE`/`UNKNOWN` |
+| MCP tool | `ChangePlan` (tool args) | verdict JSON | returns verdict; tool itself never throws to the agent |
 
 ### Compositional ingest (cross-vendor enabler, cheap now)
 
@@ -273,6 +317,27 @@ Adding WAN/NAC later adds new entity types and new derived graphs; it never modi
 entities or existing checks. A WAN check simply asks the IR for `Tunnel`/`BgpPeer` facts that a
 wired-only ingest does not populate.
 
+### IR versioning & capability negotiation
+
+So growth (Aruba, L3, NAC) is additive and never silently breaks a check, every IR snapshot carries:
+
+```python
+class IR:
+    ir_version: str                # semver of the IR schema; engine rejects an incompatible major
+    capabilities: set[IRCapability]   # what THIS instance actually populated, e.g.
+                                   #   {wired.l2, links.bidirectional, clients.active}
+                                   #   (a wired-only ingest does NOT include {wan, nac, l3.routes})
+    ...
+```
+
+- A check's `requires()` is matched against `ir.capabilities`. Missing capability →
+  `INSUFFICIENT_DATA` (per gating order) — **never a crash, never a false `PASS`**.
+- New domains **add** capabilities; existing checks declare only the capabilities they use, so they
+  are unaffected by additions. New checks declare the new capabilities and self-gate where absent.
+- `ir_version` lets the engine fail fast if an adapter emits an IR shape it can't consume, rather
+  than producing garbage findings. Capabilities are the *runtime* contract; `ir_version` is the
+  *schema* contract.
+
 ---
 
 ## The check-plugin contract
@@ -289,15 +354,17 @@ class Check(Protocol):
     def requires(self) -> list[IRCapability]:
         # IR facts this check needs, e.g. NEEDS_BIDIRECTIONAL_LINKS, NEEDS_ACTIVE_CLIENTS
         ...
-    def applies_to(self, delta: Delta, diff: IRDiff) -> bool:
-        # cheap predicate: does this change even touch what I reason about?
+    def applies_to(self, diff: IRDiff) -> bool:
+        # cheap predicate over the neutral change set: does this touch what I reason about?
         ...
     def run(self, ctx: CheckContext) -> CheckResult:
         ...
 ```
 
-`CheckContext` provides exactly: `baseline_ir`, `proposed_ir`, `diff`, `delta`, and a logger
-bound to `(run_id, check_id)`. Nothing vendor-specific.
+`CheckContext` provides exactly: `baseline_ir`, `proposed_ir`, `diff` (the neutral `IRDiff`), and a
+logger bound to `(run_id, check_id)`. **No raw vendor payload, nothing vendor-specific.** If a check
+needs to know *what kind* of change occurred, it reads the `IRDiff` (added/removed/modified IR
+entities) — the vendor-neutral projection of the delta.
 
 ### Result is evidence, never a bare boolean
 
@@ -305,18 +372,19 @@ Two distinct vocabularies: **Status** (did the check reach a conclusion?) and **
 is an individual finding?). They are linked but not the same field.
 
 ```python
-Status   = PASS | WARN | FAIL | NOT_APPLICABLE | INSUFFICIENT_DATA | ERROR   # check-level outcome
-Severity = INFO | WARNING | ERROR | CRITICAL                                  # per-finding
+Status   = PASS | WARN | FAIL | NOT_APPLICABLE | INSUFFICIENT_DATA | CHECK_ERROR  # check-level outcome
+Severity = INFO | WARNING | ERROR | CRITICAL                                       # per-finding
 
 class Finding:
-    source: "adapter" | "check"    # L0/L1 adapter validation, or an L2/L3 check
-    code: str                      # stable machine code, e.g. "l2.blackhole.vlan_isolated"
+    source: "adapter" | "check"           # L0/L1 adapter validation, or an L2/L3 check
+    category: "network" | "operational"   # network = predicted breakage; operational = the twin itself had trouble
+    code: str                             # stable machine code, e.g. "l2.blackhole.vlan_isolated"
     severity: Severity
     confidence: Confidence
-    message: str                   # human-readable
-    affected_entities: list[str]   # IR entity ids
-    evidence: dict                 # facts inspected + reasoning data (what made this fire)
-    remediation: str | None        # suggested fix, for the agent
+    message: str                          # human-readable
+    affected_entities: list[str]          # IR entity ids
+    evidence: dict                        # facts inspected + reasoning data (what made this fire)
+    remediation: str | None               # suggested fix, for the agent
 
 class CheckResult:
     check_id: str
@@ -327,12 +395,18 @@ class CheckResult:
     reasoning: str
 ```
 
-Status and finding severity are linked but distinct: a `PASS` check may still emit `INFO` findings
-(e.g. a benign VLAN expansion); `WARN` ⇔ worst finding is `WARNING`; `FAIL` ⇔ a finding at
-`ERROR`/`CRITICAL`. **A check emits `FAIL` only at HIGH confidence** — when it is not confident
-enough to assert breakage it downgrades to `WARN` or `INSUFFICIENT_DATA`, never a silent stretch to
-`FAIL` or `PASS`. This is what keeps `FAIL → UNSAFE` an always-confident assertion (and resolves the
-boundary-uplink case below: an only-*inferred* exit yields `WARN`, not `FAIL`).
+Two important separations:
+
+- **Status vs Severity.** A `PASS` check may still emit `INFO` findings (e.g. a benign VLAN
+  expansion); `WARN` ⇔ worst finding is `WARNING`; `FAIL` ⇔ a `network` finding at `ERROR`/`CRITICAL`.
+  **A check emits `FAIL` only at HIGH confidence** — when not confident enough to assert breakage it
+  downgrades to `WARN` or `INSUFFICIENT_DATA`, never a silent stretch to `FAIL` or `PASS`. This keeps
+  `FAIL → UNSAFE` an always-confident assertion (and resolves the boundary-uplink case below: an
+  only-*inferred* exit yields `WARN`, not `FAIL`).
+- **Network vs operational.** `Severity.ERROR`/`CRITICAL` describe *predicted network breakage* and
+  drive `UNSAFE`. A check that **crashes** is a different thing — status `CHECK_ERROR`, emitting an
+  `operational`-category finding. **Operational findings never drive `UNSAFE`; they drive `REVIEW`**
+  (the twin couldn't evaluate, so a human/agent must look — it is not evidence the *network* breaks).
 
 ### The six check statuses are the whole anti-silent-OK machine
 
@@ -342,7 +416,7 @@ boundary-uplink case below: an only-*inferred* exit yields `WARN`, not `FAIL`).
 | `WARN`/`FAIL` | evaluated, found something | severity-coded with findings |
 | `NOT_APPLICABLE` | delta doesn't touch my domain | legitimately silent |
 | `INSUFFICIENT_DATA` | delta **does** touch my domain but I lacked IR facts to judge | **surfaced as a coverage gap — never folded into "OK"** |
-| `ERROR` | the check crashed | isolated, surfaced as a gap |
+| `CHECK_ERROR` | the check crashed (operational, not network) | isolated; emits an `operational` finding → `REVIEW`, **never** `UNSAFE` |
 
 The `INSUFFICIENT_DATA` vs `NOT_APPLICABLE` split is what makes "why did it say OK" answerable.
 
@@ -357,11 +431,20 @@ class Confidence:
     reasons: list[str]   # ["link wan-core↔dist1 one-sided LLDP", "STP root prediction is heuristic"]
 ```
 
-Confidence composes from two sources and a **finding's confidence is bounded by the weakest fact
-it relied on**:
+**Canonical fact→confidence table (single source of truth — every component uses this):**
 
-1. **Fact-level** (IR provenance): two-sided LLDP `HIGH`; one-sided `LOW`; inferred `MEDIUM`.
-2. **Inference-level** (method): exact `networkx` cycle search `HIGH`; heuristic `MEDIUM`.
+| Provenance of a fact | Confidence |
+|---|---|
+| Explicitly configured, two-sided LLDP, or operator/template-**designated** | `HIGH` |
+| **Config-inferred but unconfirmed** (e.g. a neighbor's role guessed from model/name, no link evidence) | `MEDIUM` |
+| **Single-source / one-sided LLDP / observation-only** | `LOW` |
+| Absent | → drives `INSUFFICIENT_DATA` (no confidence assigned) |
+
+**Composition is deterministic:** a derived fact's (and a finding's) confidence =
+`MIN(confidence of every fact it relied on, confidence of the inference method)`. Method confidence:
+exact `networkx` cycle search = `HIGH`; documented heuristic = `MEDIUM`. So a conclusion built on a
+one-sided LLDP link is `LOW` *regardless* of how exact the algorithm is — the weakest input governs.
+This rule is the only one; no component may assign confidence by any other means.
 
 Categorical + reason-backed, **never a float** (false precision undermines explainability).
 
@@ -404,15 +487,22 @@ precedence-ordered rules (first match wins):
 
 | Decision | Meaning for the agent | Triggered when |
 |---|---|---|
-| **`UNKNOWN`** | "I could not simulate this — do not apply, do not assume safe." | Any op is `UNSUPPORTED`; a structurally-fatal L0 violation short-circuited the run; or scope/state could not be fetched. |
-| **`UNSAFE`** | "This will break something — do not apply." | Any finding at `error`/`critical` severity, i.e. any check returned `FAIL`. |
-| **`REVIEW`** | "Possible issue or a blind spot — a human/agent must look before applying." | Any `WARN` finding; **or** any applicable check returned `INSUFFICIENT_DATA`/`ERROR`; **or** any finding (incl. would-be-PASS) carries `LOW`/`MEDIUM` confidence; **or** coverage is `partial`/`insufficient` on an applicable domain. |
-| **`SAFE`** | "Fully evaluated, fully covered, high confidence, clean." | All applicable checks `PASS`, **no** L0/L1 findings above `info`, coverage complete on every applicable domain, all confidence `HIGH`. |
+| **`UNKNOWN`** | "I could not simulate this — do not apply, do not assume safe." | Any op is `UNSUPPORTED` (type/field/fan-out); a structurally-fatal L0 violation short-circuited the run; **or the state fetch failed completely** (no usable baseline). |
+| **`UNSAFE`** | "This will break something — do not apply." | Any **`network`-category** finding at `ERROR`/`CRITICAL` severity (a check returned `FAIL`). Operational findings never trigger this. |
+| **`REVIEW`** | "Possible issue or a blind spot — a human/agent must look before applying." | Any `WARN` finding; **or** any applicable check returned `INSUFFICIENT_DATA` or `CHECK_ERROR`; **or** any finding carries `LOW`/`MEDIUM` confidence; **or** coverage is `partial`/`insufficient` on an applicable domain (including a **relevant** partial fetch). |
+| **`SAFE`** | "Fully evaluated, fully covered, high confidence, clean." | All applicable checks `PASS`, **no** finding above `INFO`, coverage complete on every applicable domain, all confidence `HIGH`. |
 
 Precedence is strict: `UNKNOWN` > `UNSAFE` > `REVIEW` > `SAFE`. The key invariant: **a blind spot
-(`INSUFFICIENT_DATA`, partial coverage, or non-HIGH confidence) can never resolve to `SAFE`** — it
-floors at `REVIEW`. `decision_reasons` always lists the specific drivers so the agent can branch
-(e.g. `REVIEW` + "low confidence: one-sided LLDP link" → gather more data vs. ask the user).
+(`INSUFFICIENT_DATA`, partial coverage, non-HIGH confidence, or a crashed check) can never resolve to
+`SAFE`** — it floors at `REVIEW`. `decision_reasons` always lists the specific drivers.
+
+**Partial-fetch rules (how `state_meta.fetch_failures` maps to a decision):**
+- **Complete failure** (no usable baseline state) → `UNKNOWN`.
+- **Relevant partial failure** — a fetch failed for a device/object that an applicable check needs
+  → that check returns `INSUFFICIENT_DATA` → `REVIEW`. The failure is named in `decision_reasons`.
+- **Irrelevant partial failure** — a fetch failed for something outside every applicable check's
+  scope → recorded in `state_meta.fetch_failures` for transparency, but **does not** lower the
+  decision (a check that didn't need it still has full coverage).
 
 > Note: the separate **apply module** (out of scope here) is the only consumer allowed to act on
 > `SAFE` automatically, and only behind whatever policy gate it defines. The twin only *reports*.
@@ -421,14 +511,15 @@ floors at `REVIEW`. `decision_reasons` always lists the specific drivers so the 
 
 - Checks live in `checks/wired/` and self-register (decorator/entry-point). Adding one is dropping
   in a file; the engine discovers it.
-- The engine runs each check **in isolation**: a raised exception → `status: ERROR`, logged with
-  its `check_id`, run continues. One bad check cannot take down the run or another check.
+- The engine runs each check **in isolation**: a raised exception → `status: CHECK_ERROR` + an
+  `operational` finding, logged with its `check_id`, run continues. One bad check cannot take down
+  the run or another check, and a crash never masquerades as network breakage (`REVIEW`, not `UNSAFE`).
 
 **Gating order (strict — this ordering is itself a contract):** for each check the engine does,
 in this sequence:
 
 1. Compute `IRDiff` (`IR` vs `IR'`).
-2. **`applies_to(delta, diff)`** — if `False` → **`NOT_APPLICABLE`**, stop. *This is checked
+2. **`applies_to(diff)`** — if `False` → **`NOT_APPLICABLE`**, stop. *This is checked
    first*, so a cosmetic change (e.g. a `notes` edit) that touches nothing a check cares about is
    correctly `NOT_APPLICABLE`, **not** `INSUFFICIENT_DATA`.
 3. Only for applicable checks: **`requires()`** vs the IR's capabilities — if unmet →
@@ -569,29 +660,39 @@ degrades to LOW-confidence `WARN`, not a silent pass.
 ### `l2.blackhole` — and the VLAN-exit contract (promoted from open item)
 
 A blackhole = a connected component of a VLAN's per-VLAN graph that **contains members** but **has
-no path to that VLAN's exit**. **Membership is configuration-based, not client-based** — a
-component counts as having members if it contains any: access port configured for the VLAN, AP
-uplink whose AP serves an SSID on the VLAN, or downstream device/trunk carrying the VLAN — **even
-with zero currently-active clients.** (A port with no client today still breaks tomorrow.) The
-separate `client.impact` check is the only one that is active-client-only; blackhole fires on
-configured topology regardless of who is connected. The **exit** is determined by this precedence —
-a core M1 contract, because the check is meaningless without it:
+no path to that VLAN's exit**. Membership has two sources with different bases (because M1 compiles
+switch config but **not** WLAN config):
+
+- **Switched side — configuration-based.** A component has members if it contains any access port
+  configured for the VLAN or any downstream device/trunk carrying it — **even with zero active
+  clients** (a configured-but-empty port still breaks tomorrow). This is switch config we compile;
+  it needs no client data.
+- **AP / wireless side — observation-based.** Since we don't compile the SSID→VLAN mapping, an AP
+  contributes VLAN membership only via its **currently-observed wireless clients' VLANs** (from live
+  client data). Not-yet-connected clients on an SSID mapped to that VLAN are a **known coverage gap**:
+  the AP-uplink's VLAN coverage is marked `partial`, flooring that case to `REVIEW`, never `SAFE`.
+  *(Cheap future upgrade: ingest static SSID→VLAN read-only to make this configuration-based too;
+  dynamic/RADIUS-assigned VLANs stay observation-based.)*
+
+The separate `client.impact` check is active-client-only. The **exit** is determined by this
+precedence — a core M1 contract, because the check is meaningless without it:
 
 1. **In-scope IRB/SVI** — an `L3Intf(role=irb|svi)` for the VLAN exists on a compiled (switch)
    device and is reachable → that is the exit. **HIGH** confidence.
 2. **Boundary uplink** — no in-scope IRB, but the VLAN is carried on a port leading to an
-   out-of-scope upstream device (gateway/core not compiled in M1). Confidence depends on *how* the
-   uplink was identified:
-   - **Designated** (operator/template-marked uplink) **or confirmed two-sided LLDP** to a device
-     whose role is known gateway/core → **HIGH** confidence.
-   - **Inferred** heuristically (one-sided LLDP, role guessed) → **MEDIUM** confidence.
+   out-of-scope upstream device (gateway/core not compiled in M1). Confidence follows the **canonical
+   fact→confidence table** by how the uplink was identified:
+   - **Designated** (operator/template-marked) **or confirmed two-sided LLDP** to a known
+     gateway/core → **HIGH**.
+   - **Config-inferred role** (guessed from model/name, no link evidence) → **MEDIUM**.
+   - **One-sided LLDP only** → **LOW**.
 3. **Neither** — no in-scope IRB and no identifiable boundary uplink for the VLAN → the exit
    cannot be located → **`INSUFFICIENT_DATA`** for that VLAN (never `PASS`).
 
 `FAIL` fires when a component had a path to the exit in `IR` and loses it in `IR'` **and** the exit
-was HIGH-confidence (rule 1, or rule 2-designated/confirmed). With only a **MEDIUM**-confidence
-(inferred) exit, the loss is reported as **`WARN`** → `REVIEW`, per the "FAIL only at HIGH
-confidence" rule — never a confident `UNSAFE` built on a guessed exit.
+was HIGH-confidence (rule 1, or rule 2-designated/confirmed). With a MEDIUM or LOW exit the loss is
+reported as **`WARN`** → `REVIEW`, per the "FAIL only at HIGH confidence" rule — never a confident
+`UNSAFE` built on an unconfirmed exit.
 
 ### `l2.vlan_segmentation` — structural broadcast-domain change, no intent needed
 
@@ -626,12 +727,27 @@ The verdict must always answer "how/why did it return OK/NOK." Mechanisms:
   delta apply → IR re-derive → per-check execution, each stage logging inputs, outputs, timing.
 - **Per-check evidence record:** which IR facts inspected, what was found, reasoning, coverage,
   confidence (incl. a `PASS` carries evidence too).
-- **Replay store:** a **local, file-based run-artifact** capturing `(raw snapshot, delta, verdict)`
-  per run so any verdict is reproducible offline and golden-scenario fixtures are captured from real
-  data. This is a **debug/test artifact, not product state** — it is *not* the deferred
+- **Replay store:** a **local, file-based run-artifact** capturing `(raw snapshot, ChangePlan,
+  verdict)` per run so any verdict is reproducible offline and golden-scenario fixtures are captured
+  from real data. This is a **debug/test artifact, not product state** — it is *not* the deferred
   `SnapshotProvider` state backend (that's the on-demand-vs-snapshot data source, still deferred).
   Captured runs are the regression-test substrate for GS1–GS8.
 - **Structured logging** throughout, bound to `(run_id, check_id)`.
+
+### Replay redaction (mandatory before storing real org data)
+
+Raw snapshots from real orgs contain identifiers and secrets. The `ReplayStore` redacts on write —
+**capturing an un-redacted fixture is a defect, not an option:**
+
+- **Deterministic pseudonymization** for relationship-bearing identifiers (device MACs, IPs,
+  hostnames, site/org ids): replace each with a stable hash (same input → same token within a
+  fixture) so **topology and graph relationships are preserved** while real values are not.
+- **Strip secrets outright** (do not hash): PSKs, RADIUS/shared secrets, API tokens, certificates,
+  SNMP communities — null them out; checks must never depend on them.
+- **Preserve structure**: VLAN ids, port names, subnet *shapes* (re-mapped into documentation ranges
+  if needed) — enough for the checks to run identically on the fixture.
+- A redaction allow/deny manifest is versioned with the store; an unredacted field appearing in a
+  committed fixture fails CI.
 
 ---
 
@@ -649,7 +765,7 @@ that misses things.
 | **GS4** | Change an access port's VLAN from 10→20 on a port with active clients | **`REVIEW`** — `WARN` `client.impact`: N clients on VLAN 10 affected |
 | **GS5** | Change a description / cosmetic field only | **`SAFE`** — `PASS`, full coverage, HIGH confidence. *Proves no false positives* |
 | **GS6** | A change touching a link/device the data doesn't fully cover | **`REVIEW`** — `INSUFFICIENT_DATA` surfaced, *not* a green pass. *Proves the no-silent-OK machinery* |
-| **GS7** | Remove VLAN 30 from the trunk feeding AP `ap-floor2`'s switch port | **`UNSAFE`** — `FAIL` `l2.blackhole`: wireless clients on VLAN 30 via that AP isolated; `client.impact` names affected **wireless** clients; HIGH confidence |
+| **GS7** | Remove VLAN 30 from the trunk feeding AP `ap-floor2`'s switch port (assumes ≥1 **observed** VLAN-30 wireless client via that AP) | **`UNSAFE`** — `FAIL` `l2.blackhole`: observed VLAN-30 wireless clients via that AP isolated; `client.impact` names affected **wireless** clients; HIGH. *Variant: zero observed clients → `REVIEW` (AP-side VLAN coverage `partial`; future clients unknown)* |
 | **GS8** | A delta op with an `UNSUPPORTED` `object_type` (e.g. `switchtemplate`) or one that fans out beyond the single site | **`UNKNOWN`** — `UNSUPPORTED` reason; **never** a green verdict. *Proves the honest-boundary gate* |
 
 **Caveat (stated, not a bug):** client impact is reported for **currently-connected** clients — a
@@ -672,30 +788,36 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
 - **Scope/field gate:** unsupported `object_type` → `UNKNOWN`; a supported object whose payload
   also changes an out-of-scope field (e.g. `dhcpd_config`) → `UNKNOWN`, not `SAFE`.
 - **Golden-scenario integration tests (GS1–GS8):** real org data via replay fixtures; assert the
-  full verdict.
-- **Isolation test:** a deliberately-crashing check yields `ERROR` and does not affect the run or
-  other checks.
+  full verdict (including `decision`).
+- **Isolation test:** a deliberately-crashing check yields `CHECK_ERROR` + an `operational` finding,
+  resolves to `REVIEW` (not `UNSAFE`), and does not affect the run or other checks.
+- **Partial-fetch test:** relevant partial failure → affected check `INSUFFICIENT_DATA` → `REVIEW`;
+  irrelevant partial failure → recorded in `state_meta`, decision unchanged; total failure → `UNKNOWN`.
+- **Capability negotiation:** a check requiring a capability the IR lacks → `INSUFFICIENT_DATA`, not
+  a crash or false `PASS`.
+- **Replay redaction:** committed fixtures contain no un-redacted MAC/IP/hostname/secret;
+  pseudonymization is stable within a fixture (relationships preserved).
 
 ---
 
 ## Build sequence (Milestone 1)
 
 1. **IR model + graphs** (`ir/`) — entities (incl. `Port` STP fields), provenance/confidence,
-   L2 + per-VLAN graph builders.
+   `ir_version` + `capabilities`, L2 + per-VLAN graph builders.
 2. **StateProvider + MistApiProvider** — fetch config + live state for a single site, with
-   `state_meta` (acquired-at, per-source age, fetch failures, region).
+   `state_meta` (acquired-at, per-source age, fetch failures, region) and partial-fetch handling.
 3. **Mist ingest** (raw → IR via our `compiler`) + **compiler equivalence gate** against
    `getSiteSettingDerived` using the comparison rules. *Do not proceed past this until it passes.*
-4. **ScopeResolver + thin L0 validation** — object-type **and** field-level gate
-   (`UNSUPPORTED`→`UNKNOWN`), plus OAS-driven L0 (`adapters/mist/validate.py`) and the `rules/`
-   engine seam. Built **before** `apply` because validation runs before apply in the pipeline.
-5. **apply** (raw + δ → raw', **full-object replacement**) with per-`object_type` tests.
-6. **Check engine + registry + verdict** — gating order, isolation, two-source findings, and the
-   `decision` (SAFE|REVIEW|UNSAFE|UNKNOWN) aggregation.
+4. **`ScopeResolver` (pre + post) + thin L0 validation** — `ChangePlan` envelope; pre-fetch
+   object-type/fan-out gate; post-fetch changed-field allowlist (`UNSUPPORTED`→`UNKNOWN`); OAS-driven
+   L0 (`adapters/mist/validate.py`) and the `rules/` engine seam. Built **before** `apply`.
+5. **apply** (raw + `ChangeOp` → raw', **full-object replacement**) with per-`object_type` tests.
+6. **Check engine + registry + verdict** — gating order, isolation (`CHECK_ERROR`→operational),
+   two-source findings, `state_meta`/partial-fetch rules, and the `decision` aggregation.
 7. **The four L2 checks:** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`
-   (Wi-Fi-aware via live wireless clients).
-8. **Drivers:** CLI, then MCP tool.
-9. **Observability:** trace + evidence + replay store (wired in from step 6 onward).
+   (Wi-Fi-aware via observed wireless clients).
+8. **Drivers:** CLI, then MCP tool (both take a `ChangePlan`).
+9. **Observability:** trace + evidence + replay store **with redaction** (wired in from step 6 on).
 10. **Golden scenarios GS1–GS8 green** against real org data.
 
 ---
