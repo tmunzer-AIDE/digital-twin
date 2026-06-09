@@ -1,0 +1,3687 @@
+{
+ "description": "You can configure `port_usages` and `networks` settings at the device level, but most of the time it's better use the Site Setting to achieve better consistency and be able to re-use the same settings across switches entries defined here will \"replace\" those defined in Site Setting/Network Template\nIn addition it is possible to use the `port_config_overwrite` to overwrite some attributes of the port_usage without having to create a new port_usage.",
+ "properties": {
+  "acl_policies": {
+   "items": {
+    "description": "ACL Policy:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
+    "properties": {
+     "actions": {
+      "description": "ACL Policy Actions:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
+      "items": {
+       "properties": {
+        "action": {
+         "description": "enum: `allow`, `deny`",
+         "enum": [
+          "allow",
+          "deny"
+         ],
+         "type": "string"
+        },
+        "dst_tag": {
+         "example": "corp",
+         "type": "string"
+        }
+       },
+       "required": [
+        "dst_tag"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "name": {
+      "example": "guest access",
+      "type": "string"
+     },
+     "src_tags": {
+      "description": "ACL Policy Source Tags:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
+      "items": {
+       "example": "macs",
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "acl_tags": {
+   "additionalProperties": {
+    "description": "Resource tags (`type`==`resource` or `type`==`gbp_resource`) can only be used in `dst_tags`",
+    "properties": {
+     "ether_types": {
+      "default": [
+       "any"
+      ],
+      "description": "Can only be used under dst tags.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gbp_tag": {
+      "description": "Required if\n  - `type`==`dynamic_gbp` (gbp_tag received from RADIUS)\n  - `type`==`gbp_resource`\n  - `type`==`static_gbp` (applying gbp tag against matching conditions)",
+      "type": "integer"
+     },
+     "macs": {
+      "description": "Required if \n- `type`==`mac`\n- `type`==`static_gbp` if from matching mac",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "network": {
+      "description": "If:\n  * `type`==`mac` (optional. default is `any`)\n  * `type`==`subnet` (optional. default is `any`)\n  * `type`==`network`\n  * `type`==`resource` (optional. default is `any`)\n  * `type`==`static_gbp` if from matching network (vlan)",
+      "type": "string"
+     },
+     "port_usage": {
+      "description": "Required if `type`==`port_usage`",
+      "type": "string"
+     },
+     "radius_group": {
+      "description": "Required if:\n  * `type`==`radius_group`\n  * `type`==`static_gbp`\nif from matching radius_group",
+      "type": "string"
+     },
+     "specs": {
+      "description": "If `type`==`resource`, `type`==`radius_group`, `type`==`port_usage` or `type`==`gbp_resource`. Empty means unrestricted, i.e. any",
+      "items": {
+       "properties": {
+        "port_range": {
+         "default": "0",
+         "description": "Matched dst port, \"0\" means any",
+         "type": "string"
+        },
+        "protocol": {
+         "default": "any",
+         "description": "`tcp` / `udp` / `icmp` / `icmp6` / `gre` / `any` / `:protocol_number`, `protocol_number` is between 1-254, default is `any` `protocol_number` is between 1-254",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "subnets": {
+      "description": "If \n- `type`==`subnet` \n- `type`==`resource` (optional. default is `any`)\n- `type`==`static_gbp` if from matching subnet",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "type": {
+      "description": "enum: \n  * `any`: matching anything not identified\n  * `dynamic_gbp`: from the gbp_tag received from RADIUS\n  * `gbp_resource`: can only be used in `dst_tags`\n  * `mac`\n  * `network`\n  * `port_usage`\n  * `radius_group`\n  * `resource`: can only be used in `dst_tags`\n  * `static_gbp`: applying gbp tag against matching conditions\n  * `subnet`'",
+      "enum": [
+       "any",
+       "dynamic_gbp",
+       "gbp_resource",
+       "mac",
+       "network",
+       "port_usage",
+       "radius_group",
+       "resource",
+       "static_gbp",
+       "subnet"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "type"
+    ],
+    "type": "object"
+   },
+   "description": "ACL Tags to identify traffic source or destination. Key name is the tag name",
+   "type": "object"
+  },
+  "additional_config_cmds": {
+   "description": "additional CLI commands to append to the generated Junos config. **Note**: no check is done",
+   "items": {
+    "description": "JUNOS \"set\" command to add to the generated configuration",
+    "example": "set snmp community public",
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "aggregate_routes": {
+   "additionalProperties": {
+    "properties": {
+     "discard": {
+      "default": false,
+      "type": "boolean"
+     },
+     "metric": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "preference": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the destination subnet (e.g. \"172.16.3.0/24\")",
+   "example": {
+    "172.16.3.0/24": {
+     "discard": false,
+     "metric": null,
+     "preference": 30
+    }
+   },
+   "type": "object"
+  },
+  "aggregate_routes6": {
+   "additionalProperties": {
+    "properties": {
+     "discard": {
+      "default": false,
+      "type": "boolean"
+     },
+     "metric": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "preference": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the destination subnet (e.g. \"2a02:1234:420a:10c9::/64\")",
+   "example": {
+    "2a02:1234:420a:10c9::/64": {
+     "discard": false,
+     "metric": null,
+     "preference": 30
+    }
+   },
+   "type": "object"
+  },
+  "created_time": {
+   "description": "When the object has been created, in epoch",
+   "format": "double",
+   "readOnly": true,
+   "type": "number"
+  },
+  "deviceprofile_id": {
+   "format": "uuid",
+   "readOnly": true,
+   "type": "string"
+  },
+  "dhcp_snooping": {
+   "properties": {
+    "all_networks": {
+     "type": "boolean"
+    },
+    "enable_arp_spoof_check": {
+     "description": "Enable for dynamic ARP inspection check",
+     "type": "boolean"
+    },
+    "enable_ip_source_guard": {
+     "description": "Enable for check for forging source IP address",
+     "type": "boolean"
+    },
+    "enabled": {
+     "type": "boolean"
+    },
+    "networks": {
+     "description": "If `all_networks`==`false`, list of network with DHCP snooping enabled",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object"
+  },
+  "dhcpd_config": {
+   "additionalProperties": {
+    "description": "the Property key is the network name. In case of DHCP relay, it's common for many networks to use the same dhcp relay, comma-separated network names can be used here (e.g. \"net1,net2\")",
+    "properties": {
+     "dns_servers": {
+      "description": "If `type`==`server` or `type6`==`server` - optional, if not defined, system one will be used",
+      "example": [
+       "8.8.8.8",
+       "4.4.4.4"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "dns_suffix": {
+      "description": "If `type`==`server` or `type6`==`server` - optional, if not defined, system one will be used",
+      "example": [
+       ".mist.local",
+       ".mist.com"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "fixed_bindings": {
+      "additionalProperties": {
+       "properties": {
+        "ip": {
+         "example": "192.168.70.35",
+         "type": "string"
+        },
+        "ip6": {
+         "example": "2607:f8b0:4005:808::2",
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "description": "If `type`==`server` or `type6`==`server`. Property key is the MAC Address. Format is `[0-9a-f]{12}` (e.g. \"5684dae9ac8b\")",
+      "example": {
+       "5684dae9ac8b": {
+        "ip": "192.168.70.35",
+        "name": "John"
+       }
+      },
+      "type": "object"
+     },
+     "gateway": {
+      "description": "If `type`==`server`  - optional, `ip` will be used if not provided",
+      "example": "192.168.70.1",
+      "type": "string"
+     },
+     "ip_end": {
+      "description": "If `type`==`server`",
+      "example": "192.168.70.200",
+      "type": "string"
+     },
+     "ip_end6": {
+      "description": "If `type6`==`server`",
+      "example": "2607:f8b0:4005:808::ff",
+      "type": "string"
+     },
+     "ip_start": {
+      "description": "If `type`==`server`",
+      "example": "192.168.70.100",
+      "type": "string"
+     },
+     "ip_start6": {
+      "description": "If `type6`==`server`",
+      "example": "2607:f8b0:4005:808::2",
+      "type": "string"
+     },
+     "lease_time": {
+      "default": 86400,
+      "description": "In seconds, lease time has to be between 3600 [1hr] - 604800 [1 week], default is 86400 [1 day]",
+      "maximum": 604800,
+      "minimum": 3600,
+      "type": "integer"
+     },
+     "options": {
+      "additionalProperties": {
+       "properties": {
+        "type": {
+         "description": "enum: `boolean`, `hex`, `int16`, `int32`, `ip`, `string`, `uint16`, `uint32`",
+         "enum": [
+          "boolean",
+          "hex",
+          "int16",
+          "int32",
+          "ip",
+          "string",
+          "uint16",
+          "uint32"
+         ],
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "description": "If `type`==`server` or `type6`==`server`. Property key is the DHCP option number",
+      "type": "object"
+     },
+     "server_id_override": {
+      "default": false,
+      "description": "`server_id_override`==`true` means the device, when acts as DHCP relay and forwards DHCP responses from DHCP server to clients, \nshould overwrite the Sever Identifier option (i.e. DHCP option 54) in DHCP responses with its own IP address.",
+      "type": "boolean"
+     },
+     "servers": {
+      "description": "If `type`==`relay`",
+      "example": [
+       "11.2.3.4"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "servers6": {
+      "description": "If `type6`==`relay`",
+      "example": [
+       "2607:f8b0:4005:808::64"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "type": {
+      "description": "enum: `none`, `relay` (DHCP Relay), `server` (DHCP Server)",
+      "enum": [
+       "none",
+       "relay",
+       "server"
+      ],
+      "type": "string"
+     },
+     "type6": {
+      "default": "none",
+      "description": "enum: `none`, `relay` (DHCP Relay), `server` (DHCP Server)",
+      "enum": [
+       "none",
+       "relay",
+       "server"
+      ],
+      "type": "string"
+     },
+     "vendor_encapsulated": {
+      "additionalProperties": {
+       "properties": {
+        "type": {
+         "description": "enum: `boolean`, `hex`, `int16`, `int32`, `ip`, `string`, `uint16`, `uint32`",
+         "enum": [
+          "boolean",
+          "hex",
+          "int16",
+          "int32",
+          "ip",
+          "string",
+          "uint16",
+          "uint32"
+         ],
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "description": "If `type`==`server` or `type6`==`server`. Property key is <enterprise number>:<sub option code>, with\n  * enterprise number: 1-65535 (https://www.iana.org/assignments/enterprise-numbers/enterprise-numbers)\n  * sub option code: 1-255, sub-option code'",
+      "type": "object"
+     }
+    },
+    "type": "object"
+   },
+   "properties": {
+    "enabled": {
+     "default": false,
+     "description": "If set to `true`, enable the DHCP server",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "disable_auto_config": {
+   "default": false,
+   "description": "This disables the default behavior of a cloud-ready switch/gateway being managed/configured by Mist. Setting this to `true` means you want to disable the default behavior and do not want the device to be Mist-managed.",
+   "type": "boolean"
+  },
+  "dns_servers": {
+   "description": "Global dns settings. To keep compatibility, dns settings in `ip_config` and `oob_ip_config` will overwrite this setting",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "dns_suffix": {
+   "description": "Global dns settings. To keep compatibility, dns settings in `ip_config` and `oob_ip_config` will overwrite this setting",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "evpn_config": {
+   "description": "EVPN Junos settings",
+   "properties": {
+    "enabled": {
+     "readOnly": true,
+     "type": "boolean"
+    },
+    "role": {
+     "description": "enum: `access`, `collapsed-core`, `core`, `distribution`, `esilag-access`, `none`",
+     "enum": [
+      "access",
+      "collapsed-core",
+      "core",
+      "distribution",
+      "esilag-access",
+      "none"
+     ],
+     "readOnly": true,
+     "type": "string"
+    }
+   },
+   "readOnly": true,
+   "type": "object"
+  },
+  "extra_routes": {
+   "additionalProperties": {
+    "properties": {
+     "discard": {
+      "default": false,
+      "description": "This takes precedence",
+      "type": "boolean"
+     },
+     "metric": {
+      "example": null,
+      "maximum": 2147483647,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "next_qualified": {
+      "additionalProperties": {
+       "properties": {
+        "metric": {
+         "nullable": true,
+         "type": "integer"
+        },
+        "preference": {
+         "nullable": true,
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      },
+      "example": {
+       "10.3.1.1": {
+        "metric": null,
+        "preference": 40
+       }
+      },
+      "type": "object"
+     },
+     "no_resolve": {
+      "default": false,
+      "type": "boolean"
+     },
+     "preference": {
+      "example": 30,
+      "maximum": 2147483647,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "via": {
+      "description": "Next-hop IP Address",
+      "example": "10.2.1.1",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the destination CIDR (e.g. \"10.0.0.0/8\")",
+   "example": {
+    "0.0.0.0/0": {
+     "via": "192.168.1.10"
+    }
+   },
+   "type": "object"
+  },
+  "extra_routes6": {
+   "additionalProperties": {
+    "properties": {
+     "discard": {
+      "default": false,
+      "description": "This takes precedence",
+      "type": "boolean"
+     },
+     "metric": {
+      "example": null,
+      "maximum": 2147483647,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "next_qualified": {
+      "additionalProperties": {
+       "properties": {
+        "metric": {
+         "nullable": true,
+         "type": "integer"
+        },
+        "preference": {
+         "nullable": true,
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      },
+      "example": {
+       "2a02:1234:200a::100": {
+        "metric": null,
+        "preference": 40
+       }
+      },
+      "type": "object"
+     },
+     "no_resolve": {
+      "default": false,
+      "type": "boolean"
+     },
+     "preference": {
+      "example": 30,
+      "maximum": 2147483647,
+      "minimum": 0,
+      "nullable": true,
+      "type": "integer"
+     },
+     "via": {
+      "description": "Next-hop IP Address",
+      "example": "2a02:1234:200a::100",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the destination CIDR (e.g. \"2a02:1234:420a:10c9::/64\")",
+   "example": {
+    "2a02:1234:420a:10c9::/64": {
+     "via": "2a02:1234:200a::100"
+    }
+   },
+   "type": "object"
+  },
+  "id": {
+   "description": "Unique ID of the object instance in the Mist Organization",
+   "example": "53f10664-3ce8-4c27-b382-0ef66432349f",
+   "format": "uuid",
+   "readOnly": true,
+   "type": "string"
+  },
+  "image1_url": {
+   "nullable": true,
+   "type": "string"
+  },
+  "image2_url": {
+   "nullable": true,
+   "type": "string"
+  },
+  "image3_url": {
+   "nullable": true,
+   "type": "string"
+  },
+  "iot_config": {
+   "additionalProperties": {
+    "description": "Switch IOT port configuration",
+    "properties": {
+     "alarm_class": {
+      "default": "minor",
+      "description": "Alarm class for the switch iot port in. enum: `minor`, `major`",
+      "enum": [
+       "minor",
+       "major"
+      ],
+      "type": "string"
+     },
+     "enabled": {
+      "default": false,
+      "type": "boolean"
+     },
+     "input_src": {
+      "default": "IN0",
+      "description": "Only for \"OUT\" ports, input source for the switch iot port out. enum: `IN0`, `IN1`",
+      "enum": [
+       "IN0",
+       "IN1"
+      ],
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property Key is the IOT port name, e.g.: \n  * `IN0` or `IN1` for the FPC0 input port with 5V triggered inputs\n  * `OUT1` for the FPC0 output port (can only be triggered by either IN0 or IN1)\n  * \"X/IN0`, `X/IN1` and `X/OUT` are used to define IOT ports on VC members",
+   "type": "object"
+  },
+  "ip_config": {
+   "description": "Junos IP Config",
+   "properties": {
+    "dns": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array",
+     "uniqueItems": true
+    },
+    "dns_suffix": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array",
+     "uniqueItems": true
+    },
+    "gateway": {
+     "type": "string"
+    },
+    "ip": {
+     "type": "string"
+    },
+    "netmask": {
+     "description": "Used only if `subnet` is not specified in `networks`",
+     "type": "string"
+    },
+    "network": {
+     "description": "Network where this mgmt IP reside, this will be used as default network for outbound-ssh, dns, ntp, dns, tacplus, radius, syslog, snmp",
+     "type": "string"
+    },
+    "type": {
+     "default": "dhcp",
+     "description": "enum: `dhcp`, `static`",
+     "enum": [
+      "dhcp",
+      "static"
+     ],
+     "example": "static",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "local_port_config": {
+   "additionalProperties": {
+    "description": "Switch port config",
+    "properties": {
+     "all_networks": {
+      "default": false,
+      "description": "Only if `mode`==`trunk` whether to trunk all network/vlans",
+      "type": "boolean"
+     },
+     "allow_dhcpd": {
+      "description": "If DHCP snooping is enabled, whether DHCP server is allowed on the interfaces with. All the interfaces from port configs using this port usage are effected. Please notice that allow_dhcpd is a tri_state. When it is not defined, it means using the system's default setting which depends on whether the port is an access or trunk port.",
+      "type": "boolean"
+     },
+     "allow_multiple_supplicants": {
+      "default": false,
+      "type": "boolean"
+     },
+     "bypass_auth_when_server_down": {
+      "default": false,
+      "description": "Only if `port_auth`==`dot1x` bypass auth for known clients if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "bypass_auth_when_server_down_for_unknown_client": {
+      "default": false,
+      "description": "Only if `port_auth`=`dot1x` bypass auth for all (including unknown clients) if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "description": {
+      "type": "string"
+     },
+     "disable_autoneg": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` if speed and duplex are specified, whether to disable autonegotiation",
+      "type": "boolean"
+     },
+     "disabled": {
+      "default": false,
+      "description": "Whether the port is disabled",
+      "type": "boolean"
+     },
+     "duplex": {
+      "default": "auto",
+      "description": "link connection mode. enum: `auto`, `full`, `half`",
+      "enum": [
+       "auto",
+       "full",
+       "half"
+      ],
+      "type": "string"
+     },
+     "dynamic_vlan_networks": {
+      "description": "Only if `port_auth`==`dot1x`, if dynamic vlan is used, specify the possible networks/vlans RADIUS can return",
+      "example": [
+       "corp",
+       "user"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "enable_mac_auth": {
+      "default": false,
+      "description": "Only if `port_auth`==`dot1x` whether to enable MAC Auth",
+      "type": "boolean"
+     },
+     "enable_qos": {
+      "default": false,
+      "type": "boolean"
+     },
+     "guest_network": {
+      "description": "Only if `port_auth`==`dot1x` which network to put the device into if the device cannot do dot1x. default is null (i.e. not allowed)",
+      "nullable": true,
+      "type": "string"
+     },
+     "inter_switch_link": {
+      "default": false,
+      "description": "inter_switch_link is used together with \"isolation\" under networks. NOTE: inter_switch_link works only between Juniper device. This has to be applied to both ports connected together",
+      "type": "boolean"
+     },
+     "mac_auth_only": {
+      "description": "Only if `enable_mac_auth`==`true`",
+      "type": "boolean"
+     },
+     "mac_auth_preferred": {
+      "description": "Only if `enable_mac_auth`==`true` + `mac_auth_only`==`false`, dot1x will be given priority then mac_auth. Enable this to prefer mac_auth over dot1x.",
+      "type": "boolean"
+     },
+     "mac_auth_protocol": {
+      "default": "eap-md5",
+      "description": "Only if `enable_mac_auth` ==`true`. This type is ignored if mist_nac is enabled. enum: `eap-md5`, `eap-peap`, `pap`",
+      "enum": [
+       "eap-md5",
+       "eap-peap",
+       "pap"
+      ],
+      "type": "string"
+     },
+     "mac_limit": {
+      "default": 0,
+      "description": "Max number of mac addresses, default is 0 for unlimited, otherwise range is 1 or higher, with upper bound constrained by platform",
+      "minimum": 0,
+      "type": "integer"
+     },
+     "mode": {
+      "description": "enum: `access`, `inet`, `trunk`",
+      "enum": [
+       "access",
+       "inet",
+       "trunk"
+      ],
+      "type": "string"
+     },
+     "mtu": {
+      "description": "Media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation. The default value is 1514.",
+      "type": "integer"
+     },
+     "networks": {
+      "description": "Only if `mode`==`trunk`, the list of network/vlans",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "note": {
+      "description": "Additional note for the port config override",
+      "example": "force 100M for camera",
+      "type": "string"
+     },
+     "persist_mac": {
+      "default": false,
+      "description": "Only if `mode`==`access` and `port_auth`!=`dot1x` whether the port should retain dynamically learned MAC addresses",
+      "type": "boolean"
+     },
+     "poe_disabled": {
+      "default": false,
+      "description": "Whether PoE capabilities are disabled for a port",
+      "type": "boolean"
+     },
+     "port_auth": {
+      "description": "if dot1x is desired, set to dot1x. enum: `dot1x`",
+      "enum": [
+       "dot1x"
+      ],
+      "nullable": true,
+      "type": "string"
+     },
+     "port_network": {
+      "description": "Native network/vlan for untagged traffic",
+      "type": "string"
+     },
+     "reauth_interval": {
+      "anyOf": [
+       {
+        "default": 3600,
+        "maximum": 65535,
+        "minimum": 10,
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600)"
+     },
+     "server_fail_network": {
+      "description": "Only if `port_auth`==`dot1x` sets server fail fallback vlan",
+      "nullable": true,
+      "type": "string"
+     },
+     "server_reject_network": {
+      "description": "Only if `port_auth`==`dot1x` when radius server reject / fails",
+      "nullable": true,
+      "type": "string"
+     },
+     "speed": {
+      "default": "auto",
+      "description": "enum: `100m`, `10m`, `1g`, `2.5g`, `5g`, `10g`, `25g`, `40g`, `100g`,`auto`",
+      "enum": [
+       "10m",
+       "100m",
+       "1g",
+       "2.5g",
+       "5g",
+       "10g",
+       "25g",
+       "40g",
+       "100g",
+       "auto"
+      ],
+      "type": "string"
+     },
+     "storm_control": {
+      "description": "Switch storm control",
+      "properties": {
+       "disable_port": {
+        "default": false,
+        "description": "Whether to disable the port when storm control is triggered",
+        "type": "boolean"
+       },
+       "no_broadcast": {
+        "default": false,
+        "description": "Whether to disable storm control on broadcast traffic",
+        "type": "boolean"
+       },
+       "no_multicast": {
+        "default": false,
+        "description": "Whether to disable storm control on multicast traffic",
+        "type": "boolean"
+       },
+       "no_registered_multicast": {
+        "default": false,
+        "description": "Whether to disable storm control on registered multicast traffic",
+        "type": "boolean"
+       },
+       "no_unknown_unicast": {
+        "default": false,
+        "description": "Whether to disable storm control on unknown unicast traffic",
+        "type": "boolean"
+       },
+       "percentage": {
+        "default": 80,
+        "description": "Bandwidth-percentage, configures the storm control level as a percentage of the available bandwidth",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "stp_edge": {
+      "default": false,
+      "description": "When enabled, the port is not expected to receive BPDU frames",
+      "type": "boolean"
+     },
+     "stp_no_root_port": {
+      "default": false,
+      "type": "boolean"
+     },
+     "stp_p2p": {
+      "default": false,
+      "type": "boolean"
+     },
+     "usage": {
+      "description": "Port usage name.",
+      "type": "string"
+     },
+     "use_vstp": {
+      "default": false,
+      "description": "If this is connected to a vstp network",
+      "type": "boolean"
+     },
+     "voip_network": {
+      "description": "Network/vlan for voip traffic, must also set port_network. to authenticate device, set port_auth",
+      "type": "string"
+     }
+    },
+    "required": [
+     "usage"
+    ],
+    "type": "object"
+   },
+   "description": "Local port override, overriding the port configuration from `port_config`. Property key is the port name or range (e.g. \"ge-0/0/0-10\")",
+   "type": "object"
+  },
+  "mac": {
+   "description": "Device MAC address",
+   "readOnly": true,
+   "type": "string"
+  },
+  "managed": {
+   "default": false,
+   "description": "An adopted switch/gateway will not be managed/configured by Mist by default. Setting this parameter to `true` enables the adopted switch/gateway to be managed/configured by Mist.",
+   "type": "boolean"
+  },
+  "map_id": {
+   "description": "Map where the device belongs to",
+   "example": "63eda950-c6da-11e4-a628-60f81dd250cc",
+   "format": "uuid",
+   "type": "string"
+  },
+  "mist_nac": {
+   "description": "Enable mist_nac to use RadSec",
+   "properties": {
+    "enabled": {
+     "type": "boolean"
+    },
+    "network": {
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "model": {
+   "description": "Device Model",
+   "readOnly": true,
+   "type": "string"
+  },
+  "modified_time": {
+   "description": "When the object has been modified for the last time, in epoch",
+   "format": "double",
+   "readOnly": true,
+   "type": "number"
+  },
+  "name": {
+   "type": "string"
+  },
+  "networks": {
+   "additionalProperties": {
+    "description": "A network represents a network segment. It can either represent a VLAN (then usually ties to a L3 subnet), optionally associate it with a subnet which can later be used to create addition routes. Used for ports doing `family ethernet-switching`. It can also be a pure L3-subnet that can then be used against a port that with `family inet`.",
+    "properties": {
+     "gateway": {
+      "description": "Only required for EVPN-VXLAN networks, IPv4 Virtual Gateway",
+      "type": "string"
+     },
+     "gateway6": {
+      "description": "Only required for EVPN-VXLAN networks, IPv6 Virtual Gateway",
+      "type": "string"
+     },
+     "isolation": {
+      "default": false,
+      "description": "whether to stop clients to talk to each other, default is false (when enabled, a unique isolation_vlan_id is required). NOTE: this features requires uplink device to also a be Juniper device and `inter_switch_link` to be set. See also `inter_isolation_network_link` and `community_vlan_id` in port_usage",
+      "type": "boolean"
+     },
+     "isolation_vlan_id": {
+      "example": "3070",
+      "type": "string"
+     },
+     "subnet": {
+      "description": "Optional for pure switching, required when L3 / routing features are used",
+      "type": "string"
+     },
+     "subnet6": {
+      "description": "Optional for pure switching, required when L3 / routing features are used",
+      "type": "string"
+     },
+     "vlan_id": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "maximum": 4094,
+        "minimum": 1,
+        "type": "integer"
+       }
+      ]
+     }
+    },
+    "required": [
+     "vlan_id"
+    ],
+    "type": "object"
+   },
+   "description": "Property key is network name",
+   "type": "object"
+  },
+  "notes": {
+   "type": "string"
+  },
+  "ntp_servers": {
+   "description": "List of NTP servers specific to this device. By default, those in Site Settings will be used",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "oob_ip_config": {
+   "description": "Switch OOB IP Config:\n  - If HA configuration: key parameter will be nodeX (eg: node1)\n  - If there are 2 routing engines, re1 mgmt IP has to be set separately (if desired): key parameter = `re1`",
+   "properties": {
+    "gateway": {
+     "type": "string"
+    },
+    "ip": {
+     "type": "string"
+    },
+    "netmask": {
+     "description": "Used only if `subnet` is not specified in `networks`",
+     "type": "string"
+    },
+    "network": {
+     "description": "Optional, the network to be used for mgmt",
+     "type": "string"
+    },
+    "type": {
+     "default": "dhcp",
+     "description": "enum: `dhcp`, `static`",
+     "enum": [
+      "dhcp",
+      "static"
+     ],
+     "example": "static",
+     "type": "string"
+    },
+    "use_mgmt_vrf": {
+     "default": false,
+     "description": "If supported on the platform. If enabled, DNS will be using this routing-instance, too",
+     "type": "boolean"
+    },
+    "use_mgmt_vrf_for_host_out": {
+     "default": false,
+     "description": "For host-out traffic (NTP/TACPLUS/RADIUS/SYSLOG/SNMP), if alternative source network/ip is desired",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "org_id": {
+   "example": "a97c1b22-a4e9-411e-9bfd-d8695a0f9e61",
+   "format": "uuid",
+   "readOnly": true,
+   "type": "string"
+  },
+  "ospf_areas": {
+   "additionalProperties": {
+    "description": "Property key is the OSPF Area (Area should be a number (0-255) / IP address)",
+    "properties": {
+     "include_loopback": {
+      "default": false,
+      "type": "boolean"
+     },
+     "networks": {
+      "additionalProperties": {
+       "description": "Property key is the network name. Networks to participate in an OSPF area",
+       "properties": {
+        "auth_keys": {
+         "additionalProperties": {
+          "type": "string"
+         },
+         "description": "Required if `auth_type`==`md5`. Property key is the key number",
+         "example": {
+          "1": "auth-key-1"
+         },
+         "type": "object"
+        },
+        "auth_password": {
+         "description": "Required if `auth_type`==`password`, the password, max length is 8",
+         "example": "simple",
+         "type": "string"
+        },
+        "auth_type": {
+         "default": "none",
+         "description": "auth type. enum: `md5`, `none`, `password`",
+         "enum": [
+          "md5",
+          "none",
+          "password"
+         ],
+         "example": "md5",
+         "type": "string"
+        },
+        "bfd_minimum_interval": {
+         "example": 500,
+         "maximum": 255000,
+         "minimum": 1,
+         "type": "integer"
+        },
+        "dead_interval": {
+         "example": 40,
+         "maximum": 65535,
+         "minimum": 1,
+         "type": "integer"
+        },
+        "export_policy": {
+         "example": "export_policy",
+         "type": "string"
+        },
+        "hello_interval": {
+         "maximum": 255,
+         "minimum": 1,
+         "type": "integer"
+        },
+        "import_policy": {
+         "example": "import_policy",
+         "type": "string"
+        },
+        "interface_type": {
+         "default": "broadcast",
+         "description": "interface type (nbma = non-broadcast multi-access). enum: `broadcast`, `nbma`, `p2mp`, `p2p`",
+         "enum": [
+          "broadcast",
+          "nbma",
+          "p2mp",
+          "p2p"
+         ],
+         "type": "string"
+        },
+        "metric": {
+         "example": 10000,
+         "maximum": 65535,
+         "minimum": 1,
+         "nullable": true,
+         "type": "integer"
+        },
+        "no_readvertise_to_overlay": {
+         "default": false,
+         "description": "By default, we'll re-advertise all learned OSPF routes toward overlay",
+         "type": "boolean"
+        },
+        "passive": {
+         "default": false,
+         "description": "Whether to send OSPF-Hello",
+         "type": "boolean"
+        }
+       },
+       "type": "object"
+      },
+      "example": {
+       "corp": {
+        "auth_keys": {
+         "1": "auth-key-1"
+        },
+        "auth_type": "md5",
+        "bfd_minimum_interval": 500,
+        "dead_interval": 40,
+        "hello_interval": 10,
+        "interface_type": "nbma",
+        "metric": 10000
+       },
+       "guest": {
+        "passive": true
+       }
+      },
+      "type": "object"
+     },
+     "type": {
+      "default": "default",
+      "description": "OSPF type. enum: `default`, `nssa`, `stub`",
+      "enum": [
+       "default",
+       "nssa",
+       "stub"
+      ],
+      "example": "default",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Junos OSPF areas. Property key is the OSPF Area (Area should be a number (0-255) / IP address)",
+   "type": "object"
+  },
+  "ospf_config": {
+   "properties": {
+    "areas": {
+     "additionalProperties": {
+      "properties": {
+       "no_summary": {
+        "default": false,
+        "description": "Disable OSPF summary routes for this area",
+        "type": "boolean"
+       }
+      }
+     },
+     "description": "Property key is the area name. Defines the OSPF areas configured on the switch.",
+     "type": "object"
+    },
+    "enabled": {
+     "default": false,
+     "description": "Enable OSPF on the switch",
+     "type": "boolean"
+    },
+    "export_policy": {
+     "description": "optional, for basic scenario, `import_policy` can be specified and can be applied to all networks in all areas if not explicitly specified",
+     "type": "string"
+    },
+    "import_policy": {
+     "description": "optional, for basic scenario, `import_policy` can be specified and can be applied to all networks in all areas if not explicitly specified",
+     "type": "string"
+    },
+    "reference_bandwidth": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "description": "Reference bandwidth. Integer(100000) or String (10g)",
+     "example": 100000
+    }
+   }
+  },
+  "other_ip_configs": {
+   "additionalProperties": {
+    "description": "Optional, if it's required to have switch's L3 presence on a network/vlan",
+    "properties": {
+     "evpn_anycast": {
+      "default": false,
+      "description": "For EVPN, if anycast is desired",
+      "type": "boolean"
+     },
+     "ip": {
+      "description": "Required if `type`==`static`",
+      "example": "10.3.3.1",
+      "type": "string"
+     },
+     "ip6": {
+      "description": "Required if `type6`==`static`",
+      "example": "fdad:b0bc:f29e::3d16",
+      "type": "string"
+     },
+     "netmask": {
+      "description": "Optional, `subnet` from `network` definition will be used if defined",
+      "example": "255.255.255.0",
+      "type": "string"
+     },
+     "netmask6": {
+      "description": "Optional, `subnet` from `network` definition will be used if defined",
+      "example": "/64",
+      "type": "string"
+     },
+     "type": {
+      "default": "dhcp",
+      "description": "enum: `dhcp`, `static`",
+      "enum": [
+       "dhcp",
+       "static"
+      ],
+      "example": "static",
+      "type": "string"
+     },
+     "type6": {
+      "default": "disabled",
+      "description": "enum: `autoconf`, `dhcp`, `disabled`, `static`",
+      "enum": [
+       "autoconf",
+       "dhcp",
+       "disabled",
+       "static"
+      ],
+      "example": "static",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the network name. Defines the additional IP Addresses configured on the device.",
+   "type": "object"
+  },
+  "port_config": {
+   "additionalProperties": {
+    "description": "Switch port config",
+    "properties": {
+     "ae_disable_lacp": {
+      "description": "To disable LACP support for the AE interface",
+      "type": "boolean"
+     },
+     "ae_idx": {
+      "description": "Users could force to use the designated AE name",
+      "type": "integer"
+     },
+     "ae_lacp_slow": {
+      "description": "To use fast timeout",
+      "type": "boolean"
+     },
+     "aggregated": {
+      "default": false,
+      "type": "boolean"
+     },
+     "critical": {
+      "default": false,
+      "description": "To generate port up/down alarm",
+      "type": "boolean"
+     },
+     "description": {
+      "type": "string"
+     },
+     "disable_autoneg": {
+      "default": false,
+      "description": "If `speed` and `duplex` are specified, whether to disable autonegotiation",
+      "type": "boolean"
+     },
+     "duplex": {
+      "default": "auto",
+      "description": "enum: `auto`, `full`, `half`",
+      "enum": [
+       "auto",
+       "full",
+       "half"
+      ],
+      "type": "string"
+     },
+     "dynamic_usage": {
+      "description": "Enable dynamic usage for this port. Set to `dynamic` to enable.",
+      "nullable": true,
+      "type": "string"
+     },
+     "esilag": {
+      "type": "boolean"
+     },
+     "mtu": {
+      "default": 1514,
+      "description": "Media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation",
+      "type": "integer"
+     },
+     "no_local_overwrite": {
+      "default": true,
+      "description": "Prevent helpdesk to override the port config",
+      "type": "boolean"
+     },
+     "poe_disabled": {
+      "default": false,
+      "type": "boolean"
+     },
+     "port_network": {
+      "description": "Required if `usage`==`vlan_tunnel`. Q-in-Q tunneling using All-in-one bundling. This also enables standard L2PT for interfaces that are not encapsulation tunnel interfaces and uses MAC rewrite operation. [View more information](https://www.juniper.net/documentation/us/en/software/junos/multicast-l2/topics/topic-map/q-in-q.html#id-understanding-qinq-tunneling-and-vlan-translation)",
+      "type": "string"
+     },
+     "speed": {
+      "default": "auto",
+      "description": "enum: `100m`, `10m`, `1g`, `2.5g`, `5g`, `10g`, `25g`, `40g`, `100g`,`auto`",
+      "enum": [
+       "10m",
+       "100m",
+       "1g",
+       "2.5g",
+       "5g",
+       "10g",
+       "25g",
+       "40g",
+       "100g",
+       "auto"
+      ],
+      "type": "string"
+     },
+     "usage": {
+      "description": "Port usage name. For Q-in-Q, use `vlan_tunnel`. If EVPN is used, use `evpn_uplink`or `evpn_downlink`",
+      "type": "string"
+     }
+    },
+    "required": [
+     "usage"
+    ],
+    "type": "object"
+   },
+   "description": "Property key is the port name or range (e.g. \"ge-0/0/0-10\")",
+   "type": "object"
+  },
+  "port_config_overwrite": {
+   "additionalProperties": {
+    "description": "Switch port config",
+    "properties": {
+     "description": {
+      "type": "string"
+     },
+     "disabled": {
+      "default": false,
+      "description": "Whether the port is disabled",
+      "type": "boolean"
+     },
+     "duplex": {
+      "default": "auto",
+      "description": "Link connection mode. enum: `auto`, `full`, `half`",
+      "enum": [
+       "auto",
+       "full",
+       "half"
+      ],
+      "type": "string"
+     },
+     "mac_limit": {
+      "anyOf": [
+       {
+        "maximum": 16383,
+        "minimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "default": 0,
+      "description": "Max number of mac addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
+     },
+     "poe_disabled": {
+      "default": false,
+      "description": "Whether PoE capabilities are disabled for a port",
+      "type": "boolean"
+     },
+     "port_network": {
+      "description": "Native network/vlan for untagged traffic",
+      "type": "string"
+     },
+     "speed": {
+      "default": "auto",
+      "description": "Port Speed, default is auto to automatically negotiate speed enum: `100m`, `10m`, `1g`, `2.5g`, `5g`, `10g`, `25g`, `40g`, `100g`,`auto`",
+      "enum": [
+       "10m",
+       "100m",
+       "1g",
+       "2.5g",
+       "5g",
+       "10g",
+       "25g",
+       "40g",
+       "100g",
+       "auto"
+      ],
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the port name or range (e.g. \"ge-0/0/0-10\"). This can be used to override some attributes of the port_usage without having to create a new port_usage.",
+   "type": "object"
+  },
+  "port_mirroring": {
+   "additionalProperties": {
+    "properties": {
+     "input_networks_ingress": {
+      "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
+      "items": {
+       "example": "corp",
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "input_port_ids_egress": {
+      "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
+      "items": {
+       "example": "ge-0/0/3",
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "input_port_ids_ingress": {
+      "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
+      "items": {
+       "example": "ge-0/0/3",
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "output_ip_address": {
+      "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
+      "example": "1.2.3.4",
+      "type": "string"
+     },
+     "output_network": {
+      "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
+      "example": "analyze",
+      "type": "string"
+     },
+     "output_port_id": {
+      "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
+      "example": "ge-0/0/5",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the port mirroring instance name. `port_mirroring` can be added under device/site settings. It takes interface and ports as input for ingress, interface as input for egress and can take interface and port as output. A maximum 4 mirroring ports is allowed",
+   "type": "object"
+  },
+  "port_usages": {
+   "additionalProperties": {
+    "description": "Junos port usages",
+    "properties": {
+     "all_networks": {
+      "default": false,
+      "description": "Only if `mode`==`trunk`. Whether to trunk all network/vlans",
+      "type": "boolean"
+     },
+     "allow_dhcpd": {
+      "description": "Only if `mode`!=`dynamic`. If DHCP snooping is enabled, whether DHCP server is allowed on the interfaces with. All the interfaces from port configs using this port usage are effected. Please notice that allow_dhcpd is a tri_state. When it is not defined, it means using the system's default setting which depends on whether the port is an access or trunk port.",
+      "type": "boolean"
+     },
+     "allow_multiple_supplicants": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`",
+      "type": "boolean"
+     },
+     "bypass_auth_when_server_down": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Bypass auth for known clients if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "bypass_auth_when_server_down_for_unknown_client": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x`. Bypass auth for all (including unknown clients) if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "community_vlan_id": {
+      "description": "Only if `mode`!=`dynamic`. To be used together with `isolation` under networks. Signaling that this port connects to the networks isolated but wired clients belong to the same community can talk to each other",
+      "type": "integer"
+     },
+     "description": {
+      "description": "Only if `mode`!=`dynamic`",
+      "type": "string"
+     },
+     "disable_autoneg": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. If speed and duplex are specified, whether to disable autonegotiation",
+      "type": "boolean"
+     },
+     "disabled": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. Whether the port is disabled",
+      "type": "boolean"
+     },
+     "duplex": {
+      "default": "auto",
+      "description": "Only if `mode`!=`dynamic`. Link connection mode. enum: `auto`, `full`, `half`",
+      "enum": [
+       "auto",
+       "full",
+       "half"
+      ],
+      "type": "string"
+     },
+     "dynamic_vlan_networks": {
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`, if dynamic vlan is used, specify the possible networks/vlans RADIUS can return",
+      "example": [
+       "corp",
+       "user"
+      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "enable_mac_auth": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Whether to enable MAC Auth",
+      "type": "boolean"
+     },
+     "enable_qos": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`",
+      "type": "boolean"
+     },
+     "guest_network": {
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Which network to put the device into if the device cannot do dot1x. default is null (i.e. not allowed)",
+      "nullable": true,
+      "type": "string"
+     },
+     "inter_isolation_network_link": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. `inter_switch_link` is used together with `isolation` under networks. NOTE: `inter_switch_link` works only between Juniper device. This has to be applied to both ports connected together",
+      "type": "boolean"
+     },
+     "inter_switch_link": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. `inter_switch_link` is used together with `isolation` under networks. NOTE: inter_switch_link works only between Juniper device. This has to be applied to both ports connected together",
+      "type": "boolean"
+     },
+     "mac_auth_only": {
+      "description": "Only if `mode`!=`dynamic` and `enable_mac_auth`==`true`",
+      "type": "boolean"
+     },
+     "mac_auth_preferred": {
+      "description": "Only if `mode`!=`dynamic` + `enable_mac_auth`==`true` + `mac_auth_only`==`false`, dot1x will be given priority then mac_auth. Enable this to prefer mac_auth over dot1x.",
+      "type": "boolean"
+     },
+     "mac_auth_protocol": {
+      "default": "eap-md5",
+      "description": "Only if `mode`!=`dynamic` and `enable_mac_auth` ==`true`. This type is ignored if mist_nac is enabled. enum: `eap-md5`, `eap-peap`, `pap`",
+      "enum": [
+       "eap-md5",
+       "eap-peap",
+       "pap"
+      ],
+      "type": "string"
+     },
+     "mac_limit": {
+      "anyOf": [
+       {
+        "maximum": 16383,
+        "minimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "default": 0,
+      "description": "Only if `mode`!=`dynamic`, max number of mac addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
+     },
+     "mode": {
+      "description": "`mode`==`dynamic` must only be used if the port usage name is `dynamic`. enum: `access`, `dynamic`, `inet`, `trunk`",
+      "enum": [
+       "access",
+       "dynamic",
+       "inet",
+       "trunk"
+      ],
+      "type": "string"
+     },
+     "mtu": {
+      "anyOf": [
+       {
+        "maximum": 9216,
+        "minimum": 256,
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "description": "Only if `mode`!=`dynamic` media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation. The default value is 1514.",
+      "nullable": true
+     },
+     "networks": {
+      "description": "Only if `mode`==`trunk`, the list of network/vlans",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "persist_mac": {
+      "default": false,
+      "description": "Only if `mode`==`access` and `port_auth`!=`dot1x`. Whether the port should retain dynamically learned MAC addresses",
+      "type": "boolean"
+     },
+     "poe_disabled": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. Whether PoE capabilities are disabled for a port",
+      "type": "boolean"
+     },
+     "port_auth": {
+      "description": "Only if `mode`!=`dynamic`. If dot1x is desired, set to dot1x. enum: `dot1x`",
+      "enum": [
+       "dot1x"
+      ],
+      "nullable": true,
+      "type": "string"
+     },
+     "port_network": {
+      "description": "Only if `mode`!=`dynamic`. Native network/vlan for untagged traffic",
+      "type": "string"
+     },
+     "reauth_interval": {
+      "anyOf": [
+       {
+        "default": 3600,
+        "maximum": 65535,
+        "minimum": 10,
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600)"
+     },
+     "reset_default_when": {
+      "default": "link_down",
+      "description": "Only if `mode`==`dynamic` Control when the DPC port should be changed to the default port usage. enum: `link_down`, `none` (let the DPC port keep at the current port usage)",
+      "enum": [
+       "link_down",
+       "none"
+      ],
+      "example": "link_down",
+      "type": "string"
+     },
+     "rules": {
+      "description": "Only if `mode`==`dynamic`",
+      "items": {
+       "properties": {
+        "equals": {
+         "type": "string"
+        },
+        "equals_any": {
+         "description": "Use `equals_any` to match any item in a list",
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "expression": {
+         "description": "\"[0:3]\":\"abcdef\" -> \"abc\"\n\"split(.)[1]\": \"a.b.c\" -> \"b\"\n\"split(-)[1][0:3]: \"a1234-b5678-c90\" -> \"b56\"",
+         "type": "string"
+        },
+        "src": {
+         "description": "enum: `link_peermac`, `lldp_chassis_id`, `lldp_hardware_revision`, `lldp_manufacturer_name`, `lldp_oui`, `lldp_serial_number`, `lldp_system_name`, `radius_dynamicfilter`, `radius_usermac`, `radius_username`",
+         "enum": [
+          "link_peermac",
+          "lldp_chassis_id",
+          "lldp_hardware_revision",
+          "lldp_manufacturer_name",
+          "lldp_oui",
+          "lldp_serial_number",
+          "lldp_system_name",
+          "radius_dynamicfilter",
+          "radius_usermac",
+          "radius_username"
+         ],
+         "type": "string"
+        },
+        "usage": {
+         "description": "`port_usage` name",
+         "type": "string"
+        }
+       },
+       "required": [
+        "src"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "server_fail_network": {
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Sets server fail fallback vlan",
+      "nullable": true,
+      "type": "string"
+     },
+     "server_reject_network": {
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. When radius server reject / fails",
+      "nullable": true,
+      "type": "string"
+     },
+     "speed": {
+      "default": "auto",
+      "description": "Only if `mode`!=`dynamic`, Port speed, default is auto to automatically negotiate speed enum: `100m`, `10m`, `1g`, `2.5g`, `5g`, `10g`, `25g`, `40g`, `100g`,`auto`",
+      "enum": [
+       "10m",
+       "100m",
+       "1g",
+       "2.5g",
+       "5g",
+       "10g",
+       "25g",
+       "40g",
+       "100g",
+       "auto"
+      ],
+      "type": "string"
+     },
+     "storm_control": {
+      "description": "Switch storm control. Only if `mode`!=`dynamic`",
+      "properties": {
+       "disable_port": {
+        "default": false,
+        "description": "Whether to disable the port when storm control is triggered",
+        "type": "boolean"
+       },
+       "no_broadcast": {
+        "default": false,
+        "description": "Whether to disable storm control on broadcast traffic",
+        "type": "boolean"
+       },
+       "no_multicast": {
+        "default": false,
+        "description": "Whether to disable storm control on multicast traffic",
+        "type": "boolean"
+       },
+       "no_registered_multicast": {
+        "default": false,
+        "description": "Whether to disable storm control on registered multicast traffic",
+        "type": "boolean"
+       },
+       "no_unknown_unicast": {
+        "default": false,
+        "description": "Whether to disable storm control on unknown unicast traffic",
+        "type": "boolean"
+       },
+       "percentage": {
+        "default": 80,
+        "description": "Bandwidth-percentage, configures the storm control level as a percentage of the available bandwidth",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "stp_disable": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `stp_required`==`false`. Drop bridge protocol data units (BPDUs ) that enter any interface or a specified interface",
+      "type": "boolean"
+     },
+     "stp_edge": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. When enabled, the port is not expected to receive BPDU frames",
+      "type": "boolean"
+     },
+     "stp_no_root_port": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`",
+      "type": "boolean"
+     },
+     "stp_p2p": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`",
+      "type": "boolean"
+     },
+     "stp_required": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. Whether to remain in block state if no BPDU is received",
+      "type": "boolean"
+     },
+     "ui_evpntopo_id": {
+      "description": "Optional for Campus Fabric Core-Distribution ESI-LAG profile. Helper used by the UI to select this port profile as the ESI-Lag between Distribution and Access switches",
+      "format": "uuid",
+      "type": "string"
+     },
+     "use_vstp": {
+      "default": false,
+      "description": "If this is connected to a vstp network",
+      "type": "boolean"
+     },
+     "voip_network": {
+      "description": "Only if `mode`!=`dynamic`. Network/vlan for voip traffic, must also set port_network. to authenticate device, set port_auth",
+      "nullable": true,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the port usage name. Defines the profiles of port configuration configured on the switch",
+   "type": "object"
+  },
+  "radius_config": {
+   "description": "Junos Radius config",
+   "properties": {
+    "acct_immediate_update": {
+     "type": "boolean"
+    },
+    "acct_interim_interval": {
+     "default": 0,
+     "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the radius server, 600 and up is recommended when enabled",
+     "maximum": 65535,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "acct_servers": {
+     "items": {
+      "properties": {
+       "host": {
+        "description": "IP/ hostname of RADIUS server",
+        "example": "1.2.3.4",
+        "type": "string"
+       },
+       "keywrap_enabled": {
+        "type": "boolean"
+       },
+       "keywrap_format": {
+        "description": "enum: `ascii`, `hex`",
+        "enum": [
+         "ascii",
+         "hex"
+        ],
+        "type": "string"
+       },
+       "keywrap_kek": {
+        "example": "1122334455",
+        "type": "string"
+       },
+       "keywrap_mack": {
+        "example": "1122334455",
+        "type": "string"
+       },
+       "port": {
+        "anyOf": [
+         {
+          "maximum": 65545,
+          "minimum": 1,
+          "type": "integer"
+         },
+         {
+          "type": "string"
+         }
+        ],
+        "description": "Radius Auth Port, value from 1 to 65535, default is 1813"
+       },
+       "secret": {
+        "description": "Secret of RADIUS server",
+        "example": "testing123",
+        "type": "string"
+       }
+      },
+      "required": [
+       "host",
+       "secret"
+      ],
+      "type": "object"
+     },
+     "type": "array",
+     "uniqueItems": true
+    },
+    "auth_server_selection": {
+     "default": "ordered",
+     "description": "enum: `ordered`, `unordered`",
+     "enum": [
+      "ordered",
+      "unordered"
+     ],
+     "type": "string"
+    },
+    "auth_servers": {
+     "items": {
+      "description": "Authentication Server",
+      "properties": {
+       "host": {
+        "description": "IP/ hostname of RADIUS server",
+        "example": "1.2.3.4",
+        "type": "string"
+       },
+       "keywrap_enabled": {
+        "type": "boolean"
+       },
+       "keywrap_format": {
+        "description": "enum: `ascii`, `hex`",
+        "enum": [
+         "ascii",
+         "hex"
+        ],
+        "type": "string"
+       },
+       "keywrap_kek": {
+        "example": "1122334455",
+        "type": "string"
+       },
+       "keywrap_mack": {
+        "example": "1122334455",
+        "type": "string"
+       },
+       "port": {
+        "anyOf": [
+         {
+          "maximum": 65545,
+          "minimum": 1,
+          "type": "integer"
+         },
+         {
+          "type": "string"
+         }
+        ],
+        "description": "Radius Auth Port, value from 1 to 65535, default is 1812"
+       },
+       "require_message_authenticator": {
+        "default": false,
+        "description": "Whether to require Message-Authenticator in requests",
+        "type": "boolean"
+       },
+       "secret": {
+        "description": "Secret of RADIUS server",
+        "example": "testing123",
+        "type": "string"
+       }
+      },
+      "required": [
+       "host",
+       "secret"
+      ],
+      "type": "object"
+     },
+     "type": "array",
+     "uniqueItems": true
+    },
+    "auth_servers_retries": {
+     "default": 3,
+     "description": "Radius auth session retries",
+     "type": "integer"
+    },
+    "auth_servers_timeout": {
+     "default": 5,
+     "description": "Radius auth session timeout",
+     "type": "integer"
+    },
+    "coa_enabled": {
+     "default": false,
+     "type": "boolean"
+    },
+    "coa_port": {
+     "anyOf": [
+      {
+       "maximum": 65545,
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "description": "Radius CoA Port, value from 1 to 65535, default is 3799"
+    },
+    "fast_dot1x_timers": {
+     "default": false,
+     "type": "boolean"
+    },
+    "network": {
+     "description": "Use `network`or `source_ip`. Which network the RADIUS server resides, if there's static IP for this network, we'd use it as source-ip",
+     "type": "string"
+    },
+    "source_ip": {
+     "description": "Use `network`or `source_ip`",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "remote_syslog": {
+   "properties": {
+    "archive": {
+     "properties": {
+      "files": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ],
+       "example": 20
+      },
+      "size": {
+       "example": "5m",
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "cacerts": {
+     "example": [
+      "-----BEGIN CERTIFICATE-----\\nMIIFZjCCA06gAwIBAgIIP61/1qm/uDowDQYJKoZIhvcNAQELBQE\\n-----END CERTIFICATE-----",
+      "-----BEGIN CERTIFICATE-----\\nBhMCRVMxFDASBgNVBAoMC1N0YXJ0Q29tIENBMSwwKgYDVn-----END CERTIFICATE-----"
+     ],
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "console": {
+     "properties": {
+      "contents": {
+       "items": {
+        "properties": {
+         "facility": {
+          "default": "any",
+          "description": "enum: `any`, `authorization`, `change-log`, `config`, `conflict-log`, `daemon`, `dfc`, `external`, `firewall`, `ftp`, `interactive-commands`, `kernel`, `ntp`, `pfe`, `security`, `user`",
+          "enum": [
+           "any",
+           "authorization",
+           "change-log",
+           "config",
+           "conflict-log",
+           "daemon",
+           "dfc",
+           "external",
+           "firewall",
+           "ftp",
+           "interactive-commands",
+           "kernel",
+           "ntp",
+           "pfe",
+           "security",
+           "user"
+          ],
+          "example": "config",
+          "type": "string"
+         },
+         "severity": {
+          "default": "any",
+          "description": "enum: `alert`, `any`, `critical`, `emergency`, `error`, `info`, `notice`, `warning`",
+          "enum": [
+           "alert",
+           "any",
+           "critical",
+           "emergency",
+           "error",
+           "info",
+           "notice",
+           "warning"
+          ],
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "enabled": {
+     "default": false,
+     "type": "boolean"
+    },
+    "files": {
+     "items": {
+      "properties": {
+       "archive": {
+        "properties": {
+         "files": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "integer"
+           }
+          ],
+          "example": 20
+         },
+         "size": {
+          "example": "5m",
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "contents": {
+        "items": {
+         "properties": {
+          "facility": {
+           "default": "any",
+           "description": "enum: `any`, `authorization`, `change-log`, `config`, `conflict-log`, `daemon`, `dfc`, `external`, `firewall`, `ftp`, `interactive-commands`, `kernel`, `ntp`, `pfe`, `security`, `user`",
+           "enum": [
+            "any",
+            "authorization",
+            "change-log",
+            "config",
+            "conflict-log",
+            "daemon",
+            "dfc",
+            "external",
+            "firewall",
+            "ftp",
+            "interactive-commands",
+            "kernel",
+            "ntp",
+            "pfe",
+            "security",
+            "user"
+           ],
+           "example": "config",
+           "type": "string"
+          },
+          "severity": {
+           "default": "any",
+           "description": "enum: `alert`, `any`, `critical`, `emergency`, `error`, `info`, `notice`, `warning`",
+           "enum": [
+            "alert",
+            "any",
+            "critical",
+            "emergency",
+            "error",
+            "info",
+            "notice",
+            "warning"
+           ],
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "enable_tls": {
+        "description": "Only if `protocol`==`tcp`",
+        "type": "boolean"
+       },
+       "explicit_priority": {
+        "type": "boolean"
+       },
+       "file": {
+        "example": "file-name",
+        "type": "string"
+       },
+       "match": {
+        "example": "!alarm|ntp|errors.crc_error[chan]",
+        "type": "string"
+       },
+       "structured_data": {
+        "type": "boolean"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "network": {
+     "description": "If source_address is configured, will use the vlan firstly otherwise use source_ip",
+     "example": "default",
+     "type": "string"
+    },
+    "send_to_all_servers": {
+     "default": false,
+     "type": "boolean"
+    },
+    "servers": {
+     "example": [
+      {
+       "facility": "config",
+       "host": "syslogd.internal",
+       "port": 514,
+       "protocol": "udp",
+       "severity": "info",
+       "tag": ""
+      }
+     ],
+     "items": {
+      "properties": {
+       "contents": {
+        "items": {
+         "properties": {
+          "facility": {
+           "default": "any",
+           "description": "enum: `any`, `authorization`, `change-log`, `config`, `conflict-log`, `daemon`, `dfc`, `external`, `firewall`, `ftp`, `interactive-commands`, `kernel`, `ntp`, `pfe`, `security`, `user`",
+           "enum": [
+            "any",
+            "authorization",
+            "change-log",
+            "config",
+            "conflict-log",
+            "daemon",
+            "dfc",
+            "external",
+            "firewall",
+            "ftp",
+            "interactive-commands",
+            "kernel",
+            "ntp",
+            "pfe",
+            "security",
+            "user"
+           ],
+           "example": "config",
+           "type": "string"
+          },
+          "severity": {
+           "default": "any",
+           "description": "enum: `alert`, `any`, `critical`, `emergency`, `error`, `info`, `notice`, `warning`",
+           "enum": [
+            "alert",
+            "any",
+            "critical",
+            "emergency",
+            "error",
+            "info",
+            "notice",
+            "warning"
+           ],
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "explicit_priority": {
+        "type": "boolean"
+       },
+       "facility": {
+        "default": "any",
+        "description": "enum: `any`, `authorization`, `change-log`, `config`, `conflict-log`, `daemon`, `dfc`, `external`, `firewall`, `ftp`, `interactive-commands`, `kernel`, `ntp`, `pfe`, `security`, `user`",
+        "enum": [
+         "any",
+         "authorization",
+         "change-log",
+         "config",
+         "conflict-log",
+         "daemon",
+         "dfc",
+         "external",
+         "firewall",
+         "ftp",
+         "interactive-commands",
+         "kernel",
+         "ntp",
+         "pfe",
+         "security",
+         "user"
+        ],
+        "example": "config",
+        "type": "string"
+       },
+       "host": {
+        "example": "syslogd.internal",
+        "type": "string"
+       },
+       "match": {
+        "example": "!alarm|ntp|errors.crc_error[chan]",
+        "type": "string"
+       },
+       "port": {
+        "anyOf": [
+         {
+          "maximum": 65545,
+          "minimum": 1,
+          "type": "integer"
+         },
+         {
+          "type": "string"
+         }
+        ],
+        "default": 514,
+        "description": "Syslog Service Port, value from 1 to 65535"
+       },
+       "protocol": {
+        "default": "udp",
+        "description": "enum: `tcp`, `udp`",
+        "enum": [
+         "tcp",
+         "udp"
+        ],
+        "type": "string"
+       },
+       "routing_instance": {
+        "example": "routing-instance-name",
+        "type": "string"
+       },
+       "server_name": {
+        "description": "Name of the server",
+        "example": "syslogd.internal",
+        "type": "string"
+       },
+       "severity": {
+        "default": "any",
+        "description": "enum: `alert`, `any`, `critical`, `emergency`, `error`, `info`, `notice`, `warning`",
+        "enum": [
+         "alert",
+         "any",
+         "critical",
+         "emergency",
+         "error",
+         "info",
+         "notice",
+         "warning"
+        ],
+        "type": "string"
+       },
+       "source_address": {
+        "description": "If source_address is configured, will use the vlan firstly otherwise use source_ip",
+        "type": "string"
+       },
+       "structured_data": {
+        "type": "boolean"
+       },
+       "tag": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "time_format": {
+     "description": "enum: `millisecond`, `year`, `year millisecond`",
+     "enum": [
+      "millisecond",
+      "year",
+      "year millisecond"
+     ],
+     "example": "millisecond",
+     "type": "string"
+    },
+    "users": {
+     "items": {
+      "properties": {
+       "contents": {
+        "items": {
+         "properties": {
+          "facility": {
+           "default": "any",
+           "description": "enum: `any`, `authorization`, `change-log`, `config`, `conflict-log`, `daemon`, `dfc`, `external`, `firewall`, `ftp`, `interactive-commands`, `kernel`, `ntp`, `pfe`, `security`, `user`",
+           "enum": [
+            "any",
+            "authorization",
+            "change-log",
+            "config",
+            "conflict-log",
+            "daemon",
+            "dfc",
+            "external",
+            "firewall",
+            "ftp",
+            "interactive-commands",
+            "kernel",
+            "ntp",
+            "pfe",
+            "security",
+            "user"
+           ],
+           "example": "config",
+           "type": "string"
+          },
+          "severity": {
+           "default": "any",
+           "description": "enum: `alert`, `any`, `critical`, `emergency`, `error`, `info`, `notice`, `warning`",
+           "enum": [
+            "alert",
+            "any",
+            "critical",
+            "emergency",
+            "error",
+            "info",
+            "notice",
+            "warning"
+           ],
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "match": {
+        "example": "\"!alarm|ntp|errors.crc_error[chan]\"",
+        "type": "string"
+       },
+       "user": {
+        "example": "*",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object"
+  },
+  "role": {
+   "type": "string"
+  },
+  "router_id": {
+   "description": "Used for OSPF / BGP / EVPN",
+   "example": "10.2.1.10",
+   "type": "string"
+  },
+  "serial": {
+   "description": "Device Serial",
+   "readOnly": true,
+   "type": "string"
+  },
+  "site_id": {
+   "example": "441a1214-6928-442a-8e92-e1d34b8ec6a6",
+   "format": "uuid",
+   "readOnly": true,
+   "type": "string"
+  },
+  "snmp_config": {
+   "properties": {
+    "client_list": {
+     "items": {
+      "properties": {
+       "client_list_name": {
+        "example": "clist-1",
+        "type": "string"
+       },
+       "clients": {
+        "items": {
+         "example": "151.140.101.218/32",
+         "type": "string"
+        },
+        "type": "array"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "contact": {
+     "example": "cns@juniper.net",
+     "type": "string"
+    },
+    "description": {
+     "example": "Juniper QFX Series Switch - 1K_5LA",
+     "type": "string"
+    },
+    "enabled": {
+     "default": true,
+     "type": "boolean"
+    },
+    "engine_id": {
+     "maxLength": 27,
+     "type": "string"
+    },
+    "engine_id_type": {
+     "default": "local",
+     "description": "enum: `local`, `use_mac_address`",
+     "enum": [
+      "local",
+      "use_mac_address"
+     ],
+     "type": "string"
+    },
+    "location": {
+     "example": "Las Vegas, NV",
+     "type": "string"
+    },
+    "name": {
+     "example": "TGH-1K-QFX10K",
+     "type": "string"
+    },
+    "network": {
+     "default": "default",
+     "type": "string"
+    },
+    "trap_groups": {
+     "items": {
+      "properties": {
+       "categories": {
+        "items": {
+         "example": "authentication",
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "group_name": {
+        "description": "Categories list can refer to https://www.juniper.net/documentation/software/topics/task/configuration/snmp_trap-groups-configuring-junos-nm.html",
+        "example": "profiler",
+        "type": "string"
+       },
+       "targets": {
+        "items": {
+         "example": "172.29.158.19",
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "version": {
+        "default": "v2",
+        "description": "enum: `all`, `v1`, `v2`",
+        "enum": [
+         "all",
+         "v1",
+         "v2"
+        ],
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "v2c_config": {
+     "items": {
+      "properties": {
+       "authorization": {
+        "example": "read-only",
+        "type": "string"
+       },
+       "client_list_name": {
+        "description": "Client_list_name here should refer to client_list above",
+        "example": "clist-1",
+        "type": "string"
+       },
+       "community_name": {
+        "example": "abc123",
+        "type": "string"
+       },
+       "view": {
+        "description": "View name here should be defined in views above",
+        "example": "all",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "v3_config": {
+     "properties": {
+      "notify": {
+       "items": {
+        "properties": {
+         "name": {
+          "type": "string"
+         },
+         "tag": {
+          "type": "string"
+         },
+         "type": {
+          "description": "enum: `inform`, `trap`",
+          "enum": [
+           "inform",
+           "trap"
+          ],
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "notify_filter": {
+       "items": {
+        "properties": {
+         "contents": {
+          "items": {
+           "properties": {
+            "include": {
+             "type": "boolean"
+            },
+            "oid": {
+             "example": "1.3.6.1.4.1",
+             "type": "string"
+            }
+           },
+           "type": "object"
+          },
+          "type": "array"
+         },
+         "profile_name": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "target_address": {
+       "items": {
+        "properties": {
+         "address": {
+          "example": "10.11.0.2",
+          "type": "string"
+         },
+         "address_mask": {
+          "example": "255.255.255.0",
+          "type": "string"
+         },
+         "port": {
+          "default": "161",
+          "nullable": true,
+          "type": "string"
+         },
+         "tag_list": {
+          "description": "Refer to notify tag, can be multiple with blank",
+          "type": "string"
+         },
+         "target_address_name": {
+          "example": "target_address_name",
+          "type": "string"
+         },
+         "target_parameters": {
+          "description": "Refer to notify target parameters name",
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "target_parameters": {
+       "items": {
+        "properties": {
+         "message_processing_model": {
+          "description": "enum: `v1`, `v2c`, `v3`",
+          "enum": [
+           "v1",
+           "v2c",
+           "v3"
+          ],
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "notify_filter": {
+          "description": "Refer to profile-name in notify_filter",
+          "type": "string"
+         },
+         "security_level": {
+          "description": "enum: `authentication`, `none`, `privacy`",
+          "enum": [
+           "authentication",
+           "none",
+           "privacy"
+          ],
+          "type": "string"
+         },
+         "security_model": {
+          "description": "enum: `usm`, `v1`, `v2c`",
+          "enum": [
+           "usm",
+           "v1",
+           "v2c"
+          ],
+          "type": "string"
+         },
+         "security_name": {
+          "description": "Refer to security_name in usm",
+          "example": "m01620",
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "usm": {
+       "items": {
+        "properties": {
+         "engine_type": {
+          "description": "enum: `local_engine`, `remote_engine`",
+          "enum": [
+           "local_engine",
+           "remote_engine"
+          ],
+          "type": "string"
+         },
+         "remote_engine_id": {
+          "description": "Required only if `engine_type`==`remote_engine`",
+          "example": "00:00:00:0b:00:00:70:10:6f:08:b6:3f",
+          "type": "string"
+         },
+         "users": {
+          "items": {
+           "properties": {
+            "authentication_password": {
+             "description": "Not required if `authentication_type`==`authentication-none`. Include alphabetic, numeric, and special characters, but it cannot include control characters.",
+             "minLength": 7,
+             "type": "string"
+            },
+            "authentication_type": {
+             "description": "sha224, sha256, sha384, sha512 are supported in 21.1 and newer release. enum: `authentication-md5`, `authentication-none`, `authentication-sha`, `authentication-sha224`, `authentication-sha256`, `authentication-sha384`, `authentication-sha512`",
+             "enum": [
+              "authentication-md5",
+              "authentication-none",
+              "authentication-sha",
+              "authentication-sha224",
+              "authentication-sha256",
+              "authentication-sha384",
+              "authentication-sha512"
+             ],
+             "type": "string"
+            },
+            "encryption_password": {
+             "description": "Not required if `encryption_type`==`privacy-none`. Include alphabetic, numeric, and special characters, but it cannot include control characters",
+             "minLength": 8,
+             "type": "string"
+            },
+            "encryption_type": {
+             "description": "enum: `privacy-3des`, `privacy-aes128`, `privacy-des`, `privacy-none`",
+             "enum": [
+              "privacy-3des",
+              "privacy-aes128",
+              "privacy-des",
+              "privacy-none"
+             ],
+             "type": "string"
+            },
+            "name": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          },
+          "type": "array"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "vacm": {
+       "properties": {
+        "access": {
+         "items": {
+          "properties": {
+           "group_name": {
+            "type": "string"
+           },
+           "prefix_list": {
+            "items": {
+             "properties": {
+              "context_prefix": {
+               "description": "Only required if `type`==`context_prefix`",
+               "example": "iil",
+               "type": "string"
+              },
+              "notify_view": {
+               "description": "Refer to view name",
+               "example": "all",
+               "type": "string"
+              },
+              "read_view": {
+               "description": "Refer to view name",
+               "example": "all",
+               "type": "string"
+              },
+              "security_level": {
+               "description": "enum: `authentication`, `none`, `privacy`",
+               "enum": [
+                "authentication",
+                "none",
+                "privacy"
+               ],
+               "type": "string"
+              },
+              "security_model": {
+               "description": "enum: `any`, `usm`, `v1`, `v2c`",
+               "enum": [
+                "any",
+                "usm",
+                "v1",
+                "v2c"
+               ],
+               "type": "string"
+              },
+              "type": {
+               "description": "enum: `context_prefix`, `default_context_prefix`",
+               "enum": [
+                "context_prefix",
+                "default_context_prefix"
+               ],
+               "type": "string"
+              },
+              "write_view": {
+               "description": "Refer to view name",
+               "example": "all",
+               "type": "string"
+              }
+             },
+             "type": "object"
+            },
+            "type": "array"
+           }
+          },
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "security_to_group": {
+         "properties": {
+          "content": {
+           "items": {
+            "properties": {
+             "group": {
+              "description": "Refer to group_name under access",
+              "type": "string"
+             },
+             "security_name": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          },
+          "security_model": {
+           "description": "enum: `usm`, `v1`, `v2c`",
+           "enum": [
+            "usm",
+            "v1",
+            "v2c"
+           ],
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "type": "object"
+    },
+    "views": {
+     "items": {
+      "properties": {
+       "include": {
+        "description": "If the root oid configured is included",
+        "type": "boolean"
+       },
+       "oid": {
+        "example": "1.3.6.1",
+        "type": "string"
+       },
+       "view_name": {
+        "example": "all",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object"
+  },
+  "stp_config": {
+   "properties": {
+    "bridge_priority": {
+     "default": "32k",
+     "description": "Switch STP priority. Range [0, 4k, 8k.. 60k] in steps of 4k. Bridge priority applies to both VSTP and RSTP.",
+     "example": "40k",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "switch_mgmt": {
+   "description": "Switch settings",
+   "properties": {
+    "ap_affinity_threshold": {
+     "default": 10,
+     "description": "AP_affinity_threshold ap_affinity_threshold can be added as a field under site/setting. By default, this value is set to 12. If the field is set in both site/setting and org/setting, the value from site/setting will be used.",
+     "type": "integer"
+    },
+    "cli_banner": {
+     "description": "Set Banners for switches. Allows markup formatting",
+     "example": "\\t\\tWELCOME!",
+     "type": "string"
+    },
+    "cli_idle_timeout": {
+     "description": "Sets timeout for switches",
+     "maximum": 60,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "config_revert_timer": {
+     "default": 10,
+     "description": "Rollback timer for commit confirmed",
+     "maximum": 30,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "dhcp_option_fqdn": {
+     "default": false,
+     "description": "Enable to provide the FQDN with DHCP option 81",
+     "type": "boolean"
+    },
+    "disable_oob_down_alarm": {
+     "type": "boolean"
+    },
+    "fips_enabled": {
+     "default": false,
+     "type": "boolean"
+    },
+    "local_accounts": {
+     "additionalProperties": {
+      "properties": {
+       "password": {
+        "example": "Juniper123",
+        "type": "string"
+       },
+       "role": {
+        "default": "none",
+        "description": "enum: `admin`, `helpdesk`, `none`, `read`",
+        "enum": [
+         "admin",
+         "helpdesk",
+         "none",
+         "read"
+        ],
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "description": "Property key is the user name. For Local user authentication",
+     "type": "object"
+    },
+    "mxedge_proxy_host": {
+     "description": "IP Address or FQDN of the Mist Edge used to proxy the switch management traffic to the Mist Cloud",
+     "type": "string"
+    },
+    "mxedge_proxy_port": {
+     "anyOf": [
+      {
+       "maximum": 65535,
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "default": 2222,
+     "description": "Mist Edge port used to proxy the switch management traffic to the Mist Cloud. Value in range 1-65535"
+    },
+    "protect_re": {
+     "description": "Restrict inbound-traffic to host\nwhen enabled, all traffic that is not essential to our operation will be dropped \ne.g. ntp / dns / traffic to mist will be allowed by default, if dhcpd is enabled, we'll make sure it works",
+     "properties": {
+      "allowed_services": {
+       "description": "Optionally, services we'll allow",
+       "example": [
+        "icmp",
+        "ssh"
+       ],
+       "items": {
+        "description": "enum: `icmp`, `ssh`",
+        "enum": [
+         "icmp",
+         "ssh"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "custom": {
+       "items": {
+        "description": "Custom acls",
+        "properties": {
+         "port_range": {
+          "default": "0",
+          "description": "Matched dst port, \"0\" means any",
+          "example": "80,1035-1040",
+          "type": "string"
+         },
+         "protocol": {
+          "default": "any",
+          "description": "enum: `any`, `icmp`, `tcp`, `udp`",
+          "enum": [
+           "any",
+           "icmp",
+           "tcp",
+           "udp"
+          ],
+          "type": "string"
+         },
+         "subnets": {
+          "items": {
+           "example": "10.1.2.0/24",
+           "type": "string"
+          },
+          "type": "array"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "enabled": {
+       "default": false,
+       "description": "When enabled, all traffic that is not essential to our operation will be dropped\ne.g. ntp / dns / traffic to mist will be allowed by default\n     if dhcpd is enabled, we'll make sure it works",
+       "type": "boolean"
+      },
+      "hit_count": {
+       "default": false,
+       "description": "Whether to enable hit count for Protect_RE policy",
+       "type": "boolean"
+      },
+      "trusted_hosts": {
+       "description": "host/subnets we'll allow traffic to/from",
+       "items": {
+        "example": "10.242.3.0/24",
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "radius": {
+     "description": "By default, `radius_config` will be used. if a different one has to be used set `use_different_radius",
+     "properties": {
+      "enabled": {
+       "type": "boolean"
+      },
+      "radius_config": {
+       "description": "Junos Radius config",
+       "properties": {
+        "acct_immediate_update": {
+         "type": "boolean"
+        },
+        "acct_interim_interval": {
+         "default": 0,
+         "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the radius server, 600 and up is recommended when enabled",
+         "maximum": 65535,
+         "minimum": 0,
+         "type": "integer"
+        },
+        "acct_servers": {
+         "items": {
+          "properties": {
+           "host": {
+            "description": "IP/ hostname of RADIUS server",
+            "example": "1.2.3.4",
+            "type": "string"
+           },
+           "keywrap_enabled": {
+            "type": "boolean"
+           },
+           "keywrap_format": {
+            "description": "enum: `ascii`, `hex`",
+            "enum": [
+             "ascii",
+             "hex"
+            ],
+            "type": "string"
+           },
+           "keywrap_kek": {
+            "example": "1122334455",
+            "type": "string"
+           },
+           "keywrap_mack": {
+            "example": "1122334455",
+            "type": "string"
+           },
+           "port": {
+            "anyOf": [
+             {
+              "maximum": 65545,
+              "minimum": 1,
+              "type": "integer"
+             },
+             {
+              "type": "string"
+             }
+            ],
+            "description": "Radius Auth Port, value from 1 to 65535, default is 1813"
+           },
+           "secret": {
+            "description": "Secret of RADIUS server",
+            "example": "testing123",
+            "type": "string"
+           }
+          },
+          "required": [
+           "host",
+           "secret"
+          ],
+          "type": "object"
+         },
+         "type": "array",
+         "uniqueItems": true
+        },
+        "auth_server_selection": {
+         "default": "ordered",
+         "description": "enum: `ordered`, `unordered`",
+         "enum": [
+          "ordered",
+          "unordered"
+         ],
+         "type": "string"
+        },
+        "auth_servers": {
+         "items": {
+          "description": "Authentication Server",
+          "properties": {
+           "host": {
+            "description": "IP/ hostname of RADIUS server",
+            "example": "1.2.3.4",
+            "type": "string"
+           },
+           "keywrap_enabled": {
+            "type": "boolean"
+           },
+           "keywrap_format": {
+            "description": "enum: `ascii`, `hex`",
+            "enum": [
+             "ascii",
+             "hex"
+            ],
+            "type": "string"
+           },
+           "keywrap_kek": {
+            "example": "1122334455",
+            "type": "string"
+           },
+           "keywrap_mack": {
+            "example": "1122334455",
+            "type": "string"
+           },
+           "port": {
+            "anyOf": [
+             {
+              "maximum": 65545,
+              "minimum": 1,
+              "type": "integer"
+             },
+             {
+              "type": "string"
+             }
+            ],
+            "description": "Radius Auth Port, value from 1 to 65535, default is 1812"
+           },
+           "require_message_authenticator": {
+            "default": false,
+            "description": "Whether to require Message-Authenticator in requests",
+            "type": "boolean"
+           },
+           "secret": {
+            "description": "Secret of RADIUS server",
+            "example": "testing123",
+            "type": "string"
+           }
+          },
+          "required": [
+           "host",
+           "secret"
+          ],
+          "type": "object"
+         },
+         "type": "array",
+         "uniqueItems": true
+        },
+        "auth_servers_retries": {
+         "default": 3,
+         "description": "Radius auth session retries",
+         "type": "integer"
+        },
+        "auth_servers_timeout": {
+         "default": 5,
+         "description": "Radius auth session timeout",
+         "type": "integer"
+        },
+        "coa_enabled": {
+         "default": false,
+         "type": "boolean"
+        },
+        "coa_port": {
+         "anyOf": [
+          {
+           "maximum": 65545,
+           "minimum": 1,
+           "type": "integer"
+          },
+          {
+           "type": "string"
+          }
+         ],
+         "description": "Radius CoA Port, value from 1 to 65535, default is 3799"
+        },
+        "fast_dot1x_timers": {
+         "default": false,
+         "type": "boolean"
+        },
+        "network": {
+         "description": "Use `network`or `source_ip`. Which network the RADIUS server resides, if there's static IP for this network, we'd use it as source-ip",
+         "type": "string"
+        },
+        "source_ip": {
+         "description": "Use `network`or `source_ip`",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "use_different_radius": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "remove_existing_configs": {
+     "default": false,
+     "description": "By default, only the configuration generated by Mist is cleaned up during the configuration process. If `true`, all the existing configuration will be removed.",
+     "type": "boolean"
+    },
+    "root_password": {
+     "type": "string"
+    },
+    "tacacs": {
+     "properties": {
+      "acct_servers": {
+       "items": {
+        "properties": {
+         "host": {
+          "type": "string"
+         },
+         "port": {
+          "type": "string"
+         },
+         "secret": {
+          "type": "string"
+         },
+         "timeout": {
+          "default": 10,
+          "type": "integer"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "default_role": {
+       "default": "none",
+       "description": "enum: `admin`, `helpdesk`, `none`, `read`",
+       "enum": [
+        "admin",
+        "helpdesk",
+        "none",
+        "read"
+       ],
+       "type": "string"
+      },
+      "enabled": {
+       "type": "boolean"
+      },
+      "network": {
+       "description": "Which network the TACACS server resides",
+       "type": "string"
+      },
+      "tacplus_servers": {
+       "items": {
+        "properties": {
+         "host": {
+          "type": "string"
+         },
+         "port": {
+          "type": "string"
+         },
+         "secret": {
+          "type": "string"
+         },
+         "timeout": {
+          "default": 10,
+          "type": "integer"
+         }
+        },
+        "type": "object"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "use_mxedge_proxy": {
+     "description": "To use mxedge as proxy",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "type": {
+   "description": "Device Type. enum: `switch`",
+   "enum": [
+    "switch"
+   ],
+   "readOnly": true,
+   "type": "string"
+  },
+  "use_router_id_as_source_ip": {
+   "default": false,
+   "description": "Whether to use it for snmp / syslog / tacplus / radius",
+   "type": "boolean"
+  },
+  "vars": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "description": "Dictionary of name->value, the vars can then be used in Wlans. This can overwrite those from Site Vars",
+   "example": {
+    "RADIUS_IP1": "172.31.2.5",
+    "RADIUS_SECRET": "11s64632d"
+   },
+   "type": "object"
+  },
+  "virtual_chassis": {
+   "description": "Required for preprovisioned Virtual Chassis",
+   "properties": {
+    "members": {
+     "description": "List of Virtual Chassis members",
+     "items": {
+      "properties": {
+       "mac": {
+        "description": "fpc0, same as the mac of device_id",
+        "example": "aff827549235",
+        "type": "string"
+       },
+       "member_id": {
+        "type": "integer"
+       },
+       "vc_role": {
+        "description": "Both vc_role master and backup will be matched to routing-engine role in Junos preprovisioned VC config. enum: `backup`, `linecard`, `master`",
+        "enum": [
+         "backup",
+         "linecard",
+         "master"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "mac",
+       "member_id",
+       "vc_role"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "preprovisioned": {
+     "default": false,
+     "description": "To configure whether the VC is preprovisioned or nonprovisioned",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "vrf_config": {
+   "properties": {
+    "enabled": {
+     "description": "Whether to enable VRF (when supported on the device)",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "vrf_instances": {
+   "additionalProperties": {
+    "example": {
+     "extra_routes": {
+      "0.0.0.0/0": {
+       "via": "192.168.31.1"
+      }
+     },
+     "networks": [
+      "guest"
+     ]
+    },
+    "properties": {
+     "aggregate_routes": {
+      "additionalProperties": {
+       "properties": {
+        "discard": {
+         "default": false,
+         "type": "boolean"
+        },
+        "metric": {
+         "maximum": 4294967295,
+         "minimum": 0,
+         "nullable": true,
+         "type": "integer"
+        },
+        "preference": {
+         "maximum": 4294967295,
+         "minimum": 0,
+         "nullable": true,
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      },
+      "description": "Property key is the destination subnet (e.g. \"172.16.3.0/24\")",
+      "example": {
+       "172.16.3.0/24": {
+        "discard": false,
+        "metric": null,
+        "preference": 30
+       }
+      },
+      "type": "object"
+     },
+     "aggregate_routes6": {
+      "additionalProperties": {
+       "properties": {
+        "discard": {
+         "default": false,
+         "type": "boolean"
+        },
+        "metric": {
+         "maximum": 4294967295,
+         "minimum": 0,
+         "nullable": true,
+         "type": "integer"
+        },
+        "preference": {
+         "maximum": 4294967295,
+         "minimum": 0,
+         "nullable": true,
+         "type": "integer"
+        }
+       },
+       "type": "object"
+      },
+      "description": "Property key is the destination subnet (e.g. \"2a02:1234:420a:10c9::/64\")",
+      "example": {
+       "2a02:1234:420a:10c9::/64": {
+        "discard": false,
+        "metric": null,
+        "preference": 30
+       }
+      },
+      "type": "object"
+     },
+     "evpn_auto_loopback_subnet": {
+      "example": "100.101.0.0/24",
+      "type": "string"
+     },
+     "evpn_auto_loopback_subnet6": {
+      "type": "string"
+     },
+     "extra_routes": {
+      "additionalProperties": {
+       "properties": {
+        "via": {
+         "description": "Next-hop address",
+         "format": "ipv4",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "description": "Property key is the destination CIDR (e.g. \"10.0.0.0/8\")",
+      "example": {
+       "0.0.0.0/0": {
+        "via": "192.168.1.10"
+       }
+      },
+      "type": "object"
+     },
+     "extra_routes6": {
+      "additionalProperties": {
+       "properties": {
+        "via": {
+         "description": "Next-hop address",
+         "format": "ipv6",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "description": "Property key is the destination CIDR (e.g. \"2a02:1234:420a:10c9::/64\")",
+      "example": {
+       "2a02:1234:420a:10c9::/64": {
+        "via": "2a02:1234:200a::100"
+       }
+      },
+      "type": "object"
+     },
+     "networks": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+     }
+    },
+    "type": "object"
+   },
+   "description": "Property key is the network name",
+   "example": {
+    "guest": {
+     "extra_routes": {
+      "0.0.0.0/0": {
+       "via": "192.168.31.1"
+      }
+     },
+     "networks": [
+      "guest"
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "vrrp_config": {
+   "description": "Junos VRRP config",
+   "properties": {
+    "enabled": {
+     "type": "boolean"
+    },
+    "groups": {
+     "additionalProperties": {
+      "properties": {
+       "preempt": {
+        "default": false,
+        "description": "If `true`, allow preemption (a backup router can preempt a primary router)",
+        "type": "boolean"
+       },
+       "priority": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "description": "Property key is the VRRP name",
+     "type": "object"
+    }
+   },
+   "type": "object"
+  },
+  "x": {
+   "description": "X in pixel",
+   "example": 53.5,
+   "format": "double",
+   "type": "number"
+  },
+  "y": {
+   "description": "Y in pixel",
+   "example": 173.1,
+   "format": "double",
+   "type": "number"
+  }
+ },
+ "required": [
+  "type"
+ ],
+ "type": "object"
+}

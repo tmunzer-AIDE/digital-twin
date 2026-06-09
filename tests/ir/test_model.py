@@ -274,3 +274,33 @@ def test_valid_ir_with_full_references_builds():
         .build()
     )
     assert len(ir.links) == 1
+
+
+def test_builder_has_and_replace_port():
+    b = IRBuilder().add_device(sw("d1")).add_port(trunk_port("d1", "a"))
+    assert b.has_device("d1") is True and b.has_device("dX") is False
+    assert b.has_port("d1:a") is True and b.has_port("d1:b") is False
+    from dataclasses import replace as dc_replace
+
+    updated = dc_replace(b.get_port("d1:a"), stp_state="forwarding")
+    b.replace_port(updated)
+    assert b.build().port("d1:a").stp_state == "forwarding"
+
+
+def test_replace_unknown_port_rejected():
+    with pytest.raises(IRValidationError):
+        IRBuilder().replace_port(trunk_port("d1", "a"))
+
+
+def test_builder_has_client_normalizes_mac():
+    from digital_twin.ir import AttachKind as AK
+    from digital_twin.ir import Client as C
+    from digital_twin.ir import ClientKind as CK
+
+    b = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_port(trunk_port("d1", "a"))
+        .add_client(C(mac="aa:bb:cc", kind=CK.WIRED, attach_kind=AK.PORT, attach_id="d1:a"))
+    )
+    assert b.has_client("AA-BB-CC") is True and b.has_client("ff:ff:ff") is False

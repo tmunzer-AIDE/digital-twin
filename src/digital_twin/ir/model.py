@@ -24,6 +24,7 @@ from .entities import (
     LinkKind,
     Port,
     Vlan,
+    client_id,
     link_id,
     port_id,
 )
@@ -110,6 +111,27 @@ class IRBuilder:
 
     def with_capability(self, cap: Capability) -> IRBuilder:
         self._capabilities.add(cap)
+        return self
+
+    # -- lookups / mutation used by ingesters (pre-build) ----------------------
+    def has_device(self, did: str) -> bool:
+        return did in self._devices
+
+    def has_port(self, pid: str) -> bool:
+        return pid in self._ports
+
+    def has_client(self, mac: str) -> bool:
+        return client_id(mac) in self._client_ids
+
+    def get_port(self, pid: str) -> Port:
+        return self._ports[pid]
+
+    def replace_port(self, port: Port) -> IRBuilder:
+        """Replace an already-added port (same id) — used by ingesters to enrich
+        config-built ports with observed live facts (e.g. STP state)."""
+        if port.id not in self._ports:
+            raise IRValidationError(f"cannot replace unknown port {port.id}")
+        self._ports[port.id] = port
         return self
 
     def _validate(self) -> None:
