@@ -104,27 +104,41 @@ anything outside it is rejected loudly rather than silently passed.
 | `switchtemplate`, `gatewaytemplate`, `aptemplate`, `networktemplate`, `rftemplate`, `sitetemplate` | org template id | org-level | ⛔ `UNSUPPORTED` (multi-site fan-out) |
 | any gateway/AP `device`, WLAN, or other object | — | — | ⛔ `UNSUPPORTED` (not compiled/modeled in M1) |
 
-**Field-level gate (post-fetch, because a delta is a *full-object* replacement).** Since `payload`
-replaces the whole object, a single op can change fields M1 cannot reason about. After state is
-fetched (pipeline step 4), `ScopeResolver.post` computes the set of changed JSON paths
-(`payload` vs current raw) and applies a **default-deny allowlist**: a path is in-scope only if it
-matches an entry below; **any changed path not matched → `UNKNOWN`.**
+**Field gate — two default-deny stages (raw pre-screen + post-compile derived-impact).** Because a
+delta is a *full-object replacement*, a single op can change fields M1 cannot reason about — either
+directly, or *indirectly* via `vars` substitution that ripples through the compiler into an
+out-of-scope effective field. So the field gate runs at **two** points:
 
-**In-scope JSON paths (the authoritative M1 allowlist — grows as scope grows):**
+1. **Raw pre-screen** (`ScopeResolver.post`, pipeline step 4) — diff `payload` vs current raw and
+   match changed paths against the raw allowlist below. Cheap; catches obvious out-of-scope edits
+   before we bother compiling.
+2. **Derived-impact gate** (post-compile, pipeline step 8) — diff the *effective* config `IR` vs
+   `IR'`. **If any effective field outside the in-scope set differs → `UNKNOWN`**, even when the raw
+   change looked in-scope. This is what makes `vars` safe to allow: a var edit that compiles into a
+   `dhcpd_config` change is caught here.
 
-| `object_type` | In-scope changed paths (glob) |
-|---|---|
-| `site_setting` | `networks.*`, `port_usages.*`, `vars.*` |
-| `device` (switch) | `port_config.*`, `networks.*`, `port_usages.*`, `ip_config.*`, `name`, `notes` |
+**In-scope raw paths (authoritative M1 allowlist — named subtrees, leaf-tightened):**
 
-**Explicitly out-of-scope → `UNKNOWN`** (non-exhaustive; default-deny catches the rest):
-`*.dhcpd_config.*` (DHCP), `wlan*`, `*radio*`/`*rf*`, `gateway*`/`vpn*`/`tunnel*` (WAN),
-`*.acl*`/`*nac*`/`*auth*` (security), and any path absent from the allowlist above.
+| `object_type` | In-scope changed paths | Notes |
+|---|---|---|
+| `site_setting` | `networks.*`, `port_usages.*`, `vars.*` | `vars` allowed *only* because stage-2 catches ripple |
+| `device` (switch) | `port_config.*`, `networks.*`, `port_usages.*`, `name`, `notes` | `ip_config` **excluded** in M1 (mgmt/L3 fields out of scope); the switch IRB exit is read from `networks` |
+
+**In-scope effective fields (stage-2 gate):** the compiled `networks`/`vlans`, `port_usages`, and
+switch `port_config` that feed the L2 / per-VLAN / exit model. Any other effective field differing
+between `IR` and `IR'` → `UNKNOWN`. (Exact leaf paths are pinned against the OAS during build — see
+Open items.)
+
+**Explicitly out-of-scope → `UNKNOWN`** (default-deny catches the rest): `*.dhcpd_config.*` (DHCP),
+`wlan*`, `*radio*`/`*rf*`, `gateway*`/`vpn*`/`tunnel*` (WAN), `*.acl*`/`*nac*`/`*auth*` (security),
+`ip_config.*`, and any path/effective-field absent from the allowlists above.
 
 **Gating outcomes (all carry an `UNSUPPORTED` reason; never a green verdict):**
-- Unwhitelisted `object_type`, or a `device` whose actual role is gateway/AP → `UNKNOWN` (pre-fetch).
-- More than the one in-scope site impacted (fan-out) → `UNKNOWN` (pre-fetch).
-- Any changed path outside the allowlist → `UNKNOWN` (post-fetch; `decision_reasons` names the path).
+- Unwhitelisted `object_type`, or fan-out beyond the one in-scope site → `UNKNOWN` (**pre-fetch**).
+- A `device` whose **actual role** is gateway/AP → `UNKNOWN` (**post-fetch** — role is only known
+  once the device is fetched from inventory).
+- Any changed raw path outside the allowlist → `UNKNOWN` (**post-fetch** raw pre-screen).
+- Any out-of-scope **effective** field changed → `UNKNOWN` (**post-compile** derived-impact gate).
 
 ### Delta semantics (resolve before `apply` and L0)
 
@@ -136,6 +150,15 @@ A delta op is **a full-object replacement**, matching Mist's `PUT` semantics: `p
   template-inheritance derivation (`compiler`) are separate steps: `apply` swaps the raw object,
   then `compiler` re-derives the effective config from the changed raw state.
 - `action` values in M1: `update` (replace existing object). `create`/`delete` are out of M1.
+
+**Multi-op semantics (ordered).** `ops` apply in strictly increasing `order` against a **rolling raw
+state**: op *N* sees the raw state as already modified by ops `0..N-1`, and its changed-field gate
+diffs against that rolling pre-op state (not the original fetched state). Constraints:
+- `order` must be a **total order with unique values**; gaps are fine, duplicates → `UNKNOWN`.
+- **Two ops targeting the same `(object_type, object_id)` → `UNKNOWN`** (ambiguous: because each op
+  is a *full-object replacement*, a later op would silently make an earlier one dead — almost
+  certainly an authoring error). One op per object in M1.
+- The proposed IR is compiled once from the final rolling `raw'` (after all ops applied).
 
 ### Explicit non-goals (deferred, behind existing seams)
 
@@ -162,7 +185,7 @@ A delta op is **a full-object replacement**, matching Mist's `PUT` semantics: `p
 
 ### The twin is one pure function
 
-`simulate(delta) → verdict`, no side effects on Mist. Internally, a fixed pipeline where every
+`simulate(ChangePlan) → verdict`, no side effects on Mist. Internally, a fixed pipeline where every
 stage is a swappable seam:
 
 ```
@@ -174,21 +197,24 @@ stage is a swappable seam:
     object_type,  │       └─ structurally-fatal → short-circuit verdict           │    check_results +
     object_id,    │  3. StateProvider       fetch raw vendor state for scope      │    coverage map +
     payload}]}    │       └─ total failure → UNKNOWN; partial → state_meta        │    confidence +
-                  │  4. ScopeResolver.post  changed-field gate (δ vs current raw) │    state_meta +
-                  │       └─ out-of-scope field changed → UNKNOWN                  │    ir_diff + trace)
+                  │  4. ScopeResolver.post  raw field pre-screen + device-role     │    state_meta +
+                  │       └─ out-of-scope raw path / wrong role → UNKNOWN          │    ir_diff + trace)
                   │  5. Adapter.ingest      raw → IR  (baseline, via compiler)     │
                   │  6. Adapter.apply       raw + δ → raw'                         │
                   │  7. Adapter.ingest      raw' → IR' (proposed, via compiler)    │
-                  │  8. IRDiff              IR vs IR'  (neutral change set)        │
+                  │  8. IRDiff + derived-impact gate                              │
+                  │       └─ out-of-scope EFFECTIVE field changed → UNKNOWN        │
                   │  9. CheckRegistry       run L2/L3 checks on (IR, IR', IRDiff)  │
                   │ 10. VerdictBuilder      aggregate findings → decision          │
                   └──────────────────────────────────────────────────────────────┘
 ```
 
-`ScopeResolver` runs in **two phases**: a **pre-fetch** gate (envelope shape, object-type
-whitelist, single-site) that needs no state, and a **post-fetch** changed-field gate that diffs the
-payload against the freshly-fetched current raw config. The field gate *must* be post-fetch because
-"which fields actually changed" is only knowable against current state.
+`ScopeResolver` runs in **three checkpoints**: a **pre-fetch** gate (envelope shape, object-type
+whitelist, single-site — no state needed); a **post-fetch** raw pre-screen + device-role check
+(needs the fetched device/raw); and a **post-compile** derived-impact gate (step 8) that catches
+changes which only become out-of-scope *after* template/var substitution. The raw field gate must
+be post-fetch because "which fields changed" needs current state; the derived-impact gate must be
+post-compile because `vars`/template ripple is only visible in the effective config.
 
 The verdict has **two finding sources**, both using the same `Finding` model: the vendor adapter's
 payload validation (L0, step 2) and the neutral check registry (L2/L3, step 9). Schema validation —
@@ -226,21 +252,25 @@ noted — they become verdict outcomes (`UNKNOWN`/`REVIEW`), never an unhandled 
 | `VendorAdapter.validate` | `ChangeOp.payload`, OAS | L0 `Finding`s | fatal schema error → short-circuit verdict |
 | `VendorAdapter.ingest` (+`Compiler`) | raw state | frozen `IR` (+ `capabilities`, `ir_version`) | compile failure → `UNKNOWN` (named in reasons) |
 | `VendorAdapter.apply` | raw, `δ` | `raw'` | unknown object/id → `UNKNOWN` |
-| `IRDiff` | `IR`, `IR'` | neutral change set | — (pure) |
+| `IRDiff` | `IR`, `IR'` | neutral change set + derived-impact gate | out-of-scope *effective* field changed → `UNKNOWN` |
 | `CheckRegistry` | `IR`, `IR'`, `IRDiff` | `list[CheckResult]` | per-check crash isolated → `CHECK_ERROR` |
 | `VerdictBuilder` | all findings + coverage + `state_meta` | `verdict` (+ `decision`) | — (pure aggregation) |
 | `ReplayStore` | `(raw, ChangePlan, verdict)` | redacted fixture on disk | write failure logged; never blocks a run |
-| CLI driver | `ChangePlan` (file/stdin) | verdict JSON / human summary | non-zero exit on `UNSAFE`/`UNKNOWN` |
+| CLI driver | `ChangePlan` (file/stdin) | verdict JSON / human summary | distinct exit code per decision (below) |
 | MCP tool | `ChangePlan` (tool args) | verdict JSON | returns verdict; tool itself never throws to the agent |
+
+**CLI exit codes** — only `SAFE` is success, because `REVIEW`/`UNSAFE`/`UNKNOWN` all mean "do not
+apply automatically": `SAFE` → `0`, `REVIEW` → `10`, `UNSAFE` → `20`, `UNKNOWN` → `30`. Distinct
+codes let scripts/CI branch precisely.
 
 ### Compositional ingest (cross-vendor enabler, cheap now)
 
 Ingest is compositional, not monolithic. Each adapter contributes entities into the same IR; a
 `merge/reconcile` step stitches them on **vendor-neutral identity** (MAC, LLDP system-name,
 subnet — never a vendor `object_id`). In Milestone 1 there is one adapter, so reconcile is a
-pass-through. The delta envelope carries an implicit `source: "mist"` so a delta-router can later
-route each op to the owning adapter's `apply`. This is the only "future" work done now, and it is
-one field plus a no-op step.
+pass-through. The `ChangePlan.source` field (explicit, e.g. `"mist"`) selects the owning adapter, so
+a delta-router can later route each op to the right adapter's `apply`. This is the only "future"
+work done now, and it is one field plus a no-op step.
 
 ### Module layout
 
@@ -433,12 +463,21 @@ class Confidence:
 
 **Canonical fact→confidence table (single source of truth — every component uses this):**
 
+The axis is **authority/corroboration**, not "config vs live." A device's report about *itself* is
+authoritative ground truth; a single-source claim about a *relationship or another device* is weak.
+
 | Provenance of a fact | Confidence |
 |---|---|
-| Explicitly configured, two-sided LLDP, or operator/template-**designated** | `HIGH` |
-| **Config-inferred but unconfirmed** (e.g. a neighbor's role guessed from model/name, no link evidence) | `MEDIUM` |
-| **Single-source / one-sided LLDP / observation-only** | `LOW` |
+| Explicitly configured; two-sided LLDP; operator/template-**designated**; **OR authoritative device self-report** — a device reporting *its own* state (STP mode/state, its own associated clients with their VLANs, its own port status) | `HIGH` |
+| **Config-inferred but unconfirmed** (e.g. a neighbor's role guessed from model/name, no corroboration) | `MEDIUM` |
+| **Single-source claim about a cross-device relationship** (one-sided LLDP link; an uncorroborated inference about another device) | `LOW` |
 | Absent | → drives `INSUFFICIENT_DATA` (no confidence assigned) |
+
+So **known STP state** (the switch reporting its own ports) and **observed wireless clients** (the AP
+reporting its own associations) are `HIGH` — making GS3/GS7 honestly `UNSAFE`/`HIGH`. A one-sided
+LLDP link — a claim about a relationship the other end didn't confirm — stays `LOW`. (Note: observed
+clients are HIGH-*confidence* about who is connected; the *coverage* gap for not-yet-connected
+clients is a separate `partial`-coverage matter, per the blackhole AP-membership rule.)
 
 **Composition is deterministic:** a derived fact's (and a finding's) confidence =
 `MIN(confidence of every fact it relied on, confidence of the inference method)`. Method confidence:
@@ -839,3 +878,6 @@ not open questions.)*
   hand-authored declarative rules — deliberately kept off the M1 critical path.
 - Source/format of the Mist OAS used by L0 (bundled spec version vs fetched), and how schema
   drift is handled when Mist updates the API.
+- **Exact leaf paths for the field allowlist** (raw and effective) pinned against the Mist OAS — the
+  in-scope tables are named subtrees; implementation must enumerate the precise leaves and their
+  out-of-scope siblings (especially under `networks.*` and `port_config.*`).
