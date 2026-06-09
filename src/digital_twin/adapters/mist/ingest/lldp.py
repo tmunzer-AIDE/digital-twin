@@ -66,8 +66,9 @@ class LldpIngester:
             if not row.get("neighbor_mac") or not row.get("port_id"):
                 continue
             src = port_id(device_id(str(row["mac"])), str(row["port_id"]))
+            # Mist port stats name the neighbor's port via `neighbor_port_desc`.
             dst = port_id(
-                device_id(str(row["neighbor_mac"])), str(row.get("neighbor_port_id") or "?")
+                device_id(str(row["neighbor_mac"])), str(row.get("neighbor_port_desc") or "?")
             )
             out[(src, dst)] = row
         return out
@@ -137,24 +138,32 @@ class LldpIngester:
         )
 
     def _kind(self, a: _Json, b: _Json | None) -> tuple[LinkKind, str | None]:
+        # A LAG member's port row carries `port_parent` = the bundle name (e.g. "ae0").
         for row in (a, b or {}):
-            if row.get("aggregated") or row.get("lag_name"):
-                return LinkKind.LAG, str(row.get("lag_name") or "lag")
+            parent = row.get("port_parent")
+            if parent:
+                return LinkKind.LAG, str(parent)
         return LinkKind.PHYSICAL, None
 
     def _emit_ap_uplinks(
         self, ctx: IngestContext, claims: dict[tuple[str, str], _Json], emitted: set[str]
     ) -> None:
-        switch_by_name = {
-            str(d.get("name")): device_id(str(d["mac"]))
-            for d in ctx.raw.devices
-            if d.get("type") == "switch" and d.get("mac")
-        }
+        switches = [d for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")]
+        switch_by_name = {str(d.get("name")): device_id(str(d["mac"])) for d in switches}
+        switch_macs = {device_id(str(d["mac"])) for d in switches}
         for stat in ctx.raw.device_stats:
             if stat.get("type") != "ap" or not stat.get("mac"):
                 continue
             lldp = stat.get("lldp_stat") or {}
-            sw_id = switch_by_name.get(str(lldp.get("system_name")))
+            # Prefer chassis_id (switch base MAC) — robust; fall back to system_name
+            # (the switch hostname), which catches Virtual Chassis whose chassis_id
+            # is a member FPC MAC rather than the Mist device MAC.
+            chassis = device_id(str(lldp["chassis_id"])) if lldp.get("chassis_id") else None
+            sw_id = (
+                chassis
+                if chassis in switch_macs
+                else switch_by_name.get(str(lldp.get("system_name")))
+            )
             sw_port_name = lldp.get("port_id") or lldp.get("port_desc")
             if not sw_id or not sw_port_name:
                 continue

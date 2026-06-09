@@ -113,21 +113,17 @@ class MistApiProvider(StateProvider):
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _device_stats(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.stats.devices.listSiteDevicesStats(
-            self._session, s.site_id, type="all"
-        )
+        resp = mistapi.api.v1.sites.stats.listSiteDevicesStats(self._session, s.site_id, type="all")
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _port_stats(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.stats.ports.searchSiteSwOrGwPorts(
+        resp = mistapi.api.v1.sites.stats.searchSiteSwOrGwPorts(
             self._session, s.site_id, limit=1000
         )
         return [dict(d) for d in (resp.data or {}).get("results", [])]
 
     def _wireless_clients(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.stats.clients.listSiteWirelessClientsStats(
-            self._session, s.site_id
-        )
+        resp = mistapi.api.v1.sites.stats.listSiteWirelessClientsStats(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _wired_clients(self, s: SiteScope) -> list[_Json]:

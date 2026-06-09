@@ -39,14 +39,14 @@ def test_two_sided_lldp_creates_one_high_confidence_link():
             "port_id": "ge-0/0/47",
             "up": True,
             "neighbor_mac": "bb0000000002",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         },
         {
             "mac": "bb0000000002",
             "port_id": "ge-0/0/47",
             "up": True,
             "neighbor_mac": "aa0000000001",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         },
     ]
     ir = _ctx(stats).builder.build()
@@ -61,7 +61,7 @@ def test_one_sided_lldp_creates_low_confidence_link():
             "port_id": "ge-0/0/47",
             "up": True,
             "neighbor_mac": "bb0000000002",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         }
     ]
     ir = _ctx(stats).builder.build()
@@ -70,28 +70,42 @@ def test_one_sided_lldp_creates_low_confidence_link():
 
 
 def test_lag_members_get_bundle_id():
+    # a LAG member's port row carries port_parent = the bundle name (real Mist field)
     stats = [
         {
             "mac": "aa0000000001",
             "port_id": "ge-0/0/47",
             "up": True,
-            "aggregated": True,
-            "lag_name": "ae0",
+            "port_parent": "ae0",
             "neighbor_mac": "bb0000000002",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         },
         {
             "mac": "bb0000000002",
             "port_id": "ge-0/0/47",
             "up": True,
-            "aggregated": True,
-            "lag_name": "ae0",
+            "port_parent": "ae0",
             "neighbor_mac": "aa0000000001",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         },
     ]
     ir = _ctx(stats).builder.build()
     assert ir.links[0].kind is LinkKind.LAG and ir.links[0].bundle_id == "ae0"
+
+
+def test_ap_uplink_matches_switch_by_chassis_id():
+    # chassis_id (switch base MAC) is the robust match key; system_name is the fallback
+    device_stats = [
+        {
+            "mac": "cc0000000001",
+            "type": "ap",
+            "lldp_stat": {"chassis_id": "aa:00:00:00:00:01", "port_id": "ge-0/0/10"},
+        }
+    ]
+    ir = _ctx([], device_stats).builder.build()
+    ap_links = [link for link in ir.links if "cc0000000001" in link.id]
+    assert len(ap_links) == 1
+    assert "aa0000000001:ge-0/0/10" in ap_links[0].id
 
 
 def test_stp_state_attached_to_port_when_present():
@@ -132,7 +146,7 @@ def test_unmanaged_lldp_neighbor_becomes_wired_edge_client_not_link():
             "port_id": "ge-0/0/10",
             "up": True,
             "neighbor_mac": "99eeddccbbaa",
-            "neighbor_port_id": "p1",
+            "neighbor_port_desc": "p1",
         }
     ]
     ir = _ctx(stats).builder.build()  # build() must NOT crash
@@ -151,7 +165,7 @@ def test_ap_corroboration_requires_the_switch_to_name_that_ap():
             "port_id": "ge-0/0/10",
             "up": True,
             "neighbor_mac": "bb0000000002",
-            "neighbor_port_id": "ge-0/0/47",
+            "neighbor_port_desc": "ge-0/0/47",
         }
     ]
     device_stats = [
@@ -175,7 +189,7 @@ def test_switch_reporting_ap_yields_one_link_not_duplicates():
             "port_id": "ge-0/0/10",
             "up": True,
             "neighbor_mac": "cc0000000001",
-            "neighbor_port_id": "eth0",
+            "neighbor_port_desc": "eth0",
         }
     ]
     device_stats = [

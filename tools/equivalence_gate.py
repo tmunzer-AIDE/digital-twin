@@ -19,7 +19,13 @@ import os
 import sys
 from pathlib import Path
 
-from digital_twin.adapters.mist.compile.equivalence import attribute_coverage, compare_effective
+from digital_twin.adapters.mist.compile.equivalence import (
+    IN_SCOPE_FIELDS,
+    attribute_coverage,
+    compare_effective,
+    restrict_schema_to_scope,
+    restrict_to_scope,
+)
 from digital_twin.adapters.mist.compile.switch import merge_only
 from digital_twin.providers.base import FetchError, SiteScope
 from digital_twin.providers.mist_api import MistApiProvider
@@ -47,28 +53,32 @@ def main() -> None:
             )
             failures += 1
             continue
-        # derived does NOT resolve {{vars}} (confirmed) -> compare the pre-vars merge
-        ours = merge_only(
-            dict(raw.networktemplate) if raw.networktemplate else None, dict(raw.setting)
+        # derived does NOT resolve {{vars}} (confirmed) -> compare the pre-vars merge,
+        # restricted to the M1 in-scope fields (out-of-scope domains = Tier-1's job).
+        ours = restrict_to_scope(
+            merge_only(
+                dict(raw.networktemplate) if raw.networktemplate else None, dict(raw.setting)
+            )
         )
-        derived = dict(raw.derived_setting)
+        derived = restrict_to_scope(dict(raw.derived_setting))
         derived_samples.append(derived)
         result = compare_effective(ours, derived)
         if result.passed:
             note = (
                 f" ({len(result.catalogued_diffs)} catalogued)" if result.catalogued_diffs else ""
             )
-            print(f"[ OK ] {site_id}{note}")
+            print(f"[ OK ] {site_id}  (in-scope: {', '.join(IN_SCOPE_FIELDS)}){note}")
         else:
             failures += 1
-            print(f"[FAIL] {site_id}: {len(result.diffs)} uncatalogued diff(s):")
+            print(f"[FAIL] {site_id}: {len(result.diffs)} uncatalogued in-scope diff(s):")
             for d in result.diffs[:25]:
                 print(f"         {d.path}: ours={d.ours!r} derived={d.derived!r}")
 
     if OAS.exists() and derived_samples:
-        cov = attribute_coverage(json.loads(OAS.read_text()), derived_samples)
+        schema = restrict_schema_to_scope(json.loads(OAS.read_text()))
+        cov = attribute_coverage(schema, derived_samples)
         total = len(cov.covered) + len(cov.uncovered)
-        print(f"\nattribute coverage: {len(cov.covered)}/{total} schema leaves exercised")
+        print(f"\nin-scope attribute coverage: {len(cov.covered)}/{total} schema leaves exercised")
         for leaf in sorted(cov.uncovered)[:40]:
             print(f"  uncovered: {leaf}   (validated by Tier-1 OAS tests only)")
 

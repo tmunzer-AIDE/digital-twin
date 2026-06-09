@@ -19,6 +19,21 @@ from digital_twin.adapters.mist.oas import norm_schema
 
 _DIVERGENCES = Path(__file__).parent / "divergences.json"
 
+# The M1 in-scope site-setting fields (the switch L2 config the compiler/IR use).
+# The gate's "100% on in-scope fields" rule (spec) applies to THESE subtrees;
+# out-of-scope domains (radio_config, marvis, password_policy, RF templates,
+# server-injected metadata/defaults) are validated by the Tier-1 OAS tests.
+IN_SCOPE_FIELDS: tuple[str, ...] = ("networks", "port_usages", "vars")
+
+
+def restrict_to_scope(config: dict[str, Any]) -> dict[str, Any]:
+    return {k: config[k] for k in IN_SCOPE_FIELDS if k in config}
+
+
+def restrict_schema_to_scope(schema: dict[str, Any]) -> dict[str, Any]:
+    props = norm_schema(schema).get("properties") or {}
+    return {"type": "object", "properties": {k: props[k] for k in IN_SCOPE_FIELDS if k in props}}
+
 
 @dataclass(frozen=True)
 class Diff:

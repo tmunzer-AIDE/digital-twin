@@ -71,3 +71,21 @@ def test_attribute_coverage_sees_leaves_behind_composition():
     cov = attribute_coverage(schema, [{"vlan": 30}])
     assert "vlan" in cov.covered
     assert "extra.x" in cov.uncovered  # visible despite the allOf wrapper
+
+
+def test_restrict_to_scope_keeps_only_in_scope_fields():
+    from digital_twin.adapters.mist.compile.equivalence import (
+        IN_SCOPE_FIELDS,
+        restrict_to_scope,
+    )
+
+    cfg = {
+        "networks": {"corp": {}},
+        "port_usages": {},
+        "vars": {},
+        "radio_config": {"x": 1},
+        "marvis": {"y": 2},
+    }
+    out = restrict_to_scope(cfg)
+    assert set(out) == set(IN_SCOPE_FIELDS) & set(cfg)
+    assert "radio_config" not in out and "marvis" not in out
