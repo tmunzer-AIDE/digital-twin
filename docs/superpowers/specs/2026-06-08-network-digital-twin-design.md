@@ -23,12 +23,22 @@ system is modular and can ingest additional sources (e.g. Aruba Central) later.
 
 ### Goal (product)
 
-An AI agent proposes a change as a JSON delta:
+An AI agent proposes a change as a JSON delta. **Product-vision example** (multi-object, org
+templates — *not* all supported in M1; see *Supported delta types*):
 
 ```json
 [
   {"action": "update", "order": 0, "object_type": "switchtemplate", "object_id": "xxxx", "payload": { /* Mist API schema */ }},
   {"action": "update", "order": 1, "object_type": "gatewaytemplate", "object_id": "yyyy", "payload": { /* Mist API schema */ }}
+]
+```
+
+**M1-valid example** (single site, switch-relevant — what the MVP actually simulates):
+
+```json
+[
+  {"action": "update", "order": 0, "object_type": "site_setting", "object_id": "<site_id>", "payload": { /* full site setting: networks, port_usages, ... */ }},
+  {"action": "update", "order": 1, "object_type": "device", "object_id": "<switch_device_id>", "payload": { /* full switch device config: port_config, ... */ }}
 ]
 ```
 
@@ -52,8 +62,11 @@ The narrowest slice that proves the full loop end-to-end and is still genuinely 
   switch port via LLDP); wireless clients are modeled as leaf clients whose VLAN is read from
   Mist **live client data** (no WLAN compile needed). The delta is still a wired/switch change;
   we extend only the *impact surface* to include downstream wireless clients.
-- **Fully-managed networks only.** All forwarding devices are Mist/Junos with reliable
-  two-sided LLDP. We do not attempt to model what we cannot see.
+- **Fully-managed sites are the target, but completeness is verified at runtime — never assumed.**
+  M1 is designed for sites where all forwarding devices are Mist/Junos with two-sided LLDP. We do
+  **not** assume that holds: ingest records per-fact provenance, and any data gap (one-sided LLDP,
+  missing neighbor, unfetched device) lowers confidence/coverage and pushes affected checks to
+  `INSUFFICIENT_DATA` → `REVIEW`, never a silent `SAFE` (this is exactly GS6).
 - **On-demand data.** Each simulate call fetches current Mist state for the affected scope,
   builds the IR fresh, applies the delta in memory, runs checks, discards.
 - **Drivers:** CLI (for testing) + MCP tool (for the agent loop).
@@ -65,20 +78,38 @@ The narrowest slice that proves the full loop end-to-end and is still genuinely 
 ### Supported delta types (M1) — the honest-decision boundary
 
 The product vision allows any Mist `object_type` (see the example in *Goal*). **M1 supports only a
-whitelisted subset**, and anything outside it is rejected loudly rather than silently passed:
+whitelisted subset, gated at two levels** — object type *and* the specific fields changed — and
+anything outside it is rejected loudly rather than silently passed.
 
-| `object_type` | M1 | Rationale |
-|---|---|---|
-| site `setting` (networks, vlans, port_usages, dhcpd) | ✅ supported | site-scoped, switch-relevant |
-| switch `device` config (port_config, etc.) | ✅ supported | single-device, in compile scope |
-| `switchtemplate`, `gatewaytemplate`, `aptemplate`, `networktemplate`, `rftemplate`, `sitetemplate` | ⛔ `UNSUPPORTED` | org-level → multi-site fan-out, out of M1 |
-| gateway/AP/WLAN objects | ⛔ `UNSUPPORTED` | no gateway/AP compile in M1 |
-| anything else | ⛔ `UNSUPPORTED` | not modeled |
+**Supported object types (exact strings, with `object_id` meaning):**
 
-- A delta op whose `object_type` is not whitelisted → the run resolves to **`decision: UNKNOWN`**
-  with an `UNSUPPORTED` reason. **Never a green verdict.**
-- A whitelisted op that the `ScopeResolver` determines would impact **more than the one in-scope
-  site** (fan-out) → also `UNSUPPORTED` in M1.
+| `object_type` | `object_id` is | Mist endpoint | M1 |
+|---|---|---|---|
+| `site_setting` | the `site_id` | `PUT /sites/{site_id}/setting` | ✅ (subject to field gate below) |
+| `device` (role=`switch` only) | the switch `device_id` | `PUT /sites/{site_id}/devices/{device_id}` | ✅ (subject to field gate below) |
+| `switchtemplate`, `gatewaytemplate`, `aptemplate`, `networktemplate`, `rftemplate`, `sitetemplate` | org template id | org-level | ⛔ `UNSUPPORTED` (multi-site fan-out) |
+| any gateway/AP `device`, WLAN, or other object | — | — | ⛔ `UNSUPPORTED` (not compiled/modeled in M1) |
+
+**Field-level gate (because a delta is a *full-object* replacement).** Since `payload` replaces the
+whole object, a single op can change fields M1 cannot reason about. `ScopeResolver` diffs the
+payload against current raw state and inspects **which fields actually changed**:
+
+- **In-scope (simulated):** `site_setting.networks`, `site_setting.port_usages`,
+  switch-relevant VLAN/port fields; `device.port_config` and switch port/VLAN fields.
+- **Out-of-scope → `UNKNOWN`:** any change touching `dhcpd_config` (DHCP — explicitly out of
+  scope), WLAN/RF fields, gateway/WAN fields, NAC, or any field not in the in-scope set. The twin
+  must **not** return `SAFE` on the strength of L2 analysis alone when the same payload also
+  changed something it didn't evaluate.
+- A changed field that is purely cosmetic (e.g. `notes`, `name`) is in-scope and harmless.
+
+**Gating outcomes:**
+- Unwhitelisted `object_type`, or a switch `device` that is actually a gateway/AP → `UNKNOWN`.
+- A supported object whose **changed fields** include any out-of-scope field → `UNKNOWN`
+  (`decision_reasons` names the offending field).
+- A supported op that `ScopeResolver` finds would impact **more than the one in-scope site**
+  (fan-out) → `UNKNOWN`.
+
+All `UNKNOWN` outcomes carry an `UNSUPPORTED` reason and are **never a green verdict**.
 
 ### Delta semantics (resolve before `apply` and L0)
 
@@ -203,7 +234,8 @@ yields a frozen proposed IR. Nothing mutates in place — a run is reproducible 
 ```
 core domain (Milestone 1):
   Device    id, role(switch|gateway|ap|mistedge), model, site, vc_members
-  Port      device_id, name, mode(access|trunk), speed, poe, profile, native_vlan, tagged_vlans
+  Port      device_id, name, mode(access|trunk), speed, poe, profile, native_vlan, tagged_vlans,
+            stp_enabled, stp_mode(rstp|mstp|vstp|none), stp_state, stp_provenance(observed|config|unknown)
   Link      a_port, b_port, kind(physical|lag|mclag|vc), source(lldp|config), bidirectional
   Vlan      vlan_id, name, scope(site|org)
   L3Intf    device_id, vlan_id|port, subnet, ip, role(irb|svi|wan|loopback)   # minimal: VLAN "exit"
@@ -269,16 +301,40 @@ bound to `(run_id, check_id)`. Nothing vendor-specific.
 
 ### Result is evidence, never a bare boolean
 
+Two distinct vocabularies: **Status** (did the check reach a conclusion?) and **Severity** (how bad
+is an individual finding?). They are linked but not the same field.
+
 ```python
+Status   = PASS | WARN | FAIL | NOT_APPLICABLE | INSUFFICIENT_DATA | ERROR   # check-level outcome
+Severity = INFO | WARNING | ERROR | CRITICAL                                  # per-finding
+
+class Finding:
+    source: "adapter" | "check"    # L0/L1 adapter validation, or an L2/L3 check
+    code: str                      # stable machine code, e.g. "l2.blackhole.vlan_isolated"
+    severity: Severity
+    confidence: Confidence
+    message: str                   # human-readable
+    affected_entities: list[str]   # IR entity ids
+    evidence: dict                 # facts inspected + reasoning data (what made this fire)
+    remediation: str | None        # suggested fix, for the agent
+
 class CheckResult:
-    status: PASS | WARN | FAIL | NOT_APPLICABLE | INSUFFICIENT_DATA | ERROR
-    findings: list[Finding]      # severity, message, affected_entity_ids, detail
-    coverage: Coverage           # what I evaluated vs. couldn't, and why  (breadth)
-    confidence: Confidence       # how much I trust the conclusion         (soundness)
-    reasoning: str               # human-readable "here's how I concluded this"
+    check_id: str
+    status: Status
+    findings: list[Finding]
+    coverage: Coverage             # breadth: what I evaluated vs. couldn't
+    confidence: Confidence         # soundness: how much I trust the conclusion
+    reasoning: str
 ```
 
-### The five statuses are the whole anti-silent-OK machine
+Status and finding severity are linked but distinct: a `PASS` check may still emit `INFO` findings
+(e.g. a benign VLAN expansion); `WARN` ⇔ worst finding is `WARNING`; `FAIL` ⇔ a finding at
+`ERROR`/`CRITICAL`. **A check emits `FAIL` only at HIGH confidence** — when it is not confident
+enough to assert breakage it downgrades to `WARN` or `INSUFFICIENT_DATA`, never a silent stretch to
+`FAIL` or `PASS`. This is what keeps `FAIL → UNSAFE` an always-confident assertion (and resolves the
+boundary-uplink case below: an only-*inferred* exit yields `WARN`, not `FAIL`).
+
+### The six check statuses are the whole anti-silent-OK machine
 
 | status | meaning | verdict treatment |
 |---|---|---|
@@ -317,15 +373,28 @@ covered, AND high-confidence*:
 ```
 verdict = {
   decision,            # SAFE | REVIEW | UNSAFE | UNKNOWN   ← the agent-facing contract
-  decision_reasons,    # human + machine-readable why this decision (e.g. ["UNSUPPORTED object_type"])
-  overall_severity,
-  findings_by_source,  # { adapter: [Finding...], checks: [CheckResult...] }
+  decision_reasons,    # machine + human reasons (e.g. ["UNSUPPORTED object_type: switchtemplate"])
+  overall_severity,    # max Severity across findings (INFO|WARNING|ERROR|CRITICAL)
+
+  findings: [ Finding, ... ],        # flat, agent-facing — every Finding from every source
+  check_results: [ CheckResult, ... ],   # per-check detail: status, coverage, confidence, reasoning
+
   coverage:  { "wired.l2": {evaluated, partial, insufficient, not_applicable}, ... },
-  confidence_summary: { high: n, medium: n, low: n, with reasons },
+  confidence_summary: { high: n, medium: n, low: n, reasons: [...] },
+
+  state_meta: {                      # freshness — so the agent can reason about stale evidence
+    state_acquired_at,               # when the on-demand fetch ran
+    sources: [ { source: "mist", region, fetched_at, age_seconds }, ... ],
+    fetch_failures: [ { source, object, error }, ... ],   # partial fetches → lower coverage
+  },
+
   ir_diff,
   trace_ref,
 }
 ```
+
+`findings` is the flat list an agent consumes; `check_results` is the per-check audit detail. A
+`Finding` always names its `source` and stable `code`, so the two views never disagree.
 
 #### `decision` — the single field an agent acts on
 
@@ -354,8 +423,18 @@ floors at `REVIEW`. `decision_reasons` always lists the specific drivers so the 
   in a file; the engine discovers it.
 - The engine runs each check **in isolation**: a raised exception → `status: ERROR`, logged with
   its `check_id`, run continues. One bad check cannot take down the run or another check.
-- A check whose `requires()` the current IR can't satisfy is auto-marked `INSUFFICIENT_DATA`
-  **before** it runs — it never executes blind.
+
+**Gating order (strict — this ordering is itself a contract):** for each check the engine does,
+in this sequence:
+
+1. Compute `IRDiff` (`IR` vs `IR'`).
+2. **`applies_to(delta, diff)`** — if `False` → **`NOT_APPLICABLE`**, stop. *This is checked
+   first*, so a cosmetic change (e.g. a `notes` edit) that touches nothing a check cares about is
+   correctly `NOT_APPLICABLE`, **not** `INSUFFICIENT_DATA`.
+3. Only for applicable checks: **`requires()`** vs the IR's capabilities — if unmet →
+   **`INSUFFICIENT_DATA`**, do not run. A blind spot only counts against the verdict when the
+   check actually *applies*.
+4. Otherwise run `run(ctx)`.
 
 ---
 
@@ -410,9 +489,14 @@ are deferred to the declarative `rules/` layer.
 
 ### ingest (raw → IR)
 
-Reads Mist config + live state for the scope and builds the baseline IR:
+Reads Mist config + live state for the scope and builds the baseline IR. **Both the baseline IR and
+the proposed IR are built from raw config run through *our* `compiler`** — *not* from Mist's
+`getSiteSettingDerived`. Mist's derived output is used **only** as the oracle in the equivalence
+test (below); it never feeds a live simulation, because there is no derived-API equivalent for a
+*proposed* state and we need baseline and proposed to be produced by the identical code path.
 
-- **Config:** switch config, site setting (derived), port profiles/usages, networks, VLANs.
+- **Config (raw, pre-derive):** switch config, raw site setting, templates in the inheritance
+  chain, port profiles/usages, networks, VLANs.
 - **Live state (from device stats):** `if_stat` (port up/down/speed), `lldp_stat`/`clients[]`
   (neighbors → links), `module_stat` (VC links, PoE), wired+wireless client list with `vlan_id`,
   AP→switch-port attachment via AP LLDP.
@@ -425,10 +509,26 @@ Derives switch effective config through the inheritance chain
 `site_setting.vars`. (Derivation semantics are known/owned by the team.)
 
 **Validation gate (the foundation test):** with a **no-op delta**, our compiled effective config
-must equal Mist's `getSiteSettingDerived` for the same site. We assert this equivalence across
-many real sites from the available read-only orgs. This is the oracle for *current* state; there
-is no oracle for a *proposed* state, so this equivalence is the contract the whole simulation
-rests on. **If we cannot reach near-100% equivalence, the foundation is not ready.**
+must equal Mist's `getSiteSettingDerived` for the same site, across many real sites from the
+available read-only orgs. This is the oracle for *current* state; there is no oracle for a
+*proposed* state, so this equivalence is the contract the whole simulation rests on.
+
+**Comparison rules (so "equal" is unambiguous):**
+- **Canonical form** before compare: recursively sort object keys and sort arrays whose order is
+  not semantically meaningful (e.g. VLAN lists) by a stable key; normalize types (e.g. `"100"` vs
+  `100` where Mist is loose).
+- **Defaults:** apply Mist's documented default for an absent field on both sides before compare,
+  so "field omitted" and "field set to its default" are treated as equal.
+- **Absent vs empty:** treat absent, `null`, and empty (`[]`/`{}`) as equal *only* where Mist
+  itself does; otherwise flag — document each such field.
+- **Ignored fields:** exclude read-only/server-generated fields (timestamps, `_*` metadata,
+  derived counters, stats) via an explicit ignore-list; every ignored field is enumerated, not
+  blanket-skipped.
+- **"Near-100%":** target is **100% on every in-scope field after the rules above.** Any residual
+  diff must be an *explicitly catalogued* known-divergence with a reason; an uncatalogued diff
+  **fails the gate**. The metric is "sites with zero uncatalogued field diffs / total sites."
+
+**If we cannot reach this, the foundation is not ready — do not build checks on top.**
 
 ### apply (raw + δ → raw')
 
@@ -468,31 +568,40 @@ degrades to LOW-confidence `WARN`, not a silent pass.
 
 ### `l2.blackhole` — and the VLAN-exit contract (promoted from open item)
 
-A blackhole = a connected component of a VLAN's per-VLAN graph that **contains members** (access
-ports with clients, or downstream devices carrying the VLAN) but **has no path to that VLAN's
-exit**. `client.impact` enumerates the affected clients. The **exit** is determined by this
-precedence — this is a core M1 contract because the check is meaningless without it:
+A blackhole = a connected component of a VLAN's per-VLAN graph that **contains members** but **has
+no path to that VLAN's exit**. **Membership is configuration-based, not client-based** — a
+component counts as having members if it contains any: access port configured for the VLAN, AP
+uplink whose AP serves an SSID on the VLAN, or downstream device/trunk carrying the VLAN — **even
+with zero currently-active clients.** (A port with no client today still breaks tomorrow.) The
+separate `client.impact` check is the only one that is active-client-only; blackhole fires on
+configured topology regardless of who is connected. The **exit** is determined by this precedence —
+a core M1 contract, because the check is meaningless without it:
 
 1. **In-scope IRB/SVI** — an `L3Intf(role=irb|svi)` for the VLAN exists on a compiled (switch)
    device and is reachable → that is the exit. **HIGH** confidence.
 2. **Boundary uplink** — no in-scope IRB, but the VLAN is carried on a port leading to an
-   out-of-scope upstream device (gateway/core not compiled in M1, identified via LLDP neighbor
-   role or a designated uplink) → treat that boundary uplink as the exit. **MEDIUM** confidence
-   (we assume L3 termination lives upstream; we cannot verify it).
+   out-of-scope upstream device (gateway/core not compiled in M1). Confidence depends on *how* the
+   uplink was identified:
+   - **Designated** (operator/template-marked uplink) **or confirmed two-sided LLDP** to a device
+     whose role is known gateway/core → **HIGH** confidence.
+   - **Inferred** heuristically (one-sided LLDP, role guessed) → **MEDIUM** confidence.
 3. **Neither** — no in-scope IRB and no identifiable boundary uplink for the VLAN → the exit
    cannot be located → **`INSUFFICIENT_DATA`** for that VLAN (never `PASS`).
 
-`FAIL` fires when a component had a path to the exit in `IR` and loses it in `IR'`.
+`FAIL` fires when a component had a path to the exit in `IR` and loses it in `IR'` **and** the exit
+was HIGH-confidence (rule 1, or rule 2-designated/confirmed). With only a **MEDIUM**-confidence
+(inferred) exit, the loss is reported as **`WARN`** → `REVIEW`, per the "FAIL only at HIGH
+confidence" rule — never a confident `UNSAFE` built on a guessed exit.
 
 ### `l2.vlan_segmentation` — structural broadcast-domain change, no intent needed
 
 Purely structural (topology alone, no policy/intent). It compares a VLAN's per-VLAN graph
 partition between `IR` and `IR'`:
 
-- **Split** — a single connected component fragments into ≥2 components → `WARN`
-  ("broadcast domain partitioned"). HIGH confidence.
+- **Split** — a single connected component fragments into ≥2 components → status `WARN` with a
+  `WARNING`-severity finding ("broadcast domain partitioned"). HIGH confidence.
 - **Expansion/contraction** — the VLAN now reaches new devices/ports, or stops reaching some
-  (without a full split) → `INFO`. HIGH confidence.
+  (without a full split) → status `PASS` with an `INFO`-severity finding. HIGH confidence.
 
 It deliberately does **not** judge whether the change is *allowed* (that needs intent we don't
 have). It is distinct from `l2.blackhole`: segmentation = "the domain's shape changed";
@@ -534,8 +643,8 @@ that misses things.
 
 | # | Delta | Expected `decision` + verdict |
 |---|---|---|
-| **GS1** | Remove VLAN 30 from trunk `ge-0/0/1` — the *only* uplink carrying VLAN 30 to downstream switch B | **`UNSAFE`** — `FAIL` `l2.blackhole`: VLAN 30 segment on B isolated; `client.impact` names active VLAN-30 clients on B; **HIGH** confidence |
-| **GS2** | Remove VLAN 30 from a trunk where a *second* trunk still carries it | **`SAFE`** — `PASS` (INFO): VLAN 30 still reaches via redundant path. *Proves graph reasoning, not "a trunk changed → panic"* |
+| **GS1** | Remove VLAN 30 from trunk `ge-0/0/1` — the *only* uplink carrying VLAN 30 to downstream switch B (VLAN-30 exit is an in-scope IRB or designated uplink → HIGH-confidence exit) | **`UNSAFE`** — `FAIL` `l2.blackhole`: VLAN 30 segment on B isolated; `client.impact` names active VLAN-30 clients on B; **HIGH** confidence. *Variant: if the exit were only inferred (MEDIUM) → `REVIEW`/`WARN`* |
+| **GS2** | Remove VLAN 30 from a trunk where a *second* trunk still carries it (HIGH-confidence exit) | **`SAFE`** — `PASS` (at most `INFO` findings): VLAN 30 still reaches via redundant path. *Proves graph reasoning, not "a trunk changed → panic"* |
 | **GS3** | Add/enable a second trunk between two switches creating a redundant L2 path on ports with **STP disabled** (LAG/VC normalized out first) | **`UNSAFE`** — `FAIL` `l2.loop` (unprotected cycle), **HIGH**. *Variant: STP state unknown → **`REVIEW`** / `WARN` at LOW confidence, not FAIL* |
 | **GS4** | Change an access port's VLAN from 10→20 on a port with active clients | **`REVIEW`** — `WARN` `client.impact`: N clients on VLAN 10 affected |
 | **GS5** | Change a description / cosmetic field only | **`SAFE`** — `PASS`, full coverage, HIGH confidence. *Proves no false positives* |
@@ -558,7 +667,10 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
   in one verdict with correct aggregation.
 - **Unit tests per check:** synthetic IRs with known issues; assert status, severity, findings,
   coverage, and confidence (including the `INSUFFICIENT_DATA` and no-false-positive cases).
-- **Unit tests for `apply`:** PUT/merge semantics per object type.
+- **Unit tests for `apply`:** full-object replacement per supported `object_type` (right object
+  replaced; subsequent re-derive reflects the change).
+- **Scope/field gate:** unsupported `object_type` → `UNKNOWN`; a supported object whose payload
+  also changes an out-of-scope field (e.g. `dhcpd_config`) → `UNKNOWN`, not `SAFE`.
 - **Golden-scenario integration tests (GS1–GS8):** real org data via replay fixtures; assert the
   full verdict.
 - **Isolation test:** a deliberately-crashing check yields `ERROR` and does not affect the run or
@@ -568,19 +680,22 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
 
 ## Build sequence (Milestone 1)
 
-1. **IR model + graphs** (`ir/`) — entities, provenance/confidence, L2 + per-VLAN graph builders.
-2. **StateProvider + MistApiProvider** — fetch config + live state for a single site.
-3. **Mist ingest** (current state → IR) + **compiler equivalence gate** against
-   `getSiteSettingDerived`. *Do not proceed past this until the gate passes.*
-4. **apply** (raw + δ → raw') with per-object-type PUT/merge tests.
-5. **Check engine + registry + verdict/coverage/confidence aggregation** with isolation, and the
-   **two-source verdict** (adapter `validate` findings + check findings).
-6. **Thin L0 schema validation** (`adapters/mist/validate.py`) driven by the Mist OAS, plus the
-   `rules/` engine seam (no L1/L3 rules populated; optionally one self-`INSUFFICIENT_DATA` example).
+1. **IR model + graphs** (`ir/`) — entities (incl. `Port` STP fields), provenance/confidence,
+   L2 + per-VLAN graph builders.
+2. **StateProvider + MistApiProvider** — fetch config + live state for a single site, with
+   `state_meta` (acquired-at, per-source age, fetch failures, region).
+3. **Mist ingest** (raw → IR via our `compiler`) + **compiler equivalence gate** against
+   `getSiteSettingDerived` using the comparison rules. *Do not proceed past this until it passes.*
+4. **ScopeResolver + thin L0 validation** — object-type **and** field-level gate
+   (`UNSUPPORTED`→`UNKNOWN`), plus OAS-driven L0 (`adapters/mist/validate.py`) and the `rules/`
+   engine seam. Built **before** `apply` because validation runs before apply in the pipeline.
+5. **apply** (raw + δ → raw', **full-object replacement**) with per-`object_type` tests.
+6. **Check engine + registry + verdict** — gating order, isolation, two-source findings, and the
+   `decision` (SAFE|REVIEW|UNSAFE|UNKNOWN) aggregation.
 7. **The four L2 checks:** `l2.loop`, `l2.blackhole`, `l2.vlan_segmentation`, `client.impact`
    (Wi-Fi-aware via live wireless clients).
 8. **Drivers:** CLI, then MCP tool.
-9. **Observability:** trace + evidence + replay store (wired in from step 5 onward).
+9. **Observability:** trace + evidence + replay store (wired in from step 6 onward).
 10. **Golden scenarios GS1–GS8 green** against real org data.
 
 ---
@@ -600,10 +715,5 @@ not open questions.)*
 - **OAS conditional coverage (drives L1 scope):** how much of "xyz required if abc==true" is
   machine-readable in Mist's OAS vs prose-only. Gates how much L1 can be OAS-driven vs
   hand-authored declarative rules — deliberately kept off the M1 critical path.
-- Source/format of the Mist OAS used by L0 (bundled spec version vs fetched), and how schema
-  drift is handled when Mist updates the API.
-- **OAS conditional coverage (drives L1 scope):** how much of "xyz required if abc==true" is
-  machine-readable in Mist's OAS vs prose-only. This investigation gates how much L1 can be
-  OAS-driven vs hand-authored declarative rules — deliberately kept off the M1 critical path.
 - Source/format of the Mist OAS used by L0 (bundled spec version vs fetched), and how schema
   drift is handled when Mist updates the API.
