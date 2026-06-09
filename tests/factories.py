@@ -14,6 +14,7 @@ from digital_twin.ir.entities import (
     LinkKind,
     Port,
     PortMode,
+    link_id,
 )
 from digital_twin.ir.provenance import Provenance, fact_meta
 
@@ -53,7 +54,7 @@ def link(
     prov: Provenance = Provenance.LLDP_TWO_SIDED,
 ) -> Link:
     return Link(
-        id=f"{pa}__{pb}", a_port=pa, b_port=pb, kind=kind, bundle_id=bundle, meta=fact_meta(prov)
+        id=link_id(pa, pb), a_port=pa, b_port=pb, kind=kind, bundle_id=bundle, meta=fact_meta(prov)
     )
 
 

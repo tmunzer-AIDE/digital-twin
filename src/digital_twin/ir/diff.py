@@ -73,16 +73,18 @@ def _changed_fields(a: Any, b: Any) -> tuple[str, ...]:
             continue
         if getattr(a, f.name) != getattr(b, f.name):
             changed.append(f.name)
-    return tuple(changed)
+    return tuple(sorted(changed))  # field-order independent -> stable fixtures
 
 
 def diff_ir(baseline: IR, proposed: IR) -> IRDiff:
+    """Diff two IR snapshots. Output is sorted by (kind, id) so verdicts and
+    replay fixtures are deterministic across runs."""
     base = _index(baseline)
     prop = _index(proposed)
-    added = [EntityRef(*k) for k in prop.keys() - base.keys()]
-    removed = [EntityRef(*k) for k in base.keys() - prop.keys()]
+    added = [EntityRef(*k) for k in sorted(prop.keys() - base.keys())]
+    removed = [EntityRef(*k) for k in sorted(base.keys() - prop.keys())]
     modified: list[Modified] = []
-    for key in base.keys() & prop.keys():
+    for key in sorted(base.keys() & prop.keys()):
         changed = _changed_fields(base[key], prop[key])
         if changed:
             modified.append(Modified(EntityRef(*key), changed))

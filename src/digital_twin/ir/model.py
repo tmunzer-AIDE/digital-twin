@@ -1,6 +1,8 @@
 """IR: the immutable, validated, vendor-neutral container, plus an IRBuilder.
 
-build() rejects duplicate ids (every entity type) and dangling references. Mappings
+build() rejects duplicate ids (every entity type), dangling references,
+non-canonical ids, bundle/kind mismatches, and ambiguous VC folds — so bad
+ingester output cannot silently become misleading graph structure. Mappings
 are read-only proxies; never mutate after build().
 """
 
@@ -11,7 +13,20 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from .capabilities import Capability
-from .entities import AttachKind, Client, ClientKind, Device, DeviceRole, L3Intf, Link, Port, Vlan
+from .entities import (
+    AttachKind,
+    Client,
+    ClientKind,
+    Device,
+    DeviceRole,
+    L3Intf,
+    Link,
+    LinkKind,
+    Port,
+    Vlan,
+    link_id,
+    port_id,
+)
 
 IR_VERSION = "1.0"
 
@@ -99,16 +114,51 @@ class IRBuilder:
 
     def _validate(self) -> None:
         errors: list[str] = []
+        errors += self._validate_ports()
+        errors += self._validate_links()
+        errors += self._validate_l3intfs()
+        errors += self._validate_clients()
+        errors += self._validate_vc()
+        if errors:
+            raise IRValidationError("invalid IR:\n  " + "\n  ".join(errors))
+
+    def _validate_ports(self) -> list[str]:
+        errors: list[str] = []
         for p in self._ports.values():
             if p.device_id not in self._devices:
                 errors.append(f"port {p.id} references unknown device {p.device_id}")
+            expected = port_id(p.device_id, p.name)
+            if p.id != expected:
+                errors.append(f"port id {p.id} is not canonical (expected {expected})")
+        return errors
+
+    def _validate_links(self) -> list[str]:
+        # Canonical ids sort the endpoints, so the duplicate-id check in add_link
+        # also rejects reversed-duplicate endpoint pairs.
+        errors: list[str] = []
         for link in self._links:
             for endpoint in (link.a_port, link.b_port):
                 if endpoint not in self._ports:
                     errors.append(f"link {link.id} references unknown port {endpoint}")
+            expected = link_id(link.a_port, link.b_port)
+            if link.id != expected:
+                errors.append(f"link id {link.id} is not canonical (expected {expected})")
+            is_bundle_kind = link.kind in (LinkKind.LAG, LinkKind.MCLAG)
+            if is_bundle_kind and link.bundle_id is None:
+                errors.append(f"link {link.id} kind {link.kind.value} requires a bundle_id")
+            if not is_bundle_kind and link.bundle_id is not None:
+                errors.append(f"link {link.id} kind {link.kind.value} must not have a bundle_id")
+        return errors
+
+    def _validate_l3intfs(self) -> list[str]:
+        errors: list[str] = []
         for intf in self._l3intfs:
             if intf.device_id not in self._devices:
                 errors.append(f"l3intf {intf.id} references unknown device {intf.device_id}")
+        return errors
+
+    def _validate_clients(self) -> list[str]:
+        errors: list[str] = []
         for c in self._clients:
             if c.kind is ClientKind.WIRELESS and c.attach_kind is not AttachKind.AP:
                 errors.append(f"wireless client {c.mac} must attach to an AP")
@@ -122,12 +172,33 @@ class IRBuilder:
                     errors.append(f"client {c.mac} references unknown ap {c.attach_id}")
                 elif ap.role is not DeviceRole.AP:
                     errors.append(f"client {c.mac} attaches to {c.attach_id} which is not an AP")
+        return errors
+
+    def _validate_vc(self) -> list[str]:
+        # An ambiguous fold (self/duplicate/nested membership) would silently drop
+        # or misplace devices in the L2 graph — reject it here instead.
+        errors: list[str] = []
+        member_owner: dict[str, str] = {}
         for d in self._devices.values():
             for member in d.vc_members:
+                if member == d.id:
+                    errors.append(f"device {d.id} lists itself as a vc member")
+                    continue
                 if member not in self._devices:
                     errors.append(f"device {d.id} lists unknown vc member {member}")
-        if errors:
-            raise IRValidationError("invalid IR:\n  " + "\n  ".join(errors))
+                if member in member_owner:
+                    errors.append(
+                        f"device {member} is a vc member of both {member_owner[member]} and {d.id}"
+                    )
+                else:
+                    member_owner[member] = d.id
+        for d in self._devices.values():
+            if d.vc_members and d.id in member_owner:
+                errors.append(
+                    f"device {d.id} is both a vc root and a member of "
+                    f"{member_owner[d.id]} (nested VC)"
+                )
+        return errors
 
     def build(self) -> IR:
         self._validate()

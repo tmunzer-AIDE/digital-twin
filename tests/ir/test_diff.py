@@ -54,3 +54,26 @@ def test_touches_reports_kinds():
     d = diff_ir(base, proposed)
     assert d.touches("device") is True
     assert d.touches("port") is False
+
+
+def test_diff_output_order_is_deterministic():
+    # set-based diffing must not leak nondeterministic ordering into verdicts/fixtures
+    base = IRBuilder().add_device(sw("d1")).build()
+    proposed = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d9"))
+        .add_device(sw("d2"))
+        .add_device(sw("d5"))
+        .add_port(trunk_port("d2", "a"))
+        .build()
+    )
+    d = diff_ir(base, proposed)
+    assert [(r.kind, r.id) for r in d.added] == [
+        ("device", "d2"),
+        ("device", "d5"),
+        ("device", "d9"),
+        ("port", "d2:a"),
+    ]
+    # and repeated runs agree
+    assert d == diff_ir(base, proposed)

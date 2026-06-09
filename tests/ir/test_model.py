@@ -10,10 +10,12 @@ from digital_twin.ir.entities import (
     L3Role,
     Link,
     LinkKind,
+    Port,
+    PortMode,
     Vlan,
 )
 from digital_twin.ir.model import IR_VERSION, IRBuilder, IRValidationError
-from tests.factories import ap, sw, trunk_port
+from tests.factories import ap, link, sw, trunk_port
 
 
 def test_empty_ir_has_version_and_no_capabilities():
@@ -59,10 +61,23 @@ def test_duplicate_link_id_rejected():
         .add_port(trunk_port("d1", "a"))
         .add_port(trunk_port("d2", "a"))
     )
-    link = Link(id="l1", a_port="d1:a", b_port="d2:a", kind=LinkKind.PHYSICAL)
-    b.add_link(link)
+    b.add_link(link("d1:a", "d2:a"))
     with pytest.raises(IRValidationError):
-        b.add_link(link)
+        b.add_link(link("d1:a", "d2:a"))
+
+
+def test_reversed_duplicate_link_rejected():
+    # canonical ids sort the endpoints, so a reversed duplicate collides on id
+    b = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(trunk_port("d1", "a"))
+        .add_port(trunk_port("d2", "a"))
+    )
+    b.add_link(link("d1:a", "d2:a"))
+    with pytest.raises(IRValidationError):
+        b.add_link(link("d2:a", "d1:a"))
 
 
 def test_duplicate_l3intf_id_rejected():
@@ -105,11 +120,93 @@ def test_link_with_dangling_endpoint_rejected_at_build():
         IRBuilder()
         .add_device(sw("d1"))
         .add_port(trunk_port("d1", "ge-0/0/1"))
-        .add_link(Link(id="l1", a_port="d1:ge-0/0/1", b_port="d2:missing", kind=LinkKind.PHYSICAL))
+        .add_link(link("d1:ge-0/0/1", "d2:missing"))
     )
     with pytest.raises(IRValidationError) as e:
         b.build()
     assert "d2:missing" in str(e.value)
+
+
+def test_non_canonical_port_id_rejected_at_build():
+    bad = Port(id="whatever", device_id="d1", name="ge-0/0/1", mode=PortMode.TRUNK)
+    with pytest.raises(IRValidationError) as e:
+        IRBuilder().add_device(sw("d1")).add_port(bad).build()
+    assert "not canonical" in str(e.value)
+
+
+def test_non_canonical_link_id_rejected_at_build():
+    # e.g. a vendor object id instead of the canonical sorted-endpoint id
+    b = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(trunk_port("d1", "a"))
+        .add_port(trunk_port("d2", "a"))
+        .add_link(Link(id="mist-obj-123", a_port="d1:a", b_port="d2:a", kind=LinkKind.PHYSICAL))
+    )
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "not canonical" in str(e.value)
+
+
+def test_lag_without_bundle_id_rejected_at_build():
+    # an un-bundled LAG member would otherwise read as false parallel redundancy
+    b = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(trunk_port("d1", "a"))
+        .add_port(trunk_port("d2", "a"))
+        .add_link(link("d1:a", "d2:a", LinkKind.LAG))  # bundle=None
+    )
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "requires a bundle_id" in str(e.value)
+
+
+def test_physical_with_bundle_id_rejected_at_build():
+    b = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(trunk_port("d1", "a"))
+        .add_port(trunk_port("d2", "a"))
+        .add_link(link("d1:a", "d2:a", LinkKind.PHYSICAL, bundle="ae0"))
+    )
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "must not have a bundle_id" in str(e.value)
+
+
+def test_vc_self_membership_rejected_at_build():
+    with pytest.raises(IRValidationError) as e:
+        IRBuilder().add_device(sw("d1", vc_members=("d1",))).build()
+    assert "itself" in str(e.value)
+
+
+def test_vc_duplicate_membership_rejected_at_build():
+    b = (
+        IRBuilder()
+        .add_device(sw("d1", vc_members=("d3",)))
+        .add_device(sw("d2", vc_members=("d3",)))
+        .add_device(sw("d3"))
+    )
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "member of both" in str(e.value)
+
+
+def test_nested_vc_membership_rejected_at_build():
+    # d2 is both a VC root (owns d3) and a member of d1 -> ambiguous fold
+    b = (
+        IRBuilder()
+        .add_device(sw("d1", vc_members=("d2",)))
+        .add_device(sw("d2", vc_members=("d3",)))
+        .add_device(sw("d3"))
+    )
+    with pytest.raises(IRValidationError) as e:
+        b.build()
+    assert "nested" in str(e.value)
 
 
 def test_wired_client_with_unknown_port_rejected_at_build():
@@ -173,7 +270,7 @@ def test_valid_ir_with_full_references_builds():
         .add_device(sw("d2"))
         .add_port(trunk_port("d1", "ge-0/0/1"))
         .add_port(trunk_port("d2", "ge-0/0/5"))
-        .add_link(Link(id="l1", a_port="d1:ge-0/0/1", b_port="d2:ge-0/0/5", kind=LinkKind.PHYSICAL))
+        .add_link(link("d1:ge-0/0/1", "d2:ge-0/0/5"))
         .build()
     )
     assert len(ir.links) == 1
