@@ -880,7 +880,19 @@ def norm_schema(schema: dict[str, Any]) -> dict[str, Any]:
         return norm_schema({**merged, **{k: v for k, v in schema.items() if k != "allOf"}})
     for comb in ("anyOf", "oneOf"):
         if comb in schema:
-            return norm_schema(schema[comb][0])  # first variant, deterministic
+            variants = schema[comb]
+            # Mist uses these for SCALAR unions (int-or-{{var}}), where every
+            # variant has the same (empty) leaf set, so first-variant is safe.
+            # An object-shaped non-first variant would hide leaves from both
+            # the Tier-1 generator and Tier-2 coverage — fail loudly instead.
+            for extra in variants[1:]:
+                if isinstance(extra, dict) and (
+                    "properties" in extra or "additionalProperties" in extra
+                ):
+                    raise UnsupportedSchema(
+                        f"{comb} with object-shaped non-first variant (leaves would be hidden)"
+                    )
+            return norm_schema(variants[0])  # first variant, deterministic
     t = schema.get("type")
     if isinstance(t, list):  # nullable type arrays, e.g. ["integer", "null"]
         non_null = [x for x in t if x != "null"]
@@ -1173,6 +1185,14 @@ class IngestFailure:
 
 @dataclass(frozen=True)
 class IngestReport:
+    """Outcome of an ingest run.
+
+    CONTRACT: when ``ok`` is False, the builder/IR is DIAGNOSTIC-ONLY — the
+    failed ingester may have left partial mutations behind (no rollback is
+    attempted). The pipeline must map a non-ok report to decision UNKNOWN
+    (named per failed ingester) and must NOT run checks against that IR.
+    """
+
     produced: frozenset[Capability]
     failures: tuple[IngestFailure, ...]
 
@@ -1205,7 +1225,7 @@ class IngesterRegistry:
         return IngestReport(produced=frozenset(produced), failures=tuple(failures))
 ```
 
-- [ ] **Step 4: Run to verify pass** — PASS (2).
+- [ ] **Step 4: Run to verify pass** — PASS (4).
 
 - [ ] **Step 5: Commit**
 
@@ -2525,7 +2545,7 @@ which schema leaves real data exercised.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
