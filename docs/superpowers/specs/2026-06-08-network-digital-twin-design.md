@@ -112,10 +112,16 @@ out-of-scope effective field. So the field gate runs at **two** points:
 1. **Raw pre-screen** (`ScopeResolver.post`, pipeline step 4) — diff `payload` vs current raw and
    match changed paths against the raw allowlist below. Cheap; catches obvious out-of-scope edits
    before we bother compiling.
-2. **Derived-impact gate** (post-compile, pipeline step 8) — diff the *effective* config `IR` vs
-   `IR'`. **If any effective field outside the in-scope set differs → `UNKNOWN`**, even when the raw
-   change looked in-scope. This is what makes `vars` safe to allow: a var edit that compiles into a
-   `dhcpd_config` change is caught here.
+2. **Derived-impact gate** (post-compile) — diff the **compiler's full effective config**
+   (`effective` vs `effective'`), **not** the IR. This matters: the IR is a *projection* of only the
+   in-scope fields, so an out-of-scope effective field (e.g. `dhcpd_config`) **never enters the IR**
+   and `IRDiff` can't see it. The compiler therefore retains the *full* effective config alongside
+   the IR projection; the gate diffs that full config and **if any effective field outside the
+   in-scope set differs → `UNKNOWN`**, even when the raw change looked in-scope. This is what makes
+   `vars` safe to allow: a var edit that compiles into a `dhcpd_config` change is caught here.
+
+   *(Two artifacts from compile: the **full effective config** — all fields, consumed by this gate —
+   and the **IR** — the in-scope projection, consumed by representations/analysis/checks.)*
 
 **In-scope raw paths (authoritative M1 allowlist — named subtrees, leaf-tightened):**
 
@@ -199,12 +205,12 @@ stage is a swappable seam:
     payload}]}    │       └─ total failure → UNKNOWN; partial → state_meta        │    confidence +
                   │  4. ScopeResolver.post  raw field pre-screen + device-role     │    state_meta +
                   │       └─ out-of-scope raw path / wrong role → UNKNOWN          │    ir_diff + trace)
-                  │  5. Adapter.ingest      raw → IR  (baseline, via compiler)     │
+                  │  5. Adapter.ingest      raw → effective + IR (baseline)        │
                   │  6. Adapter.apply       raw + δ → raw'                         │
-                  │  7. Adapter.ingest      raw' → IR' (proposed, via compiler)    │
-                  │  8. IRDiff + derived-impact gate                              │
+                  │  7. Adapter.ingest      raw' → effective' + IR' (proposed)     │
+                  │  8. derived-impact gate diff(effective, effective')           │
                   │       └─ out-of-scope EFFECTIVE field changed → UNKNOWN        │
-                  │  9. CheckRegistry       run L2/L3 checks on (IR, IR', IRDiff)  │
+                  │  9. CheckRegistry       diff_ir(IR,IR'); run checks on ctx     │
                   │ 10. VerdictBuilder      aggregate findings → decision          │
                   └──────────────────────────────────────────────────────────────┘
 ```
@@ -219,8 +225,9 @@ post-compile because `vars`/template ripple is only visible in the effective con
 The verdict has **two finding sources**, both using the same `Finding` model: the vendor adapter's
 payload validation (L0, step 2) and the neutral check registry (L2/L3, step 9). Schema validation —
 vendor-specific, reads raw payload — stays out of the neutral check layer, while still surfacing in
-one unified verdict. **Checks at step 9 receive only `(IR, IR', IRDiff)` — never the raw Mist
-payload** (see the check contract).
+one unified verdict. **Checks at step 9 receive only the two `AnalysisContext`s (baseline +
+proposed, each wrapping an IR with memoized representations/analysis) and the `IRDiff` — never the
+raw Mist payload** (see the check contract).
 
 ### Seams (this is where modularity lives)
 
@@ -284,13 +291,21 @@ ctx.vlan_components(30); ctx.path_to_exit(30, node)  # analysis (cached)
 
 ### Capability supply/demand is a DAG (closes the silent-blind-spot wall)
 
-Capabilities flow up the layers: **ingesters/compilers *produce*** IR capabilities →
-**representations/analyzers *require*** them → **checks *require*** analysis. A check that
-`requires()` a capability the IR didn't populate auto-resolves to `INSUFFICIENT_DATA` (per the
-gating order). `engine/capability_check.py` validates the whole chain: **every required capability
-must have a producer somewhere, or be explicitly marked not-yet-supported** — a test turns a
-"silently INSUFFICIENT_DATA forever" gap into a loud build failure. Adding a domain means adding an
-ingester that *produces* the capability and a check that *requires* it; the validator keeps them honest.
+**Capabilities are one unified, namespaced vocabulary** (`Capability` — namespaced strings). M1's
+set is the IR-domain subset (`IRCapability`: `wired.l2`, `stp.state`, `clients.active`, `l3.exits`);
+*producers* of analysis-derived capabilities (e.g. `analysis.reachability`) slot into the **same**
+vocabulary later with no type change. Every producer (ingester/compiler, and later an analyzer) and
+every consumer (representation, analyzer, check) declares `produces()` / `requires()` over this one
+type — so the supply/demand graph is uniform across layers.
+
+Capabilities flow up the layers: **ingesters/compilers *produce*** them → **representations/
+analyzers *require*** them → **checks *require*** them (directly, or transitively via the analysis
+they read). A check that `requires()` a capability the IR didn't populate auto-resolves to
+`INSUFFICIENT_DATA` (per the gating order). `engine/capability_check.py` validates the whole chain:
+**every required capability must have a producer somewhere, or be explicitly marked
+not-yet-supported** — a test turns a "silently INSUFFICIENT_DATA forever" gap into a loud build
+failure. Adding a domain means adding an ingester that *produces* the capability and a check that
+*requires* it; the validator keeps them honest.
 
 ### Component contracts (inputs / outputs / errors)
 
@@ -303,11 +318,11 @@ noted — they become verdict outcomes (`UNKNOWN`/`REVIEW`), never an unhandled 
 | `StateProvider` | scope | raw vendor state + `state_meta` | total fetch fail → `UNKNOWN`; partial → recorded in `state_meta` |
 | `scope/field_gate` (post-fetch) | `payload`, current raw | changed-path set, in/out verdict | out-of-scope raw path → `UNKNOWN` |
 | `adapters/mist/validate` (L0) | `ChangeOp.payload`, OAS | L0 `Finding`s | fatal schema error → short-circuit verdict |
-| `ingest/registry` (+per-domain ingesters) | raw state | IR slices + produced capabilities | a domain ingester failure → `UNKNOWN` (named) |
-| `compile/registry` (+per-domain compilers) | raw + templates | effective config | compile failure → `UNKNOWN` (named in reasons) |
+| `compile/registry` (+per-domain compilers) | raw + templates | **full effective config** | compile failure → `UNKNOWN` (named in reasons) |
+| `ingest/registry` (+per-domain ingesters) | effective config | IR slices (in-scope projection) + produced capabilities | a domain ingester failure → `UNKNOWN` (named) |
 | `adapters/mist/apply` | raw, `δ` (ordered ops) | `raw'` | unknown object/id, duplicate op → `UNKNOWN` |
-| `ir/diff.diff_ir` | `IR`, `IR'` | neutral `IRDiff` | — (pure) |
-| `scope/derived_gate` (post-compile) | `IRDiff`, effective allowlist | in/out verdict | out-of-scope *effective* field → `UNKNOWN` |
+| `ir/diff.diff_ir` | `IR`, `IR'` | neutral `IRDiff` (for checks) | — (pure) |
+| `scope/derived_gate` (post-compile) | `effective`, `effective'`, effective allowlist | in/out verdict | out-of-scope *effective* field → `UNKNOWN` |
 | `analysis/AnalysisContext` | `IR` | memoized representations + analysis (carry confidence) | missing capability → analysis absent → check `INSUFFICIENT_DATA` |
 | `checks/registry` | `IR`, `IRDiff`, `AnalysisContext` | `list[CheckResult]` | per-check crash isolated → `CHECK_ERROR` |
 | `verdict/verdict` (+`decision`) | all findings + coverage + `state_meta` | `verdict` (+ `decision`) | — (pure aggregation) |
@@ -336,8 +351,9 @@ has one reason to change; protocols sit at every seam; pure layers never import 
 
 ```
 src/digital_twin/
-├── contracts/                  # cross-cutting input/output value types (pure)
-│   └── change_plan.py          # ChangePlan, ChangeOp
+├── contracts/                  # cross-cutting value types (pure) — imported by everyone, imports nobody
+│   ├── change_plan.py          # ChangePlan, ChangeOp
+│   └── finding.py              # Finding, Severity, category(network|operational)  ← shared result DTO
 ├── ir/                         # vendor-neutral model — PURE, depends on nothing
 │   ├── confidence.py           # Confidence, min_confidence
 │   ├── provenance.py           # Provenance, FactMeta, canonical provenance→confidence table
@@ -355,16 +371,15 @@ src/digital_twin/
 │   ├── vlan_reachability.py    # connected components, path-to-exit
 │   └── exits.py                # VLAN-exit resolution (IRB → boundary uplink → none)   (later: reachability, forwarding, batfish, policy_eval)
 ├── checks/                     # INTERPRET analysis → findings — the ONLY layer with severity
-│   ├── base.py                 # Check protocol, CheckContext, CheckResult
+│   ├── base.py                 # Check protocol, CheckContext, CheckResult, Coverage (imports contracts.finding)
 │   ├── registry.py             # discovery, gating order (applies_to→requires), isolation
 │   └── wired/                  # l2_loop.py, l2_blackhole.py, l2_vlan_segmentation.py, client_impact.py
 ├── rules/                      # declarative L1/L3 (later) — data-driven, not code-per-rule
 │   ├── engine.py               # evaluate "when <cond> then <require>"
 │   ├── primitives.py           # require/reachable primitives (query analysis layer)
 │   └── catalog/                # rule DEFINITIONS (data)
-├── verdict/                    # findings → decision — PURE
-│   ├── finding.py              # Finding, Severity, category(network|operational)
-│   ├── coverage.py             # Coverage model + per-domain rollup
+├── verdict/                    # findings → decision — PURE (imports contracts.finding + checks.base; never imported by them)
+│   ├── coverage.py             # per-domain coverage rollup
 │   ├── confidence_summary.py   # confidence rollup
 │   ├── state_meta.py           # freshness (acquired_at, per-source age, fetch_failures, region)
 │   ├── decision.py             # SAFE|REVIEW|UNSAFE|UNKNOWN + precedence (pure function)
@@ -402,9 +417,12 @@ src/digital_twin/
 
 **Dependency direction (a clean DAG, no cycles):**
 `ir → representations → analysis → checks → verdict`; `scope → {ir, contracts}`;
-`adapters → {ir, contracts, verdict}`; `providers → contracts`; `rules → {analysis, verdict}`;
-`engine → everything (wires only)`; `observability/drivers` consume `verdict/contracts`. The pure
-core (`ir/representations/analysis/verdict`) never imports effectful code.
+`checks → {analysis, contracts}` (emit `contracts.Finding`); `verdict → {contracts, checks}` (one
+direction — verdict is never imported by checks, so no cycle); `scope → {ir, contracts}`;
+`adapters → {ir, contracts}` (L0 findings are `contracts.Finding`); `providers → contracts`;
+`rules → {analysis, contracts}`; `engine → everything (wires only)`; `observability/drivers` consume
+`{contracts, verdict}`. The pure core (`ir/representations/analysis/checks/verdict`) never imports
+effectful code; `contracts` imports nobody.
 
 The central lesson from the prior project: the vendor-specific hard 80% (`validate`/per-domain
 `ingest`/`compile`/`apply`) is split into many small modules behind the `MistAdapter` facade — adding
@@ -425,15 +443,21 @@ yields a frozen proposed IR. Nothing mutates in place — a run is reproducible 
 
 ### Entities (Milestone 1 — namespaced so new domains bolt on without touching these)
 
+Every entity carries a `FactMeta` (provenance + confidence). The entity `meta` covers the entity's
+facts when they share a source; a field that comes from a *different* source than the entity's
+config gets its **own** `*_meta` field (M1's one such case: `Port.stp_meta`, a live fact).
+
 ```
 core domain (Milestone 1):
-  Device    id, role(switch|gateway|ap|mistedge), model, site, vc_members
-  Port      device_id, name, mode(access|trunk), speed, poe, profile, native_vlan, tagged_vlans,
-            stp_enabled, stp_mode(rstp|mstp|vstp|none), stp_state, stp_provenance(observed|config|unknown)
-  Link      a_port, b_port, kind(physical|lag|mclag|vc), source(lldp|config), bidirectional
-  Vlan      vlan_id, name, scope(site|org)
-  L3Intf    device_id, vlan_id|port, subnet, ip, role(irb|svi|wan|loopback)   # minimal: VLAN "exit"
-  Client    mac, attach(port|ap), vlan, ip, kind(wired|wireless), active
+  Device    id, role(switch|gateway|ap|mistedge), model, site, vc_members, meta
+  Port      id, device_id, name, mode(access|trunk), speed, poe, profile, native_vlan,
+            tagged_vlans, stp_enabled, stp_mode, stp_state, stp_meta(FactMeta|None), meta
+  Link      id, a_port, b_port, kind(physical|lag|mclag|vc), bundle_id, meta
+            #  ^ no source/bidirectional: provenance (incl. one-sided LLDP) lives in meta;
+            #    bundle_id identifies a LAG/MCLAG bundle for correct edge collapse
+  Vlan      vlan_id, name, scope, meta
+  L3Intf    id(auto), device_id, role(irb|svi|wan|loopback), vlan_id|port, subnet, ip, meta
+  Client    id(=mac), mac, kind(wired|wireless), attach_kind(port|ap), attach_id, vlan, ip, active, meta
 
 future domains (entity types only, added later, zero change to the above):
   wan/    Tunnel, Peer, Path        policy/  Acl, FwRule, Service
@@ -441,24 +465,28 @@ future domains (entity types only, added later, zero change to the above):
   routing/ OspfAdj, BgpPeer, StpInfo, IpsecSa
 ```
 
-### Derived graphs (built once per IR snapshot, cached on it)
+### Derived graphs / representations (built once per IR, memoized by `AnalysisContext`)
 
-- **L2 graph** — devices+ports as nodes, physical links as edges, with **LAG/MCLAG collapsed to a
-  single logical edge and VC treated as device-internal** → reachability, connected components.
-- **Per-VLAN graph** — subgraph restricted to links that *carry* that VLAN → input to **loop** and
-  **blackhole** detection. Exact models, severity, and confidence behavior are binding contracts
-  in *L2 topology check semantics (M1 contracts)* — a graph cycle is **not** a loop by itself.
-- **L3 graph** (minimal in M1) — VLAN→exit, where "exit" follows the precedence contract in the
-  blackhole section (in-scope IRB → boundary uplink → else `INSUFFICIENT_DATA`).
+These are **representations** (layer 2). M1 uses a **device-level** L2 graph whose **edges are
+derived from specific ports** (see *L2 topology check semantics*) — so a port-level config change
+changes its edge and is detected.
+
+- **L2 graph** — **device nodes**; edges are logical links carrying `member_ports`/`bundle_id`/
+  carried-VLANs/confidence. LAG/MCLAG collapse by `bundle_id`; independent links (and independent
+  bundles) stay **parallel** edges (redundancy = cycle); VC fabric folds into one node.
+- **Per-VLAN graph** — subgraph restricted to edges that *carry* that VLAN, including only
+  participating nodes (carrying / member access-port / exit), annotated `access_ports`/`exits`.
+  Input to **loop** and **blackhole** *analysis* (layer 3); a graph cycle is **not** a loop by itself.
+- **VLAN-exit / index lookups** (`ir/indexes.py`) — access-ports-by-vlan, exits-by-vlan, etc.
 
 ### Three properties that make the IR trustworthy and diffable
 
-1. **Every fact carries provenance + confidence.** A `Link` records `source: lldp` and whether it
-   was seen from both sides (`bidirectional`). Checks read this and downgrade their own confidence
-   when they lean on a weak fact.
-2. **Stable identity.** Every entity `id` derives from stable keys (`device.mac + port.name`,
-   subnet, LLDP system-name), so baseline and proposed entities line up and `IRDiff` is a clean
-   structural delta. This same property enables future cross-vendor reconciliation.
+1. **Every fact carries provenance + confidence** via `FactMeta`. A `Link` whose `meta.provenance`
+   is one-sided LLDP is `LOW`; a `Port.stp_meta` of `None` means STP unknown. Analysis composes
+   confidence (MIN) over the specific facts it relied on; only checks turn it into severity.
+2. **Stable identity.** Every entity has a stable `id` from stable keys (`device.mac + port.name`,
+   etc.) — never a vendor `object_id` — so baseline/proposed entities line up, `IRDiff` is a clean
+   structural delta, and `IRBuilder` rejects duplicate ids and dangling refs.
 3. **Immutable snapshots.** Frozen IRs make runs reproducible and replayable.
 
 ### Extensibility
@@ -501,8 +529,8 @@ class Check(Protocol):
     domain: str              # "wired.l2" — groups in the verdict
     default_severity: Severity
 
-    def requires(self) -> list[IRCapability]:
-        # IR capabilities this check needs, e.g. STP_STATE, CLIENTS_ACTIVE, L3_EXITS
+    def requires(self) -> list[Capability]:
+        # capabilities this check needs (M1: IRCapability subset — STP_STATE, CLIENTS_ACTIVE, ...)
         ...
     def applies_to(self, diff: IRDiff) -> bool:
         # cheap predicate over the neutral change set: does this touch what I reason about?
@@ -965,10 +993,11 @@ moment-in-time read. The verdict is valid "as of now," consistent with the on-de
 
 Each plan below is a separate spec→plan→implement slice (Plan 1–5).
 
-1. **Plan 1 — IR core + indexes + representations** (`contracts/`, `ir/`, `representations/`):
-   entities (incl. `Port` STP fields) with `FactMeta`, validating `IRBuilder`, `ir_version` +
-   `capabilities`, `IRDiff`, `ir/indexes.py`, and the L2 + per-VLAN representation builders. Pure, no
-   I/O. *(Analysis + checks are Plan 4 — they change together.)*
+1. **Plan 1 — IR core + indexes + representations** (`ir/`, `representations/`):
+   entities (incl. `Port.stp_meta`) with `FactMeta`, validating `IRBuilder` (dup-id + dangling-ref
+   rejection for *every* entity), `ir_version` + `capabilities`, `IRDiff`, `ir/indexes.py`, and the
+   L2 + per-VLAN representation builders. Pure, no I/O. *(`contracts/` is created when first needed
+   in Plan 2/3; analysis + checks are Plan 4.)*
 2. **Plan 2 — StateProvider + ingester registry + Mist switch-ingester + compiler + equivalence
    gate + capability wiring.** `MistApiProvider`; `ingest/registry.py` + `ingest/switch.py`;
    `compile/switch.py` + the **equivalence gate** against `getSiteSettingDerived` (*do not proceed
