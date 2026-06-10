@@ -1,5 +1,5 @@
 from digital_twin.contracts import Rejection
-from digital_twin.scope.derived_gate import changed_effective_fields, check_derived
+from digital_twin.scope.derived_gate import changed_effective_paths, check_derived
 
 BASE = {
     "networks": {"corp": {"vlan_id": 10}},
@@ -28,11 +28,20 @@ def test_vars_ripple_into_out_of_scope_field_rejects():
     assert not any(reason.startswith("vars") for reason in r.reasons)
 
 
+def test_unmodeled_leaf_inside_in_scope_subtree_rejects():
+    # the review's P1 case at the EFFECTIVE level: networks is in scope, but
+    # isolation is an unmodeled leaf the IR cannot see
+    prop = {**BASE, "networks": {"corp": {"vlan_id": 10, "isolation": True}}}
+    r = check_derived(BASE, prop)
+    assert isinstance(r, Rejection)
+    assert any("networks.corp.isolation" in reason for reason in r.reasons)
+
+
 def test_out_of_scope_field_appearing_rejects():
     prop = {**BASE, "radius_config": {"servers": []}}
     assert isinstance(check_derived(BASE, prop), Rejection)
 
 
-def test_changed_effective_fields_lists_top_level_only():
+def test_changed_effective_paths_are_leaf_level():
     prop = {**BASE, "networks": {"corp": {"vlan_id": 11}}, "extra": 1}
-    assert changed_effective_fields(BASE, prop) == ("extra", "networks")
+    assert changed_effective_paths(BASE, prop) == ("extra", "networks.corp.vlan_id")

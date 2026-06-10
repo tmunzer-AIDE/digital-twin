@@ -10,28 +10,25 @@ def test_supported_object_types_are_the_m1_pair():
     assert SUPPORTED_OBJECT_TYPES == ("site_setting", "device")
 
 
-def test_raw_allowlist_matches_spec_table():
-    assert RAW_ALLOWLIST["site_setting"] == ("networks.*", "port_usages.*", "vars.*")
-    assert RAW_ALLOWLIST["device"] == (
-        "port_config.*",
-        "networks.*",
-        "port_usages.*",
-        "name",
-        "notes",
-    )
+def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
+    # spec: "named subtrees, LEAF-tightened" — only IR-modeled leaves, never
+    # whole networks/port_usages subtrees (which carry isolation/allow_dhcpd/...)
+    site = RAW_ALLOWLIST["site_setting"]
+    assert "networks.*.vlan_id" in site and "vars.*" in site
+    assert "networks.*" not in site and "port_usages.*" not in site
+    for attr in ("mode", "port_network", "networks", "all_networks"):
+        assert f"port_usages.*.{attr}" in site
+
+    device = RAW_ALLOWLIST["device"]
+    assert "name" in device and "notes" in device
+    assert "port_config.*.usage" in device and "port_config.*" not in device
 
 
-def test_effective_allowlist_covers_what_the_ir_consumes():
-    # everything resolve_effective_ports/vlans read, and vars (the allowed input)
-    for f in (
-        "networks",
-        "port_usages",
-        "vars",
-        "port_config",
-        "local_port_config",
-        "port_config_overwrite",
-    ):
-        assert f in EFFECTIVE_ALLOWLIST
+def test_effective_allowlist_is_leaf_level():
+    assert "networks.*.vlan_id" in EFFECTIVE_ALLOWLIST
+    assert "vars.*" in EFFECTIVE_ALLOWLIST
+    assert "port_config.*.usage" in EFFECTIVE_ALLOWLIST
+    assert "networks.*" not in EFFECTIVE_ALLOWLIST  # subtree entries are gone
 
 
 def test_server_metadata_is_ignored_in_raw_diffs():

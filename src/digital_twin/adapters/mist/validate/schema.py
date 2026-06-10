@@ -1,8 +1,10 @@
 """L0: thin structural payload validation against the COMMITTED Mist OAS.
 
 Types, enums, required, and machine-readably encoded conditionals — exactly what
-jsonschema can assert from the extracted schemas (OAS-only keywords like
-`nullable` are unknown keywords to jsonschema and simply don't constrain).
+jsonschema can assert from the extracted schemas. OAS 3.0 `nullable: true` is
+NOT a JSON-Schema keyword (jsonschema would ignore it and then `type: string`
+would falsely reject an explicit null), so schemas are normalized first:
+nullable -> type list with "null" (+ None appended to any enum).
 Deterministic -> every finding is HIGH confidence, source=adapter,
 category=operational (a payload Mist would reject is not network breakage).
 `fatal` means the run cannot meaningfully continue (payload not an object /
@@ -48,9 +50,32 @@ def _finding(code: str, message: str, path: str = "") -> Finding:
     )
 
 
+def _absorb_nullable(node: Any) -> None:
+    """In place: OAS `nullable: true` -> JSON-Schema `type: [..., "null"]` (+ null
+    in any enum) — recursively. load_schema returns a fresh object each call, so
+    mutating here never touches shared state."""
+    if isinstance(node, dict):
+        if node.get("nullable") is True:
+            t = node.get("type")
+            if isinstance(t, str):
+                node["type"] = [t, "null"]
+            elif isinstance(t, list) and "null" not in t:
+                node["type"] = [*t, "null"]
+            enum = node.get("enum")
+            if isinstance(enum, list) and None not in enum:
+                node["enum"] = [*enum, None]
+        for value in node.values():
+            _absorb_nullable(value)
+    elif isinstance(node, list):
+        for item in node:
+            _absorb_nullable(item)
+
+
 @cache
 def _validator(object_type: str) -> jsonschema.Draft202012Validator:
-    return jsonschema.Draft202012Validator(load_schema(_SCHEMA_FILES[object_type]))
+    schema = load_schema(_SCHEMA_FILES[object_type])
+    _absorb_nullable(schema)
+    return jsonschema.Draft202012Validator(schema)
 
 
 def validate_payload(object_type: str, payload: Mapping[str, Any]) -> L0Result:

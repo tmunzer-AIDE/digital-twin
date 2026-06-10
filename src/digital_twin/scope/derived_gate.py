@@ -1,12 +1,14 @@
-"""Post-compile derived-impact gate: diff the FULL effective configs.
+"""Post-compile derived-impact gate: diff the FULL effective configs, leaf-level.
 
 The IR is a projection of in-scope fields only, so an out-of-scope effective
 change (e.g. a vars edit rippling into dhcpd_config) NEVER enters the IR and
 IRDiff cannot see it. This gate diffs the compiler's full effective output
-(baseline vs proposed) — site effective AND each device effective — and rejects
-if any field OUTSIDE the effective allowlist differs. Both sides come from the
-identical compiler code path, so plain equality is sound (no normalization
-needed — same code, same shapes).
+(baseline vs proposed) — site effective AND each device effective — at LEAF
+granularity and rejects if any leaf outside the effective allowlist differs.
+Leaf-level matters for the same reason as the raw gate: an in-scope subtree
+(networks) can carry out-of-scope leaves (isolation) that the IR does not
+model. Both sides come from the identical compiler code path, so plain
+equality is sound (no normalization needed — same code, same shapes).
 """
 
 from __future__ import annotations
@@ -16,32 +18,32 @@ from typing import Any
 
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
+from digital_twin.scope.paths import allowed, changed_leaf_paths
 
 _STAGE = "derived_gate"
 
 
-def changed_effective_fields(
+def changed_effective_paths(
     baseline: Mapping[str, Any], proposed: Mapping[str, Any]
 ) -> tuple[str, ...]:
-    keys = set(baseline) | set(proposed)
-    return tuple(sorted(k for k in keys if baseline.get(k) != proposed.get(k)))
+    return changed_leaf_paths(baseline, proposed)
 
 
 def check_derived(
     baseline: Mapping[str, Any], proposed: Mapping[str, Any], *, artifact: str = "site"
 ) -> Rejection | None:
     offending = [
-        field
-        for field in changed_effective_fields(baseline, proposed)
-        if field not in EFFECTIVE_ALLOWLIST
+        path
+        for path in changed_effective_paths(baseline, proposed)
+        if not allowed(path, EFFECTIVE_ALLOWLIST)
     ]
     if offending:
         return Rejection(
             stage=_STAGE,
             reasons=tuple(
-                f"{field}: out-of-scope EFFECTIVE field differs in {artifact} config "
+                f"{path}: out-of-scope EFFECTIVE leaf differs in {artifact} config "
                 "(change ripples beyond the M1 model)"
-                for field in offending
+                for path in offending
             ),
         )
     return None

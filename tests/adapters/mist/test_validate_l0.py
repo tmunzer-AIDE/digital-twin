@@ -34,6 +34,21 @@ def test_enum_violation_detected_on_device_payload():
     assert any("duplex" in str(f.evidence.get("path")) for f in res.findings)
 
 
+def test_nullable_string_field_accepts_explicit_null():
+    # OAS `nullable: true` is not a JSON-Schema keyword; without normalization
+    # `type: string` would falsely reject a valid explicit null
+    res = validate_payload(
+        "site_setting", {"port_usages": {"office": {"mode": "access", "guest_network": None}}}
+    )
+    assert res.findings == ()
+
+
+def test_nullable_enum_field_accepts_explicit_null():
+    # port_auth is nullable AND enum-constrained — null must join the enum too
+    res = validate_payload("site_setting", {"port_usages": {"office": {"port_auth": None}}})
+    assert res.findings == ()
+
+
 def test_non_object_payload_is_fatal():
     res = validate_payload("site_setting", "just-a-string")  # type: ignore[arg-type]
     assert res.fatal is True and len(res.findings) == 1

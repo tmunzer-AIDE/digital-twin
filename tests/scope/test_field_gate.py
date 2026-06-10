@@ -10,16 +10,24 @@ CURRENT = {
     "dhcpd_config": {"corp": {"ip": "10.0.0.2"}},
 }
 
+SWITCH_CUR = {
+    "type": "switch",
+    "name": "sw-a",
+    "notes": "old",
+    "port_config": {"ge-0/0/0": {"usage": "office"}},
+}
+
 
 def test_changed_paths_detects_leaf_edit():
     payload = {**CURRENT, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
     assert changed_paths(CURRENT, payload) == ("networks.voice.vlan_id",)
 
 
-def test_changed_paths_counts_removal_as_change():
-    # full-object replacement: a key present in current but absent from payload IS a change
+def test_changed_paths_descends_removed_subtree_to_leaves():
+    # full-object replacement: a key present in current but absent from payload
+    # IS a change — surfaced at LEAF granularity
     payload = {k: v for k, v in CURRENT.items() if k != "dhcpd_config"}
-    assert changed_paths(CURRENT, payload) == ("dhcpd_config",)
+    assert changed_paths(CURRENT, payload) == ("dhcpd_config.corp.ip",)
 
 
 def test_changed_paths_ignores_server_metadata():
@@ -39,13 +47,43 @@ def test_out_of_scope_change_rejects_with_paths():
     assert any("dhcpd_config" in reason for reason in r.reasons)
 
 
+def test_unmodeled_leaf_inside_allowed_subtree_rejects():
+    # the review's P1 case: networks is an in-scope SUBTREE but isolation is an
+    # unmodeled LEAF — the IR cannot simulate it, so it must not pass as in-scope
+    payload = {
+        **CURRENT,
+        "networks": {"corp": {"vlan_id": 10, "isolation": True}, "voice": {"vlan_id": 30}},
+    }
+    r = screen_op("site_setting", CURRENT, payload)
+    assert isinstance(r, Rejection)
+    assert any("networks.corp.isolation" in reason for reason in r.reasons)
+
+
+def test_unmodeled_usage_leaf_rejects():
+    payload = {
+        **CURRENT,
+        "port_usages": {"office": {"mode": "access", "port_network": "corp", "allow_dhcpd": True}},
+    }
+    r = screen_op("site_setting", CURRENT, payload)
+    assert isinstance(r, Rejection)
+    assert any("allow_dhcpd" in reason for reason in r.reasons)
+
+
 def test_whole_subtree_removal_of_allowed_field_passes():
     payload = {k: v for k, v in CURRENT.items() if k != "vars"}
     assert screen_op("site_setting", CURRENT, payload) is None
 
 
 def test_device_exact_leaves_name_notes():
-    cur = {"name": "sw-a", "notes": "old", "port_config": {"ge-0/0/0": {"usage": "office"}}}
-    assert screen_op("device", cur, {**cur, "name": "sw-b"}) is None
-    r = screen_op("device", cur, {**cur, "managed": False})
+    assert screen_op("device", SWITCH_CUR, {**SWITCH_CUR, "name": "sw-b"}) is None
+    r = screen_op("device", SWITCH_CUR, {**SWITCH_CUR, "managed": False})
     assert isinstance(r, Rejection)
+
+
+def test_non_switch_device_rejected_post_fetch():
+    # the review's P1 case: M1 models switch config only — an AP update must
+    # not pass the gates even if its changed paths look allowable
+    ap_cur = {"type": "ap", "name": "ap-1"}
+    r = screen_op("device", ap_cur, {**ap_cur, "name": "ap-2"})
+    assert isinstance(r, Rejection) and r.stage == "field_gate"
+    assert any("'ap'" in reason and "switch" in reason for reason in r.reasons)
