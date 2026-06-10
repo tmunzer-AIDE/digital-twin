@@ -171,6 +171,30 @@ def test_malformed_envelope_stops_at_envelope():
     assert isinstance(result, Rejection) and result.stage == "envelope"
 
 
+def test_local_port_config_override_flows_through_to_proposed_ir():
+    # a resolver-modeled override map: the op adds a local override reassigning
+    # one port's usage — must pass the gates AND be visible in the proposed IR
+    new_device = {**SWITCH, "local_port_config": {"ge-0/0/1": {"usage": "uplink"}}}
+    result = _pipeline(
+        _plan(
+            [
+                {
+                    "action": "update",
+                    "order": 0,
+                    "object_type": "device",
+                    "object_id": "dev-a",
+                    "payload": new_device,
+                }
+            ]
+        )
+    )
+    assert isinstance(result, tuple), f"expected ok, got {result}"
+    _, (baseline_ir, proposed_ir) = result
+    assert proposed_ir.port("aa0000000001:ge-0/0/1").profile == "uplink"  # overridden
+    assert proposed_ir.port("aa0000000001:ge-0/0/0").profile == "office"  # untouched
+    assert baseline_ir.port("aa0000000001:ge-0/0/1").profile == "office"
+
+
 def test_device_port_change_flows_through_to_proposed_ir():
     new_device = {**SWITCH, "port_config": {"ge-0/0/0-1": {"usage": "uplink"}}}
     result = _pipeline(

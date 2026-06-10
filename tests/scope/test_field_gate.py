@@ -80,6 +80,28 @@ def test_device_exact_leaves_name_notes():
     assert isinstance(r, Rejection)
 
 
+def test_modeled_local_port_config_leaves_pass():
+    # local_port_config is a MODELED input: the resolver reassigns the usage per
+    # member (ingest.ports) — proven by the ingest tests. Must be in scope.
+    payload = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"usage": "uplink"}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+
+def test_modeled_port_config_overwrite_leaf_passes():
+    # port_config_overwrite.port_network moves the access VLAN (resolver-honored)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"port_network": "voice"}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+
+def test_unmodeled_overwrite_leaf_still_rejects():
+    # the resolver honors ONLY port_network from port_config_overwrite — speed
+    # et al. are not modeled, so they stay out of scope (leaf-tightened)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"speed": "10g"}}}
+    r = screen_op("device", SWITCH_CUR, payload)
+    assert isinstance(r, Rejection)
+    assert any("port_config_overwrite.ge-0/0/0.speed" in reason for reason in r.reasons)
+
+
 def test_non_switch_device_rejected_post_fetch():
     # the review's P1 case: M1 models switch config only — an AP update must
     # not pass the gates even if its changed paths look allowable

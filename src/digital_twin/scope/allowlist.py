@@ -18,9 +18,20 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = ("mode", "port_network", "networks", "al
 
 _NETWORK_LEAVES: tuple[str, ...] = ("networks.*.vlan_id",)
 _USAGE_LEAVES: tuple[str, ...] = tuple(f"port_usages.*.{a}" for a in _MODELED_USAGE_ATTRS)
-# Inline port_config attrs the resolver honors (ingest.ports resolve_effective_ports).
+# Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map:
+# port_config and local_port_config take usage + the usage-override attrs;
+# port_config_overwrite is honored for port_network ONLY (_OVERWRITE_ATTRS).
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
     f"port_config.*.{a}" for a in ("usage", *_MODELED_USAGE_ATTRS)
+)
+_LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
+    f"local_port_config.*.{a}" for a in ("usage", *_MODELED_USAGE_ATTRS)
+)
+_OVERWRITE_LEAVES: tuple[str, ...] = ("port_config_overwrite.*.port_network",)
+_DEVICE_PORT_LEAVES: tuple[str, ...] = (
+    *_PORT_CONFIG_LEAVES,
+    *_LOCAL_PORT_CONFIG_LEAVES,
+    *_OVERWRITE_LEAVES,
 )
 
 # Raw changed-path allowlist per object_type (post-fetch field gate).
@@ -28,7 +39,7 @@ _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
 # its ripple into out-of-scope effective fields.
 RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "site_setting": (*_NETWORK_LEAVES, *_USAGE_LEAVES, "vars.*"),
-    "device": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_PORT_CONFIG_LEAVES, "name", "notes"),
+    "device": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, "name", "notes"),
 }
 
 # Server-managed fields excluded from the raw diff: a PUT payload never carries
@@ -51,6 +62,6 @@ IGNORED_RAW_FIELDS: tuple[str, ...] = (
 EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_NETWORK_LEAVES,
     *_USAGE_LEAVES,
-    *_PORT_CONFIG_LEAVES,
+    *_DEVICE_PORT_LEAVES,
     "vars.*",
 )

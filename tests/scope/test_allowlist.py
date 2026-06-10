@@ -22,6 +22,11 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     device = RAW_ALLOWLIST["device"]
     assert "name" in device and "notes" in device
     assert "port_config.*.usage" in device and "port_config.*" not in device
+    # resolver-modeled override maps (compile/switch + ingest/ports): in scope,
+    # leaf-tightened to exactly what the resolver honors
+    assert "local_port_config.*.usage" in device
+    assert "port_config_overwrite.*.port_network" in device
+    assert "port_config_overwrite.*.speed" not in device  # not resolver-honored
 
 
 def test_effective_allowlist_is_leaf_level():

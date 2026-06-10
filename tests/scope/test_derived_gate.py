@@ -42,6 +42,17 @@ def test_out_of_scope_field_appearing_rejects():
     assert isinstance(check_derived(BASE, prop), Rejection)
 
 
+def test_modeled_local_and_overwrite_effective_changes_pass():
+    # both maps are resolver-modeled inputs; their modeled leaves changing in
+    # the effective config must not trip the derived gate
+    prop = {
+        **BASE,
+        "local_port_config": {"ge-0/0/0": {"usage": "uplink"}},
+        "port_config_overwrite": {"ge-0/0/0": {"port_network": "voice"}},
+    }
+    assert check_derived(BASE, prop) is None
+
+
 def test_changed_effective_paths_are_leaf_level():
     prop = {**BASE, "networks": {"corp": {"vlan_id": 11}}, "extra": 1}
     assert changed_effective_paths(BASE, prop) == ("extra", "networks.corp.vlan_id")
