@@ -60,3 +60,7 @@ def simulate_change_tool(change_plan: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
