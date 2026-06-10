@@ -325,6 +325,35 @@ def test_gs14_variant_unresolvable_dynamic_port_is_review(tmp_path):
     assert any(f.code == "scope.dynamic_ports.unverifiable" for f in v.findings)
 
 
+def test_gs15_dynamic_rule_edit_is_in_scope_and_gets_a_real_verdict(tmp_path):
+    # editing a dynamic profile's RULES is a modeled change (the runtime
+    # resolver consumes them): re-pointing the matching rule away from the AP
+    # de-trunks its resolved uplink -> the WLAN vlan (with IRB exit) is severed
+    # -> UNSAFE, not UNKNOWN, not a blanket gate
+    doc, _ = dynamic_ap_wlan_doc(with_stats_row=True)
+    from .builders import _device, _drop_nones
+
+    edge = _device(doc, EDGE)
+    usages = copy.deepcopy(_drop_nones(edge.get("port_usages") or {}))
+    usages["gs_dyn"] = {
+        "mode": "dynamic",
+        "rules": [
+            {"src": "lldp_system_name", "expression": "[0:3]", "equals": "ZZ_",
+             "usage": "gs_ap_trunk"}
+        ],
+    }
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(edge["id"]),
+        "payload": {"type": "switch", "port_usages": usages},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any("blackhole" in f.code and "exit_lost" in f.code for f in v.findings)
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

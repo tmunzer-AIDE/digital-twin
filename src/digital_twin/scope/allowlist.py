@@ -15,17 +15,26 @@ SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device")
 
 # What the IR consumes from a port usage (ingest.ports.usage_vlans).
 _MODELED_USAGE_ATTRS: tuple[str, ...] = ("mode", "port_network", "networks", "all_networks")
+# Dynamic-profile machinery the runtime-usage resolver consumes
+# (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
+# atomically, so it is a single leaf) and `reset_default_when` (down-port
+# semantics). These live on port_usages ONLY — inline port_config rules are
+# not a thing the resolver honors.
+_DYNAMIC_PROFILE_ATTRS: tuple[str, ...] = ("rules", "reset_default_when")
 
 _NETWORK_LEAVES: tuple[str, ...] = ("networks.*.vlan_id",)
-_USAGE_LEAVES: tuple[str, ...] = tuple(f"port_usages.*.{a}" for a in _MODELED_USAGE_ATTRS)
+_USAGE_LEAVES: tuple[str, ...] = tuple(
+    f"port_usages.*.{a}" for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS)
+)
 # Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map:
-# port_config and local_port_config take usage + the usage-override attrs;
+# port_config and local_port_config take usage + the usage-override attrs +
+# dynamic_usage (the runtime-profile pointer, ingest.dynamic_usage);
 # port_config_overwrite is honored for port_network ONLY (_OVERWRITE_ATTRS).
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"port_config.*.{a}" for a in ("usage", *_MODELED_USAGE_ATTRS)
+    f"port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
 )
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}" for a in ("usage", *_MODELED_USAGE_ATTRS)
+    f"local_port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
 )
 _OVERWRITE_LEAVES: tuple[str, ...] = ("port_config_overwrite.*.port_network",)
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (

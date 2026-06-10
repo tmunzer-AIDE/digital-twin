@@ -25,7 +25,7 @@ from digital_twin.ir import (
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
 from .base import IngestContext
-from .dynamic_usage import evaluate_rules
+from .dynamic_usage import classify_dynamic_port
 from .ports import resolve_effective_ports, resolve_port_bases, usage_definition, usage_vlans
 
 _Json = Mapping[str, Any]
@@ -153,46 +153,28 @@ class SwitchIngester:
         static_name: str | None,
         static_meta: FactMeta,
     ) -> tuple[dict[str, Any], str | None, FactMeta]:
-        """The RUNTIME usage of a dynamically-profiled port, from the profile's
-        rules + the port's observed LLDP neighbor. Honesty per dynamic_usage.py:
-        nothing connected (row down) or a conclusive rule miss -> the static
-        usage stands; a match -> the matched usage at OBSERVED confidence; any
-        inconclusive outcome -> VLAN-BLIND (carriage unknown, never guessed)."""
-
-        def blind(reason: str) -> tuple[dict[str, Any], str | None, FactMeta]:
-            return {}, static_name, fact_meta(Provenance.INFERRED, (reason,))
-
-        rules = ((eff.get("port_usages") or {}).get(profile) or {}).get("rules")
-        if not isinstance(rules, list):
-            return blind(f"dynamic profile {profile!r} has no rules in the modeled config")
-        if row is None:
-            return blind(
-                f"port {member} is dynamically profiled but has no port stats — "
-                "runtime usage unknown"
-            )
-        if not row.get("up"):
-            return static_usage, static_name, static_meta  # nothing connected
-        outcome = evaluate_rules(
-            rules, {"lldp_system_name": row.get("neighbor_system_name")}
-        )
-        if outcome.kind == "static":
+        """The RUNTIME usage of a dynamically-profiled port (see
+        classify_dynamic_port — the shared source of truth): static stands when
+        nothing is connected or the rules conclusively miss; a match yields the
+        matched usage at OBSERVED confidence; anything unresolvable is
+        VLAN-BLIND (carriage unknown, never guessed)."""
+        kind, detail = classify_dynamic_port(eff, profile, row)
+        if kind == "static":
             return static_usage, static_name, static_meta
-        if outcome.kind == "matched" and outcome.usage is not None:
-            definition, def_res = usage_definition(eff, outcome.usage)
-            if def_res == "unresolved":
-                return blind(
-                    f"runtime usage {outcome.usage!r} (dynamic rule) has no definition "
-                    "in the modeled config"
-                )
+        if kind == "matched" and detail is not None:
+            definition, _ = usage_definition(eff, detail)
+            neighbor = (row or {}).get("neighbor_system_name")
             return (
                 definition,
-                outcome.usage,
+                detail,
                 fact_meta(
                     Provenance.OBSERVED,
                     (
-                        f"runtime usage {outcome.usage!r} via dynamic rule on "
-                        f"lldp_system_name {row.get('neighbor_system_name')!r}",
+                        f"runtime usage {detail!r} via dynamic rule on "
+                        f"lldp_system_name {neighbor!r}",
                     ),
                 ),
             )
-        return blind("dynamic rules not evaluable from observed LLDP — runtime usage unknown")
+        return {}, static_name, fact_meta(
+            Provenance.INFERRED, (f"port {member}: {detail or 'runtime usage unknown'}",)
+        )

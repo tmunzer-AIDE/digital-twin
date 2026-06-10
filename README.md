@@ -147,16 +147,21 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   blind-spot note — still never a silent SAFE.
 - **Dynamic port profiles are MODELED**: a `dynamic_usage` port's runtime
   profile is resolved by evaluating the template's dynamic rules (first match
-  wins, `expression` slice + `equals`) against the port's **observed LLDP
-  neighbor** — so "this port runs usage `ap` because an AP named LD_* is
-  plugged in" is a real fact (OBSERVED confidence), and redefining that usage
-  produces real topology findings. What can't be resolved stays honest: an
-  unevaluable rule source (e.g. `lldp_system_description` — in no fetched
-  stat), a missing port-stats row, or a matched-but-undefined usage makes the
-  port's carriage UNKNOWN, and a delta redefining `port_usages`/`networks` on
-  such a device returns **REVIEW** with `scope.dynamic_ports.unverifiable`
-  naming the exact unresolved ports. Down ports keep their static usage
-  (nothing connected — Mist semantics).
+  wins; full OAS grammar — `equals`/`equals_any`, `[a:b]` slices and
+  `split(.)[n]` expressions) against the port's **observed LLDP neighbor** —
+  so "this port runs usage `ap` because an AP named LD_* is plugged in" is a
+  real fact (OBSERVED confidence). Both the usage definitions AND the dynamic
+  machinery itself (`port_usages.*.rules`, `reset_default_when`,
+  `port_config.*.dynamic_usage`) are in-scope, modeled leaves — a rule edit
+  gets a real verdict. What can't be resolved stays honest: an unevaluable
+  rule source (only `lldp_system_name` is observable from fetched stats), a
+  missing port-stats row, a matched-but-undefined usage, or a down port whose
+  profile sets `reset_default_when: "none"` (it keeps its LAST runtime usage —
+  unknowable) makes the port's carriage UNKNOWN; a delta redefining
+  `port_usages`/`networks` while such a port exists on **either side**
+  (an unknown baseline can't be safely transitioned from) returns **REVIEW**
+  with `scope.dynamic_ports.unverifiable` naming the exact ports. Down ports
+  otherwise keep their static usage (nothing connected — Mist semantics).
 - **LLDP link building** uses `neighbor_mac` when present and falls back to
   `neighbor_system_name` matched against the site's managed devices — some
   orgs' port stats carry only the name, and without the fallback the site

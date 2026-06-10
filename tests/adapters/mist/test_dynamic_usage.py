@@ -126,3 +126,97 @@ def test_all_dynamic_ports_resolved_means_no_finding():
 
 def test_unchanged_definitions_mean_no_finding():
     assert unresolved_dynamic_findings({"aa0000000001": _EFF}, {"aa0000000001": _EFF}, _STATS) == ()
+
+
+# -- full OAS rule grammar: equals_any + split()/index/slice expressions --------
+
+
+def test_equals_any_matches_any_listed_value():
+    rules = [
+        {"src": "lldp_system_name", "expression": "[0:3]", "equals_any": ["AP_", "ap-"],
+         "usage": "ap"}
+    ]
+    assert evaluate_rules(rules, {"lldp_system_name": "ap-7"}).usage == "ap"
+    assert evaluate_rules(rules, {"lldp_system_name": "AP_9"}).usage == "ap"
+    assert evaluate_rules(rules, {"lldp_system_name": "sw-1"}).kind == "static"
+
+
+def test_split_expression_selects_the_field():
+    # schema: "split(.)[1]": "a.b.c" -> "b"
+    rules = [{"src": "lldp_system_name", "expression": "split(.)[1]", "equals": "b",
+              "usage": "ap"}]
+    assert evaluate_rules(rules, {"lldp_system_name": "a.b.c"}).kind == "matched"
+
+
+def test_split_then_slice_expression():
+    # schema: "split(-)[1][0:3]": "a1234-b5678-c90" -> "b56"
+    rules = [{"src": "lldp_system_name", "expression": "split(-)[1][0:3]", "equals": "b56",
+              "usage": "ap"}]
+    assert evaluate_rules(rules, {"lldp_system_name": "a1234-b5678-c90"}).kind == "matched"
+
+
+def test_split_index_out_of_range_is_a_conclusive_miss():
+    rules = [{"src": "lldp_system_name", "expression": "split(.)[5]", "equals": "x",
+              "usage": "ap"}]
+    assert evaluate_rules(rules, {"lldp_system_name": "a.b"}).kind == "static"
+
+
+def test_unparseable_expression_is_inconclusive():
+    rules = [{"src": "lldp_system_name", "expression": "regex(foo)", "equals": "x",
+              "usage": "ap"}]
+    assert evaluate_rules(rules, {"lldp_system_name": "a"}).kind == "inconclusive"
+
+
+def test_baseline_unresolved_dynamic_port_also_gates():
+    # reviewer case (W1): the rule matches usage "aps" but the BASELINE has no
+    # "aps" definition (unresolved -> the CURRENT carriage is unknown); the
+    # proposal adds the definition. The transition FROM an unknown state cannot
+    # be verified -> gate, with side-specific evidence.
+    base = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "dynamic": {
+                "mode": "dynamic",
+                "rules": [
+                    {"src": "lldp_system_name", "expression": "[0:3]", "equals": "AP_",
+                     "usage": "aps"}
+                ],
+            },
+        },
+        "port_config": {"ge-0/0/1": {"usage": "default", "dynamic_usage": "dynamic"}},
+    }
+    prop = {**base, "port_usages": {**base["port_usages"], "aps": {"mode": "trunk"}}}
+    findings = unresolved_dynamic_findings(
+        {"aa0000000001": base}, {"aa0000000001": prop}, _STATS
+    )
+    assert len(findings) == 1
+    assert findings[0].evidence["unresolved_dynamic_ports"] == {
+        "baseline": ["ge-0/0/1"],
+        "proposed": [],
+    }
+
+
+def test_reset_default_when_none_makes_a_down_port_unresolved():
+    # OAS: reset_default_when "none" keeps the LAST dynamic usage on link-down —
+    # unknowable from config+stats, so a down port is NOT conclusively static
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "aps": {"mode": "trunk", "all_networks": True},
+            "dynamic": {
+                "mode": "dynamic",
+                "reset_default_when": "none",
+                "rules": [
+                    {"src": "lldp_system_name", "expression": "[0:3]", "equals": "AP_",
+                     "usage": "aps"}
+                ],
+            },
+        },
+        "port_config": {"ge-0/0/1": {"usage": "default", "dynamic_usage": "dynamic"}},
+    }
+    changed = {**eff, "port_usages": {**eff["port_usages"], "aps": {"mode": "access"}}}
+    down = [{"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": False}]
+    findings = unresolved_dynamic_findings(
+        {"aa0000000001": eff}, {"aa0000000001": changed}, down
+    )
+    assert len(findings) == 1 and "ge-0/0/1" in str(findings[0].evidence)

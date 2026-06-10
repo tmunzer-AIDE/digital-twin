@@ -134,3 +134,26 @@ def test_non_switch_device_rejected_post_fetch():
     r = screen_op("device", ap_cur, {**ap_cur, "name": "ap-2"})
     assert isinstance(r, Rejection) and r.stage == "field_gate"
     assert any("'ap'" in reason and "switch" in reason for reason in r.reasons)
+
+
+def test_dynamic_profile_leaves_are_in_scope():
+    # the IR consumes these now (runtime usage resolution): rule edits,
+    # reset_default_when, and a port's dynamic_usage pointer are MODELED leaves
+    cur = {
+        "port_usages": {
+            "dyn": {"mode": "dynamic", "rules": [{"src": "lldp_system_name", "equals": "a",
+                                                  "usage": "ap"}]}
+        },
+        "port_config": {"ge-0/0/1": {"usage": "default"}},
+    }
+    new = {
+        "port_usages": {
+            "dyn": {
+                "mode": "dynamic",
+                "reset_default_when": "none",
+                "rules": [{"src": "lldp_system_name", "equals": "b", "usage": "uplink"}],
+            }
+        },
+        "port_config": {"ge-0/0/1": {"usage": "default", "dynamic_usage": "dyn"}},
+    }
+    assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
