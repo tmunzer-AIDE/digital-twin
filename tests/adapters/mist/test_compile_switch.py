@@ -57,6 +57,50 @@ def test_compile_device_merges_port_config_per_key_not_wholesale():
     assert eff["port_config"]["ge-0/0/1"] == {"usage": "c"}  # device wins its key
 
 
+def test_compile_device_applies_switch_matching_base():
+    # a matched rule's port_config becomes the BASE; the device's own port_config
+    # is layered on top (both ports present in the effective config)
+    tpl = {
+        "switch_matching": {
+            "enable": True,
+            "rules": [
+                {"match_model[0:6]": "EX4100", "port_config": {"ge-0/0/44": {"usage": "iot"}}}
+            ],
+        }
+    }
+    device = {"model": "EX4100-48MP", "port_config": {"ge-0/0/0": {"usage": "office"}}}
+    eff = compile_device(tpl, {}, device)
+    assert eff["port_config"]["ge-0/0/44"]["usage"] == "iot"  # from the rule
+    assert eff["port_config"]["ge-0/0/0"]["usage"] == "office"  # from the device
+
+
+def test_compile_device_port_overrides_switch_matching_rule_per_port():
+    tpl = {
+        "switch_matching": {
+            "enable": True,
+            "rules": [
+                {"match_model": "EX4100-48MP", "port_config": {"ge-0/0/5": {"usage": "rule"}}}
+            ],
+        }
+    }
+    device = {"model": "EX4100-48MP", "port_config": {"ge-0/0/5": {"usage": "device"}}}
+    eff = compile_device(tpl, {}, device)
+    assert eff["port_config"]["ge-0/0/5"]["usage"] == "device"  # device wins
+
+
+def test_compile_device_ignores_switch_matching_when_disabled():
+    tpl = {
+        "switch_matching": {
+            "enable": False,
+            "rules": [
+                {"match_model": "EX4100-48MP", "port_config": {"ge-0/0/9": {"usage": "iot"}}}
+            ],
+        }
+    }
+    eff = compile_device(tpl, {}, {"model": "EX4100-48MP"})
+    assert "ge-0/0/9" not in (eff.get("port_config") or {})
+
+
 def test_compile_device_carries_local_and_overwrite_maps():
     # old code dropped these device fields entirely -> the resolver never saw them
     device = {

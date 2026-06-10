@@ -52,21 +52,28 @@ def _expand_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def resolve_port_bases(eff: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """member -> merged port_config attrs: port_config <- local_port_config (per
+    member). The usage assignment + flags (e.g. dynamic_usage) BEFORE the named
+    port_usages profile is applied. A port present only in local_port_config is
+    included (a local override can stand alone)."""
+    base = _expand_map(eff.get("port_config") or {})
+    for member, attrs in _expand_map(eff.get("local_port_config") or {}).items():
+        base[member] = {**base.get(member, {}), **attrs}  # local override wins per member
+    return base
+
+
 def resolve_effective_ports(
     eff: dict[str, Any],
 ) -> Iterator[tuple[str, dict[str, Any], str | None]]:
     """Yield (member, effective_usage, usage_name) for every configured port.
 
     Layers port_config + local_port_config + port_config_overwrite onto the named
-    port_usages profile (see module docstring). A port present only in
-    local_port_config still yields (local override can stand alone).
+    port_usages profile (see module docstring).
     """
     usages: dict[str, Any] = eff.get("port_usages") or {}
-    base = _expand_map(eff.get("port_config") or {})
-    for member, attrs in _expand_map(eff.get("local_port_config") or {}).items():
-        base[member] = {**base.get(member, {}), **attrs}  # local override wins per member
     overwrite = _expand_map(eff.get("port_config_overwrite") or {})
-    for member, attrs in base.items():
+    for member, attrs in resolve_port_bases(eff).items():
         usage_name = attrs.get("usage")
         effective = dict(usages.get(str(usage_name)) or {})
         for key in _USAGE_OVERRIDE_ATTRS:

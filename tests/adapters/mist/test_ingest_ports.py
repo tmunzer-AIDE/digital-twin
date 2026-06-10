@@ -1,6 +1,7 @@
 from digital_twin.adapters.mist.ingest.ports import (
     expand_port_members,
     resolve_effective_ports,
+    resolve_port_bases,
     usage_vlans,
 )
 from tests.adapters.mist.fixtures import SITE_EFFECTIVE
@@ -106,6 +107,20 @@ def test_port_config_overwrite_moves_the_access_vlan_without_a_new_usage():
     usage, name = _resolved(eff)["ge-0/0/9"]
     assert name == "office"  # profile name unchanged
     assert usage_vlans(usage, NETWORKS) == (30, ())  # but VLAN is now voice(30)
+
+
+def test_resolve_port_bases_merges_local_over_port_config_and_keeps_dynamic_flag():
+    eff = {
+        "port_config": {
+            "ge-0/0/0": {"usage": "office", "dynamic_usage": "dynamic"},
+            "ge-0/0/1-2": {"usage": "office"},
+        },
+        "local_port_config": {"ge-0/0/1": {"usage": "uplink"}},
+    }
+    bases = resolve_port_bases(eff)
+    assert bases["ge-0/0/0"]["dynamic_usage"] == "dynamic"  # flag preserved per member
+    assert bases["ge-0/0/1"]["usage"] == "uplink"  # local override wins per member
+    assert bases["ge-0/0/2"]["usage"] == "office"
 
 
 def test_port_present_only_in_local_config_still_resolves():

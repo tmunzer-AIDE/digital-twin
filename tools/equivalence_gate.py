@@ -7,12 +7,12 @@ Two independent checks (both must pass for exit 0):
    compile_site: derived does not resolve {{vars}}.) This proves the site-level
    inputs the compiler consumes match Mist's derivation.
 
-2. PORT-PROJECTION CROSS-CHECK — our compiled per-port usage vs the OBSERVED
-   `port_usage` in port_stats. This is the ONLY oracle for the device-level port
-   projection: port_config is device-level and absent from getSiteSettingDerived,
-   and there is no structured device-derived endpoint. Scoped to STATIC ports we
-   model (in device port_config, dynamic_usage off); dynamic_usage ports reflect
-   runtime, and switch_matching-assigned ports are not yet modeled.
+2. PORT-PROJECTION CROSS-CHECK — our compiled per-port usage (switch_matching
+   rule base + device overlay) vs the OBSERVED `port_usage` in port_stats. This is
+   the ONLY oracle for the device-level port projection: port_config is device-
+   level and absent from getSiteSettingDerived, and there is no structured device-
+   derived endpoint. Scoped to STATIC ports (dynamic_usage off per member, since
+   their observed usage is runtime, not config).
 
 Usage:  uv run python tools/equivalence_gate.py
 Env:    MIST_HOST, MIST_APITOKEN, DT_GATE_ORG_ID, DT_GATE_SITE_IDS (comma-separated)
@@ -35,7 +35,7 @@ from digital_twin.adapters.mist.compile.equivalence import (
     restrict_to_scope,
 )
 from digital_twin.adapters.mist.compile.switch import compile_device, merge_only
-from digital_twin.adapters.mist.ingest.ports import expand_port_members, resolve_effective_ports
+from digital_twin.adapters.mist.ingest.ports import resolve_effective_ports, resolve_port_bases
 from digital_twin.providers.base import FetchError, OrgScope, RawSiteState
 from digital_twin.providers.mist_api import MistApiProvider
 
@@ -45,7 +45,10 @@ _Mismatch = tuple[str, str, str, str | None, str]  # (site, device, port, ours, 
 
 
 def _port_usage_crosscheck(raw: RawSiteState) -> tuple[int, list[tuple[str, str, str | None, str]]]:
-    """Compiled per-port usage vs OBSERVED port_usage, for STATIC ports only."""
+    """Compiled per-port usage vs OBSERVED port_usage, for STATIC ports only.
+
+    Compares the FULL effective port_config (switch_matching rule base + device
+    overlay), excluding dynamic_usage ports per member (runtime usage, not config)."""
     nt = dict(raw.networktemplate) if raw.networktemplate else None
     setting = dict(raw.setting)
     matched = 0
@@ -53,17 +56,13 @@ def _port_usage_crosscheck(raw: RawSiteState) -> tuple[int, list[tuple[str, str,
     for d in raw.devices:
         if d.get("type") != "switch" or not d.get("mac"):
             continue
-        static: set[str] = set()
-        for key, cfg in (d.get("port_config") or {}).items():
-            if (cfg or {}).get("dynamic_usage") == "dynamic":
-                continue  # dynamic ports' observed usage is runtime, not config
-            static.update(expand_port_members(key))
-        compiled = {
-            member: name
-            for member, _usage, name in resolve_effective_ports(
-                compile_device(nt, setting, dict(d))
-            )
+        eff = compile_device(nt, setting, dict(d))
+        static = {
+            member
+            for member, base in resolve_port_bases(eff).items()
+            if base.get("dynamic_usage") != "dynamic"
         }
+        compiled = {member: name for member, _usage, name in resolve_effective_ports(eff)}
         observed = {
             str(p["port_id"]): str(p["port_usage"])
             for p in raw.port_stats
@@ -149,8 +148,8 @@ def main() -> None:
     if xc_mismatches:
         failures += 1
     print(
-        "  scope: STATIC ports we model only — dynamic_usage ports are runtime and\n"
-        "         switch_matching-assigned ports are NOT YET modeled (compiler gap)."
+        "  scope: STATIC ports only (switch_matching rule base + device overlay);\n"
+        "         dynamic_usage ports are runtime and excluded."
     )
 
     sys.exit(1 if failures else 0)

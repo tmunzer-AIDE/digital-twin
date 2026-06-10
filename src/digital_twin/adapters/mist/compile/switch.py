@@ -8,14 +8,16 @@ compile_site:   merge_only + {{vars}} resolved — the site-level live artifact
 compile_device: device config layered on the UNRESOLVED merge (per-key, device
                 wins), THEN {{vars}} resolved once — device-level config can
                 reference site vars; devices have no vars of their own.
-                NO site oracle exists for this layer (derived is site-level);
-                the live gate's port-usage cross-check (compiled vs observed)
-                validates the projection, alongside unit tests.
+                Template `switch_matching` rules supply the BASE port_config
+                (see switch_matching.py); the device's own port_config overlays
+                it per-port. NO site oracle exists for this layer (derived is
+                site-level); the live gate's port-usage cross-check (compiled vs
+                observed) validates the projection, alongside unit tests.
 
-KNOWN GAPS (M1): template `switch_matching` (rule-based per-switch port_config
-assignment) is NOT evaluated — ports assigned only via those rules are missing
-from the IR. `dynamic_usage` ports keep their STATIC usage here; their runtime
-usage (driven by the connected device) is intentionally not modeled.
+KNOWN LIMITS (M1): `dynamic_usage` ports keep their STATIC usage — their runtime
+usage (driven by the connected device) is intentionally not modeled. Ports left
+unassigned by every rule + the device fall to Mist's implicit `default` usage;
+those are not synthesized here (no static port inventory, and they carry no VLAN).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import copy
 from typing import Any
 
 from .merge import merge_site_effective
+from .switch_matching import resolve_switch_matching
 from .vars import resolve_vars
 
 JsonObj = dict[str, Any]
@@ -63,8 +66,16 @@ def compile_site(networktemplate: JsonObj | None, site_setting: JsonObj) -> Json
 def compile_device(
     networktemplate: JsonObj | None, site_setting: JsonObj, device: JsonObj
 ) -> JsonObj:
-    """Per-device effective: unresolved site merge + device overlay, then vars once."""
+    """Per-device effective: unresolved site merge + device overlay, then vars once.
+
+    switch_matching (template rules) provides the device's BASE port_config (first
+    matching rule wins); the device's own port_config then overlays it per-port via
+    the per-key DICT_MERGE below.
+    """
     out = merge_only(networktemplate, site_setting)
+    base_port_config = resolve_switch_matching(out.get("switch_matching"), device)
+    if base_port_config:
+        out["port_config"] = base_port_config
     for field in _DEVICE_DICT_MERGE_FIELDS:
         dev_val = device.get(field)
         if isinstance(dev_val, dict):
