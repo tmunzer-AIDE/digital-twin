@@ -151,4 +151,9 @@ class FixtureProvider:
         *,
         include_derived: bool = False,
     ) -> dict[str, RawSiteState | FetchError]:
-        return {self._raw.scope.site_id: self._raw}
+        # the batched path applies the SAME strict guard as fetch_site —
+        # no silent wrong-scope hole for offline replay callers
+        targets = list(site_ids) if site_ids is not None else [self._raw.scope.site_id]
+        return {
+            sid: self.fetch_site(SiteScope(org_id=scope.org_id, site_id=sid)) for sid in targets
+        }

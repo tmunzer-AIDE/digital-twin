@@ -8,11 +8,14 @@ FIXTURES = sorted(Path(__file__).parent.glob("fixtures/*.json"))
 _MAC = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.IGNORECASE)
 _PRIVATE_IP = re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
 _SECRET_KEYS = ("psk", "password", "secret", "token", "community", "passphrase")
-# credential material EMBEDDED in ordinary strings (cmd lines, URLs, key blobs)
+# credential material EMBEDDED in ordinary strings (cmd lines, URLs, key blobs);
+# the URL rule FRAGMENT-matches param names (access_token, api_key, ...) and
+# mirrors redaction._URL_CRED
 _EMBEDDED_CRED = re.compile(
     r"encrypted-password|plain-text-password|pre-shared-key|ssh-rsa|ssh-ed25519"
     r"|BEGIN (?:RSA |EC )?PRIVATE KEY"
-    r"|[?&](?:token|key|secret|password|apikey)=(?!redacted-)",
+    r"|[?&][a-zA-Z0-9_\-]*(?:token|secret|password|apikey|api_key|credential|signature)"
+    r"[a-zA-Z0-9_\-]*=(?!redacted-)",
     re.IGNORECASE,
 )
 

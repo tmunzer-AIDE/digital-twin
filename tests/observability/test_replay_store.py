@@ -69,6 +69,27 @@ def test_fixture_provider_strict_false_escape_hatch(tmp_path):
     assert isinstance(raw, RawSiteState)
 
 
+def test_fetch_sites_applies_the_same_strict_scope_guard(tmp_path):
+    # the batched path must not keep a silent wrong-scope hole open
+    from digital_twin.providers.base import FetchError, OrgScope
+
+    path = ReplayStore(tmp_path).save_raw("run1", raw_site())
+    provider = FixtureProvider(path)
+    fixture_scope = provider.fixture_scope
+
+    # wrong org -> every requested site is a FetchError
+    out = provider.fetch_sites(OrgScope("other-org"), [fixture_scope.site_id])
+    assert all(isinstance(v, FetchError) for v in out.values())
+
+    # right org, wrong site -> FetchError for that site
+    out = provider.fetch_sites(OrgScope(fixture_scope.org_id), ["ghost-site"])
+    assert isinstance(out["ghost-site"], FetchError)
+
+    # right org, fixture site -> served
+    out = provider.fetch_sites(OrgScope(fixture_scope.org_id), [fixture_scope.site_id])
+    assert isinstance(out[fixture_scope.site_id], RawSiteState)
+
+
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):
     from digital_twin.observability.trace import Trace
 

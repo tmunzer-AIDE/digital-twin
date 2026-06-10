@@ -79,6 +79,18 @@ def test_url_query_credentials_are_redacted():
     assert "token=" in out["blacklist_url"]  # param name survives, value tokenized
 
 
+def test_url_credential_param_name_variants_are_redacted():
+    # compound names are the common real-world form — the fragment matches,
+    # not an exact-name list
+    url = (
+        "https://x.example/cb?access_token=AAA&api_key=BBB&client_secret=CCC&auth_token=DDD&page=2"
+    )
+    out = redact({"u": url})["u"]
+    for literal in ("AAA", "BBB", "CCC", "DDD"):
+        assert literal not in out
+    assert "page=2" in out  # benign params survive
+
+
 def test_prose_mentioning_password_survives():
     # tight manifest: only command lines / url params / credential keywords are
     # scrubbed — human prose must not be destroyed

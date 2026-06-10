@@ -17,7 +17,7 @@ import hashlib
 import re
 from typing import Any
 
-REDACTION_VERSION = "3"  # v3: credential command lines + URL query credentials
+REDACTION_VERSION = "4"  # v4: URL credential params FRAGMENT-matched (+signature)
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -47,7 +47,14 @@ _CRED_CMD = re.compile(
     r")",
     re.IGNORECASE,
 )
-_URL_CRED = re.compile(r"([?&](?:token|key|secret|password|auth|apikey)=)[^&\"'\s]+")
+# FRAGMENT match on the param name (access_token, api_key, client_secret,
+# auth_token, ...) — over-redacting a benign param (e.g. keyword=) is safe,
+# under-redacting a credential is not
+_URL_CRED = re.compile(
+    r"([?&][a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature)"
+    r"[a-zA-Z0-9_\-]*=)[^&\"'\s]+",
+    re.IGNORECASE,  # X-Amz-Credential, X-Amz-Security-Token, ...
+)
 
 # embedded (substring) forms — composite address lists, free-text notes, URLs
 _MAC_ANY = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
