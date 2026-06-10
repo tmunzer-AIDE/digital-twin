@@ -116,6 +116,43 @@ def test_transit_only_vlan_low_exit_does_not_taint_confidence():
     assert result.confidence.level is ConfidenceLevel.HIGH  # LOW exit not consulted
 
 
+def _gs7_site(connected: bool):
+    """GS7: AP with an observed vlan-30 wireless client; delta cuts the AP uplink."""
+    from tests.factories import ap, wireless_client
+
+    b = IRBuilder()
+    b.add_device(sw("SW")).add_device(ap("AP1"))
+    b.add_vlan(Vlan(vlan_id=30, name="voice", scope="s1"))
+    b.add_port(trunk_port("SW", "to-ap", tagged=(30,)))
+    b.add_port(trunk_port("AP1", "eth0", tagged=(30,)))
+    if connected:
+        b.add_link(link("AP1:eth0", "SW:to-ap"))
+    b.add_l3intf(irb("SW", 30))
+    b.add_client(wireless_client("ww:01", "AP1", vlan=30))
+    for c in (IRCapability.WIRED_L2, IRCapability.L3_EXITS, IRCapability.CLIENTS_ACTIVE):
+        b.with_capability(c)
+    return b.build()
+
+
+def test_gs7_wireless_client_isolated_by_uplink_removal_fails():
+    # observed wireless clients ARE membership (observation-based, per spec):
+    # cutting the AP uplink strands the vlan-30 wireless client -> FAIL
+    result = L2BlackholeCheck().run(_ctx(_gs7_site(True), _gs7_site(False)))
+    assert result.status is Status.FAIL
+    f = next(x for x in result.findings if "exit_lost" in x.code)
+    assert "AP1" in f.affected_entities
+
+
+def test_wireless_membership_marks_coverage_partial():
+    # spec: AP-side membership is observation-based — not-yet-connected clients
+    # are a KNOWN coverage gap, so the conclusion's coverage is PARTIAL
+    from digital_twin.checks.base import CoverageState
+
+    result = L2BlackholeCheck().run(_ctx(_gs7_site(True), _gs7_site(True)))
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("observation-based" in n for n in result.coverage.notes)
+
+
 def test_preexisting_strand_is_context_not_failure():
     # already disconnected in baseline -> not attributed to the delta
     base = _ir(connected=False)

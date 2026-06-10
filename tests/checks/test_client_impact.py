@@ -51,6 +51,31 @@ def test_client_in_blackholed_segment_flags_blackhole():
     assert any(i["impact"] == "blackhole" and i["mac"] == "aa:aa" for i in impacts)
 
 
+def test_wireless_client_on_isolated_ap_flags_blackhole():
+    # GS7 wireless side: the AP node participates via its observed client, so
+    # cutting the AP uplink must surface the wireless client as blackholed
+    from tests.factories import ap, wireless_client
+
+    def site(connected: bool):
+        b = IRBuilder()
+        b.add_device(sw("SW")).add_device(ap("AP1"))
+        b.add_vlan(Vlan(vlan_id=30, name="voice", scope="s1"))
+        b.add_port(trunk_port("SW", "to-ap", tagged=(30,)))
+        b.add_port(trunk_port("AP1", "eth0", tagged=(30,)))
+        if connected:
+            b.add_link(link("AP1:eth0", "SW:to-ap"))
+        b.add_l3intf(irb("SW", 30))
+        b.add_client(wireless_client("ww:01", "AP1", vlan=30))
+        for c in (IRCapability.WIRED_L2, IRCapability.L3_EXITS, IRCapability.CLIENTS_ACTIVE):
+            b.with_capability(c)
+        return b.build()
+
+    result = ClientImpactCheck().run(_ctx(site(True), site(False)))
+    assert result.status is Status.WARN
+    impacts = result.findings[0].evidence["impacts"]
+    assert any(i["impact"] == "blackhole" and i["mac"] == "ww:01" for i in impacts)
+
+
 def test_no_clients_affected_passes_with_caveat():
     result = ClientImpactCheck().run(_ctx(_ir(with_client=False), _ir(with_client=False)))
     assert result.status is Status.PASS

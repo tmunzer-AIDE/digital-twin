@@ -54,8 +54,19 @@ class L2BlackholeCheck:
                 "AP/wireless VLAN membership is observation-based and client data "
                 "is absent — wireless membership not evaluated"
             )
+        wireless_in_play = False
         for vid in sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans)):
             statuses.append(self._check_vlan(ctx, vid, findings, confidences))
+            wireless_in_play = wireless_in_play or any(
+                c.wireless_members for c in ctx.proposed.vlan_components(vid)
+            )
+        if wireless_in_play:
+            # spec: AP membership is observation-based — not-yet-connected clients
+            # are a known coverage gap, so this conclusion can never be "complete"
+            notes.append(
+                "AP VLAN membership is observation-based (currently-connected "
+                "clients only) — coverage partial by construction"
+            )
         status = _aggregate(statuses)
         coverage_state = CoverageState.PARTIAL if notes else CoverageState.COMPLETE
         if status is Status.INSUFFICIENT_DATA:
@@ -121,19 +132,29 @@ class L2BlackholeCheck:
         baseline_stranded_ports = frozenset(
             p for c in baseline_components if not c.reaches_exit for p in c.member_ports
         )
+        baseline_reaching_wireless = frozenset(
+            m for c in baseline_components if c.reaches_exit for m in c.wireless_members
+        )
+        baseline_stranded_wireless = frozenset(
+            m for c in baseline_components if not c.reaches_exit for m in c.wireless_members
+        )
         exit_conf = proposed_exit.confidence
         assert exit_conf is not None  # kind != NONE guarantees it (appended above)
         worst = Status.PASS
         for comp in stranded:
-            lost_exit = bool(comp.member_ports & baseline_reaching_ports) or any(
-                comp.nodes & prev for prev in baseline_reaching
+            lost_exit = (
+                bool(comp.member_ports & baseline_reaching_ports)
+                or bool(comp.wireless_members & baseline_reaching_wireless)
+                or any(comp.nodes & prev for prev in baseline_reaching)
             )
-            # attribution is per member PORT: the condition is pre-existing ONLY
-            # if every member port of this stranded component was ALREADY a
-            # stranded member in the baseline. A new access port added to an
+            # attribution is per MEMBER (port or observed wireless client): the
+            # condition is pre-existing ONLY if every member of this stranded
+            # component was ALREADY a stranded member in the baseline. A new
+            # access port — or a client observed on a newly stranded AP — on an
             # already-blackholed node is still a newly blackholed member.
             new_ports = sorted(comp.member_ports - baseline_stranded_ports)
-            preexisting = not lost_exit and not new_ports
+            new_wireless = sorted(comp.wireless_members - baseline_stranded_wireless)
+            preexisting = not lost_exit and not new_ports and not new_wireless
             if preexisting:
                 findings.append(
                     self._finding(

@@ -95,3 +95,23 @@ def test_edge_payload_preserved_and_ring_is_a_cycle():
     edge = next(iter(v30.edges(data=True)))[2]["data"]
     assert isinstance(edge, L2Edge)
     assert edge.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_ap_with_observed_wireless_client_participates():
+    # spec: an AP contributes VLAN membership via its OBSERVED wireless clients'
+    # vlans — an isolated AP with a vlan-30 client must be IN the vlan-30 graph
+    from tests.factories import ap, wireless_client
+
+    ir = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(ap("ap1"))
+        .add_client(wireless_client("ww:01", "ap1", vlan=30))
+        .add_port(access_port("d1", "acc", 30))
+        .build()
+    )
+    v30 = build_vlan_graph(ir, build_l2_graph(ir), 30)
+    assert "ap1" in v30.nodes
+    node = _node(v30, "ap1")
+    assert node.wireless_clients == ["ww:01"]
+    assert node.is_member  # observation-based membership
