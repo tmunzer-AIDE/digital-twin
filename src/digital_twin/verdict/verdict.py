@@ -13,6 +13,7 @@ from digital_twin.ir import IRDiff
 from .confidence_summary import ConfidenceSummary, summarize
 from .coverage import DomainCoverage, rollup
 from .decision import Decision, DecisionInputs, decide
+from .state_meta import StateMetaView
 
 _SEVERITY_ORDER = [Severity.INFO, Severity.WARNING, Severity.ERROR, Severity.CRITICAL]
 
@@ -27,6 +28,8 @@ class Verdict:
     coverage: dict[str, DomainCoverage]
     confidence_summary: ConfidenceSummary
     ir_diff: IRDiff
+    state_meta: StateMetaView | None = None  # freshness (None pre-fetch)
+    trace_ref: str | None = None  # run id of the trace record
 
 
 def assemble(
@@ -34,6 +37,8 @@ def assemble(
     inputs: DecisionInputs,
     ir_diff: IRDiff,
     domains: dict[str, str] | None = None,
+    state_meta: StateMetaView | None = None,
+    trace_ref: str | None = None,
 ) -> Verdict:
     # adapter findings live INSIDE DecisionInputs so they reach decide() —
     # the flat verdict list and the decision can never disagree on inputs
@@ -52,4 +57,6 @@ def assemble(
         coverage=rollup(inputs.check_results, check_domains),
         confidence_summary=summarize(findings),
         ir_diff=ir_diff,
+        state_meta=state_meta,
+        trace_ref=trace_ref,
     )
