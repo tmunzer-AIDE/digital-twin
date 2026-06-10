@@ -145,13 +145,18 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   statically resolved — wxtag-scoped, template VLAN). Without WLAN config
   (fetch absent), AP VLAN coverage falls back to the observation-based
   blind-spot note — still never a silent SAFE.
-- **Dynamic port profiles are an honesty boundary**: Mist can assign a port's
-  usage at runtime (`dynamic_usage`), and no fetched stat exposes the applied
-  profile — so a delta that *redefines* a `port_usages` entry or a `networks`
-  VLAN on an object whose blast radius includes dynamic ports returns
-  **REVIEW** with `scope.dynamic_ports.unverifiable`, never a silent SAFE
-  (the model keeps dynamic ports at their static usage and cannot bound the
-  impact on them or the devices attached — typically APs).
+- **Dynamic port profiles are MODELED**: a `dynamic_usage` port's runtime
+  profile is resolved by evaluating the template's dynamic rules (first match
+  wins, `expression` slice + `equals`) against the port's **observed LLDP
+  neighbor** — so "this port runs usage `ap` because an AP named LD_* is
+  plugged in" is a real fact (OBSERVED confidence), and redefining that usage
+  produces real topology findings. What can't be resolved stays honest: an
+  unevaluable rule source (e.g. `lldp_system_description` — in no fetched
+  stat), a missing port-stats row, or a matched-but-undefined usage makes the
+  port's carriage UNKNOWN, and a delta redefining `port_usages`/`networks` on
+  such a device returns **REVIEW** with `scope.dynamic_ports.unverifiable`
+  naming the exact unresolved ports. Down ports keep their static usage
+  (nothing connected — Mist semantics).
 - **LLDP link building** uses `neighbor_mac` when present and falls back to
   `neighbor_system_name` matched against the site's managed devices — some
   orgs' port stats carry only the name, and without the fallback the site

@@ -98,3 +98,77 @@ def test_disabled_usage_marks_port_disabled():
     ir = ctx.builder.build()
     assert ir.ports["aa0000000001:ge-0/0/1"].disabled is True
     assert ir.ports["aa0000000001:ge-0/0/2"].disabled is True  # system 'disabled'
+
+
+# -- dynamic port profiles: runtime usage from rules + observed LLDP ------------
+
+_DYN_EFF = {
+    "networks": {"corp": {"vlan_id": 10}, "iot": {"vlan_id": 30}},
+    "port_usages": {
+        "aps": {"mode": "trunk", "all_networks": True, "port_network": "corp"},
+        "plain": {"mode": "access", "port_network": "corp"},
+        "dynamic": {
+            "mode": "dynamic",
+            "rules": [
+                {"src": "lldp_system_name", "expression": "[0:3]", "equals": "AP_", "usage": "aps"}
+            ],
+        },
+    },
+    "port_config": {
+        "ge-0/0/1": {"usage": "plain", "dynamic_usage": "dynamic"},
+        "ge-0/0/2": {"usage": "plain", "dynamic_usage": "dynamic"},
+        "ge-0/0/3": {"usage": "plain", "dynamic_usage": "dynamic"},
+        "ge-0/0/4": {"usage": "plain", "dynamic_usage": "dynamic"},
+    },
+}
+
+
+def _dyn_ir(port_stats):
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(
+            devices=({**SWITCH_A, "port_config": _DYN_EFF["port_config"]},),
+            port_stats=tuple(port_stats),
+        ),
+        site_effective=_DYN_EFF,
+        device_effective={"aa0000000001": _DYN_EFF},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    return ctx.builder.build()
+
+
+def test_dynamic_port_with_matching_neighbor_gets_the_runtime_usage():
+    ir = _dyn_ir(
+        [{"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": True, "neighbor_system_name": "AP_7"}]
+    )
+    p = ir.ports["aa0000000001:ge-0/0/1"]
+    assert p.mode is PortMode.TRUNK and p.tagged_vlans == (30,) and p.native_vlan == 10
+    assert p.profile == "aps"
+    assert "dynamic rule" in " ".join(p.meta.confidence.reasons)
+
+
+def test_dynamic_port_with_unmatched_lldp_neighbor_is_blind_not_static():
+    # name rules miss -> Mist would keep static, BUT our rule list is fully
+    # name-sourced so a miss IS conclusive -> static usage stands
+    ir = _dyn_ir(
+        [{"mac": "aa0000000001", "port_id": "ge-0/0/2", "up": True, "neighbor_system_name": "PC-9"}]
+    )
+    p = ir.ports["aa0000000001:ge-0/0/2"]
+    assert p.mode is PortMode.ACCESS and p.native_vlan == 10  # static 'plain'
+
+
+def test_dynamic_port_down_keeps_static_usage():
+    ir = _dyn_ir([{"mac": "aa0000000001", "port_id": "ge-0/0/3", "up": False}])
+    p = ir.ports["aa0000000001:ge-0/0/3"]
+    assert p.mode is PortMode.ACCESS and p.native_vlan == 10  # static 'plain'
+
+
+def test_dynamic_port_without_stats_row_is_vlan_blind():
+    # no port-stats row: connected-or-not is unknowable -> carriage unknown
+    ir = _dyn_ir([])
+    p = ir.ports["aa0000000001:ge-0/0/4"]
+    assert p.native_vlan is None and p.tagged_vlans == ()
+    assert p.meta.provenance.value == "inferred"

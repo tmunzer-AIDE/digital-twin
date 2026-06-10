@@ -50,6 +50,18 @@ def _system_usage(eff: dict[str, Any], name: str) -> dict[str, Any] | None:
     return _SYSTEM_USAGES.get(name)
 
 
+def usage_definition(eff: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
+    """(usage attrs, resolution) for a usage NAME: explicit map > Mist system
+    defaults > unresolved (empty — carriage unknown, never silently empty)."""
+    explicit = (eff.get("port_usages") or {}).get(name)
+    if explicit is not None:
+        return dict(explicit), "explicit"
+    system = _system_usage(eff, name)
+    if system is not None:
+        return dict(system), "system"
+    return {}, "unresolved"
+
+
 def expand_port_members(key: str) -> list[str]:
     members: list[str] = []
     for part in key.split(","):
@@ -97,21 +109,14 @@ def resolve_effective_ports(
     definition: carriage UNKNOWN, never silently empty), "none" (no usage name;
     inline attrs only).
     """
-    usages: dict[str, Any] = eff.get("port_usages") or {}
     overwrite = _expand_map(eff.get("port_config_overwrite") or {})
     for member, attrs in resolve_port_bases(eff).items():
         usage_name = attrs.get("usage")
-        explicit = usages.get(str(usage_name))
+        effective: dict[str, Any]
         if usage_name is None:
             effective, resolution = {}, "none"
-        elif explicit is not None:
-            effective, resolution = dict(explicit), "explicit"
         else:
-            system = _system_usage(eff, str(usage_name))
-            if system is not None:
-                effective, resolution = dict(system), "system"
-            else:
-                effective, resolution = {}, "unresolved"
+            effective, resolution = usage_definition(eff, str(usage_name))
         for key in _USAGE_OVERRIDE_ATTRS:
             if key in attrs:
                 effective[key] = attrs[key]

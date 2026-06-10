@@ -32,6 +32,7 @@ from typing import Any
 from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.apply import get_object
 from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
+from digital_twin.adapters.mist.ingest.dynamic_usage import unresolved_dynamic_findings
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
@@ -41,7 +42,6 @@ from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
 from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta, StateProvider
 from digital_twin.scope.derived_gate import check_derived
-from digital_twin.scope.dynamic_ports import dynamic_profile_findings
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -161,11 +161,6 @@ def simulate(
             rejection = screen_op(op.object_type, current, effective)
             if rejection:
                 return unknown(rejection, state_meta=state_meta)
-            # dynamic-port honesty: a usage/network redefinition with dynamic
-            # ports in the blast radius is unverifiable -> WARNING (-> REVIEW)
-            adapter_findings += dynamic_profile_findings(
-                op.object_type, current, effective, proposed_raw.devices
-            )
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return unknown(applied, state_meta=state_meta)
@@ -191,6 +186,15 @@ def simulate(
                 ),
                 state_meta=state_meta,
             )
+
+    # 7b — dynamic-port honesty: vlan-defining definitions changed on a device
+    # with dynamically-profiled ports whose RUNTIME usage could not be resolved
+    # from observed LLDP -> WARNING (-> REVIEW). Resolved dynamic ports need no
+    # gate: their impact is in the IR diff and the checks reason about it.
+    with trace.stage("dynamic_gate"):
+        adapter_findings += unresolved_dynamic_findings(
+            baseline.device_effective, proposed.device_effective, raw.port_stats
+        )
 
     # 8 — derived-impact gate (site + every device effective)
     with trace.stage("derived_gate"):

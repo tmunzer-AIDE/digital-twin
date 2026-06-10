@@ -26,6 +26,7 @@ from .builders import (
     ap_wlan_doc,
     augmented_doc,
     device_op,
+    dynamic_ap_wlan_doc,
     fixture_doc,
     plan_for,
     write_doc,
@@ -300,6 +301,28 @@ def test_gs13_variant_redundant_uplink_left_up_is_not_severed(tmp_path):
     isolation = next(r for r in v.check_results if r.check_id == "wired.l2.isolation")
     assert isolation.status.value == "pass", isolation
     assert not any("isolation" in f.code for f in v.findings)
+
+
+def test_gs14_resolved_dynamic_port_gets_a_precise_unsafe(tmp_path):
+    # the original real-world case, fully modeled: the AP-feeding port runs
+    # usage gs_ap_trunk at RUNTIME via a dynamic rule (lldp neighbor 'AP_*');
+    # redefining that usage trunk->access severs the AP's WLAN vlan, which has
+    # an IRB exit -> a real UNSAFE naming the loss — and NO blanket dynamic-
+    # ports finding, because the runtime usage was resolved.
+    doc, op = dynamic_ap_wlan_doc(with_stats_row=True)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any("blackhole" in f.code and "exit_lost" in f.code for f in v.findings)
+    assert not any("dynamic_ports" in f.code for f in v.findings)
+
+
+def test_gs14_variant_unresolvable_dynamic_port_is_review(tmp_path):
+    # same world WITHOUT the port-stats row: connected-or-not is unknowable ->
+    # the unresolved-dynamic gate floors to REVIEW, never silent SAFE
+    doc, op = dynamic_ap_wlan_doc(with_stats_row=False)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert any(f.code == "scope.dynamic_ports.unverifiable" for f in v.findings)
 
 
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):

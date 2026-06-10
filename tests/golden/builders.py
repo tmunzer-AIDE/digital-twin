@@ -200,6 +200,62 @@ def ap_wlan_doc(*, wlan_vlan: int, exit_for_wlan: bool) -> tuple[dict[str, Any],
     return doc, op
 
 
+def dynamic_ap_wlan_doc(*, with_stats_row: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ap_wlan world, but the AP-feeding port gets usage `gs_ap_trunk` at
+    RUNTIME via a dynamic profile rule (lldp_system_name 'AP_*'). The op
+    redefines gs_ap_trunk trunk->access at device level — affecting the port
+    only through its RESOLVED runtime usage. With the port-stats row the twin
+    resolves the profile (-> precise verdict, no blanket gate); without it the
+    runtime usage is unknowable (-> the unresolved-dynamic gate, REVIEW).
+    """
+    doc, _ = ap_wlan_doc(wlan_vlan=3100, exit_for_wlan=True)
+    edge = _device(doc, EDGE)
+    ap_port = ap_uplink_on(doc, EDGE)[1]
+    # isolate the behavior under test: the REAL fixture device (and its
+    # template's switch_matching rules) carry other, genuinely unresolvable
+    # dynamic ports that would honestly trip the gate — strip them so the only
+    # dynamic port in this world is the test subject
+    edge["port_config"] = {
+        k: v
+        for k, v in edge["port_config"].items()
+        if not (isinstance(v, dict) and v.get("dynamic_usage"))
+    }
+    if isinstance(doc.get("networktemplate"), dict):
+        doc["networktemplate"].pop("switch_matching", None)
+    edge["port_config"][ap_port] = {"usage": "default", "dynamic_usage": "gs_dyn"}
+    doc["setting"]["port_usages"]["gs_dyn"] = {
+        "mode": "dynamic",
+        "rules": [
+            {"src": "lldp_system_name", "expression": "[0:3]", "equals": "AP_",
+             "usage": "gs_ap_trunk"}
+        ],
+    }
+    # drop the fixture's own rows for this port (a real row with a rule-missing
+    # neighbor would CONCLUSIVELY keep the static usage — a different world)
+    doc["port_stats"] = [
+        r
+        for r in doc["port_stats"]
+        if not (r.get("mac") == EDGE and r.get("port_id") == ap_port)
+    ]
+    if with_stats_row:
+        # 'AP_GS14' matches the rule but no site device name -> no link side-effects
+        doc["port_stats"] = list(doc["port_stats"]) + [
+            {"mac": EDGE, "port_id": ap_port, "up": True, "neighbor_system_name": "AP_GS14"}
+        ]
+    usages = {
+        **_drop_nones(edge.get("port_usages") or {}),
+        "gs_ap_trunk": {"mode": "access", "port_network": "gs_mgmt"},
+    }
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(edge["id"]),
+        "payload": {"type": "switch", "port_usages": usages},
+    }
+    return doc, op
+
+
 def ap_unresolved_wlan_doc() -> tuple[dict[str, Any], dict[str, Any]]:
     """An AP whose only WLAN is wxtag-scoped (AP membership unresolvable) and
     whose uplink trunk carries vlan 999 (exit on HUB); the op flips it
