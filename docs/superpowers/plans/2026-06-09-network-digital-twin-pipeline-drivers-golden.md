@@ -31,7 +31,7 @@
 - Modify: `src/digital_twin/representations/l2_graph.py`
 - Test: `tests/representations/test_l2_graph.py` (append)
 
-- [ ] **Step 1: Write the failing test** (append to `tests/representations/test_l2_graph.py`)
+- [x] **Step 1: Write the failing test** (append to `tests/representations/test_l2_graph.py`)
 
 ```python
 def test_ap_uplink_edge_carries_switch_side_vlans():
@@ -65,12 +65,12 @@ def test_switch_to_switch_edges_unchanged_by_transparency():
     assert edge.vlans == {30}  # intersection semantics stay exact
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/representations/test_l2_graph.py -q`
 Expected: first new test FAILS (`edge.vlans == set()`)
 
-- [ ] **Step 3: Implement** — in `l2_graph.py`, give `build_l2_graph` role awareness:
+- [x] **Step 3: Implement** — in `l2_graph.py`, give `build_l2_graph` role awareness:
 
 ```python
 def _offered(port: Port) -> set[int]:
@@ -95,12 +95,12 @@ and inside the link loop replace the `vlans = link_carried_vlans(pa, pb)` line w
 (import `DeviceRole` from `digital_twin.ir.entities`; module docstring gains one line
 explaining the AP-transparency rule.)
 
-- [ ] **Step 4: Full affected suites + gate**
+- [x] **Step 4: Full affected suites + gate**
 
 Run: `uv run pytest tests/representations tests/analysis tests/checks tests/test_plan4_flow.py -q && uv run ruff check . && uv run mypy`
 Expected: PASS (the GS7 check tests built their own tagged AP ports, so they stay green)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/representations/l2_graph.py tests/representations/test_l2_graph.py
@@ -116,7 +116,7 @@ git commit -m "Plan 5: AP uplink edges are vlan-transparent (switch side defines
 - Modify: `src/digital_twin/verdict/verdict.py`
 - Test: `tests/verdict/test_state_meta.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/verdict/test_state_meta.py
@@ -157,9 +157,9 @@ def test_verdict_carries_state_meta_and_trace_ref():
     assert v.state_meta is None and v.trace_ref == "run-123"
 ```
 
-- [ ] **Step 2: Run to verify failure** — `uv run pytest tests/verdict/test_state_meta.py -q` → ImportError
+- [x] **Step 2: Run to verify failure** — `uv run pytest tests/verdict/test_state_meta.py -q` → ImportError
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/verdict/state_meta.py
@@ -200,9 +200,9 @@ In `verdict/verdict.py`: add fields `state_meta: StateMetaView | None = None` an
 `trace_ref: str | None = None` to `Verdict`, matching keyword-only params on
 `assemble(..., state_meta=None, trace_ref=None)` passed through; import the view type.
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/verdict -q && uv run ruff check . && uv run mypy` → PASS
+- [x] **Step 4: Gate** — `uv run pytest tests/verdict -q && uv run ruff check . && uv run mypy` → PASS
 
-- [ ] **Step 5: Commit** — `git add ... && git commit -m "Plan 5: state_meta freshness view + Verdict carries state_meta/trace_ref"`
+- [x] **Step 5: Commit** — `git add ... && git commit -m "Plan 5: state_meta freshness view + Verdict carries state_meta/trace_ref"`
 
 ---
 
@@ -212,7 +212,7 @@ In `verdict/verdict.py`: add fields `state_meta: StateMetaView | None = None` an
 - Create: `src/digital_twin/observability/__init__.py`, `trace.py`, `logging.py`
 - Test: `tests/observability/__init__.py`, `tests/observability/test_trace.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/observability/test_trace.py
@@ -248,9 +248,9 @@ def test_bound_logger_smoke():
     log.info("hello")  # must not raise; binding is in the logger name/extra
 ```
 
-- [ ] **Step 2: RED** — ImportError
+- [x] **Step 2: RED** — ImportError
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/observability/__init__.py
@@ -315,8 +315,8 @@ def bound_logger(run_id: str, check_id: str | None = None) -> logging.LoggerAdap
     return logging.LoggerAdapter(logging.getLogger("digital_twin"), extra)
 ```
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: trace + bound structured logging"`
+- [x] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
+- [x] **Step 5: Commit** — `"Plan 5: trace + bound structured logging"`
 
 ---
 
@@ -326,7 +326,7 @@ def bound_logger(run_id: str, check_id: str | None = None) -> logging.LoggerAdap
 - Create: `src/digital_twin/observability/replay/__init__.py`, `redaction.py`
 - Test: `tests/observability/test_redaction.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/observability/test_redaction.py
@@ -375,9 +375,9 @@ def test_version_present():
     assert isinstance(REDACTION_VERSION, str) and REDACTION_VERSION
 ```
 
-- [ ] **Step 2: RED** — ImportError
+- [x] **Step 2: RED** — ImportError
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/observability/replay/__init__.py
@@ -466,8 +466,8 @@ def redact(obj: Any, key: str = "") -> Any:
     return obj
 ```
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: redaction engine + manifest (pseudonymize ids, strip secrets)"`
+- [x] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
+- [x] **Step 5: Commit** — `"Plan 5: redaction engine + manifest (pseudonymize ids, strip secrets)"`
 
 ---
 
@@ -477,7 +477,7 @@ def redact(obj: Any, key: str = "") -> Any:
 - Create: `src/digital_twin/observability/replay/store.py`
 - Test: `tests/observability/test_replay_store.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/observability/test_replay_store.py
@@ -535,9 +535,9 @@ def test_save_run_includes_plan_verdict_and_trace(tmp_path):
     assert data["trace"]["run_id"] == "run2"
 ```
 
-- [ ] **Step 2: RED** — ImportError
+- [x] **Step 2: RED** — ImportError
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/observability/replay/store.py
@@ -669,8 +669,8 @@ class FixtureProvider:
         return {self._raw.scope.site_id: self._raw}
 ```
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: replay store (redact-on-write) + FixtureProvider"`
+- [x] **Step 4: Gate** — `uv run pytest tests/observability -q && uv run ruff check . && uv run mypy` → PASS
+- [x] **Step 5: Commit** — `"Plan 5: replay store (redact-on-write) + FixtureProvider"`
 
 ---
 
@@ -680,7 +680,7 @@ class FixtureProvider:
 - Create: `src/digital_twin/engine/run_context.py`, `src/digital_twin/engine/pipeline.py`
 - Test: `tests/engine/__init__.py`, `tests/engine/test_pipeline.py`
 
-- [ ] **Step 1: Failing tests** (the pipeline contract — every short-circuit + the happy path + two-source findings)
+- [x] **Step 1: Failing tests** (the pipeline contract — every short-circuit + the happy path + two-source findings)
 
 ```python
 # tests/engine/test_pipeline.py
@@ -821,9 +821,9 @@ def test_cosmetic_noop_is_safe():
     assert v.decision is Decision.SAFE
 ```
 
-- [ ] **Step 2: RED** — ImportError
+- [x] **Step 2: RED** — ImportError
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/engine/run_context.py
@@ -1046,8 +1046,8 @@ def simulate(
 __all__ = ["simulate", "ChangePlan"]
 ```
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/engine -q && uv run ruff check . && uv run mypy && uv run pytest -q` → all PASS
-- [ ] **Step 5: Commit** — `"Plan 5: the 10-stage pipeline (orchestration only, failures as values)"`
+- [x] **Step 4: Gate** — `uv run pytest tests/engine -q && uv run ruff check . && uv run mypy && uv run pytest -q` → all PASS
+- [x] **Step 5: Commit** — `"Plan 5: the 10-stage pipeline (orchestration only, failures as values)"`
 
 ---
 
@@ -1057,7 +1057,7 @@ __all__ = ["simulate", "ChangePlan"]
 - Create: `src/digital_twin/drivers/__init__.py`, `render.py`
 - Test: `tests/drivers/__init__.py`, `tests/drivers/test_render.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/drivers/test_render.py
@@ -1090,8 +1090,8 @@ def test_render_human_leads_with_decision():
     assert text.splitlines()[0].startswith("decision: SAFE")
 ```
 
-- [ ] **Step 2: RED** — ImportError
-- [ ] **Step 3: Implement**
+- [x] **Step 2: RED** — ImportError
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/drivers/__init__.py
@@ -1151,8 +1151,8 @@ def render_human(verdict: Verdict) -> str:
     return "\n".join(lines)
 ```
 
-- [ ] **Step 4: Gate** → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: verdict rendering (JSON + human)"`
+- [x] **Step 4: Gate** → PASS
+- [x] **Step 5: Commit** — `"Plan 5: verdict rendering (JSON + human)"`
 
 ---
 
@@ -1163,7 +1163,7 @@ def render_human(verdict: Verdict) -> str:
 - Modify: `pyproject.toml` (add `[project.scripts]`)
 - Test: `tests/drivers/test_cli.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/drivers/test_cli.py
@@ -1214,8 +1214,8 @@ site_id, hence reading it back from `raw_site()`… which is NOT redacted. Pin t
 by loading the fixture's scope via `load_fixture_raw` instead if the assertion
 fails — the redacted site_id is the one the plan must name.)*
 
-- [ ] **Step 2: RED** — ImportError
-- [ ] **Step 3: Implement**
+- [x] **Step 2: RED** — ImportError
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/drivers/cli.py
@@ -1297,8 +1297,8 @@ pyproject addition:
 digital-twin = "digital_twin.drivers.cli:script"
 ```
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/drivers -q && uv run ruff check . && uv run mypy && uv run digital-twin --help` → PASS / usage text
-- [ ] **Step 5: Commit** — `"Plan 5: CLI driver (decision exit codes, fixture replay, run capture)"`
+- [x] **Step 4: Gate** — `uv run pytest tests/drivers -q && uv run ruff check . && uv run mypy && uv run digital-twin --help` → PASS / usage text
+- [x] **Step 5: Commit** — `"Plan 5: CLI driver (decision exit codes, fixture replay, run capture)"`
 
 ---
 
@@ -1309,9 +1309,9 @@ digital-twin = "digital_twin.drivers.cli:script"
 - Create: `src/digital_twin/drivers/mcp_server.py`
 - Test: `tests/drivers/test_mcp_server.py`
 
-- [ ] **Step 1: `uv add mcp`** → resolves
+- [x] **Step 1: `uv add mcp`** → resolves
 
-- [ ] **Step 2: Failing test**
+- [x] **Step 2: Failing test**
 
 ```python
 # tests/drivers/test_mcp_server.py
@@ -1334,7 +1334,7 @@ def test_tool_isolates_internal_errors(tmp_path):
     assert any("error" in r.lower() or "fixture" in r.lower() for r in out["decision_reasons"])
 ```
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # src/digital_twin/drivers/mcp_server.py
@@ -1390,8 +1390,8 @@ def main() -> None:
     mcp.run()
 ```
 
-- [ ] **Step 4: Gate** → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: MCP driver (simulate_change tool, never throws)"`
+- [x] **Step 4: Gate** → PASS
+- [x] **Step 5: Commit** — `"Plan 5: MCP driver (simulate_change tool, never throws)"`
 
 ---
 
@@ -1402,7 +1402,7 @@ def main() -> None:
 - Create (captured): `tests/golden/fixtures/site.json`
 - Test: `tests/golden/__init__.py`, `tests/golden/test_fixture_hygiene.py`
 
-- [ ] **Step 1: Write the capture tool**
+- [x] **Step 1: Write the capture tool**
 
 ```python
 # tools/capture_replay.py
@@ -1437,12 +1437,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Capture the fixture from the real org** (the main gate site)
+- [x] **Step 2: Capture the fixture from the real org** (the main gate site)
 
 Run: `set -a; . ./.env; set +a; uv run python tools/capture_replay.py "$(echo $DT_GATE_SITE_IDS | cut -d, -f1)" tests/golden/fixtures/site.json`
 Expected: `captured (redacted): tests/golden/fixtures/site.json`
 
-- [ ] **Step 3: Fixture-hygiene test (the spec's redaction CI rule)**
+- [x] **Step 3: Fixture-hygiene test (the spec's redaction CI rule)**
 
 ```python
 # tests/golden/test_fixture_hygiene.py
@@ -1495,8 +1495,8 @@ def test_pseudonymization_is_stable_within_fixture():
 *(note: bare 12-hex MACs in `devices[].mac` are redacted to 12-hex tokens — the joins
 must survive, which is exactly what the third test asserts.)*
 
-- [ ] **Step 4: Gate** — `uv run pytest tests/golden -q && uv run ruff check . && uv run mypy` → PASS
-- [ ] **Step 5: Commit** — `"Plan 5: capture tool + redacted real-org fixture + hygiene CI"` (fixture included)
+- [x] **Step 4: Gate** — `uv run pytest tests/golden -q && uv run ruff check . && uv run mypy` → PASS
+- [x] **Step 5: Commit** — `"Plan 5: capture tool + redacted real-org fixture + hygiene CI"` (fixture included)
 
 ---
 
@@ -1506,7 +1506,7 @@ must survive, which is exactly what the third test asserts.)*
 - Create: `tests/golden/builders.py`
 - Create: `tests/golden/test_golden_scenarios.py`
 
-- [ ] **Step 1: Write the scenario builders** — pure helpers over the fixture that SEARCH for preconditions and synthesize delta payloads:
+- [x] **Step 1: Write the scenario builders** — pure helpers over the fixture that SEARCH for preconditions and synthesize delta payloads:
 
 ```python
 # tests/golden/builders.py
@@ -1621,7 +1621,7 @@ which falls back to `augmented_fixture_with_parallel_link()`: deep-copy the fixt
 JSON, duplicate one two-sided link's two port_stats rows under spare port names, and
 save to tmp_path via ReplayStore — a documented augmentation.)*
 
-- [ ] **Step 2: Write the GS test suite**
+- [x] **Step 2: Write the GS test suite**
 
 ```python
 # tests/golden/test_golden_scenarios.py
@@ -1671,10 +1671,10 @@ variant as a second test when the fixture has a clientless AP vlan. Write all
 bodies fully during execution; the RED step is the suite failing on missing
 builders.)*
 
-- [ ] **Step 3: Iterate** — run `uv run pytest tests/golden -q`, fix builders/expectations until every non-skipped GS passes; record which GS skipped and why; minimize skips (fixture augmentation where documented).
+- [x] **Step 3: Iterate** — run `uv run pytest tests/golden -q`, fix builders/expectations until every non-skipped GS passes; record which GS skipped and why; minimize skips (fixture augmentation where documented).
 
-- [ ] **Step 4: Full gate** — `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q` → all PASS
-- [ ] **Step 5: Commit** — `"Plan 5: GS1-GS8 golden scenarios against the redacted real-org fixture"`
+- [x] **Step 4: Full gate** — `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q` → all PASS
+- [x] **Step 5: Commit** — `"Plan 5: GS1-GS8 golden scenarios against the redacted real-org fixture"`
 
 ---
 
@@ -1684,8 +1684,8 @@ builders.)*
 - Modify: `tests/test_public_api.py` (add `test_plan5_public_api` importing: `simulate`, `RunContext`, `Trace`, `bound_logger`, `redact`, `ReplayStore`, `FixtureProvider`, `load_fixture_raw`, `verdict_to_dict`, `render_human`, `main` (cli), `simulate_change` (mcp), `StateMetaView`, `build_state_meta` — follow the existing function style)
 - Modify: this plan doc (check boxes)
 
-- [ ] **Step 1: Public API test + full gate** — `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q` → PASS
-- [ ] **Step 2: Mark checkboxes; commit** — `"Plan 5: public API surface + plan doc synced"`
+- [x] **Step 1: Public API test + full gate** — `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q` → PASS
+- [x] **Step 2: Mark checkboxes; commit** — `"Plan 5: public API surface + plan doc synced"`
 
 ---
 

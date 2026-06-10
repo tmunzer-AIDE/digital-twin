@@ -202,3 +202,38 @@ def test_plan4_public_api():
             Verdict,
         )
     )
+
+
+def test_plan5_public_api():
+    from digital_twin.drivers.cli import main
+    from digital_twin.drivers.mcp_server import simulate_change
+    from digital_twin.drivers.render import render_human, verdict_to_dict
+    from digital_twin.engine.pipeline import simulate
+    from digital_twin.engine.run_context import RunContext
+    from digital_twin.observability.logging import bound_logger
+    from digital_twin.observability.replay.redaction import redact
+    from digital_twin.observability.replay.store import (
+        FixtureProvider,
+        ReplayStore,
+        load_fixture_raw,
+    )
+    from digital_twin.observability.trace import Trace
+    from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
+
+    assert all(
+        callable(f)
+        for f in (
+            simulate,
+            main,
+            simulate_change,
+            render_human,
+            verdict_to_dict,
+            bound_logger,
+            redact,
+            load_fixture_raw,
+            build_state_meta,
+        )
+    )
+    assert all(
+        x is not None for x in (RunContext, Trace, ReplayStore, FixtureProvider, StateMetaView)
+    )
