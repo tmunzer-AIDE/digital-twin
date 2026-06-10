@@ -14,8 +14,9 @@ _SECRET_KEYS = ("psk", "password", "secret", "token", "community", "passphrase")
 _EMBEDDED_CRED = re.compile(
     r"encrypted-password|plain-text-password|pre-shared-key|ssh-rsa|ssh-ed25519"
     r"|BEGIN (?:RSA |EC )?PRIVATE KEY"
-    r"|[?&][a-zA-Z0-9_\-]*(?:token|secret|password|apikey|api_key|credential|signature)"
-    r"[a-zA-Z0-9_\-]*=(?!redacted-)",
+    r"|[?&][a-zA-Z0-9_\-]*(?:token|secret|password|apikey|api_key|credential|signature|jwt)"
+    r"[a-zA-Z0-9_\-]*=(?!redacted-)"
+    r"|eyJ[A-Za-z0-9_\-]{8,}\.eyJ",  # bare JWTs anywhere
     re.IGNORECASE,
 )
 

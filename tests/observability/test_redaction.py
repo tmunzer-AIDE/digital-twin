@@ -91,6 +91,21 @@ def test_url_credential_param_name_variants_are_redacted():
     assert "page=2" in out  # benign params survive
 
 
+def test_jwt_urls_and_bare_jwts_are_redacted():
+    # signed JWT download URLs (?jwt=eyJ...) — and bare JWTs are
+    # self-identifying (eyJ<header>.eyJ<payload>.<sig>), so catch them anywhere
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4"
+    out = redact(
+        {
+            "image_url": f"https://x.example/img.png?jwt={jwt}",
+            "note": f"download with {jwt}",
+        }
+    )
+    assert "eyJ" not in out["image_url"]
+    assert "eyJ" not in out["note"]
+    assert "jwt=" in out["image_url"]  # param name survives
+
+
 def test_prose_mentioning_password_survives():
     # tight manifest: only command lines / url params / credential keywords are
     # scrubbed — human prose must not be destroyed

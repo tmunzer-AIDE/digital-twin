@@ -17,7 +17,7 @@ import hashlib
 import re
 from typing import Any
 
-REDACTION_VERSION = "4"  # v4: URL credential params FRAGMENT-matched (+signature)
+REDACTION_VERSION = "5"  # v5: jwt URL params + bare JWTs (eyJ*.eyJ*.sig) anywhere
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -51,10 +51,13 @@ _CRED_CMD = re.compile(
 # auth_token, ...) — over-redacting a benign param (e.g. keyword=) is safe,
 # under-redacting a credential is not
 _URL_CRED = re.compile(
-    r"([?&][a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature)"
+    r"([?&][a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature|jwt)"
     r"[a-zA-Z0-9_\-]*=)[^&\"'\s]+",
-    re.IGNORECASE,  # X-Amz-Credential, X-Amz-Security-Token, ...
+    re.IGNORECASE,  # X-Amz-Credential, X-Amz-Security-Token, jwt=, ...
 )
+# bare JWTs are self-identifying — eyJ<header>.eyJ<payload>.<signature> — and can
+# appear OUTSIDE query params (paths, prose); catch them anywhere
+_JWT_ANY = re.compile(r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
 
 # embedded (substring) forms — composite address lists, free-text notes, URLs
 _MAC_ANY = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
@@ -104,6 +107,7 @@ def _sub_embedded(value: str) -> str:
     if _CRED_CMD.match(value):
         return f"redacted-cmd-{_h(value, 8)}"
     value = _URL_CRED.sub(lambda m: f"{m.group(1)}redacted-{_h(m.group(), 8)}", value)
+    value = _JWT_ANY.sub(lambda m: f"redacted-jwt-{_h(m.group(), 8)}", value)
     value = _MAC_ANY.sub(lambda m: _h(m.group().lower().replace(":", ""), 12), value)
     value = _UUID_ANY.sub(lambda m: f"uuid-{_h(m.group().lower(), 12)}", value)
     value = _IPV6_ANY.sub(lambda m: f"2001:db8::{_h(m.group(), 8)}", value)
