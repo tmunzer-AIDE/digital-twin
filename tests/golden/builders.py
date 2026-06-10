@@ -111,6 +111,131 @@ def augmented_doc(
     return doc
 
 
+GS_WLAN_VLAN = 3001  # a tagged WLAN data vlan with NO IRB (no modeled exit)
+GS_MGMT_VLAN = 1  # the AP-mgmt / access-target vlan; given a local exit
+
+
+def ap_devlan_doc() -> tuple[dict[str, Any], dict[str, Any]]:
+    """An AP uplinked to EDGE on a trunk carrying an EXIT-LESS WLAN vlan (3001),
+    with NO observed clients. Returns (doc, op): the op flips that uplink port
+    trunk -> access on the mgmt vlan, dropping 3001. The mgmt vlan HAS a local
+    exit, so the ONLY signal is the AP severed from the exit-less WLAN vlan —
+    the real-world 'AP port trunk->access blackholes its WLANs' case.
+    """
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    ap_port = ap_uplink_on(doc, EDGE)[1]
+    edge = _device(doc, EDGE)
+    doc["setting"]["networks"]["gs_wlan"] = {"vlan_id": GS_WLAN_VLAN}
+    doc["setting"]["networks"]["gs_mgmt"] = {"vlan_id": GS_MGMT_VLAN}
+    doc["setting"]["port_usages"]["gs_ap_trunk"] = {
+        "mode": "trunk", "networks": ["gs_wlan"], "port_network": "gs_mgmt"
+    }
+    doc["setting"]["port_usages"]["gs_mgmt_access"] = {"mode": "access", "port_network": "gs_mgmt"}
+    edge.setdefault("other_ip_configs", {})["gs_mgmt"] = {
+        "type": "static", "ip": "192.0.2.1", "netmask": "255.255.255.0"
+    }
+    edge.setdefault("port_config", {})[ap_port] = {"usage": "gs_ap_trunk"}
+    doc["wireless_clients"] = []  # still 'fetched' -> clients_active EARNED as empty
+    doc["wired_clients"] = []
+    dev = copy.deepcopy(edge)
+    dev["port_config"][ap_port] = {"usage": "gs_mgmt_access"}  # trunk -> access, drops 3001
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    return doc, op
+
+
+def ap_wlan_doc(*, wlan_vlan: int, exit_for_wlan: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """An AP uplinked to EDGE on a trunk carrying a tagged WLAN vlan, an enabled
+    site WLAN (apply_to=aps) needing that vlan, and NO observed clients. Returns
+    (doc, op): the op flips the uplink trunk -> access on the mgmt vlan, dropping
+    the WLAN vlan. With `exit_for_wlan` the WLAN vlan has a local IRB on EDGE
+    (severance -> exit_lost -> UNSAFE); without, it is exit-less (-> REVIEW).
+    """
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    ap_mac, ap_port = ap_uplink_on(doc, EDGE)
+    ap_id = str(_device(doc, ap_mac)["id"])
+    edge = _device(doc, EDGE)
+    doc["setting"]["networks"]["gs_wlan"] = {"vlan_id": wlan_vlan}
+    doc["setting"]["networks"]["gs_mgmt"] = {"vlan_id": 1}
+    doc["setting"]["port_usages"]["gs_ap_trunk"] = {
+        "mode": "trunk", "networks": ["gs_wlan"], "port_network": "gs_mgmt"
+    }
+    doc["setting"]["port_usages"]["gs_mgmt_access"] = {"mode": "access", "port_network": "gs_mgmt"}
+    edge.setdefault("other_ip_configs", {})["gs_mgmt"] = {
+        "type": "static", "ip": "192.0.2.1", "netmask": "255.255.255.0"
+    }
+    if exit_for_wlan:
+        edge["other_ip_configs"]["gs_wlan"] = {
+            "type": "static", "ip": "198.51.100.1", "netmask": "255.255.255.0"
+        }
+    edge.setdefault("port_config", {})[ap_port] = {"usage": "gs_ap_trunk"}
+    doc["wireless_clients"] = []
+    doc["wired_clients"] = []
+    doc["wlans"] = [
+        {
+            "ssid": "corp",
+            "enabled": True,
+            "vlan_enabled": True,
+            "interface": "all",
+            "apply_to": "aps",
+            "ap_ids": [ap_id],
+            "vlan_id": wlan_vlan,
+        }
+    ]
+    doc["meta"]["fetched"] = [*doc["meta"]["fetched"], "wlans"]
+    dev = copy.deepcopy(edge)
+    dev["port_config"][ap_port] = {"usage": "gs_mgmt_access"}  # trunk -> access, drops WLAN vlan
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    return doc, op
+
+
+def ap_unresolved_wlan_doc() -> tuple[dict[str, Any], dict[str, Any]]:
+    """An AP whose only WLAN is wxtag-scoped (AP membership unresolvable) and
+    whose uplink trunk carries vlan 999 (exit on HUB); the op flips it
+    trunk->access (drops 999). The twin can't verify the wxtag WLAN's needs ->
+    coverage note (REVIEW), never a false SAFE."""
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    ap_port = ap_uplink_on(doc, EDGE)[1]
+    edge = _device(doc, EDGE)
+    doc["setting"]["port_usages"]["gs_ap_trunk"] = {"mode": "trunk", "networks": [GS_NET]}
+    edge.setdefault("port_config", {})[ap_port] = {"usage": "gs_ap_trunk"}
+    doc["wireless_clients"] = []
+    doc["wired_clients"] = []
+    doc["wlans"] = [
+        {
+            "ssid": "guest",
+            "enabled": True,
+            "vlan_enabled": True,
+            "interface": "all",
+            "apply_to": "wxtags",
+            "wxtag_ids": ["t1"],
+            "vlan_id": 999,
+        }
+    ]
+    doc["meta"]["fetched"] = [*doc["meta"]["fetched"], "wlans"]
+    dev = copy.deepcopy(edge)
+    dev["port_config"][ap_port] = {"usage": "gs_empty_trunk"}  # drops vlan 999
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    return doc, op
+
+
 def ap_uplink_on(doc: dict[str, Any], switch_mac: str) -> tuple[str, str]:
     """(ap_mac, switch_port) of an AP whose lldp_stat names the given switch."""
     for stat in doc["device_stats"]:

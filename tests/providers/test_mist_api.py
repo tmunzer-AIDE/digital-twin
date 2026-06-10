@@ -61,6 +61,9 @@ class FakeProvider(MistApiProvider):
     def _wireless_clients(self, s: Any) -> list[dict[str, Any]]:
         return []
 
+    def _wlans(self, s: Any) -> list[dict[str, Any]]:
+        return []
+
     def _derived(self, s: Any) -> dict[str, Any]:
         return {"_derived": s.site_id}
 

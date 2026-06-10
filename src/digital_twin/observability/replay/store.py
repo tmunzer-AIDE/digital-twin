@@ -35,6 +35,7 @@ _RAW_FIELDS = (
     "port_stats",
     "wireless_clients",
     "wired_clients",
+    "wlans",
     "derived_setting",
 )
 
@@ -96,6 +97,7 @@ def load_fixture_raw(path: Path | str) -> RawSiteState:
         port_stats=tuple(data["port_stats"]),
         wireless_clients=tuple(data["wireless_clients"]),
         wired_clients=tuple(data["wired_clients"]),
+        wlans=tuple(data.get("wlans", ())),  # .get: fixtures predating WLAN support
         derived_setting=data["derived_setting"],
         meta=StateMeta(
             acquired_at=datetime.fromisoformat(meta["acquired_at"]).astimezone(UTC),

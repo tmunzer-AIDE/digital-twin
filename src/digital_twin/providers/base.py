@@ -58,6 +58,10 @@ class RawSiteState:
     wired_clients: tuple[JsonObj, ...]
     derived_setting: JsonObj | None  # ORACLE ONLY (equivalence gate)
     meta: StateMeta
+    # site WLAN configs (GET /sites/{id}/wlans) — AP VLAN requirements. Defaulted
+    # (and trailing) so existing constructors/fixtures predating it stay valid;
+    # absence is "not fetched", which leaves the WLAN_CONFIG capability unearned.
+    wlans: tuple[JsonObj, ...] = ()
 
 
 @dataclass(frozen=True)

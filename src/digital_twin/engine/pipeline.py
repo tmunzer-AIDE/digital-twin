@@ -41,6 +41,7 @@ from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
 from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta, StateProvider
 from digital_twin.scope.derived_gate import check_derived
+from digital_twin.scope.dynamic_ports import dynamic_profile_findings
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -160,6 +161,11 @@ def simulate(
             rejection = screen_op(op.object_type, current, effective)
             if rejection:
                 return unknown(rejection, state_meta=state_meta)
+            # dynamic-port honesty: a usage/network redefinition with dynamic
+            # ports in the blast radius is unverifiable -> WARNING (-> REVIEW)
+            adapter_findings += dynamic_profile_findings(
+                op.object_type, current, effective, proposed_raw.devices
+            )
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return unknown(applied, state_meta=state_meta)

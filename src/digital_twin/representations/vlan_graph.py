@@ -15,7 +15,13 @@ from collections import defaultdict
 import networkx as nx
 
 from digital_twin.ir.entities import AttachKind
-from digital_twin.ir.indexes import access_ports_by_vlan, exits_by_vlan, node_for, vc_root_map
+from digital_twin.ir.indexes import (
+    access_ports_by_vlan,
+    exits_by_vlan,
+    node_for,
+    vc_root_map,
+    wlan_aps_by_vlan,
+)
 from digital_twin.ir.model import IR
 
 from .graph_data import L2Edge, VlanNode
@@ -37,6 +43,10 @@ def build_vlan_graph(ir: IR, l2: nx.MultiGraph, vlan_id: int) -> nx.MultiGraph:
         if c.attach_kind is AttachKind.AP and c.vlan == vlan_id:
             wireless_by_node[node_for(vc_root, c.attach_id)].append(c.mac)
 
+    wlan_by_node: dict[str, list[str]] = defaultdict(list)
+    for node in wlan_aps_by_vlan(ir).get(vlan_id, []):
+        wlan_by_node[node].append(node)  # config WLAN requirement (AP node == member id)
+
     carrying: list[tuple[str, str, object, L2Edge]] = [
         (u, v, key, data["data"])
         for u, v, key, data in l2.edges(keys=True, data=True)
@@ -44,7 +54,11 @@ def build_vlan_graph(ir: IR, l2: nx.MultiGraph, vlan_id: int) -> nx.MultiGraph:
     ]
     carrying_nodes = {n for u, v, _, _ in carrying for n in (u, v)}
     participating = (
-        carrying_nodes | set(access_by_node) | set(exits_by_node) | set(wireless_by_node)
+        carrying_nodes
+        | set(access_by_node)
+        | set(exits_by_node)
+        | set(wireless_by_node)
+        | set(wlan_by_node)
     )
 
     h: nx.MultiGraph = nx.MultiGraph()
@@ -55,6 +69,7 @@ def build_vlan_graph(ir: IR, l2: nx.MultiGraph, vlan_id: int) -> nx.MultiGraph:
                 access_ports=access_by_node.get(node, []),
                 exits=exits_by_node.get(node, []),
                 wireless_clients=sorted(wireless_by_node.get(node, [])),
+                wlan_aps=sorted(wlan_by_node.get(node, [])),
             ),
         )
     for u, v, key, edge in carrying:

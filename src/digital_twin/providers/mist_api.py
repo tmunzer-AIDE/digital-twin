@@ -172,6 +172,7 @@ class MistApiProvider(StateProvider):
                 attempt("wireless_clients", lambda: self._wireless_clients(scope), [])
             ),
             wired_clients=tuple(attempt("wired_clients", wired_clients_fn, [])),
+            wlans=tuple(attempt("wlans", lambda: self._wlans(scope), [])),
             derived_setting=derived,
             meta=StateMeta(
                 acquired_at=_now(),
@@ -257,6 +258,15 @@ class MistApiProvider(StateProvider):
 
     def _wired_clients(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.wired_clients.searchSiteWiredClients(self._session, s.site_id)
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
+    def _wlans(self, s: SiteScope) -> list[_Json]:
+        # site WLAN config (AP VLAN requirements) — the DERIVED list, which
+        # merges org-template WLANs into the site's effective set. Real orgs
+        # commonly define every SSID at org level via wlantemplates, leaving
+        # the plain per-site list EMPTY (found in real use, 2026-06-10) — the
+        # twin would then falsely "know" there are no WLAN requirements.
+        resp = mistapi.api.v1.sites.wlans.listSiteWlansDerived(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     # -- org-batched endpoints (payload identical to the per-site call) --------

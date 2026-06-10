@@ -36,6 +36,7 @@ def main() -> None:
         "port_stats",
         "wireless_clients",
         "wired_clients",
+        "wlans",
         "derived_setting",
     ):
         (OUT / f"{name}.json").write_text(json.dumps(getattr(raw, name), indent=1, default=str))

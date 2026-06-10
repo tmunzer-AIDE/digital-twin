@@ -23,3 +23,4 @@ class IRCapability(StrEnum):
     STP_STATE = "stp.state"
     CLIENTS_ACTIVE = "clients.active"
     L3_EXITS = "l3.exits"
+    WLAN_CONFIG = "wlan.config"  # AP VLAN requirements known from WLAN config

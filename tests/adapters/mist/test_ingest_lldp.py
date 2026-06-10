@@ -32,6 +32,47 @@ def _ctx(port_stats, device_stats=()) -> IngestContext:
     return ctx
 
 
+def test_neighbor_named_by_system_name_only_still_links():
+    # real orgs exist whose switch port stats carry NO neighbor_mac — only
+    # neighbor_system_name (found in real use, 2026-06-10). Without a name
+    # fallback the whole site is EDGELESS and every strand looks pre-existing.
+    stats = [
+        {
+            "mac": "aa0000000001",
+            "port_id": "ge-0/0/47",
+            "up": True,
+            "neighbor_system_name": "sw-b",
+            "neighbor_port_desc": "ge-0/0/47",
+        },
+        {
+            "mac": "bb0000000002",
+            "port_id": "ge-0/0/47",
+            "up": True,
+            "neighbor_system_name": "sw-a",
+            "neighbor_port_desc": "ge-0/0/47",
+        },
+    ]
+    ir = _ctx(stats).builder.build()
+    assert len(ir.links) == 1
+    assert ir.links[0].meta.confidence.level is ConfidenceLevel.HIGH  # two-sided
+
+
+def test_unmatched_system_name_without_mac_is_skipped():
+    # a non-Mist neighbor with no MAC cannot be identified -> no link, no
+    # invented client (we have no stable id for it)
+    stats = [
+        {
+            "mac": "aa0000000001",
+            "port_id": "ge-0/0/47",
+            "up": True,
+            "neighbor_system_name": "some-printer",
+            "neighbor_port_desc": "eth0",
+        }
+    ]
+    ir = _ctx(stats).builder.build()
+    assert ir.links == () and ir.clients == ()
+
+
 def test_two_sided_lldp_creates_one_high_confidence_link():
     stats = [
         {

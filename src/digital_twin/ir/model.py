@@ -36,6 +36,9 @@ class IRValidationError(ValueError):
     """Raised when an IR would be internally inconsistent (dup ids / dangling refs)."""
 
 
+_EMPTY_MAP: Mapping[str, object] = MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class IR:
     ir_version: str
@@ -46,6 +49,11 @@ class IR:
     vlans: Mapping[int, Vlan]
     l3intfs: tuple[L3Intf, ...]
     clients: tuple[Client, ...]
+    # config-derived AP VLAN requirements (WlanIngester): ap device id -> the
+    # VLANs its enabled WLANs need delivered on its uplink; and ap device id ->
+    # reasons a WLAN's requirement could not be resolved (coverage gaps).
+    ap_wlan_vlans: Mapping[str, frozenset[int]] = _EMPTY_MAP  # type: ignore[assignment]
+    ap_wlan_unresolved: Mapping[str, tuple[str, ...]] = _EMPTY_MAP  # type: ignore[assignment]
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -69,6 +77,8 @@ class IRBuilder:
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
         self._capabilities: set[Capability] = set()
+        self._ap_wlan_vlans: dict[str, set[int]] = {}
+        self._ap_wlan_unresolved: dict[str, list[str]] = {}
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -113,9 +123,21 @@ class IRBuilder:
         self._capabilities.add(cap)
         return self
 
+    def require_ap_vlans(self, ap_id: str, vlans: frozenset[int]) -> IRBuilder:
+        """Record that an AP's enabled WLANs need these VLANs on its uplink."""
+        self._ap_wlan_vlans.setdefault(ap_id, set()).update(vlans)
+        return self
+
+    def mark_ap_wlan_unresolved(self, ap_id: str, reasons: tuple[str, ...]) -> IRBuilder:
+        self._ap_wlan_unresolved.setdefault(ap_id, []).extend(reasons)
+        return self
+
     # -- lookups / mutation used by ingesters (pre-build) ----------------------
     def has_device(self, did: str) -> bool:
         return did in self._devices
+
+    def has_vlan(self, vid: int) -> bool:
+        return vid in self._vlans
 
     def has_port(self, pid: str) -> bool:
         return pid in self._ports
@@ -141,6 +163,7 @@ class IRBuilder:
         errors += self._validate_l3intfs()
         errors += self._validate_clients()
         errors += self._validate_vc()
+        errors += self._validate_wlan_reqs()
         if errors:
             raise IRValidationError("invalid IR:\n  " + "\n  ".join(errors))
 
@@ -222,6 +245,18 @@ class IRBuilder:
                 )
         return errors
 
+    def _validate_wlan_reqs(self) -> list[str]:
+        # config-derived requirements must reference real AP devices, else an
+        # ingester bug would silently misattribute VLAN needs.
+        errors: list[str] = []
+        for ap_id in set(self._ap_wlan_vlans) | set(self._ap_wlan_unresolved):
+            dev = self._devices.get(ap_id)
+            if dev is None:
+                errors.append(f"wlan requirement references unknown device {ap_id}")
+            elif dev.role is not DeviceRole.AP:
+                errors.append(f"wlan requirement on {ap_id} which is not an AP")
+        return errors
+
     def build(self) -> IR:
         self._validate()
         return IR(
@@ -233,4 +268,10 @@ class IRBuilder:
             vlans=MappingProxyType(dict(self._vlans)),
             l3intfs=tuple(self._l3intfs),
             clients=tuple(self._clients),
+            ap_wlan_vlans=MappingProxyType(
+                {ap: frozenset(v) for ap, v in self._ap_wlan_vlans.items()}
+            ),
+            ap_wlan_unresolved=MappingProxyType(
+                {ap: tuple(r) for ap, r in self._ap_wlan_unresolved.items()}
+            ),
         )

@@ -41,6 +41,19 @@ def test_load_round_trips_to_raw_site_state(tmp_path):
     assert raw.devices and raw.setting  # payloads intact (values redacted)
 
 
+def test_wlans_round_trip_and_default_when_absent(tmp_path):
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("run1", raw_site(wlans=({"ssid": "corp", "vlan_id": 10},)))
+    raw = load_fixture_raw(path)
+    assert raw.wlans and raw.wlans[0]["vlan_id"] == 10
+    # a fixture predating WLAN support (no "wlans" key) loads as empty, not a crash
+    data = json.loads(path.read_text())
+    del data["wlans"]
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps(data))
+    assert load_fixture_raw(legacy).wlans == ()
+
+
 def test_fixture_provider_serves_matching_scope(tmp_path):
     store = ReplayStore(tmp_path)
     path = store.save_raw("run1", raw_site())

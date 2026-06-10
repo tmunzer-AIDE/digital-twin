@@ -38,3 +38,20 @@ def test_membership_and_exit_reachability_per_component():
 def test_single_component_when_connected():
     comps = AnalysisContext(_split_ir(connected=True)).vlan_components(10)
     assert len(comps) == 1 and comps[0].reaches_exit
+
+
+def test_ap_wlan_requirement_is_a_config_member():
+    # an AP whose enabled WLAN needs vlan 30 is a CONFIG member of vlan 30 with
+    # no observed client — an isolated such AP is a stranded member (blackhole
+    # material), the basis for catching trunk->access severance of idle WLANs.
+    from tests.factories import ap
+
+    b = IRBuilder()
+    b.add_device(ap("ap1"))
+    b.add_vlan(Vlan(vlan_id=30, name="iot", scope="s1"))
+    b.require_ap_vlans("ap1", frozenset({30}))
+    comps = AnalysisContext(b.build()).vlan_components(30)
+    assert len(comps) == 1
+    c = comps[0]
+    assert c.nodes == frozenset({"ap1"}) and "ap1" in c.wlan_members
+    assert c.has_members and not c.reaches_exit

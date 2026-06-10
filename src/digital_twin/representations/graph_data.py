@@ -38,18 +38,20 @@ class L2Edge:
 class VlanNode:
     """The payload on a per-VLAN-graph node (a participating device).
 
-    Membership has two bases (spec): access_ports = configuration-based
-    (switched side); wireless_clients = OBSERVATION-based (an AP contributes
-    membership only via its currently-observed wireless clients' vlans).
+    Membership has three bases: access_ports = configuration-based (switched
+    side); wlan_aps = configuration-based (an AP whose enabled WLAN config needs
+    this vlan on its uplink — known even with no client connected); and
+    wireless_clients = OBSERVATION-based (currently-observed wireless clients).
     """
 
     access_ports: list[str] = field(default_factory=list)
     exits: list[str] = field(default_factory=list)
     wireless_clients: list[str] = field(default_factory=list)  # observed client macs
+    wlan_aps: list[str] = field(default_factory=list)  # config WLAN-required AP nodes
 
     @property
     def is_member(self) -> bool:
-        return bool(self.access_ports or self.wireless_clients)
+        return bool(self.access_ports or self.wireless_clients or self.wlan_aps)
 
     @property
     def is_exit(self) -> bool:

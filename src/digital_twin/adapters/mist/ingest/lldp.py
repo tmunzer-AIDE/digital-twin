@@ -60,16 +60,34 @@ class LldpIngester:
 
     # -- claims ---------------------------------------------------------------
     def _claims(self, ctx: IngestContext) -> dict[tuple[str, str], _Json]:
-        """(reporter_port_id_global, claimed_neighbor_port_id_global) -> stat row."""
+        """(reporter_port_id_global, claimed_neighbor_port_id_global) -> stat row.
+
+        Some orgs' port stats carry NO neighbor_mac — only neighbor_system_name
+        (found in real use, 2026-06-10; without this the site model is EDGELESS
+        and every strand looks pre-existing). Fallback: resolve the neighbor by
+        its system name against the site's managed device names — same rule the
+        AP-uplink path already uses. A macless row whose name matches nothing
+        is SKIPPED (no stable identity to attach a link or edge-client to).
+        """
+        by_name = {
+            str(d["name"]): device_id(str(d["mac"]))
+            for d in ctx.raw.devices
+            if d.get("name") and d.get("mac")
+        }
         out: dict[tuple[str, str], _Json] = {}
         for row in ctx.raw.port_stats:
-            if not row.get("neighbor_mac") or not row.get("port_id"):
+            if not row.get("port_id"):
                 continue
+            if row.get("neighbor_mac"):
+                neighbor = device_id(str(row["neighbor_mac"]))
+            else:
+                named = by_name.get(str(row.get("neighbor_system_name")))
+                if named is None:
+                    continue
+                neighbor = named
             src = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             # Mist port stats name the neighbor's port via `neighbor_port_desc`.
-            dst = port_id(
-                device_id(str(row["neighbor_mac"])), str(row.get("neighbor_port_desc") or "?")
-            )
+            dst = port_id(neighbor, str(row.get("neighbor_port_desc") or "?"))
             out[(src, dst)] = row
         return out
 

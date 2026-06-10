@@ -20,6 +20,7 @@ from digital_twin.adapters.mist.ingest.clients import ClientsIngester
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.registry import IngesterRegistry, IngestReport
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
+from digital_twin.adapters.mist.ingest.wlan import WlanIngester
 from digital_twin.adapters.mist.validate import L0Result, validate_payload
 from digital_twin.contracts import ChangeOp, Rejection
 from digital_twin.ir import IR, IRBuilder, device_id
@@ -41,7 +42,7 @@ class MistAdapter:
         self._registry = IngesterRegistry(
             ingesters
             if ingesters is not None
-            else [SwitchIngester(), LldpIngester(), ClientsIngester()]
+            else [SwitchIngester(), LldpIngester(), ClientsIngester(), WlanIngester()]
         )
 
     def validate(self, op: ChangeOp) -> L0Result:

@@ -46,6 +46,7 @@ ALL_FETCHED = (
     "port_stats",
     "wireless_clients",
     "wired_clients",
+    "wlans",
 )
 
 
@@ -55,6 +56,7 @@ def raw_site(
     device_stats: tuple[dict[str, Any], ...] = (),
     wireless_clients: tuple[dict[str, Any], ...] = (),
     wired_clients: tuple[dict[str, Any], ...] = (),
+    wlans: tuple[dict[str, Any], ...] = (),
     fetched: tuple[str, ...] = ALL_FETCHED,
 ) -> RawSiteState:
     return RawSiteState(
@@ -67,6 +69,7 @@ def raw_site(
         port_stats=port_stats,
         wireless_clients=wireless_clients,
         wired_clients=wired_clients,
+        wlans=wlans,
         derived_setting=None,
         meta=StateMeta(acquired_at=datetime.now(UTC), host="test", fetched=fetched, failures=()),
     )

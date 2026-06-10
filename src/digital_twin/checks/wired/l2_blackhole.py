@@ -31,6 +31,7 @@ from digital_twin.ir import (
     min_confidence,
 )
 from digital_twin.ir.entities import DeviceRole
+from digital_twin.ir.indexes import node_for, vc_root_map
 
 
 class L2BlackholeCheck:
@@ -65,6 +66,7 @@ class L2BlackholeCheck:
                 and any(c.wireless_members for c in ctx.proposed.vlan_components(vid))
             )
             notes.extend(self._ap_blind_spots(ctx, vid))
+        notes.extend(self._wlan_unresolved_notes(ctx))
         if wireless_in_play:
             # spec: AP membership is observation-based — not-yet-connected clients
             # are a known coverage gap, so this conclusion can never be "complete"
@@ -94,37 +96,83 @@ class L2BlackholeCheck:
         )
 
     def _ap_blind_spots(self, ctx: CheckContext, vid: int) -> list[str]:
-        """APs that the DELTA cut off this vlan, with ZERO observed clients: the
-        wireless impact is UNKNOWABLE (future clients), not absent — a coverage
-        blind spot (spec: AP-side VLAN coverage is observation-based -> partial
-        -> REVIEW). Delta-conditioned: an AP that did not reach the vlan in the
-        BASELINE either is pre-existing context, not a blind spot (else every
-        delta on a site with exit-less AP vlans would flood REVIEW). APs with
-        observed clients are handled by the member path instead."""
+        """APs whose reach to this vlan the DELTA degraded, with ZERO observed
+        clients: the wireless impact is UNKNOWABLE (future clients), not absent —
+        a coverage blind spot (spec: AP-side VLAN coverage is observation-based
+        -> partial -> REVIEW). 'Degraded' = the AP was in the vlan's BASELINE
+        domain and the delta either DROPPED it from the domain (its uplink
+        stopped delivering the vlan — e.g. trunk->access) OR cost its component
+        the exit. An EXIT-LESS vlan counts: a pure-L2 WLAN vlan (no IRB) bridged
+        by the AP is exactly the case the old exit-gated form silently missed
+        (false SAFE). Delta-conditioned: an AP unchanged between baseline and
+        proposed is not flagged (else every delta on a site with exit-less AP
+        vlans floods REVIEW). APs with observed clients are handled by the member
+        path instead."""
+        baseline_domain: set[str] = set()
         baseline_reached: set[str] = set()
         for comp in ctx.baseline.vlan_components(vid):
+            baseline_domain |= comp.nodes
             if comp.reaches_exit:
                 baseline_reached |= comp.nodes
         baseline_aps = {
             n
-            for n in baseline_reached
+            for n in baseline_domain
             if (dev := ctx.baseline.ir.devices.get(n)) is not None and dev.role is DeviceRole.AP
         }
         if not baseline_aps:
             return []
+        # APs whose VLAN need is KNOWN from config are real members handled by
+        # the member-strand path; excluding them here avoids a duplicate note.
+        config_member_nodes = {m for c in ctx.baseline.vlan_components(vid) for m in c.wlan_members}
+        proposed_domain: set[str] = set()
         proposed_reached: set[str] = set()
         observed_ap_nodes: set[str] = set()
         for comp in ctx.proposed.vlan_components(vid):
+            proposed_domain |= comp.nodes
             if comp.reaches_exit:
                 proposed_reached |= comp.nodes
             if comp.wireless_members:
                 observed_ap_nodes |= comp.nodes
-        return [
-            f"vlan {vid}: AP {n} no longer reaches the vlan and has no observed "
-            "clients — wireless impact unknowable (observation-based coverage)"
-            for n in sorted(baseline_aps)
-            if n not in proposed_reached and n not in observed_ap_nodes
-        ]
+        notes: list[str] = []
+        for n in sorted(baseline_aps):
+            if n in observed_ap_nodes or n in config_member_nodes:
+                continue  # observed clients / config WLAN need -> member path handles it
+            dropped = n not in proposed_domain
+            lost_exit = n in baseline_reached and n not in proposed_reached
+            if dropped or lost_exit:
+                notes.append(
+                    f"vlan {vid}: AP {n} no longer reaches the vlan and has no observed "
+                    "clients — wireless impact unknowable (observation-based coverage)"
+                )
+        return notes
+
+    def _wlan_unresolved_notes(self, ctx: CheckContext) -> list[str]:
+        """APs carrying a WLAN whose VLAN need could not be statically resolved
+        (wxtag-scoped, template vlan) AND whose VLAN delivery the delta changed:
+        we cannot verify those WLANs are unaffected -> coverage blind spot
+        (REVIEW). Delta-conditioned via the AP's per-vlan participation, so an
+        untouched AP with unresolved WLANs is not flagged."""
+        unresolved = ctx.proposed.ir.ap_wlan_unresolved
+        if not unresolved:
+            return []
+        vc_root = vc_root_map(ctx.proposed.ir)
+        vids = sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans))
+
+        def delivery(side: object) -> dict[str, set[int]]:
+            out: dict[str, set[int]] = {}
+            for vid in vids:
+                for comp in side.vlan_components(vid):  # type: ignore[attr-defined]
+                    for node in comp.nodes:
+                        out.setdefault(node, set()).add(vid)
+            return out
+
+        base, prop = delivery(ctx.baseline), delivery(ctx.proposed)
+        notes: list[str] = []
+        for ap_id, reasons in unresolved.items():
+            node = node_for(vc_root, ap_id)
+            if base.get(node, set()) != prop.get(node, set()) and reasons:
+                notes.append(f"AP {ap_id}: VLAN delivery changed and {reasons[0]}")
+        return notes
 
     def _check_vlan(
         self,
@@ -135,11 +183,17 @@ class L2BlackholeCheck:
     ) -> Status:
         proposed_exit = ctx.proposed.exit_for(vid)
         components = ctx.proposed.vlan_components(vid)
-        if any(c.has_members for c in components) and proposed_exit.confidence is not None:
+        if (
+            any(c.has_members for c in components)
+            and proposed_exit.confidence is not None
+            and _vlan_changed(ctx, vid)
+        ):
             # the exit bounds the conclusion's confidence ONLY when member
             # reachability actually relies on it (a LOW exit = a LOW "still
-            # reachable"); a transit-only vlan never consulted its exit, so its
-            # confidence must not taint the check
+            # reachable"); a transit-only vlan never consulted its exit, and an
+            # UNCHANGED vlan's conclusion is pre-existing context — neither may
+            # taint the check (else every delta on a site with assumed-carriage
+            # uplinks floods REVIEW)
             confidences.append(proposed_exit.confidence)
         stranded = [c for c in components if c.has_members and not c.reaches_exit]
         if not stranded:
@@ -195,6 +249,12 @@ class L2BlackholeCheck:
         baseline_stranded_wireless = frozenset(
             m for c in baseline_components if not c.reaches_exit for m in c.wireless_members
         )
+        baseline_reaching_wlan = frozenset(
+            m for c in baseline_components if c.reaches_exit for m in c.wlan_members
+        )
+        baseline_stranded_wlan = frozenset(
+            m for c in baseline_components if not c.reaches_exit for m in c.wlan_members
+        )
         exit_conf = proposed_exit.confidence
         assert exit_conf is not None  # kind != NONE guarantees it (appended above)
         worst = Status.PASS
@@ -202,16 +262,18 @@ class L2BlackholeCheck:
             lost_exit = (
                 bool(comp.member_ports & baseline_reaching_ports)
                 or bool(comp.wireless_members & baseline_reaching_wireless)
+                or bool(comp.wlan_members & baseline_reaching_wlan)
                 or any(comp.nodes & prev for prev in baseline_reaching)
             )
-            # attribution is per MEMBER (port or observed wireless client): the
-            # condition is pre-existing ONLY if every member of this stranded
-            # component was ALREADY a stranded member in the baseline. A new
-            # access port — or a client observed on a newly stranded AP — on an
+            # attribution is per MEMBER (access port, config WLAN AP, or observed
+            # wireless client): the condition is pre-existing ONLY if every member
+            # of this stranded component was ALREADY a stranded member in the
+            # baseline. A new access port — or a WLAN-required/observed AP — on an
             # already-blackholed node is still a newly blackholed member.
             new_ports = sorted(comp.member_ports - baseline_stranded_ports)
             new_wireless = sorted(comp.wireless_members - baseline_stranded_wireless)
-            preexisting = not lost_exit and not new_ports and not new_wireless
+            new_wlan = sorted(comp.wlan_members - baseline_stranded_wlan)
+            preexisting = not lost_exit and not new_ports and not new_wireless and not new_wlan
             if preexisting:
                 findings.append(
                     self._finding(

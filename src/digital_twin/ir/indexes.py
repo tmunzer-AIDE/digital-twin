@@ -69,6 +69,19 @@ def clients_by_ap(ir: IR) -> dict[str, list[Client]]:
     return dict(out)
 
 
+def wlan_aps_by_vlan(ir: IR) -> dict[int, list[str]]:
+    """Config WLAN-required AP graph-nodes keyed by VLAN (an AP whose enabled
+    WLANs need the VLAN delivered on its uplink). Folds members into their VC
+    root, like the other membership indexes."""
+    vc_root = vc_root_map(ir)
+    out: dict[int, list[str]] = defaultdict(list)
+    for ap_id, vlans in ir.ap_wlan_vlans.items():
+        node = node_for(vc_root, ap_id)
+        for vid in vlans:
+            out[vid].append(node)
+    return dict(out)
+
+
 def clients_by_vlan(ir: IR) -> dict[int, list[Client]]:
     out: dict[int, list[Client]] = defaultdict(list)
     for c in ir.clients:
