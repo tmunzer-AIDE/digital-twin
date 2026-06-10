@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from digital_twin.checks.base import CoverageState
 from digital_twin.engine.pipeline import simulate
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
@@ -20,6 +21,9 @@ from .builders import (
     EDGE_UPLINK_PORT,
     WIRED_CLIENT_MAC,
     WIRELESS_CLIENT_MAC,
+    ap_devlan_doc,
+    ap_unresolved_wlan_doc,
+    ap_wlan_doc,
     augmented_doc,
     device_op,
     fixture_doc,
@@ -187,6 +191,115 @@ def _ap_uplink_port(doc) -> str | None:
         if str(lldp.get("chassis_id", "")).replace(":", "") == EDGE and lldp.get("port_id"):
             return str(lldp["port_id"])
     return None
+
+
+def test_gs9_ap_uplink_loses_exitless_wlan_vlan_is_review(tmp_path):
+    # An AP bridges a tagged WLAN data vlan (3001) that has NO IRB exit and NO
+    # observed client. Flipping its uplink trunk->access drops 3001 -> the WLANs
+    # there are blackholed, but the twin cannot see the WLAN config. Unlike
+    # GS7-variant (the dropped vlan HAD an exit), here the vlan is exit-less, so
+    # the old exit-gated blind-spot guard missed it and the verdict was SAFE.
+    # It is a blind spot, not safe: floor to REVIEW with the AP blind-spot note.
+    doc, op = ap_devlan_doc()
+    plan = plan_for(doc, [op])
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    blackhole = next(r for r in v.check_results if r.check_id == "wired.l2.blackhole")
+    assert blackhole.coverage.state is not CoverageState.COMPLETE
+    assert any("3001" in n for n in blackhole.coverage.notes), blackhole.coverage.notes
+
+
+def test_gs10_ap_wlan_vlan_severed_with_exit_is_unsafe(tmp_path):
+    # Fix B: a site WLAN (no observed clients) needs a tagged vlan on the AP's
+    # uplink; the vlan has a local IRB. Flipping the uplink trunk->access drops
+    # it -> the AP's WLAN is blackholed. KNOWN from config -> a real UNSAFE, not
+    # just a coverage REVIEW (and idle/clientless WLANs are now covered).
+    doc, op = ap_wlan_doc(wlan_vlan=3100, exit_for_wlan=True)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any("blackhole" in f.code and "exit_lost" in f.code for f in v.findings)
+
+
+def test_gs10_ap_wlan_vlan_severed_without_exit_is_review(tmp_path):
+    # same, but the WLAN vlan is pure-L2 (no IRB): the twin can't assert an
+    # egress, so the honest verdict is REVIEW (exit unlocatable), never SAFE.
+    doc, op = ap_wlan_doc(wlan_vlan=3101, exit_for_wlan=False)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_gs10_unresolvable_wlan_is_review_with_coverage_note(tmp_path):
+    # a wxtag-scoped WLAN: the twin can't pin which APs/VLANs it needs. Severing
+    # the AP's uplink with such a WLAN present must be REVIEW with an explicit
+    # coverage note naming the unverifiable WLAN — never SAFE.
+    doc, op = ap_unresolved_wlan_doc()
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    blackhole = next(r for r in v.check_results if r.check_id == "wired.l2.blackhole")
+    assert any("guest" in n for n in blackhole.coverage.notes), blackhole.coverage.notes
+
+
+def test_gs11_usage_redefinition_with_dynamic_ports_is_review(tmp_path):
+    # the 2026-06-10 live false-SAFE: AP uplinks get usage 'ap' at RUNTIME via
+    # dynamic port profiles; the model keeps static usages, so redefining the
+    # 'ap' usage (trunk->access) is a topological no-op in the model while
+    # blackholing real APs. Honest verdict: REVIEW with the dynamic-port note.
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    from .builders import _device, _drop_nones
+
+    edge = _device(doc, EDGE)
+    edge["port_config"]["ge-0/0/30"] = {"usage": "default", "dynamic_usage": "dynamic"}
+    # partial payload, real-use shape: keep every existing usage's attrs, flip
+    # ONE usage's mode (root-level update replaces the port_usages root)
+    usages = copy.deepcopy(_drop_nones(edge.get("port_usages") or {}))
+    usages["gs_dyn_target"] = {"mode": "access", "port_network": "gs_net"}
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(edge["id"]),
+        "payload": {"type": "switch", "port_usages": usages},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert any(f.code == "scope.dynamic_ports.unverifiable" for f in v.findings)
+
+
+def test_gs13_disabling_all_uplinks_is_unsafe(tmp_path):
+    # the user's plan-05 case (2026-06-10): disabling a switch's uplink(s)
+    # physically severs the switch AND everything on it (clients, APs, their
+    # WLANs) from the rest of the network. No per-vlan exit reasoning needed —
+    # the severance itself is provable at the severed links' confidence.
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    plan = plan_for(
+        doc,
+        [
+            device_op(
+                doc,
+                EDGE,
+                **{
+                    EDGE_UPLINK_PORT.replace("/", "__"): "disabled",
+                    EDGE_PAR_PORT.replace("/", "__"): "disabled",
+                },
+            )
+        ],
+    )
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any(f.code == "wired.l2.isolation.severed" for f in v.findings)
+
+
+def test_gs13_variant_redundant_uplink_left_up_is_not_severed(tmp_path):
+    # disabling ONE of two physical uplinks leaves the segment connected —
+    # the isolation check must reason about the graph, not "an uplink died"
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "disabled"})]
+    )
+    v = _simulate(doc, plan, tmp_path)
+    isolation = next(r for r in v.check_results if r.check_id == "wired.l2.isolation")
+    assert isolation.status.value == "pass", isolation
+    assert not any("isolation" in f.code for f in v.findings)
 
 
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
