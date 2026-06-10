@@ -183,3 +183,106 @@ def test_switch_to_switch_edges_unchanged_by_transparency():
     g = build_l2_graph(b.build())
     edge = next(iter(g.edges(data=True)))[2]["data"]
     assert edge.vlans == {30}  # intersection semantics stay exact
+
+
+def test_vlan_blind_peer_carries_configured_side_at_capped_confidence():
+    # real-world (2026-06-10): an uplink whose PEER port is stat-ensured only
+    # (OBSERVED, no vlan facts — e.g. absent from the peer's port_config) must
+    # NOT compute to "carries nothing": unknown != empty. The edge delivers the
+    # CONFIGURED side's offered set — same honesty rule as AP transparency —
+    # at confidence capped to MEDIUM (the carriage is assumed, not verified).
+    from digital_twin.ir.provenance import fact_meta
+
+    pa = trunk_port("d1", "ge-0/0/46", (2, 22), native=1)
+    pb = Port(
+        id="d2:mge-0/0/2",
+        device_id="d2",
+        name="mge-0/0/2",
+        mode=PortMode.TRUNK,
+        meta=fact_meta(Provenance.OBSERVED),  # stat-ensured: no vlan facts
+    )
+    ir = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(pa)
+        .add_port(pb)
+        .add_link(link(pa.id, pb.id))
+        .build()
+    )
+    e = _edge(build_l2_graph(ir), "d1", "d2")
+    assert e.vlans == {1, 2, 22}
+    assert e.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_both_ends_configured_keep_exact_intersection():
+    # a CONFIGURED empty trunk peer is a real statement (carries nothing) —
+    # the blind-peer rule must not override exact intersection semantics
+    pa = trunk_port("d1", "ge-0/0/1", (2, 22))
+    pb = trunk_port("d2", "ge-0/0/1", ())  # config-known: no tagged vlans
+    ir = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(pa)
+        .add_port(pb)
+        .add_link(link(pa.id, pb.id))
+        .build()
+    )
+    e = _edge(build_l2_graph(ir), "d1", "d2")
+    assert e.vlans == set()
+
+
+def test_unresolved_usage_port_is_vlan_blind():
+    # a CONFIG port whose usage name has no definition (e.g. 'iot' with no
+    # port_usages entry and no system default) is ingested INFERRED with no
+    # vlan facts: carriage UNKNOWN -> the blind-peer rule applies to it too
+    from digital_twin.ir.provenance import fact_meta
+
+    pa = trunk_port("d1", "ge-0/0/1", (2, 22), native=1)
+    pb = Port(
+        id="d2:ge-0/0/1",
+        device_id="d2",
+        name="ge-0/0/1",
+        mode=PortMode.ACCESS,
+        profile="iot",
+        meta=fact_meta(Provenance.INFERRED, ("usage 'iot' has no definition",)),
+    )
+    ir = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(pa)
+        .add_port(pb)
+        .add_link(link(pa.id, pb.id))
+        .build()
+    )
+    e = _edge(build_l2_graph(ir), "d1", "d2")
+    assert e.vlans == {1, 2, 22}
+    assert e.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_disabled_endpoint_drops_the_link():
+    # an admin-disabled port forwards nothing — its link is PHYSICALLY dead in
+    # the L2 view (basis of the isolation check: disabling an uplink severs
+    # everything behind it)
+    pa = trunk_port("d1", "ge-0/0/46", (2,), native=1)
+    pb = Port(
+        id="d2:ge-0/0/1",
+        device_id="d2",
+        name="ge-0/0/1",
+        mode=PortMode.TRUNK,
+        tagged_vlans=(2,),
+        native_vlan=1,
+        disabled=True,
+    )
+    ir = (
+        IRBuilder()
+        .add_device(sw("d1"))
+        .add_device(sw("d2"))
+        .add_port(pa)
+        .add_port(pb)
+        .add_link(link(pa.id, pb.id))
+        .build()
+    )
+    assert build_l2_graph(ir).number_of_edges() == 0

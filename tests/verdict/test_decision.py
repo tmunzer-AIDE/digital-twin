@@ -120,8 +120,20 @@ def test_insufficient_data_is_review():
 
 
 def test_low_confidence_finding_floors_review():
-    res = _result(Status.PASS, [_finding(Severity.INFO, level=ConfidenceLevel.LOW)])
+    # a WARNING at LOW is a real (uncertain) conclusion -> REVIEW
+    res = _result(Status.WARN, [_finding(Severity.WARNING, level=ConfidenceLevel.LOW)])
     assert decide(_inputs(check_results=(res,)))[0] is Decision.REVIEW
+
+
+def test_low_confidence_info_context_does_not_floor():
+    # INFO findings are pre-existing CONTEXT (delta-untouched by the check
+    # layer's contract) — their uncertainty is about the baseline, not the
+    # delta, so it must not gate the verdict. The check RESULT confidence
+    # still floors REVIEW whenever the delta's conclusion relied on
+    # non-HIGH facts (separate rule, unchanged).
+    res = _result(Status.PASS, [_finding(Severity.INFO, level=ConfidenceLevel.MEDIUM)])
+    d, _ = decide(_inputs(check_results=(res,)))
+    assert d is Decision.SAFE
 
 
 def test_partial_coverage_floors_review():

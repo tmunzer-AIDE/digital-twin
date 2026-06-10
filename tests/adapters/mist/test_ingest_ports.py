@@ -15,7 +15,7 @@ def _eff(**kw):
 
 
 def _resolved(eff):
-    return {member: (usage, name) for member, usage, name in resolve_effective_ports(eff)}
+    return {member: (usage, name) for member, usage, name, _res in resolve_effective_ports(eff)}
 
 
 def test_expand_single_port():
@@ -127,3 +127,65 @@ def test_port_present_only_in_local_config_still_resolves():
     assert _resolved(_eff(local_port_config={"ge-0/0/11": {"usage": "office"}}))["ge-0/0/11"][
         1
     ] == ("office")
+
+
+# -- system-defined usages + unresolved names (real-world 2026-06-10) ------------
+# Mist ships system-defined port usages (ap/uplink/default/disabled) that appear
+# in NO config object — not the template, not the device, not even the derived
+# setting. A port referencing one must resolve to the documented semantics
+# (marked "system" -> INFERRED confidence downstream); a name with NO definition
+# anywhere is "unresolved" (carriage unknown, NEVER silently empty).
+
+
+def _resolution(eff):
+    return {m: (usage, name, res) for m, usage, name, res in resolve_effective_ports(eff)}
+
+
+def test_system_uplink_resolves_trunk_all_networks():
+    eff = _eff(port_usages={}, port_config={"ge-0/0/46": {"usage": "uplink"}})
+    usage, name, res = _resolution(eff)["ge-0/0/46"]
+    assert res == "system" and name == "uplink"
+    assert usage["mode"] == "trunk" and usage["all_networks"] is True
+
+
+def test_system_disabled_resolves_to_no_vlans():
+    eff = _eff(port_config={"ge-0/0/43": {"usage": "disabled"}})
+    usage, _, res = _resolution(eff)["ge-0/0/43"]
+    assert res == "system"
+    assert usage_vlans(usage, NETWORKS) == (None, ())
+
+
+def test_explicit_definition_wins_over_system():
+    eff = _eff(
+        port_usages={**USAGES, "uplink2": {"mode": "access", "port_network": "corp"}},
+        port_config={"ge-0/0/1": {"usage": "uplink2"}},
+    )
+    usage, _, res = _resolution(eff)["ge-0/0/1"]
+    assert res == "explicit" and usage["mode"] == "access"
+
+
+def test_unknown_usage_name_is_unresolved():
+    eff = _eff(port_config={"ge-0/0/2": {"usage": "iot"}})
+    usage, name, res = _resolution(eff)["ge-0/0/2"]
+    assert res == "unresolved" and name == "iot"
+    assert usage_vlans(usage, NETWORKS) == (None, ())
+
+
+def test_no_system_defined_port_usages_flag_disables_injection():
+    eff = _eff(
+        port_usages={},
+        no_system_defined_port_usages=True,
+        port_config={"ge-0/0/46": {"usage": "uplink"}},
+    )
+    assert _resolution(eff)["ge-0/0/46"][2] == "unresolved"
+
+
+def test_disabled_system_defined_list_disables_one():
+    eff = _eff(
+        port_usages={},
+        disabled_system_defined_port_usages=["uplink"],
+        port_config={"ge-0/0/46": {"usage": "uplink"}, "ge-0/0/43": {"usage": "disabled"}},
+    )
+    out = _resolution(eff)
+    assert out["ge-0/0/46"][2] == "unresolved"
+    assert out["ge-0/0/43"][2] == "system"

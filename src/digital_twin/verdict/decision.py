@@ -83,9 +83,13 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
         if res.status in (Status.INSUFFICIENT_DATA, Status.CHECK_ERROR)
     )
     review.extend(
+        # INFO findings are pre-existing CONTEXT (the check layer emits them
+        # only for delta-untouched conditions): their uncertainty is about the
+        # baseline, not the delta — the result-confidence rule below still
+        # floors any conclusion that actually relied on non-HIGH facts
         f"{f.code}: confidence {f.confidence.level.name}"
         for f in findings
-        if f.confidence.level is not ConfidenceLevel.HIGH
+        if f.confidence.level is not ConfidenceLevel.HIGH and f.severity is not Severity.INFO
     )
     review.extend(
         # an evaluated result below HIGH (or missing) confidence is a blind spot

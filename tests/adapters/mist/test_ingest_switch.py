@@ -74,3 +74,27 @@ def test_capabilities_earned_only_when_devices_fetched():
         builder=IRBuilder(),
     )
     assert SwitchIngester().ingest(failed) == frozenset()
+
+
+def test_disabled_usage_marks_port_disabled():
+    # an admin-disabled port (usage disabled:true — incl. the system-defined
+    # 'disabled' usage) forwards NOTHING: the IR must carry the fact so the
+    # L2 graph can drop its links (physical severance, 2026-06-10 real case)
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {"off": {"mode": "access", "port_network": "corp", "disabled": True}},
+        "port_config": {"ge-0/0/1": {"usage": "off"}, "ge-0/0/2": {"usage": "disabled"}},
+    }
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.ports["aa0000000001:ge-0/0/1"].disabled is True
+    assert ir.ports["aa0000000001:ge-0/0/2"].disabled is True  # system 'disabled'

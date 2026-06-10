@@ -22,6 +22,7 @@ from digital_twin.ir import (
     device_id,
     port_id,
 )
+from digital_twin.ir.provenance import CONFIG_META, Provenance, fact_meta
 
 from .base import IngestContext
 from .ports import resolve_effective_ports, usage_vlans
@@ -78,9 +79,25 @@ class SwitchIngester:
         did = device_id(str(dev["mac"]))
         eff = ctx.device_effective.get(did) or ctx.site_effective
         networks: dict[str, Any] = eff.get("networks") or {}
-        for member, usage, usage_name in resolve_effective_ports(eff):
+        for member, usage, usage_name, resolution in resolve_effective_ports(eff):
             native, tagged = usage_vlans(usage, networks)
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
+            # honesty: system-defined semantics are inferred from docs, and an
+            # unresolved usage name means the carriage is UNKNOWN — both get
+            # INFERRED (MEDIUM) so no conclusion rides them at config-HIGH;
+            # an unresolved no-vlan port is VLAN-BLIND in the L2 graph.
+            if resolution == "system":
+                meta = fact_meta(
+                    Provenance.INFERRED,
+                    (f"usage {usage_name!r} resolved from Mist system-defined defaults",),
+                )
+            elif resolution == "unresolved":
+                meta = fact_meta(
+                    Provenance.INFERRED,
+                    (f"usage {usage_name!r} has no definition in the modeled config",),
+                )
+            else:
+                meta = CONFIG_META
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -90,6 +107,8 @@ class SwitchIngester:
                     native_vlan=native,
                     tagged_vlans=tagged,
                     profile=usage_name,
+                    disabled=bool(usage.get("disabled")),
+                    meta=meta,
                 )
             )
         for net_name, ipc in (eff.get("other_ip_configs") or {}).items():

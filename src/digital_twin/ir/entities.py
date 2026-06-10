@@ -99,6 +99,7 @@ class Port:
     speed: int | None = None
     poe: bool | None = None
     profile: str | None = None
+    disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None

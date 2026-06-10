@@ -28,6 +28,27 @@ _USAGE_OVERRIDE_ATTRS = ("mode", "port_network", "networks", "all_networks", "vo
 # port_network is the VLAN-relevant one (disabled/speed/poe are not VLAN state).
 _OVERWRITE_ATTRS = ("port_network",)
 
+# Mist SYSTEM-DEFINED port usages: referenced by port_config but defined in NO
+# config object (template/site/device — not even getSiteSettingDerived exposes
+# them; verified live 2026-06-10). Semantics per Mist docs — hence consumers
+# mark system-resolved ports INFERRED (MEDIUM), never config-HIGH. Honored
+# unless `no_system_defined_port_usages` or listed in
+# `disabled_system_defined_port_usages` (template-root flags).
+_SYSTEM_USAGES: dict[str, dict[str, Any]] = {
+    "ap": {"mode": "trunk", "all_networks": True, "port_network": "default"},
+    "uplink": {"mode": "trunk", "all_networks": True},
+    "default": {"mode": "access", "port_network": "default"},
+    "disabled": {"disabled": True},  # admin-down: genuinely carries nothing
+}
+
+
+def _system_usage(eff: dict[str, Any], name: str) -> dict[str, Any] | None:
+    if eff.get("no_system_defined_port_usages"):
+        return None
+    if name in (eff.get("disabled_system_defined_port_usages") or ()):
+        return None
+    return _SYSTEM_USAGES.get(name)
+
 
 def expand_port_members(key: str) -> list[str]:
     members: list[str] = []
@@ -65,17 +86,32 @@ def resolve_port_bases(eff: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def resolve_effective_ports(
     eff: dict[str, Any],
-) -> Iterator[tuple[str, dict[str, Any], str | None]]:
-    """Yield (member, effective_usage, usage_name) for every configured port.
+) -> Iterator[tuple[str, dict[str, Any], str | None, str]]:
+    """Yield (member, effective_usage, usage_name, resolution) per configured port.
 
     Layers port_config + local_port_config + port_config_overwrite onto the named
-    port_usages profile (see module docstring).
+    port_usages profile (see module docstring). `resolution` states WHERE the
+    usage definition came from — the honesty marker consumers turn into
+    confidence: "explicit" (a port_usages map), "system" (Mist system-defined
+    defaults — semantics inferred from docs), "unresolved" (a name with NO
+    definition: carriage UNKNOWN, never silently empty), "none" (no usage name;
+    inline attrs only).
     """
     usages: dict[str, Any] = eff.get("port_usages") or {}
     overwrite = _expand_map(eff.get("port_config_overwrite") or {})
     for member, attrs in resolve_port_bases(eff).items():
         usage_name = attrs.get("usage")
-        effective = dict(usages.get(str(usage_name)) or {})
+        explicit = usages.get(str(usage_name))
+        if usage_name is None:
+            effective, resolution = {}, "none"
+        elif explicit is not None:
+            effective, resolution = dict(explicit), "explicit"
+        else:
+            system = _system_usage(eff, str(usage_name))
+            if system is not None:
+                effective, resolution = dict(system), "system"
+            else:
+                effective, resolution = {}, "unresolved"
         for key in _USAGE_OVERRIDE_ATTRS:
             if key in attrs:
                 effective[key] = attrs[key]
@@ -83,7 +119,7 @@ def resolve_effective_ports(
             ow = overwrite.get(member, {})
             if key in ow:
                 effective[key] = ow[key]
-        yield member, effective, (str(usage_name) if usage_name is not None else None)
+        yield member, effective, (str(usage_name) if usage_name is not None else None), resolution
 
 
 def usage_vlans(

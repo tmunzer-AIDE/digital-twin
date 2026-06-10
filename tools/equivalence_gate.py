@@ -69,7 +69,7 @@ def _port_usage_crosscheck(raw: RawSiteState) -> tuple[int, list[tuple[str, str,
             for member, base in resolve_port_bases(eff).items()
             if base.get("dynamic_usage") != "dynamic"
         }
-        compiled = {member: name for member, _usage, name in resolve_effective_ports(eff)}
+        compiled = {member: name for member, _usage, name, _res in resolve_effective_ports(eff)}
         observed = {
             str(p["port_id"]): str(p["port_usage"])
             for p in raw.port_stats
