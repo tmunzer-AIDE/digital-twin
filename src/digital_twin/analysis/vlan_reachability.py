@@ -19,8 +19,12 @@ from .exits import ExitResolution
 @dataclass(frozen=True)
 class VlanComponent:
     nodes: frozenset[str]
-    has_members: bool
+    member_ports: frozenset[str]  # the access ports that ARE the membership
     reaches_exit: bool
+
+    @property
+    def has_members(self) -> bool:
+        return bool(self.member_ports)
 
 
 def vlan_components(
@@ -29,11 +33,11 @@ def vlan_components(
     exit_nodes = set(exit_res.nodes)
     out: list[VlanComponent] = []
     for nodes in nx.connected_components(vlan_graph):
-        members = any(vlan_graph.nodes[n]["data"].is_member for n in nodes)
+        member_ports = frozenset(p for n in nodes for p in vlan_graph.nodes[n]["data"].access_ports)
         out.append(
             VlanComponent(
                 nodes=frozenset(nodes),
-                has_members=members,
+                member_ports=member_ports,
                 reaches_exit=bool(nodes & exit_nodes),
             )
         )

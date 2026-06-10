@@ -115,19 +115,25 @@ class L2BlackholeCheck:
         baseline_reaching = {
             frozenset(c.nodes) for c in baseline_components if c.has_members and c.reaches_exit
         }
-        baseline_stranded = {
-            frozenset(c.nodes) for c in baseline_components if c.has_members and not c.reaches_exit
-        }
+        baseline_reaching_ports = frozenset(
+            p for c in baseline_components if c.reaches_exit for p in c.member_ports
+        )
+        baseline_stranded_ports = frozenset(
+            p for c in baseline_components if not c.reaches_exit for p in c.member_ports
+        )
         exit_conf = proposed_exit.confidence
         assert exit_conf is not None  # kind != NONE guarantees it (appended above)
         worst = Status.PASS
         for comp in stranded:
-            lost_exit = any(comp.nodes & prev for prev in baseline_reaching)
-            # pre-existing ONLY if this stranded-member CONDITION already existed
-            # in the baseline (overlap with a baseline stranded member component)
-            # and no part of it lost an exit. A newly-added member on an isolated
-            # switch overlaps neither set -> newly introduced -> attributable.
-            preexisting = not lost_exit and any(comp.nodes & prev for prev in baseline_stranded)
+            lost_exit = bool(comp.member_ports & baseline_reaching_ports) or any(
+                comp.nodes & prev for prev in baseline_reaching
+            )
+            # attribution is per member PORT: the condition is pre-existing ONLY
+            # if every member port of this stranded component was ALREADY a
+            # stranded member in the baseline. A new access port added to an
+            # already-blackholed node is still a newly blackholed member.
+            new_ports = sorted(comp.member_ports - baseline_stranded_ports)
+            preexisting = not lost_exit and not new_ports
             if preexisting:
                 findings.append(
                     self._finding(
@@ -154,7 +160,7 @@ class L2BlackholeCheck:
                 f"vlan {vid}: member segment loses its path to the {proposed_exit.kind} exit"
                 if lost_exit
                 else (
-                    f"vlan {vid}: newly configured member segment has no path to the "
+                    f"vlan {vid}: newly configured member port(s) have no path to the "
                     f"{proposed_exit.kind} exit"
                 )
             )
@@ -167,6 +173,7 @@ class L2BlackholeCheck:
                     message=message,
                     vid=vid,
                     nodes=sorted(comp.nodes),
+                    new_member_ports=new_ports,
                 )
             )
             worst = _aggregate([worst, Status.FAIL if high else Status.WARN])
@@ -182,7 +189,11 @@ class L2BlackholeCheck:
         message: str,
         vid: int,
         nodes: list[str],
+        new_member_ports: list[str] | None = None,
     ) -> Finding:
+        evidence: dict[str, object] = {"vlan": vid, "component_nodes": nodes}
+        if new_member_ports:
+            evidence["new_member_ports"] = new_member_ports
         return Finding(
             source=FindingSource.CHECK,
             category=category,
@@ -191,7 +202,7 @@ class L2BlackholeCheck:
             confidence=confidence,
             message=message,
             affected_entities=tuple(nodes),
-            evidence={"vlan": vid, "component_nodes": nodes},
+            evidence=evidence,
         )
 
 

@@ -66,6 +66,28 @@ def test_newly_added_member_on_isolated_switch_fails():
     assert any(f.code == "wired.l2.blackhole.new_member_stranded" for f in result.findings)
 
 
+def test_new_member_port_on_already_stranded_node_fails():
+    # the review's P1 round 3: A:acc1 is already blackholed (context), but the
+    # delta adds A:acc2 — a NEW member port with no path to the exit. Node-level
+    # overlap must not hide it; attribution is per member PORT.
+    def site(ports):
+        b = IRBuilder()
+        b.add_device(sw("A")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+        b.add_l3intf(irb("CORE", 10))
+        b.add_port(trunk_port("CORE", "down", tagged=(10,)))
+        for p in ports:
+            b.add_port(access_port("A", p, 10))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(["acc1"]), site(["acc1", "acc2"])))
+    assert result.status is Status.FAIL
+    f = next(x for x in result.findings if x.code == "wired.l2.blackhole.new_member_stranded")
+    assert "A:acc2" in f.evidence["new_member_ports"]
+    assert "A:acc1" not in f.evidence["new_member_ports"]  # acc1 IS pre-existing
+
+
 def test_transit_only_vlan_low_exit_does_not_taint_confidence():
     # the review's P2: a vlan with NO members doesn't rely on its exit — its
     # LOW boundary-uplink confidence must not floor the whole check (and with
