@@ -2,6 +2,12 @@
 
 Pure structural views — no algorithms with verdicts, no severity. Edges are derived
 from specific ports, so a port-level config change changes the edge (and is detected).
+
+AP-uplink edges are VLAN-TRANSPARENT: an AP bridges whatever its switch port
+delivers and its own eth port carries no vlan facts (the lldp ingester cannot
+invent them), so when exactly one link end is an AP-role device the edge carries
+the SWITCH side's offered set (tagged + native). Switch-to-switch edges keep
+exact intersection semantics.
 """
 
 from __future__ import annotations
@@ -9,7 +15,7 @@ from __future__ import annotations
 import networkx as nx
 
 from digital_twin.ir.confidence import min_confidence
-from digital_twin.ir.entities import Link, LinkKind, Port, PortMode
+from digital_twin.ir.entities import DeviceRole, Link, LinkKind, Port, PortMode
 from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.ir.model import IR
 
@@ -18,6 +24,13 @@ from .graph_data import L2Edge
 
 def _tagged(port: Port) -> set[int]:
     return set(port.tagged_vlans) if port.mode is PortMode.TRUNK else set()
+
+
+def _offered(port: Port) -> set[int]:
+    out = _tagged(port)
+    if port.native_vlan is not None:
+        out = out | {port.native_vlan}
+    return out
 
 
 def link_carried_vlans(port_a: Port, port_b: Port) -> set[int]:
@@ -69,7 +82,12 @@ def build_l2_graph(ir: IR) -> nx.MultiGraph:
         na, nb = node_for(vc_root, pa.device_id), node_for(vc_root, pb.device_id)
         if na == nb:
             continue  # VC-internal / self
-        vlans = link_carried_vlans(pa, pb)
+        a_is_ap = ir.devices[pa.device_id].role is DeviceRole.AP
+        b_is_ap = ir.devices[pb.device_id].role is DeviceRole.AP
+        if a_is_ap != b_is_ap:  # exactly one end is an AP: vlan-transparent bridge,
+            vlans = _offered(pb if a_is_ap else pa)  # the switch side defines delivery
+        else:
+            vlans = link_carried_vlans(pa, pb)
         bkey = _bundle_key(link, na, nb)
         if bkey is not None and bkey in bundle_keys:
             edge: L2Edge = g[na][nb][bundle_keys[bkey]]["data"]

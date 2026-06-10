@@ -156,3 +156,30 @@ def test_vc_internal_link_dropped_and_member_folded():
     g = build_l2_graph(ir)
     assert g.number_of_edges() == 0
     assert "d1" in g.nodes and "d1b" not in g.nodes
+
+
+def test_ap_uplink_edge_carries_switch_side_vlans():
+    # an AP is a VLAN-TRANSPARENT bridge: its eth port has no vlan facts (the
+    # lldp ingester cannot invent them), so the SWITCH side defines delivery
+    from digital_twin.ir.entities import Port, PortMode
+    from tests.factories import ap
+
+    b = IRBuilder()
+    b.add_device(sw("SW")).add_device(ap("AP1"))
+    b.add_port(trunk_port("SW", "to-ap", tagged=(30, 40), native=1))
+    b.add_port(Port(id="AP1:eth0", device_id="AP1", name="eth0", mode=PortMode.TRUNK))
+    b.add_link(link("AP1:eth0", "SW:to-ap"))
+    g = build_l2_graph(b.build())
+    edge = next(iter(g.edges(data=True)))[2]["data"]
+    assert edge.vlans == {1, 30, 40}
+
+
+def test_switch_to_switch_edges_unchanged_by_transparency():
+    b = IRBuilder()
+    b.add_device(sw("A")).add_device(sw("B"))
+    b.add_port(trunk_port("A", "up", tagged=(30, 40)))
+    b.add_port(trunk_port("B", "down", tagged=(30,)))
+    b.add_link(link("A:up", "B:down"))
+    g = build_l2_graph(b.build())
+    edge = next(iter(g.edges(data=True)))[2]["data"]
+    assert edge.vlans == {30}  # intersection semantics stay exact
