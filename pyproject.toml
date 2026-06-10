@@ -5,6 +5,7 @@ description = "Network Digital Twin — pre-deployment configuration impact simu
 requires-python = ">=3.14"
 dependencies = [
     "jsonschema>=4.26.0",
+    "mcp>=1.27.2",
     "mistapi>=0.62.0",
     "netaddr>=1.3.0",
     "networkx>=3.6.1",
@@ -46,3 +47,6 @@ strict = true
 [[tool.mypy.overrides]]
 module = ["networkx.*", "netaddr.*", "mistapi.*", "yaml.*"]
 ignore_missing_imports = true
+
+[project.scripts]
+digital-twin = "digital_twin.drivers.cli:script"
