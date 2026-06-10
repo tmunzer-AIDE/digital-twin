@@ -19,6 +19,7 @@ them into DecisionInputs and stops at the right stage. No business logic.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -43,6 +44,22 @@ from digital_twin.verdict.verdict import Verdict, assemble
 _EMPTY_DIFF = IRDiff((), (), ())
 
 
+def _merge_payload(current: Mapping[str, Any], partial: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge mode: overlay a PARTIAL payload onto the fetched current object to
+    form the full-replacement payload Mist PUT semantics require. Dicts merge
+    recursively (payload wins); an EXPLICIT null deletes the field (the only
+    delete operator in merge mode); everything else replaces."""
+    out: dict[str, Any] = dict(current)
+    for key, value in partial.items():
+        if value is None:
+            out.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
+            out[key] = _merge_payload(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def simulate(
     plan_data: Mapping[str, Any],
     *,
@@ -50,6 +67,7 @@ def simulate(
     adapter: MistAdapter | None = None,
     registry: CheckRegistry | None = None,
     run: RunContext | None = None,
+    merge_payloads: bool = False,
 ) -> Verdict:
     run = run or RunContext()
     trace = run.trace
@@ -119,7 +137,8 @@ def simulate(
 
     # 4+6 — field gate against the ROLLING pre-op state, then apply that op
     proposed_raw = raw
-    with trace.stage("scope.post+apply", note=f"{len(plan.ops)} op(s)"):
+    note = f"{len(plan.ops)} op(s)" + (" [merge mode]" if merge_payloads else "")
+    with trace.stage("scope.post+apply", note=note):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
             if current is None:
@@ -133,6 +152,10 @@ def simulate(
                     ),
                     state_meta=state_meta,
                 )
+            if merge_payloads:
+                # partial payload -> the full object a Mist PUT would need; the
+                # SAME merged object must be what gets applied to Mist later
+                op = replace(op, payload=_merge_payload(current, op.payload))
             rejection = screen_op(op.object_type, current, op.payload)
             if rejection:
                 return unknown(rejection, state_meta=state_meta)

@@ -45,8 +45,27 @@ def screen_op(
     if offending:
         return Rejection(
             stage=_STAGE,
-            reasons=tuple(
-                f"out-of-scope raw path changed: {p} (not in the M1 allowlist)" for p in offending
-            ),
+            reasons=tuple(_offense_reason(p, current, payload) for p in offending),
         )
     return None
+
+
+def _offense_reason(path: str, current: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    """Removals get actionable guidance: omitting a field from a full-replacement
+    payload is how most accidental out-of-scope 'changes' happen."""
+    if _present(current, path) and not _present(payload, path):
+        return (
+            f"out-of-scope raw path removed: {path} (omitted from payload — a Mist "
+            "PUT deletes omitted fields; echo it back unchanged, or run with "
+            "--merge-payloads to overlay your partial payload onto the current object)"
+        )
+    return f"out-of-scope raw path changed: {path} (not in the M1 allowlist)"
+
+
+def _present(obj: Mapping[str, Any], path: str) -> bool:
+    node: Any = obj
+    for segment in path.split("."):
+        if not isinstance(node, Mapping) or segment not in node:
+            return False
+        node = node[segment]
+    return node is not None  # null == absent (the established canon)

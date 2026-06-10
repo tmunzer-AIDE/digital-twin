@@ -1,0 +1,100 @@
+{
+  "source": "mist",
+  "scope": {
+    "org_id": "9777c1a0-6ef6-11e6-8bbf-02e208b2d34f",
+    "site_id": "978c48e6-6ef6-11e6-8bbf-02e208b2d34f",
+    "device_id": "00000000-0000-0000-1000-60c78d939c0f"
+  },
+  "ops": [
+    {
+      "action": "update",
+      "order": 0,
+      "object_type": "device",
+      "object_id": "00000000-0000-0000-1000-60c78d939c0f",
+      "payload": {
+        "type": "switch",
+        "port_usages": {
+          "example": {
+            "mode": "access",
+            "disabled": false,
+            "port_network": "VLAN300",
+            "stp_edge": false,
+            "all_networks": false,
+            "speed": "auto",
+            "duplex": "auto",
+            "mac_limit": 0,
+            "persist_mac": false,
+            "poe_disabled": false,
+            "enable_qos": false,
+            "storm_control": {},
+            "description": "",
+            "disable_autoneg": false
+          },
+          "dot1x": {
+            "mode": "access",
+            "disabled": false,
+            "port_network": "vlan2",
+            "stp_edge": true,
+            "all_networks": false,
+            "port_auth": "dot1x",
+            "enable_mac_auth": false,
+            "bypass_auth_when_server_down": false,
+            "speed": "1g",
+            "duplex": "auto",
+            "mac_limit": 0,
+            "poe_disabled": false,
+            "enable_qos": false,
+            "storm_control": {},
+            "allow_multiple_supplicants": false,
+            "mac_auth_only": false,
+            "persist_mac": false,
+            "description": "",
+            "disable_autoneg": false,
+            "reauth_interval": 36000
+          },
+          "ap": {
+            "mode": "trunk",
+            "all_networks": true,
+            "stp_edge": true,
+            "port_network": "default",
+            "disabled": false,
+            "speed": "auto",
+            "duplex": "auto",
+            "persist_mac": false,
+            "poe_disabled": true,
+            "enable_qos": false,
+            "disable_autoneg": false
+          },
+          "new_dot1x": {
+            "mode": "access",
+            "disabled": false,
+            "port_network": "default",
+            "stp_edge": false,
+            "all_networks": false,
+            "port_auth": "dot1x",
+            "allow_multiple_supplicants": false,
+            "enable_mac_auth": true,
+            "mac_auth_only": true,
+            "speed": "auto",
+            "duplex": "auto",
+            "mac_limit": 0,
+            "persist_mac": false,
+            "poe_disabled": false,
+            "enable_qos": false,
+            "storm_control": {},
+            "description": "test-desc",
+            "disable_autoneg": false,
+            "stp_disable": false,
+            "stp_required": false,
+            "stp_p2p": false,
+            "stp_no_root_port": false,
+            "use_vstp": false,
+            "mac_auth_preferred": false,
+            "reauth_interval": "",
+            "poe_legacy_pd": false          
+          }
+        }
+      }
+    }
+  ]
+}

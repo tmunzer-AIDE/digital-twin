@@ -102,6 +102,31 @@ def test_unmodeled_overwrite_leaf_still_rejects():
     assert any("port_config_overwrite.ge-0/0/0.speed" in reason for reason in r.reasons)
 
 
+def test_device_status_fields_are_ignored():
+    # GET-only status fields (adopted/connected/hw_rev/...) ride in the fetched
+    # object but never belong in a PUT body — omitting them is not a change
+    cur = {
+        **SWITCH_CUR,
+        "adopted": True,
+        "connected": True,
+        "hw_rev": "A1",
+        "heightSet": False,
+        "mist_configured": True,
+    }
+    payload = dict(SWITCH_CUR)  # clean config-only payload
+    assert screen_op("device", cur, payload) is None
+
+
+def test_removal_rejections_explain_put_semantics():
+    # omitting an out-of-scope field is flagged as a REMOVAL with actionable
+    # guidance (a Mist PUT would delete it), not a bare "changed"
+    cur = {**SWITCH_CUR, "dhcp_snooping": {"enabled": True}}
+    r = screen_op("device", cur, dict(SWITCH_CUR))
+    assert isinstance(r, Rejection)
+    reason = next(x for x in r.reasons if "dhcp_snooping" in x)
+    assert "omitted from payload" in reason and "PUT" in reason
+
+
 def test_non_switch_device_rejected_post_fetch():
     # the review's P1 case: M1 models switch config only — an AP update must
     # not pass the gates even if its changed paths look allowable

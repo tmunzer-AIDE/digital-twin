@@ -161,3 +161,30 @@ def test_in_scope_change_runs_checks_and_carries_state_meta():
 def test_cosmetic_noop_is_safe():
     v = simulate(_plan([_op()]), provider=FakeProvider())  # payload == current
     assert v.decision is Decision.SAFE
+
+
+def test_merge_payloads_lets_partial_payloads_through():
+    # a hand-written PARTIAL payload omits out-of-scope fields the current
+    # object has -> full-PUT semantics flag every omission (correct but harsh);
+    # merge mode overlays the partial payload onto the fetched current object
+    partial = {
+        "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}},  # the change
+        "port_usages": dict(SETTING["port_usages"]),
+        "vars": dict(SETTING["vars"]),
+        # dhcpd_config intentionally OMITTED
+    }
+    strict = simulate(_plan([_op(payload=partial)]), provider=FakeProvider())
+    assert strict.decision is Decision.UNKNOWN  # omission = deletion = out of scope
+
+    merged = simulate(_plan([_op(payload=partial)]), provider=FakeProvider(), merge_payloads=True)
+    assert merged.decision is not Decision.UNKNOWN  # current fields preserved
+    assert merged.check_results  # checks actually ran
+
+
+def test_merge_payloads_null_still_deletes():
+    # in merge mode an EXPLICIT null is the delete operator — and deleting an
+    # out-of-scope field is still out of scope
+    partial = {"dhcpd_config": None}
+    v = simulate(_plan([_op(payload=partial)]), provider=FakeProvider(), merge_payloads=True)
+    assert v.decision is Decision.UNKNOWN
+    assert any("dhcpd_config" in r for r in v.decision_reasons)

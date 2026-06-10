@@ -43,7 +43,8 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
 }
 
 # Server-managed fields excluded from the raw diff: a PUT payload never carries
-# them, and their absence is not a user change.
+# them, and their absence is not a user change. Two groups: identity/audit
+# metadata, and GET-only device STATUS fields (live state, not config intent).
 IGNORED_RAW_FIELDS: tuple[str, ...] = (
     "id",
     "org_id",
@@ -54,6 +55,16 @@ IGNORED_RAW_FIELDS: tuple[str, ...] = (
     "serial",
     "model",
     "type",
+    # device status (GET-only):
+    "adopted",
+    "connected",
+    "hw_rev",
+    "heightSet",
+    "mist_configured",
+    "magic",
+    "sku",
+    "image1_url",
+    "simplifiedName",
 )
 
 # Effective-config LEAVES the IR consumes (post-compile derived gate): any other
