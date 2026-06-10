@@ -1,12 +1,17 @@
-"""wired.l2.blackhole — a member component that loses its path to the VLAN exit.
+"""wired.l2.blackhole — a member component with no path to the VLAN exit.
 
 Per VLAN (spec contract):
 - exit resolved by analysis/exits (IRB HIGH > boundary uplink edge-confidence >
   NONE). NONE while members exist -> INSUFFICIENT_DATA for that vlan.
-- FAIL only when the component reached the exit in IR, loses it in IR', AND the
-  exit is HIGH confidence; a MEDIUM/LOW exit downgrades to WARN ("FAIL only at
-  HIGH confidence").
-- Components stranded in BOTH IRs are pre-existing -> INFO context.
+- ATTRIBUTION is condition-based: a stranded member component is attributed to
+  the delta when it lost an exit it had in IR (`exit_lost`) OR when its members
+  are newly introduced (`new_member_stranded` — e.g. the delta adds the first
+  access port on an isolated switch). It is pre-existing INFO context ONLY when
+  the same stranded-member condition already existed in the baseline.
+- FAIL only at HIGH exit confidence; MEDIUM/LOW downgrades to WARN.
+- The exit's confidence bounds the conclusion ONLY for vlans whose member
+  reachability relies on it — a transit-only vlan (no members) never consults
+  its exit, so a LOW uplink there cannot taint the check.
 - Switched membership is configuration-based (access ports — empty ports count).
   AP/wireless membership is observation-based; when client data is absent the
   coverage is PARTIAL (noted), never silently complete.
@@ -80,13 +85,14 @@ class L2BlackholeCheck:
         confidences: list[Confidence],
     ) -> Status:
         proposed_exit = ctx.proposed.exit_for(vid)
-        if proposed_exit.confidence is not None:
-            # the exit consulted for this vlan bounds the conclusion's confidence
-            # even when nothing is stranded (a LOW exit = a LOW "still reachable")
+        components = ctx.proposed.vlan_components(vid)
+        if any(c.has_members for c in components) and proposed_exit.confidence is not None:
+            # the exit bounds the conclusion's confidence ONLY when member
+            # reachability actually relies on it (a LOW exit = a LOW "still
+            # reachable"); a transit-only vlan never consulted its exit, so its
+            # confidence must not taint the check
             confidences.append(proposed_exit.confidence)
-        stranded = [
-            c for c in ctx.proposed.vlan_components(vid) if c.has_members and not c.reaches_exit
-        ]
+        stranded = [c for c in components if c.has_members and not c.reaches_exit]
         if not stranded:
             return Status.PASS
         if proposed_exit.kind is ExitKind.NONE:
@@ -105,17 +111,24 @@ class L2BlackholeCheck:
                 )
             )
             return Status.INSUFFICIENT_DATA
+        baseline_components = ctx.baseline.vlan_components(vid)
         baseline_reaching = {
-            frozenset(c.nodes)
-            for c in ctx.baseline.vlan_components(vid)
-            if c.has_members and c.reaches_exit
+            frozenset(c.nodes) for c in baseline_components if c.has_members and c.reaches_exit
+        }
+        baseline_stranded = {
+            frozenset(c.nodes) for c in baseline_components if c.has_members and not c.reaches_exit
         }
         exit_conf = proposed_exit.confidence
         assert exit_conf is not None  # kind != NONE guarantees it (appended above)
         worst = Status.PASS
         for comp in stranded:
-            newly = any(comp.nodes & prev for prev in baseline_reaching)
-            if not newly:
+            lost_exit = any(comp.nodes & prev for prev in baseline_reaching)
+            # pre-existing ONLY if this stranded-member CONDITION already existed
+            # in the baseline (overlap with a baseline stranded member component)
+            # and no part of it lost an exit. A newly-added member on an isolated
+            # switch overlaps neither set -> newly introduced -> attributable.
+            preexisting = not lost_exit and any(comp.nodes & prev for prev in baseline_stranded)
+            if preexisting:
                 findings.append(
                     self._finding(
                         code="wired.l2.blackhole.preexisting",
@@ -132,16 +145,26 @@ class L2BlackholeCheck:
                 )
                 continue
             high = exit_conf.level is ConfidenceLevel.HIGH
+            code = (
+                "wired.l2.blackhole.exit_lost"
+                if lost_exit
+                else "wired.l2.blackhole.new_member_stranded"
+            )
+            message = (
+                f"vlan {vid}: member segment loses its path to the {proposed_exit.kind} exit"
+                if lost_exit
+                else (
+                    f"vlan {vid}: newly configured member segment has no path to the "
+                    f"{proposed_exit.kind} exit"
+                )
+            )
             findings.append(
                 self._finding(
-                    code="wired.l2.blackhole.exit_lost",
+                    code=code,
                     severity=Severity.ERROR if high else Severity.WARNING,
                     category=FindingCategory.NETWORK,
                     confidence=exit_conf,
-                    message=(
-                        f"vlan {vid}: member segment loses its path to the "
-                        f"{proposed_exit.kind} exit"
-                    ),
+                    message=message,
                     vid=vid,
                     nodes=sorted(comp.nodes),
                 )
