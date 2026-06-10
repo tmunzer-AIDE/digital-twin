@@ -51,14 +51,11 @@ def screen_op(
 
 
 def _offense_reason(path: str, current: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
-    """Removals get actionable guidance: omitting a field from a full-replacement
-    payload is how most accidental out-of-scope 'changes' happen."""
+    """Distinguish deletions from edits: with Mist update semantics (omitted
+    roots persist), an absent path in the proposed object means it was deleted
+    — via a '-attribute' marker at root, or by a sent root that drops it."""
     if _present(current, path) and not _present(payload, path):
-        return (
-            f"out-of-scope raw path removed: {path} (omitted from payload — a Mist "
-            "PUT deletes omitted fields; echo it back unchanged, or run with "
-            "--merge-payloads to overlay your partial payload onto the current object)"
-        )
+        return f"out-of-scope raw path deleted: {path} (not in the M1 allowlist)"
     return f"out-of-scope raw path changed: {path} (not in the M1 allowlist)"
 
 

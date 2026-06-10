@@ -163,28 +163,41 @@ def test_cosmetic_noop_is_safe():
     assert v.decision is Decision.SAFE
 
 
-def test_merge_payloads_lets_partial_payloads_through():
-    # a hand-written PARTIAL payload omits out-of-scope fields the current
-    # object has -> full-PUT semantics flag every omission (correct but harsh);
-    # merge mode overlays the partial payload onto the fetched current object
+def test_partial_payload_with_omitted_roots_passes_natively():
+    # Mist update semantics (confirmed): ROOT attributes omitted from the
+    # payload PERSIST — they are not deleted. A partial payload touching only
+    # in-scope roots must pass the gates without any special mode.
     partial = {
         "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}},  # the change
-        "port_usages": dict(SETTING["port_usages"]),
-        "vars": dict(SETTING["vars"]),
-        # dhcpd_config intentionally OMITTED
+        # port_usages / vars / dhcpd_config intentionally OMITTED -> kept
     }
-    strict = simulate(_plan([_op(payload=partial)]), provider=FakeProvider())
-    assert strict.decision is Decision.UNKNOWN  # omission = deletion = out of scope
-
-    merged = simulate(_plan([_op(payload=partial)]), provider=FakeProvider(), merge_payloads=True)
-    assert merged.decision is not Decision.UNKNOWN  # current fields preserved
-    assert merged.check_results  # checks actually ran
+    v = simulate(_plan([_op(payload=partial)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    assert v.check_results  # checks actually ran
 
 
-def test_merge_payloads_null_still_deletes():
-    # in merge mode an EXPLICIT null is the delete operator — and deleting an
-    # out-of-scope field is still out of scope
-    partial = {"dhcpd_config": None}
-    v = simulate(_plan([_op(payload=partial)]), provider=FakeProvider(), merge_payloads=True)
+def test_dash_marker_deletion_of_out_of_scope_root_is_unknown():
+    # deletion is explicit ({"-attribute": ""}) — and deleting an out-of-scope
+    # root is still out of scope
+    v = simulate(_plan([_op(payload={"-dhcpd_config": ""})]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
     assert any("dhcpd_config" in r for r in v.decision_reasons)
+
+
+def test_conflicting_set_and_delete_is_unknown():
+    payload = {"networks": dict(SETTING["networks"]), "-networks": ""}
+    v = simulate(_plan([_op(payload=payload)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    assert any("conflict" in r.lower() for r in v.decision_reasons)
+
+
+def test_partial_device_payload_passes_l0_required():
+    # L0 validates the EFFECTIVE object (current + update), so a partial device
+    # payload without top-level 'type' (schema-required) yields no false finding
+    partial_dev = {"name": "renamed"}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=partial_dev)]),
+        provider=FakeProvider(),
+    )
+    assert not any("'type' is a required property" in f.message for f in v.findings)
+    assert v.decision is not Decision.UNKNOWN

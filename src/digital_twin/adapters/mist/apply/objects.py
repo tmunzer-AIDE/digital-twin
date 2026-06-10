@@ -1,9 +1,15 @@
-"""Per-object_type targeting: find and replace ONE raw object in RawSiteState.
+"""Per-object_type targeting + Mist UPDATE semantics for ONE raw object.
 
-Replacement is wholesale (Mist PUT semantics) with ONE honesty exception:
-server-managed identity fields are preserved from the current object — Mist
-ignores attempts to change them, and downstream ingest needs mac/type/model.
-RawSiteState is frozen; replacement returns a NEW state (dataclasses.replace).
+Mist PUT is a ROOT-LEVEL update (confirmed against the real API):
+- a root attribute PRESENT in the payload is replaced WHOLESALE;
+- a root attribute OMITTED from the payload PERSISTS unchanged;
+- deletion is EXPLICIT via a dash marker: {"-attribute_name": ""}.
+effective_update() is the single owner of these semantics — apply uses it to
+mutate state, and the engine uses it to preview the effective object for the
+field gate and L0. Server-managed identity fields are preserved from the
+current object regardless (Mist ignores attempts to change them, and
+downstream ingest needs mac/type/model). RawSiteState is frozen; replacement
+returns a NEW state (dataclasses.replace).
 """
 
 from __future__ import annotations
@@ -40,12 +46,21 @@ def get_object(raw: RawSiteState, object_type: str, object_id: str) -> _Json | N
     return None
 
 
-def _merged(current: _Json, payload: _Json) -> dict[str, Any]:
-    new = dict(payload)
+def update_conflicts(payload: _Json) -> list[str]:
+    """Roots both SET and DELETED in one payload — an authoring error."""
+    return sorted(k[1:] for k in payload if k.startswith("-") and k[1:] in payload)
+
+
+def effective_update(current: _Json, payload: _Json) -> dict[str, Any]:
+    """The full object Mist would hold after this update (root-level merge +
+    dash-marker deletions + identity preservation)."""
+    deleted = {k[1:] for k in payload if k.startswith("-")}
+    out = {k: v for k, v in current.items() if k not in deleted}
+    out.update({k: v for k, v in payload.items() if not k.startswith("-")})
     for key in IDENTITY_FIELDS:
         if key in current:
-            new[key] = current[key]
-    return new
+            out[key] = current[key]
+    return out
 
 
 def replace_object(
@@ -53,8 +68,9 @@ def replace_object(
 ) -> RawSiteState:
     """Caller must have resolved the object first (get_object is not None)."""
     if object_type == "site_setting":
-        return dc_replace(raw, setting=_merged(raw.setting, payload))
+        return dc_replace(raw, setting=effective_update(raw.setting, payload))
     devices = tuple(
-        _merged(dev, payload) if str(dev.get("id")) == object_id else dev for dev in raw.devices
+        effective_update(dev, payload) if str(dev.get("id")) == object_id else dev
+        for dev in raw.devices
     )
     return dc_replace(raw, devices=devices)

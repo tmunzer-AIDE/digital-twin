@@ -117,14 +117,14 @@ def test_device_status_fields_are_ignored():
     assert screen_op("device", cur, payload) is None
 
 
-def test_removal_rejections_explain_put_semantics():
-    # omitting an out-of-scope field is flagged as a REMOVAL with actionable
-    # guidance (a Mist PUT would delete it), not a bare "changed"
+def test_deletion_rejections_are_named_as_deletions():
+    # screen_op receives the EFFECTIVE proposed object (the engine resolves
+    # Mist update semantics first) — a path absent from it was DELETED
     cur = {**SWITCH_CUR, "dhcp_snooping": {"enabled": True}}
-    r = screen_op("device", cur, dict(SWITCH_CUR))
+    r = screen_op("device", cur, dict(SWITCH_CUR))  # effective lacks dhcp_snooping
     assert isinstance(r, Rejection)
     reason = next(x for x in r.reasons if "dhcp_snooping" in x)
-    assert "omitted from payload" in reason and "PUT" in reason
+    assert "deleted" in reason
 
 
 def test_non_switch_device_rejected_post_fetch():

@@ -1,17 +1,23 @@
 """The 10-stage simulation pipeline — ORCHESTRATION ONLY (spec diagram).
 
  1 ScopeResolver.pre   envelope + object gate (pre-fetch)        -> UNKNOWN
- 2 Adapter.validate    L0 per op (fatal -> short-circuit)        -> UNKNOWN
  3 StateProvider       fetch raw                                  -> UNKNOWN on total failure
- 4 ScopeResolver.post  field gate per op vs ROLLING pre-op state
-                       (incl. device-role)                        -> UNKNOWN
+ 2+4 per op, vs the ROLLING pre-op state:
+     effective object   Mist root-level update semantics (present roots replace,
+                        omitted roots persist, "-attr" markers delete; conflicts
+                        rejected)                                  -> UNKNOWN
+     Adapter.validate   L0 on the EFFECTIVE object (fatal -> stop) -> UNKNOWN
+     field gate         changed leaves vs allowlist (incl. role)   -> UNKNOWN
  5 Adapter.ingest      baseline (effective + IR)                  -> UNKNOWN if not ok
- 6 Adapter.apply       rolling full-object replacement            -> UNKNOWN on bad target
+ 6 Adapter.apply       per-op update on the rolling state          -> UNKNOWN on bad target
  7 Adapter.ingest      proposed                                   -> UNKNOWN if not ok
  8 derived gate        full effective config, site + per device   -> UNKNOWN
  9 diff + checks       registry (gating order, isolation)
 10 verdict             DecisionInputs -> decision + assembly
 
+L0 runs inside the loop (not pre-fetch as originally specced) because Mist
+update semantics are a root-level merge: `required`/conditional validation is
+only meaningful against the EFFECTIVE object, which needs the fetched state.
 Every failure is a VALUE produced by the owning module; this file only maps
 them into DecisionInputs and stops at the right stage. No business logic.
 """
@@ -25,6 +31,7 @@ from typing import Any
 
 from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.apply import get_object
+from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
@@ -44,22 +51,6 @@ from digital_twin.verdict.verdict import Verdict, assemble
 _EMPTY_DIFF = IRDiff((), (), ())
 
 
-def _merge_payload(current: Mapping[str, Any], partial: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge mode: overlay a PARTIAL payload onto the fetched current object to
-    form the full-replacement payload Mist PUT semantics require. Dicts merge
-    recursively (payload wins); an EXPLICIT null deletes the field (the only
-    delete operator in merge mode); everything else replaces."""
-    out: dict[str, Any] = dict(current)
-    for key, value in partial.items():
-        if value is None:
-            out.pop(key, None)
-        elif isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
-            out[key] = _merge_payload(out[key], value)
-        else:
-            out[key] = value
-    return out
-
-
 def simulate(
     plan_data: Mapping[str, Any],
     *,
@@ -67,7 +58,6 @@ def simulate(
     adapter: MistAdapter | None = None,
     registry: CheckRegistry | None = None,
     run: RunContext | None = None,
-    merge_payloads: bool = False,
 ) -> Verdict:
     run = run or RunContext()
     trace = run.trace
@@ -105,13 +95,9 @@ def simulate(
         if rejection:
             return unknown(rejection)
 
-    # 2 — L0 payload validation (pre-fetch; payload-only)
-    with trace.stage("l0.validate"):
-        for op in plan.ops:
-            result = adapter.validate(op)
-            adapter_findings += result.findings
-            if result.fatal:
-                return unknown(None, l0_fatal=True)
+    # 2 — (L0 moved into the per-op loop: Mist update semantics are root-level
+    # merge, so `required`/conditional validation is only meaningful against
+    # the EFFECTIVE object, which needs the fetched current state)
 
     # 3 — fetch
     with trace.stage("fetch"):
@@ -135,10 +121,11 @@ def simulate(
             )
     state_meta = build_state_meta(raw.meta, now=datetime.now(UTC))
 
-    # 4+6 — field gate against the ROLLING pre-op state, then apply that op
+    # 2+4+6 — per op against the ROLLING pre-op state: compute the EFFECTIVE
+    # object (Mist root-level update semantics: present roots replace, omitted
+    # roots persist, "-attr" deletes), L0-validate it, field-gate it, apply.
     proposed_raw = raw
-    note = f"{len(plan.ops)} op(s)" + (" [merge mode]" if merge_payloads else "")
-    with trace.stage("scope.post+apply", note=note):
+    with trace.stage("l0+scope.post+apply", note=f"{len(plan.ops)} op(s)"):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
             if current is None:
@@ -152,14 +139,28 @@ def simulate(
                     ),
                     state_meta=state_meta,
                 )
-            if merge_payloads:
-                # partial payload -> the full object a Mist PUT would need; the
-                # SAME merged object must be what gets applied to Mist later
-                op = replace(op, payload=_merge_payload(current, op.payload))
-            rejection = screen_op(op.object_type, current, op.payload)
+            conflicts = update_conflicts(op.payload)
+            if conflicts:
+                return unknown(
+                    Rejection(
+                        stage="apply",
+                        reasons=tuple(
+                            f"ops[order={op.order}]: conflicting set AND '-{c}' delete "
+                            "marker for the same attribute"
+                            for c in conflicts
+                        ),
+                    ),
+                    state_meta=state_meta,
+                )
+            effective = effective_update(current, op.payload)
+            result = adapter.validate(replace(op, payload=effective))
+            adapter_findings += result.findings
+            if result.fatal:
+                return unknown(None, l0_fatal=True, state_meta=state_meta)
+            rejection = screen_op(op.object_type, current, effective)
             if rejection:
                 return unknown(rejection, state_meta=state_meta)
-            applied = adapter.apply(proposed_raw, (op,))
+            applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return unknown(applied, state_meta=state_meta)
             proposed_raw = applied

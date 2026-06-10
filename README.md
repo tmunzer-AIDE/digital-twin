@@ -68,19 +68,17 @@ EOF
 
 uv run digital-twin --plan plan.json            # human summary, decision exit code
 uv run digital-twin --plan plan.json --json     # full verdict document
-uv run digital-twin --plan plan.json --merge-payloads       # PARTIAL payloads (see below)
 uv run digital-twin --plan plan.json --replay-store runs/   # capture (redacted) replay
 uv run digital-twin --plan plan.json --replay-fixture fx.json  # offline, against a fixture
 ```
 
-**Full vs partial payloads.** By default a payload is the *complete* new object
-(Mist `PUT` semantics) — any field you omit counts as **deleted**, and deleting an
-out-of-scope field returns `UNKNOWN`. For hand-written plans that's tedious, so
-`--merge-payloads` treats each payload as **partial**: it is overlaid onto the
-fetched current object (dicts merge recursively, payload wins, an explicit `null`
-deletes a field) and the resulting full object is what gets simulated — and what
-you must then `PUT` to Mist. The MCP tool takes the same option
-(`merge_payloads: true`).
+**Payload semantics (matches the Mist API).** An update payload works at the
+**root attribute** level: a root present in the payload **replaces** the current
+value wholesale (no deep merge below the root); a root you **omit persists
+unchanged**; deletion is **explicit** via a dash marker — `{"-dhcpd_config": ""}`.
+The twin simulates exactly this: gates and validation evaluate the *effective*
+object (current state + your update), so partial payloads work naturally, and
+deleting an out-of-scope attribute returns `UNKNOWN`.
 
 ### MCP server
 

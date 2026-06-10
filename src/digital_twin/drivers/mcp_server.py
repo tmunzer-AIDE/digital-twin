@@ -31,14 +31,10 @@ def _provider(replay_fixture: str | None) -> StateProvider:
 
 
 def simulate_change(
-    change_plan: dict[str, Any],
-    replay_fixture: str | None = None,
-    merge_payloads: bool = False,
+    change_plan: dict[str, Any], replay_fixture: str | None = None
 ) -> dict[str, Any]:
     try:
-        verdict = simulate(
-            change_plan, provider=_provider(replay_fixture), merge_payloads=merge_payloads
-        )
+        verdict = simulate(change_plan, provider=_provider(replay_fixture))
         return verdict_to_dict(verdict)
     except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
         # a REAL assembled UNKNOWN Verdict: agents get the identical document
@@ -56,14 +52,13 @@ def simulate_change(
 
 
 @mcp.tool()
-def simulate_change_tool(
-    change_plan: dict[str, Any], merge_payloads: bool = False
-) -> dict[str, Any]:
+def simulate_change_tool(change_plan: dict[str, Any]) -> dict[str, Any]:
     """Simulate a Mist ChangePlan against the live network state; returns the
     verdict document (decision: safe|review|unsafe|unknown + findings).
-    merge_payloads=True treats op payloads as PARTIAL and overlays them onto
-    the current object (explicit null deletes a field)."""
-    return simulate_change(change_plan, merge_payloads=merge_payloads)
+    Payloads follow Mist update semantics: root attributes present in the
+    payload replace the current values wholesale, omitted roots persist, and
+    {"-attribute": ""} deletes an attribute."""
+    return simulate_change(change_plan)
 
 
 def main() -> None:

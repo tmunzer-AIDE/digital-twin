@@ -63,7 +63,9 @@
             "persist_mac": false,
             "poe_disabled": true,
             "enable_qos": false,
-            "disable_autoneg": false
+            "disable_autoneg": false,
+            "description": "",
+            "mac_limit": 0
           },
           "new_dot1x": {
             "mode": "access",

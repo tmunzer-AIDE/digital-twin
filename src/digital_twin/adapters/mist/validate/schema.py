@@ -47,6 +47,17 @@ _SECRET_KEY_PARTS: tuple[str, ...] = (
 )
 
 
+def _without_nulls(obj: Any) -> Any:
+    """null == absent (the project-wide canon: Mist GETs return null for unset
+    optional fields) — strip None-valued keys deeply before schema validation,
+    since the EFFECTIVE object inherits them from the current state."""
+    if isinstance(obj, dict):
+        return {k: _without_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_without_nulls(v) for v in obj]
+    return obj
+
+
 def _touches_secret(err: jsonschema.ValidationError) -> bool:
     path_keys = [str(p).lower() for p in err.absolute_path]
     blob = " ".join((*path_keys, err.message.lower()))
@@ -121,7 +132,7 @@ def validate_payload(object_type: str, payload: Mapping[str, Any]) -> L0Result:
         )
     errors = (
         err
-        for err in _validator(object_type).iter_errors(dict(payload))
+        for err in _validator(object_type).iter_errors(_without_nulls(dict(payload)))
         if not _touches_secret(err)
     )
     findings = tuple(

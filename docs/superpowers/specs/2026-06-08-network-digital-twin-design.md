@@ -148,22 +148,28 @@ Open items.)
 
 ### Delta semantics (resolve before `apply` and L0)
 
-A delta op is **a full-object replacement**, matching Mist's `PUT` semantics: `payload` is the
-*complete* new object, not a JSON-merge-patch or partial. Consequences:
-- `apply` **replaces** the raw object in state with `payload` (it does not merge fields).
-- L0 `required`/conditional validation runs against the **full** object.
-- **Do not conflate this with inheritance merge.** Object-replacement (`apply`) and
-  template-inheritance derivation (`compiler`) are separate steps: `apply` swaps the raw object,
-  then `compiler` re-derives the effective config from the changed raw state.
-- `action` values in M1: `update` (replace existing object). `create`/`delete` are out of M1.
+A delta op follows **Mist's root-level update semantics** *(CORRECTED 2026-06-10 — the
+original "full-object replacement" assumption was wrong; confirmed against the real API)*:
+- a **root attribute present** in `payload` **replaces** the current value **wholesale**
+  (no deep merge below the root);
+- a **root attribute omitted** from `payload` **persists unchanged** — omission is NOT deletion;
+- **deletion is explicit** via a dash marker: `{"-attribute_name": ""}`; setting and deleting
+  the same root in one payload is an authoring error → `UNKNOWN`.
+- `apply` owns these semantics (`effective_update`); the field gate and L0 evaluate the
+  resulting **effective** object — so L0 `required`/conditional validation is meaningful, and
+  therefore runs **post-fetch inside the per-op loop**, not at the original pre-fetch stage 2.
+- **Do not conflate this with inheritance merge.** Object-update (`apply`) and
+  template-inheritance derivation (`compiler`) are separate steps: `apply` updates the raw
+  object, then `compiler` re-derives the effective config from the changed raw state.
+- `action` values in M1: `update` (update existing object). `create`/`delete` are out of M1.
 
 **Multi-op semantics (ordered).** `ops` apply in strictly increasing `order` against a **rolling raw
 state**: op *N* sees the raw state as already modified by ops `0..N-1`, and its changed-field gate
 diffs against that rolling pre-op state (not the original fetched state). Constraints:
 - `order` must be a **total order with unique values**; gaps are fine, duplicates → `UNKNOWN`.
-- **Two ops targeting the same `(object_type, object_id)` → `UNKNOWN`** (ambiguous: because each op
-  is a *full-object replacement*, a later op would silently make an earlier one dead — almost
-  certainly an authoring error). One op per object in M1.
+- **Two ops targeting the same `(object_type, object_id)` → `UNKNOWN`** (ambiguous: a later op's
+  present roots would silently override an earlier op's — almost certainly an authoring error).
+  One op per object in M1.
 - The proposed IR is compiled once from the final rolling `raw'` (after all ops applied).
 
 ### Explicit non-goals (deferred, behind existing seams)

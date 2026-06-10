@@ -49,6 +49,17 @@ def test_nullable_enum_field_accepts_explicit_null():
     assert res.findings == ()
 
 
+def test_null_values_validate_as_absent():
+    # the established canon: Mist GETs return null for unset optional fields,
+    # and null == absent everywhere (compiler equivalence, field gate). The
+    # EFFECTIVE object L0 validates inherits such nulls from the current state.
+    res = validate_payload(
+        "device",
+        {"type": "switch", "notes": None, "deviceprofile_id": None, "port_config": {}},
+    )
+    assert res.findings == ()
+
+
 def test_secret_key_violations_are_suppressed():
     # replay fixtures strip secrets (None/absent by design) and the twin never
     # simulates them — schema noise about secret-manifest keys adds nothing

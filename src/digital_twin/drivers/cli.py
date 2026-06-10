@@ -54,15 +54,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print verdict as JSON")
     parser.add_argument("--replay-fixture", help="run against a saved fixture instead of live")
     parser.add_argument("--replay-store", help="directory to capture (raw, plan, verdict, trace)")
-    parser.add_argument(
-        "--merge-payloads",
-        action="store_true",
-        help=(
-            "treat op payloads as PARTIAL: overlay them onto the fetched current "
-            "object before simulating (explicit null deletes a field). The merged "
-            "full object is what must then be PUT to Mist."
-        ),
-    )
     args = parser.parse_args(argv)
 
     plan_text = sys.stdin.read() if args.plan == "-" else Path(args.plan).read_text()
@@ -78,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     recording = _RecordingProvider(provider)
 
     run = RunContext()
-    verdict = simulate(plan_data, provider=recording, run=run, merge_payloads=args.merge_payloads)
+    verdict = simulate(plan_data, provider=recording, run=run)
 
     if args.replay_store and recording.recorded is not None:
         assert run.trace is not None
