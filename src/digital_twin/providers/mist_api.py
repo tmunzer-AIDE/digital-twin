@@ -55,8 +55,13 @@ def _group_by_site(rows: list[_Json]) -> dict[str, list[_Json]]:
     return grouped
 
 
-def _site_thunk(sites: dict[str, _Json], sid: str) -> Callable[[], _Json | None]:
-    return lambda: sites.get(sid)
+def _site_thunk(
+    sites: dict[str, _Json], scope: SiteScope, fetch: Callable[[SiteScope], _Json]
+) -> Callable[[], _Json | None]:
+    """Serve the site object from the org-batched list; fall back to the per-site
+    getSiteInfo when the org list failed or lacks the site (a single org-call
+    failure must degrade, not turn every site into a baseline failure)."""
+    return lambda: sites.get(scope.site_id) or fetch(scope)
 
 
 def _slice_thunk(index: Callable[[str], list[_Json]], sid: str) -> Callable[[], list[_Json]]:
@@ -105,7 +110,7 @@ class MistApiProvider(StateProvider):
         for sid in targets:
             out[sid] = self._fetch_one(
                 SiteScope(scope.org_id, sid),
-                site_fn=_site_thunk(sites, sid),
+                site_fn=_site_thunk(sites, SiteScope(scope.org_id, sid), self._site),
                 port_stats_fn=_slice_thunk(port_slice, sid),
                 wired_clients_fn=_slice_thunk(wired_slice, sid),
                 device_stats_fn=_slice_thunk(device_slice, sid),

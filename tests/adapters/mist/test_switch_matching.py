@@ -22,6 +22,13 @@ def test_model_slice_match_uses_the_prefix():
     assert resolve_switch_matching(sm, {"model": "EX4400-48MP"}) == {"ge-0/0/1": {"usage": "iot"}}
 
 
+def test_model_slice_match_with_dash_form():
+    # the schema documents BOTH forms: `match_name[0:3]` (colon) and
+    # `match_model[0-8]` (dash, "first 8 letters") — they are equivalent slices
+    sm = _sm({"match_model[0-8]": "EX4400-4", "port_config": {"ge-0/0/1": {"usage": "iot"}}})
+    assert resolve_switch_matching(sm, {"model": "EX4400-48MP"}) == {"ge-0/0/1": {"usage": "iot"}}
+
+
 def test_role_match():
     sm = _sm({"match_role": "core", "port_config": {"ge-0/0/2": {"usage": "uplink"}}})
     assert resolve_switch_matching(sm, {"role": "core"}) == {"ge-0/0/2": {"usage": "uplink"}}

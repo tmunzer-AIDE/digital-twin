@@ -8,9 +8,10 @@ per-port downstream (see compile_device) — so only the rule's port_config is
 consumed here; its ip_config/port_mirroring/stp_config are out of M1 L2 scope.
 
 Match criteria (data- and schema-confirmed): `match_model` (exact),
-`match_model[A:B]` (model slice), `match_role`, `match_name`, `match_name[A:B]`.
-An UNKNOWN `match_*` criterion makes the rule not match (under-assign over
-mis-assign).
+`match_model[A:B]` / `match_model[A-B]` (model slice — the schema documents BOTH
+separators, e.g. `match_name[0:3]` and `match_model[0-8]`), `match_role`,
+`match_name`, `match_name[A:B]`/`[A-B]`. An UNKNOWN `match_*` criterion makes the
+rule not match (under-assign over mis-assign).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import copy
 import re
 from typing import Any
 
-_SLICE = re.compile(r"^match_(model|name)\[(\d+):(\d+)\]$")
+_SLICE = re.compile(r"^match_(model|name)\[(\d+)[:-](\d+)\]$")
 _EXACT = {"match_model": "model", "match_name": "name", "match_role": "role"}
 
 JsonObj = dict[str, Any]

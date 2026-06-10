@@ -128,6 +128,23 @@ def test_network_template_fetched_once_across_sites():
         assert "networktemplate" in raw.meta.fetched
 
 
+def test_org_sites_failure_falls_back_to_per_site_fetch():
+    # if the org site-list call fails, explicit site_ids must still resolve via
+    # the per-site getSiteInfo fallback — NOT all become baseline failures
+    class OrgSitesBoom(FakeProvider):
+        def _org_sites(self, s: OrgScope) -> list[dict[str, Any]]:
+            raise RuntimeError("org sites 503")
+
+        def _site(self, s: Any) -> dict[str, Any]:
+            return {"id": s.site_id, "via": "per-site-fallback"}
+
+    out = OrgSitesBoom(sites=[], ports=[], wired=[]).fetch_sites(OrgScope("o1"), ["s1", "s2"])
+    for sid in ("s1", "s2"):
+        raw = out[sid]
+        assert isinstance(raw, RawSiteState), f"{sid} unexpectedly failed: {raw}"
+        assert raw.site["via"] == "per-site-fallback"
+
+
 def test_org_batch_failure_records_per_site_but_keeps_baseline():
     class PortsBoom(FakeProvider):
         def _org_port_stats(self, s: OrgScope) -> list[dict[str, Any]]:

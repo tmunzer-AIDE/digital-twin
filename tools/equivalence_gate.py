@@ -7,12 +7,19 @@ Two independent checks (both must pass for exit 0):
    compile_site: derived does not resolve {{vars}}.) This proves the site-level
    inputs the compiler consumes match Mist's derivation.
 
-2. PORT-PROJECTION CROSS-CHECK — our compiled per-port usage (switch_matching
+2. PORT-USAGE-NAME CROSS-CHECK — our compiled per-port usage NAME (switch_matching
    rule base + device overlay) vs the OBSERVED `port_usage` in port_stats. This is
-   the ONLY oracle for the device-level port projection: port_config is device-
-   level and absent from getSiteSettingDerived, and there is no structured device-
-   derived endpoint. Scoped to STATIC ports (dynamic_usage off per member, since
-   their observed usage is runtime, not config).
+   the only live oracle for the device-level port projection: port_config is
+   device-level and absent from getSiteSettingDerived, and there is no structured
+   device-derived endpoint. Scoped to STATIC ports (dynamic_usage off per member,
+   since their observed usage is runtime, not config). ZERO matches = zero
+   evidence = FAIL (a vacuous pass must not look green).
+
+   HONESTY LIMIT: this validates usage-name ASSIGNMENT only, not the VLAN
+   projection — port_stats carry no per-port VLAN fields (verified live), so a
+   port_network override that moves a port's VLAN within the same usage name is
+   invisible here. The override->VLAN layering is covered by Tier-1 unit tests
+   (test_ingest_ports.py).
 
 Usage:  uv run python tools/equivalence_gate.py
 Env:    MIST_HOST, MIST_APITOKEN, DT_GATE_ORG_ID, DT_GATE_SITE_IDS (comma-separated)
@@ -140,16 +147,21 @@ def main() -> None:
             print(f"  uncovered: {leaf}   (validated by Tier-1 OAS tests only)")
 
     print(
-        f"\nport-usage cross-check (compiled vs observed, static ports): "
+        f"\nport-usage-NAME cross-check (compiled vs observed, static ports): "
         f"{xc_matched} matched, {len(xc_mismatches)} mismatched"
     )
     for site_id, name, member, ours_u, obs_u in xc_mismatches[:25]:
         print(f"  MISMATCH {site_id} {name} {member}: ours={ours_u!r} observed={obs_u!r}")
     if xc_mismatches:
         failures += 1
+    if not xc_matched:
+        failures += 1
+        print("  [FAIL] zero matches -> the cross-check produced NO positive evidence")
     print(
         "  scope: STATIC ports only (switch_matching rule base + device overlay);\n"
-        "         dynamic_usage ports are runtime and excluded."
+        "         dynamic_usage ports are runtime and excluded. Validates usage-name\n"
+        "         assignment ONLY — no per-port VLAN is observable (port_stats carry\n"
+        "         none); the override->VLAN layering is Tier-1-tested."
     )
 
     sys.exit(1 if failures else 0)
