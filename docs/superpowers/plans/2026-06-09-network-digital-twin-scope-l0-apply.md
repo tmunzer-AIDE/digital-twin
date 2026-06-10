@@ -25,7 +25,7 @@
 - Create: `src/digital_twin/contracts/finding.py`
 - Test: `tests/contracts/__init__.py`, `tests/contracts/test_finding.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/contracts/__init__.py  (empty)
@@ -71,12 +71,12 @@ def test_severity_values_match_spec():
     assert [s.value for s in Severity] == ["info", "warning", "error", "critical"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/contracts/ -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'digital_twin.contracts'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/contracts/finding.py
@@ -136,12 +136,12 @@ from .finding import Finding, FindingCategory, FindingSource, Severity
 __all__ = ["Finding", "FindingCategory", "FindingSource", "Severity"]
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/contracts/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/contracts tests/contracts
@@ -158,7 +158,7 @@ git commit -m "Plan 3: contracts.Finding (shared L0/check result DTO)"
 - Modify: `src/digital_twin/contracts/__init__.py`
 - Test: `tests/contracts/test_change_plan.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/contracts/test_change_plan.py
@@ -194,12 +194,12 @@ def test_rejection_carries_stage_and_reasons():
     assert "wlan" in r.reasons[0]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/contracts/test_change_plan.py -q`
 Expected: FAIL — ImportError (ChangeOp etc. not defined)
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/contracts/change_plan.py
@@ -280,12 +280,12 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/contracts/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/contracts tests/contracts
@@ -301,7 +301,7 @@ git commit -m "Plan 3: ChangePlan/ChangeOp/ChangeScope + shared Rejection value"
 - Create: `src/digital_twin/scope/allowlist.py`
 - Test: `tests/scope/__init__.py`, `tests/scope/test_allowlist.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/scope/__init__.py  (empty)
@@ -344,12 +344,12 @@ def test_server_metadata_is_ignored_in_raw_diffs():
         assert f in IGNORED_RAW_FIELDS
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/scope/ -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/scope/__init__.py
@@ -404,12 +404,12 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
 )
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/scope/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/scope tests/scope
@@ -424,7 +424,7 @@ git commit -m "Plan 3: M1 allowlist data (raw paths, effective fields, ignored m
 - Create: `src/digital_twin/scope/envelope.py`
 - Test: `tests/scope/test_envelope.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/scope/test_envelope.py
@@ -492,12 +492,12 @@ def test_all_reasons_collected_not_just_first():
     assert isinstance(r, Rejection) and len(r.reasons) >= 3
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/scope/test_envelope.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/scope/envelope.py
@@ -606,12 +606,12 @@ def _parse_op(op: Any, index: int, reasons: list[str]) -> ChangeOp | None:
     )
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/scope/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/scope tests/scope
@@ -626,7 +626,7 @@ git commit -m "Plan 3: envelope gate (ChangePlan shape + static multi-op constra
 - Create: `src/digital_twin/scope/object_gate.py`
 - Test: `tests/scope/test_object_gate.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/scope/test_object_gate.py
@@ -684,12 +684,12 @@ def test_all_offending_ops_reported():
     assert isinstance(r, Rejection) and len(r.reasons) == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/scope/test_object_gate.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/scope/object_gate.py
@@ -738,12 +738,12 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
     return Rejection(stage=_STAGE, reasons=tuple(reasons)) if reasons else None
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/scope/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/scope tests/scope
@@ -758,7 +758,7 @@ git commit -m "Plan 3: object gate (pre-fetch M1 whitelist + single-site + actio
 - Create: `src/digital_twin/scope/field_gate.py`
 - Test: `tests/scope/test_field_gate.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/scope/test_field_gate.py
@@ -815,12 +815,12 @@ def test_device_exact_leaves_name_notes():
     assert isinstance(r, Rejection)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/scope/test_field_gate.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/scope/field_gate.py
@@ -895,12 +895,12 @@ def screen_op(
     return None
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/scope/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/scope tests/scope
@@ -917,12 +917,12 @@ git commit -m "Plan 3: field gate (raw changed-path pre-screen, removal-aware)"
 - Create: `src/digital_twin/adapters/mist/validate/schema.py`
 - Test: `tests/adapters/mist/test_validate_l0.py`
 
-- [ ] **Step 1: Add the dependency**
+- [x] **Step 1: Add the dependency**
 
 Run: `uv add jsonschema && uv add --dev types-jsonschema`
 Expected: both resolve; lockfile updated.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```python
 # tests/adapters/mist/test_validate_l0.py
@@ -969,12 +969,12 @@ def test_unknown_object_type_is_fatal():
     assert "wlan" in res.findings[0].message
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/adapters/mist/test_validate_l0.py -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 ```python
 # src/digital_twin/adapters/mist/validate/schema.py
@@ -1067,7 +1067,7 @@ from .schema import L0Result, validate_payload
 __all__ = ["L0Result", "validate_payload"]
 ```
 
-- [ ] **Step 5: Run tests + quality gate**
+- [x] **Step 5: Run tests + quality gate**
 
 Run: `uv run pytest tests/adapters/mist/test_validate_l0.py -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean. *Pinned facts (verified against the committed schemas):
@@ -1076,7 +1076,7 @@ top-level `required`; `device_switch` requires top-level `type` — so the parti
 device payload in the enum test yields an extra required-finding alongside the
 duplex one, which is why that test asserts with `any(...)`, not an exact count.*
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pyproject.toml uv.lock src/digital_twin/adapters/mist/validate tests/adapters/mist/test_validate_l0.py
@@ -1092,7 +1092,7 @@ git commit -m "Plan 3: thin L0 payload validation against committed Mist OAS (js
 - Create: `src/digital_twin/adapters/mist/apply/objects.py`
 - Test: `tests/adapters/mist/test_apply_objects.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/adapters/mist/test_apply_objects.py
@@ -1139,12 +1139,12 @@ def test_replace_does_not_touch_other_devices():
     assert any(d.get("id") == "dev-ap1" and d.get("model") == "AP45" for d in new.devices)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/adapters/mist/test_apply_objects.py -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/adapters/mist/apply/objects.py
@@ -1220,14 +1220,14 @@ from .objects import IDENTITY_FIELDS, get_object, replace_object
 __all__ = ["IDENTITY_FIELDS", "get_object", "replace_object"]
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/adapters/mist/test_apply_objects.py -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean. *Pinned: `raw_site()` uses `SiteScope(org_id="o1", site_id="s1")`
 and `setting=SITE_EFFECTIVE`, so `get_object(RAW, "site_setting", RAW.scope.site_id)`
 returns that exact object.*
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/adapters/mist/apply tests/adapters/mist/test_apply_objects.py
@@ -1243,7 +1243,7 @@ git commit -m "Plan 3: apply targeting (full-object replace, identity preserved)
 - Modify: `src/digital_twin/adapters/mist/apply/__init__.py`
 - Test: `tests/adapters/mist/test_apply_plan.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/adapters/mist/test_apply_plan.py
@@ -1303,12 +1303,12 @@ def test_original_raw_never_mutated():
     assert next(d for d in RAW.devices if d.get("id") == "dev-a")["name"] == before
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/adapters/mist/test_apply_plan.py -q`
 Expected: FAIL — ImportError (apply_plan)
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/adapters/mist/apply/apply.py
@@ -1364,12 +1364,12 @@ from .objects import IDENTITY_FIELDS, get_object, replace_object
 __all__ = ["IDENTITY_FIELDS", "apply_plan", "get_object", "replace_object"]
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/adapters/mist/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/adapters/mist/apply tests/adapters/mist/test_apply_plan.py
@@ -1384,7 +1384,7 @@ git commit -m "Plan 3: apply_plan (ordered rolling state, errors as values)"
 - Create: `src/digital_twin/scope/derived_gate.py`
 - Test: `tests/scope/test_derived_gate.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/scope/test_derived_gate.py
@@ -1429,12 +1429,12 @@ def test_changed_effective_fields_lists_top_level_only():
     assert changed_effective_fields(BASE, prop) == ("extra", "networks")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/scope/test_derived_gate.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/scope/derived_gate.py
@@ -1486,12 +1486,12 @@ def check_derived(
     return None
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/scope/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/scope tests/scope
@@ -1507,7 +1507,7 @@ git commit -m "Plan 3: derived-impact gate (full effective config, default-deny)
 - Create: `src/digital_twin/adapters/mist/adapter.py`
 - Test: `tests/adapters/mist/test_adapter_facade.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/adapters/mist/test_adapter_facade.py
@@ -1550,12 +1550,12 @@ def test_apply_delegates_to_apply_plan():
     assert isinstance(out, RawSiteState)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/adapters/mist/test_adapter_facade.py -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/adapters/base.py
@@ -1665,14 +1665,14 @@ class MistAdapter:
         return apply_plan(raw, ops)
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/adapters/mist/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean. *`compile_device` is invoked with switch payloads from the
 fixtures; if `raw_site()` devices lack `mac`/`type`, check `tests/adapters/mist/fixtures.py`
 — SWITCH_A has both.*
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/adapters/base.py src/digital_twin/adapters/mist/adapter.py tests/adapters/mist/test_adapter_facade.py
@@ -1686,7 +1686,7 @@ git commit -m "Plan 3: VendorAdapter protocol + MistAdapter facade"
 **Files:**
 - Test: `tests/test_plan3_flow.py`
 
-- [ ] **Step 1: Write the integration test (this is the deliverable — it should pass immediately if Tasks 1–11 are correct; any failure is a real wiring bug)**
+- [x] **Step 1: Write the integration test (this is the deliverable — it should pass immediately if Tasks 1–11 are correct; any failure is a real wiring bug)**
 
 ```python
 # tests/test_plan3_flow.py
@@ -1832,19 +1832,19 @@ def test_device_port_change_flows_through_to_proposed_ir():
     assert baseline_ir.port("aa0000000001:ge-0/0/0").profile == "office"
 ```
 
-- [ ] **Step 2: Run the integration test**
+- [x] **Step 2: Run the integration test**
 
 Run: `uv run pytest tests/test_plan3_flow.py -q`
 Expected: PASS. *If `ir.port(...)`/`ir.vlans` accessor names differ, check
 `src/digital_twin/ir/model.py` — the lldp tests use `ir.port("...")` and `ir.links`,
 and the switch tests use `ir.vlans`; mirror whatever they do.*
 
-- [ ] **Step 3: Run the FULL quality gate**
+- [x] **Step 3: Run the FULL quality gate**
 
 Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q`
 Expected: all clean, all tests pass
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_plan3_flow.py
@@ -1859,7 +1859,7 @@ git commit -m "Plan 3: end-to-end slice test (gates precede apply, ripple caught
 - Modify: `tests/test_public_api.py`
 - Modify: `docs/superpowers/plans/2026-06-09-network-digital-twin-scope-l0-apply.md` (check boxes)
 
-- [ ] **Step 1: Extend the public-API test**
+- [x] **Step 1: Extend the public-API test**
 
 Add to `tests/test_public_api.py` (follow the existing function style in that file):
 
@@ -1895,12 +1895,12 @@ def test_plan3_public_api():
                                        EFFECTIVE_ALLOWLIST, RAW_ALLOWLIST))
 ```
 
-- [ ] **Step 2: Full gate**
+- [x] **Step 2: Full gate**
 
 Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q`
 Expected: all clean
 
-- [ ] **Step 3: Mark all checkboxes in this plan document, then commit**
+- [x] **Step 3: Mark all checkboxes in this plan document, then commit**
 
 ```bash
 git add tests/test_public_api.py docs/superpowers/plans/2026-06-09-network-digital-twin-scope-l0-apply.md

@@ -105,3 +105,58 @@ def test_plan2_public_api():
             StateProvider,
         )
     )
+
+
+def test_plan3_public_api():
+    from digital_twin.adapters.base import VendorAdapter
+    from digital_twin.adapters.mist.adapter import IngestOutcome, MistAdapter
+    from digital_twin.adapters.mist.apply import apply_plan, get_object, replace_object
+    from digital_twin.adapters.mist.validate import L0Result, validate_payload
+    from digital_twin.contracts import (
+        ChangeOp,
+        ChangePlan,
+        ChangeScope,
+        Finding,
+        FindingCategory,
+        FindingSource,
+        Rejection,
+        Severity,
+    )
+    from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST, RAW_ALLOWLIST
+    from digital_twin.scope.derived_gate import check_derived
+    from digital_twin.scope.envelope import parse_change_plan
+    from digital_twin.scope.field_gate import screen_op
+    from digital_twin.scope.object_gate import check_objects
+
+    assert all(
+        callable(f)
+        for f in (
+            parse_change_plan,
+            check_objects,
+            screen_op,
+            check_derived,
+            validate_payload,
+            apply_plan,
+            get_object,
+            replace_object,
+        )
+    )
+    assert all(
+        x is not None
+        for x in (
+            VendorAdapter,
+            MistAdapter,
+            IngestOutcome,
+            L0Result,
+            ChangeOp,
+            ChangePlan,
+            ChangeScope,
+            Finding,
+            FindingCategory,
+            FindingSource,
+            Rejection,
+            Severity,
+            EFFECTIVE_ALLOWLIST,
+            RAW_ALLOWLIST,
+        )
+    )

@@ -25,9 +25,7 @@ def changed_paths(current: Mapping[str, Any], payload: Mapping[str, Any]) -> tup
     return tuple(sorted(out))
 
 
-def _walk(
-    cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, ...] = ()
-) -> None:
+def _walk(cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, ...] = ()) -> None:
     if isinstance(cur, dict) and isinstance(new, dict):
         for key in sorted(set(cur) | set(new)):
             if not path and key in ignore_top:
