@@ -26,7 +26,9 @@ def test_save_writes_redacted_fixture(tmp_path):
     data = json.loads(path.read_text())
     blob = json.dumps(data)
     assert "aa:bb:cc:dd:ee:01" not in blob and "real-name" not in blob  # redacted
-    assert data["redaction_version"] == "1"
+    from digital_twin.observability.replay.redaction import REDACTION_VERSION
+
+    assert data["redaction_version"] == REDACTION_VERSION
     assert data["scope"]["org_id"]  # structure intact
 
 

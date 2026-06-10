@@ -17,7 +17,7 @@ import hashlib
 import re
 from typing import Any
 
-REDACTION_VERSION = "1"
+REDACTION_VERSION = "2"  # v2: embedded-substring pass (composite strings, free text)
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -37,6 +37,14 @@ _MAC = re.compile(r"^(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}$|^[0-9a-fA-F]{12}$
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _IPV4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$")
 _IPV6 = re.compile(r"^[0-9a-fA-F:]+:[0-9a-fA-F:]+$")
+
+# embedded (substring) forms — composite address lists, free-text notes, URLs
+_MAC_ANY = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+_UUID_ANY = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_IPV6_ANY = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]*[0-9a-fA-F]\b")
+_IPV4_ANY = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b")
 
 
 def _h(value: str, n: int) -> str:
@@ -58,6 +66,24 @@ def _redact_scalar(key: str, value: str) -> str:
         return f"2001:db8::{_h(value, 8)}"  # documentation prefix
     if key in NAME_KEYS:
         return f"name-{_h(value, 8)}"
+    return _sub_embedded(value)
+
+
+def _ipv4_token(match: re.Match[str]) -> str:
+    value = match.group()
+    suffix = value.partition("/")[2]
+    n = int(_h(value.partition("/")[0], 8), 16)
+    ip = f"198.51.{(n >> 8) % 256}.{n % 256}"
+    return f"{ip}/{suffix}" if suffix else ip
+
+
+def _sub_embedded(value: str) -> str:
+    """Composite strings (comma-joined address lists, free text) can EMBED
+    identifiers the exact-match rules cannot see — replace them in place."""
+    value = _MAC_ANY.sub(lambda m: _h(m.group().lower().replace(":", ""), 12), value)
+    value = _UUID_ANY.sub(lambda m: f"uuid-{_h(m.group().lower(), 12)}", value)
+    value = _IPV6_ANY.sub(lambda m: f"2001:db8::{_h(m.group(), 8)}", value)
+    value = _IPV4_ANY.sub(_ipv4_token, value)
     return value
 
 

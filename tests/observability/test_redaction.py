@@ -39,5 +39,21 @@ def test_structure_preserved():
     assert out["port_config"]["ge-0/0/1"]["usage"] == "ap"
 
 
+def test_embedded_identifiers_in_composite_strings_are_redacted():
+    # real Mist payloads carry comma-joined address lists and free text — the
+    # leak class the fixture-hygiene CI caught on first capture
+    out = redact(
+        {
+            "ips": {"vlan1": "10.100.1.75/23,fe80:0:0:0:23e:73ff:fe01:2345"},
+            "note": "uplink to aa:bb:cc:dd:ee:ff at 192.168.1.1",
+        }
+    )
+    blob = str(out)
+    assert "10.100.1.75" not in blob
+    assert "fe80" not in blob
+    assert "aa:bb:cc:dd:ee:ff" not in blob
+    assert "192.168.1.1" not in blob
+
+
 def test_version_present():
     assert isinstance(REDACTION_VERSION, str) and REDACTION_VERSION
