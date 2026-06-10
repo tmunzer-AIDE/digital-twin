@@ -1,0 +1,84 @@
+"""The agent-facing decision: SAFE | REVIEW | UNSAFE | UNKNOWN.
+
+Deterministic precedence (first match wins): UNKNOWN > UNSAFE > REVIEW > SAFE.
+Key invariant (spec): a blind spot — INSUFFICIENT_DATA, partial coverage,
+non-HIGH confidence, or a crashed check — can NEVER resolve to SAFE; it floors
+at REVIEW. Operational findings never drive UNSAFE.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+from digital_twin.checks.base import CheckResult, CoverageState, Status
+from digital_twin.contracts import FindingCategory, Rejection, Severity
+from digital_twin.ir import ConfidenceLevel
+
+
+class Decision(StrEnum):
+    SAFE = "safe"
+    REVIEW = "review"
+    UNSAFE = "unsafe"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class DecisionInputs:
+    rejections: tuple[Rejection, ...]  # gates/apply (any -> UNKNOWN)
+    l0_fatal: bool  # structurally-fatal L0 short-circuit
+    baseline_unavailable: bool  # FetchError / ingest not ok
+    check_results: tuple[CheckResult, ...]
+
+
+def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
+    # 1) UNKNOWN — could not simulate
+    unknown: list[str] = []
+    for r in inputs.rejections:
+        unknown.extend(f"UNSUPPORTED [{r.stage}]: {reason}" for reason in r.reasons)
+    if inputs.l0_fatal:
+        unknown.append("structurally-fatal L0 violation short-circuited the run")
+    if inputs.baseline_unavailable:
+        unknown.append("no usable baseline state (fetch/ingest failed)")
+    if unknown:
+        return Decision.UNKNOWN, tuple(unknown)
+
+    findings = [f for res in inputs.check_results for f in res.findings]
+
+    # 2) UNSAFE — confident network breakage only
+    unsafe = [
+        f"{f.code}: {f.message}"
+        for f in findings
+        if f.category is FindingCategory.NETWORK
+        and f.severity in (Severity.ERROR, Severity.CRITICAL)
+    ]
+    if unsafe:
+        return Decision.UNSAFE, tuple(unsafe)
+
+    # 3) REVIEW — any warning or blind spot
+    review: list[str] = []
+    review.extend(f"{f.code}: {f.message}" for f in findings if f.severity is Severity.WARNING)
+    review.extend(
+        f"{res.check_id}: {res.status}"
+        for res in inputs.check_results
+        if res.status in (Status.INSUFFICIENT_DATA, Status.CHECK_ERROR)
+    )
+    review.extend(
+        f"{f.code}: confidence {f.confidence.level.name}"
+        for f in findings
+        if f.confidence.level is not ConfidenceLevel.HIGH
+    )
+    review.extend(
+        f"{res.check_id}: coverage {res.coverage.state}"
+        for res in inputs.check_results
+        if res.coverage.state in (CoverageState.PARTIAL, CoverageState.INSUFFICIENT)
+    )
+    if review:
+        return Decision.REVIEW, tuple(review)
+
+    # 4) SAFE — evaluated, covered, high confidence, clean
+    evaluated = [r.check_id for r in inputs.check_results if r.status is not Status.NOT_APPLICABLE]
+    return Decision.SAFE, (
+        f"all applicable checks passed ({', '.join(evaluated) or 'none applicable'}); "
+        "coverage complete; confidence HIGH",
+    )
