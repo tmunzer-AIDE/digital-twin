@@ -143,6 +143,56 @@ def test_gs7_wireless_client_isolated_by_uplink_removal_fails():
     assert "AP1" in f.affected_entities
 
 
+def test_gs7_zero_client_ap_isolation_floors_partial_coverage():
+    # the spec's zero-observed variant: the AP carried vlan 30 in baseline and
+    # the delta cuts it off, but NO clients are currently observed. The wireless
+    # impact is UNKNOWABLE (future clients), not absent -> coverage PARTIAL
+    # (-> REVIEW), never a clean complete PASS.
+    from digital_twin.checks.base import CoverageState
+    from tests.factories import ap
+
+    def site(connected: bool):
+        b = IRBuilder()
+        b.add_device(sw("SW")).add_device(ap("AP1"))
+        b.add_vlan(Vlan(vlan_id=30, name="voice", scope="s1"))
+        b.add_port(trunk_port("SW", "to-ap", tagged=(30,)))
+        b.add_port(trunk_port("AP1", "eth0", tagged=(30,)))
+        if connected:
+            b.add_link(link("AP1:eth0", "SW:to-ap"))
+        b.add_l3intf(irb("SW", 30))
+        for c in (IRCapability.WIRED_L2, IRCapability.L3_EXITS, IRCapability.CLIENTS_ACTIVE):
+            b.with_capability(c)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(True), site(False)))
+    assert result.status is Status.PASS  # nothing observable broke...
+    assert result.coverage.state is CoverageState.PARTIAL  # ...but it's a blind spot
+    assert any("AP1" in n and "30" in n for n in result.coverage.notes)
+
+
+def test_no_ap_change_keeps_complete_coverage():
+    # with client data present and no AP-side change there is no blind spot —
+    # a stable wired-only site must not floor every delta to REVIEW
+    from digital_twin.checks.base import CoverageState
+
+    def wired_site(connected: bool):
+        b = IRBuilder()
+        b.add_device(sw("A")).add_device(sw("B"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+        b.add_port(access_port("A", "acc", 10))
+        b.add_port(trunk_port("A", "up", tagged=(10,)))
+        b.add_port(trunk_port("B", "down", tagged=(10,)))
+        if connected:
+            b.add_link(link("A:up", "B:down"))
+        b.add_l3intf(irb("B", 10))
+        for c in (IRCapability.WIRED_L2, IRCapability.L3_EXITS, IRCapability.CLIENTS_ACTIVE):
+            b.with_capability(c)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(wired_site(True), wired_site(True)))
+    assert result.coverage.state is CoverageState.COMPLETE
+
+
 def test_wireless_membership_marks_coverage_partial():
     # spec: AP-side membership is observation-based — not-yet-connected clients
     # are a KNOWN coverage gap, so the conclusion's coverage is PARTIAL

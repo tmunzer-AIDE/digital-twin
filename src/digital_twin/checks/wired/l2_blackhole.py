@@ -30,6 +30,7 @@ from digital_twin.ir import (
     IRDiff,
     min_confidence,
 )
+from digital_twin.ir.entities import DeviceRole
 
 
 class L2BlackholeCheck:
@@ -60,6 +61,7 @@ class L2BlackholeCheck:
             wireless_in_play = wireless_in_play or any(
                 c.wireless_members for c in ctx.proposed.vlan_components(vid)
             )
+            notes.extend(self._ap_blind_spots(ctx, vid))
         if wireless_in_play:
             # spec: AP membership is observation-based — not-yet-connected clients
             # are a known coverage gap, so this conclusion can never be "complete"
@@ -87,6 +89,38 @@ class L2BlackholeCheck:
             confidence=confidence,
             reasoning="compared member-component exit reachability per vlan",
         )
+
+    def _ap_blind_spots(self, ctx: CheckContext, vid: int) -> list[str]:
+        """APs that carried this vlan in the BASELINE but no longer reach it in
+        the proposed state, with ZERO observed clients: the wireless impact is
+        UNKNOWABLE (future clients), not absent — a coverage blind spot (spec:
+        AP-side VLAN coverage is observation-based -> partial -> REVIEW).
+        APs with observed clients are handled by the member path instead."""
+        baseline_aps = {
+            n
+            for n in ctx.baseline.vlan_graph(vid).nodes
+            if (dev := ctx.baseline.ir.devices.get(n)) is not None and dev.role is DeviceRole.AP
+        }
+        if not baseline_aps:
+            return []
+        proposed_graph_nodes = set(ctx.proposed.vlan_graph(vid).nodes)
+        reaching_nodes: set[str] = set()
+        for comp in ctx.proposed.vlan_components(vid):
+            if comp.reaches_exit:
+                reaching_nodes |= comp.nodes
+        observed_ap_nodes = {
+            n
+            for comp in ctx.proposed.vlan_components(vid)
+            if comp.wireless_members
+            for n in comp.nodes
+        }
+        return [
+            f"vlan {vid}: AP {n} no longer reaches the vlan and has no observed "
+            "clients — wireless impact unknowable (observation-based coverage)"
+            for n in sorted(baseline_aps)
+            if (n not in proposed_graph_nodes or n not in reaching_nodes)
+            and n not in observed_ap_nodes
+        ]
 
     def _check_vlan(
         self,
