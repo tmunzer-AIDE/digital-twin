@@ -32,12 +32,13 @@ class Verdict:
 def assemble(
     *,
     inputs: DecisionInputs,
-    adapter_findings: tuple[Finding, ...] = (),
     ir_diff: IRDiff,
     domains: dict[str, str] | None = None,
 ) -> Verdict:
+    # adapter findings live INSIDE DecisionInputs so they reach decide() —
+    # the flat verdict list and the decision can never disagree on inputs
     decision, reasons = decide(inputs)
-    findings = (*adapter_findings, *(f for r in inputs.check_results for f in r.findings))
+    findings = (*inputs.adapter_findings, *(f for r in inputs.check_results for f in r.findings))
     overall = max((f.severity for f in findings), key=_SEVERITY_ORDER.index) if findings else None
     check_domains = domains or {
         r.check_id: r.check_id.rsplit(".", 1)[0] for r in inputs.check_results

@@ -59,6 +59,22 @@ def test_new_cycle_with_stp_unknown_warns_low():
     assert result.findings[0].confidence.level is ConfidenceLevel.LOW
 
 
+def test_stp_regression_on_existing_cycle_fails():
+    # the cycle's NODE SET is unchanged, but the delta disables STP on its
+    # ports — the spec's attributable condition is "cycle + STP disabled",
+    # which IS newly introduced here. Must FAIL, not hide behind "preexisting".
+    ctx = _ctx(_ring_ir(stp=True, parallel=True), _ring_ir(stp=False, parallel=True))
+    result = L2LoopCheck().run(ctx)
+    assert result.status is Status.FAIL
+    assert any(f.code == "wired.l2.loop.unprotected" for f in result.findings)
+
+
+def test_stp_becoming_unknown_on_existing_cycle_warns():
+    ctx = _ctx(_ring_ir(stp=True, parallel=True), _ring_ir(stp=None, parallel=True))
+    result = L2LoopCheck().run(ctx)
+    assert result.status is Status.WARN
+
+
 def test_preexisting_cycle_is_context_not_failure():
     same = _ring_ir(stp=False, parallel=True)
     ctx = _ctx(same, _ring_ir(stp=False, parallel=True))

@@ -24,13 +24,18 @@ def _finding(severity, category=FindingCategory.NETWORK, level=ConfidenceLevel.H
     )
 
 
-def _result(status, findings=(), coverage_state=CoverageState.COMPLETE):
+def _result(status, findings=(), coverage_state=CoverageState.COMPLETE, confidence="default"):
+    if confidence == "default":
+        # evaluated results carry HIGH by default in tests; None stays None for
+        # non-evaluated statuses (N_A / INSUFFICIENT_DATA / CHECK_ERROR)
+        evaluated = status in (Status.PASS, Status.WARN, Status.FAIL)
+        confidence = Confidence(level=ConfidenceLevel.HIGH) if evaluated else None
     return CheckResult(
         check_id="c",
         status=status,
         findings=tuple(findings),
         coverage=Coverage(state=coverage_state),
-        confidence=None,
+        confidence=confidence,
         reasoning="",
     )
 
@@ -38,6 +43,48 @@ def _result(status, findings=(), coverage_state=CoverageState.COMPLETE):
 def _inputs(**kw):
     defaults = dict(rejections=(), l0_fatal=False, baseline_unavailable=False, check_results=())
     return DecisionInputs(**{**defaults, **kw})
+
+
+def test_nonfatal_adapter_error_floors_review_not_safe():
+    # the review's P1 repro: an L0 schema violation (operational ERROR) with no
+    # check findings must not yield SAFE — Mist would reject this payload
+    l0 = _finding(Severity.ERROR, FindingCategory.OPERATIONAL)
+    l0 = Finding(**{**l0.__dict__, "source": FindingSource.ADAPTER})
+    d, reasons = decide(_inputs(adapter_findings=(l0,)))
+    assert d is Decision.REVIEW
+    assert any("t" in r for r in reasons)
+
+
+def test_adapter_operational_error_never_unsafe():
+    l0 = _finding(Severity.CRITICAL, FindingCategory.OPERATIONAL)
+    d, _ = decide(_inputs(adapter_findings=(l0,)))
+    assert d is Decision.REVIEW  # operational never drives UNSAFE
+
+
+def test_pass_result_with_low_confidence_floors_review():
+    res = CheckResult(
+        check_id="c",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(state=CoverageState.COMPLETE),
+        confidence=Confidence(level=ConfidenceLevel.LOW),
+        reasoning="",
+    )
+    d, reasons = decide(_inputs(check_results=(res,)))
+    assert d is Decision.REVIEW
+    assert any("confidence" in r for r in reasons)
+
+
+def test_pass_result_with_missing_confidence_floors_review():
+    res = CheckResult(
+        check_id="c",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(state=CoverageState.COMPLETE),
+        confidence=None,
+        reasoning="",
+    )
+    assert decide(_inputs(check_results=(res,)))[0] is Decision.REVIEW
 
 
 def test_rejection_is_unknown():

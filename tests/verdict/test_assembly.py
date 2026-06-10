@@ -32,9 +32,12 @@ def test_assemble_flattens_findings_and_rolls_up():
     )
     verdict = assemble(
         inputs=DecisionInputs(
-            rejections=(), l0_fatal=False, baseline_unavailable=False, check_results=(res,)
+            rejections=(),
+            l0_fatal=False,
+            baseline_unavailable=False,
+            check_results=(res,),
+            adapter_findings=(l0,),
         ),
-        adapter_findings=(l0,),
         ir_diff=IRDiff((), (), ()),
     )
     assert verdict.decision is Decision.REVIEW
@@ -42,3 +45,5 @@ def test_assemble_flattens_findings_and_rolls_up():
     assert verdict.overall_severity is Severity.ERROR
     assert verdict.confidence_summary.low == 1 and verdict.confidence_summary.high == 1
     assert verdict.coverage["wired.l2"].complete == 1
+    # the adapter finding INFLUENCED the decision (was: merged after deciding)
+    assert any("l0.schema.violation" in r for r in verdict.decision_reasons)

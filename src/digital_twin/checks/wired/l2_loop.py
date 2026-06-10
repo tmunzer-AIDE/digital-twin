@@ -2,14 +2,21 @@
 
 all cycle ports STP-running -> protected redundancy (PASS); any port STP
 DISABLED -> FAIL (ERROR, network, HIGH); STP UNKNOWN on any port -> WARN with
-LOW confidence (floors the decision to REVIEW). Only cycles newly introduced by
-the delta are attributed to it; pre-existing cycles are INFO context.
+LOW confidence (floors the decision to REVIEW).
+
+ATTRIBUTION is per the spec's CONDITION, not the cycle's mere existence: the
+attributable condition is "cycle + STP disabled/unknown". A delta that disables
+STP on an ALREADY-EXISTING cycle introduces that condition and must FAIL — only
+when the condition is no worse than in the baseline is it pre-existing context
+(INFO). Ranks: protected(0) < unknown(1) < disabled(2); attributable when the
+proposed rank exceeds the baseline rank (or the cycle itself is new).
 requires() is wired.l2 only — STP_STATE absence degrades to the UNKNOWN row,
 which is exactly the honest answer (not INSUFFICIENT_DATA).
 """
 
 from __future__ import annotations
 
+from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.cycles import Cycle
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
@@ -41,10 +48,11 @@ class L2LoopCheck:
         confidences: list[Confidence] = []
         vlan_ids = sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans))
         for vid in vlan_ids:
-            baseline_keys = {c.nodes for c in ctx.baseline.cycles(vid)}
+            baseline_rank = {c.nodes: self._rank(ctx.baseline, c) for c in ctx.baseline.cycles(vid)}
             for cycle in ctx.proposed.cycles(vid):
-                is_new = cycle.nodes not in baseline_keys
-                finding, status = self._judge(ctx, vid, cycle, is_new)
+                previous = baseline_rank.get(cycle.nodes)
+                attributable = previous is None or self._rank(ctx.proposed, cycle) > previous
+                finding, status = self._judge(ctx, vid, cycle, attributable)
                 if finding:
                     findings.append(finding)
                     confidences.append(finding.confidence)
@@ -61,19 +69,31 @@ class L2LoopCheck:
             reasoning=f"examined {len(vlan_ids)} vlan graphs for cycles",
         )
 
+    @staticmethod
+    def _rank(side: AnalysisContext, cycle: Cycle) -> int:
+        """Condition severity of a cycle in ONE IR: protected(0)<unknown(1)<disabled(2)."""
+        states = [side.ir.port(p).stp_enabled for p in cycle.member_ports]
+        if any(s is False for s in states):
+            return 2
+        if any(s is None for s in states):
+            return 1
+        return 0
+
     def _judge(
-        self, ctx: CheckContext, vid: int, cycle: Cycle, is_new: bool
+        self, ctx: CheckContext, vid: int, cycle: Cycle, attributable: bool
     ) -> tuple[Finding | None, Status]:
         ports = [ctx.proposed.ir.port(p) for p in cycle.member_ports]
         disabled = [p.id for p in ports if p.stp_enabled is False]
         unknown = [p.id for p in ports if p.stp_enabled is None]
-        if not is_new:  # pre-existing: context only, never attributed to the delta
+        if not attributable:  # condition no worse than baseline: context, not caused
             return (
                 self._finding(
                     code="wired.l2.loop.preexisting",
                     severity=Severity.INFO,
                     confidence=cycle.confidence,
-                    message=f"pre-existing cycle on vlan {vid} (context, not caused by delta)",
+                    message=(
+                        f"pre-existing cycle on vlan {vid} (condition unchanged by delta — context)"
+                    ),
                     cycle=cycle,
                     vid=vid,
                 ),

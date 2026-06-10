@@ -55,12 +55,20 @@ class L2BlackholeCheck:
         coverage_state = CoverageState.PARTIAL if notes else CoverageState.COMPLETE
         if status is Status.INSUFFICIENT_DATA:
             coverage_state = CoverageState.INSUFFICIENT
+        if confidences:
+            confidence: Confidence | None = min_confidence(*confidences)
+        elif status is Status.PASS:
+            # vacuous pass (no exits consulted, nothing stranded) is still a
+            # deterministic structural conclusion — HIGH, not "absent"
+            confidence = Confidence(level=ConfidenceLevel.HIGH)
+        else:
+            confidence = None
         return CheckResult(
             check_id=self.id,
             status=status,
             findings=tuple(findings),
             coverage=Coverage(state=coverage_state, notes=tuple(notes)),
-            confidence=min_confidence(*confidences) if confidences else None,
+            confidence=confidence,
             reasoning="compared member-component exit reachability per vlan",
         )
 
@@ -72,6 +80,10 @@ class L2BlackholeCheck:
         confidences: list[Confidence],
     ) -> Status:
         proposed_exit = ctx.proposed.exit_for(vid)
+        if proposed_exit.confidence is not None:
+            # the exit consulted for this vlan bounds the conclusion's confidence
+            # even when nothing is stranded (a LOW exit = a LOW "still reachable")
+            confidences.append(proposed_exit.confidence)
         stranded = [
             c for c in ctx.proposed.vlan_components(vid) if c.has_members and not c.reaches_exit
         ]
@@ -99,8 +111,7 @@ class L2BlackholeCheck:
             if c.has_members and c.reaches_exit
         }
         exit_conf = proposed_exit.confidence
-        assert exit_conf is not None  # kind != NONE guarantees it
-        confidences.append(exit_conf)
+        assert exit_conf is not None  # kind != NONE guarantees it (appended above)
         worst = Status.PASS
         for comp in stranded:
             newly = any(comp.nodes & prev for prev in baseline_reaching)

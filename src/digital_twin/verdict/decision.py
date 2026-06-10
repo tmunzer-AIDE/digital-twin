@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from digital_twin.checks.base import CheckResult, CoverageState, Status
-from digital_twin.contracts import FindingCategory, Rejection, Severity
+from digital_twin.contracts import Finding, FindingCategory, Rejection, Severity
 from digital_twin.ir import ConfidenceLevel
 
 
@@ -23,12 +23,19 @@ class Decision(StrEnum):
     UNKNOWN = "unknown"
 
 
+# Statuses where the check actually evaluated and concluded something — these
+# must carry HIGH result-confidence for SAFE (INSUFFICIENT_DATA/CHECK_ERROR are
+# already REVIEW via the status rule; NOT_APPLICABLE evaluated nothing).
+_EVALUATED = (Status.PASS, Status.WARN, Status.FAIL)
+
+
 @dataclass(frozen=True)
 class DecisionInputs:
     rejections: tuple[Rejection, ...]  # gates/apply (any -> UNKNOWN)
     l0_fatal: bool  # structurally-fatal L0 short-circuit
     baseline_unavailable: bool  # FetchError / ingest not ok
     check_results: tuple[CheckResult, ...]
+    adapter_findings: tuple[Finding, ...] = ()  # L0 (non-fatal) — must reach the decision
 
 
 def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
@@ -43,7 +50,11 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
     if unknown:
         return Decision.UNKNOWN, tuple(unknown)
 
-    findings = [f for res in inputs.check_results for f in res.findings]
+    # BOTH sources reach the decision (adapter L0 + checks) — same Finding model
+    findings = [
+        *inputs.adapter_findings,
+        *(f for res in inputs.check_results for f in res.findings),
+    ]
 
     # 2) UNSAFE — confident network breakage only
     unsafe = [
@@ -59,6 +70,14 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
     review: list[str] = []
     review.extend(f"{f.code}: {f.message}" for f in findings if f.severity is Severity.WARNING)
     review.extend(
+        # operational ERROR/CRITICAL (e.g. an L0 schema violation Mist would
+        # reject): never UNSAFE, but never silently SAFE either
+        f"{f.code}: {f.message}"
+        for f in findings
+        if f.category is FindingCategory.OPERATIONAL
+        and f.severity in (Severity.ERROR, Severity.CRITICAL)
+    )
+    review.extend(
         f"{res.check_id}: {res.status}"
         for res in inputs.check_results
         if res.status in (Status.INSUFFICIENT_DATA, Status.CHECK_ERROR)
@@ -67,6 +86,14 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
         f"{f.code}: confidence {f.confidence.level.name}"
         for f in findings
         if f.confidence.level is not ConfidenceLevel.HIGH
+    )
+    review.extend(
+        # an evaluated result below HIGH (or missing) confidence is a blind spot
+        f"{res.check_id}: result confidence "
+        f"{res.confidence.level.name if res.confidence else 'absent'}"
+        for res in inputs.check_results
+        if res.status in _EVALUATED
+        and (res.confidence is None or res.confidence.level is not ConfidenceLevel.HIGH)
     )
     review.extend(
         f"{res.check_id}: coverage {res.coverage.state}"
