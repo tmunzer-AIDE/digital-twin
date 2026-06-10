@@ -160,3 +160,45 @@ def test_plan3_public_api():
             RAW_ALLOWLIST,
         )
     )
+
+
+def test_plan4_public_api():
+    from digital_twin.analysis.context import AnalysisContext
+    from digital_twin.analysis.cycles import Cycle, find_cycles
+    from digital_twin.analysis.exits import ExitKind, ExitResolution, resolve_exit
+    from digital_twin.analysis.vlan_reachability import VlanComponent
+    from digital_twin.checks.base import (
+        Check,
+        CheckContext,
+        CheckResult,
+        Coverage,
+        CoverageState,
+        Status,
+    )
+    from digital_twin.checks.registry import CheckRegistry
+    from digital_twin.checks.wired import ALL_WIRED_CHECKS
+    from digital_twin.verdict.decision import Decision, DecisionInputs, decide
+    from digital_twin.verdict.verdict import Verdict, assemble
+
+    assert len(ALL_WIRED_CHECKS) == 4
+    assert all(callable(f) for f in (find_cycles, resolve_exit, decide, assemble))
+    assert all(
+        x is not None
+        for x in (
+            AnalysisContext,
+            Cycle,
+            ExitKind,
+            ExitResolution,
+            VlanComponent,
+            Check,
+            CheckContext,
+            CheckResult,
+            Coverage,
+            CoverageState,
+            Status,
+            CheckRegistry,
+            Decision,
+            DecisionInputs,
+            Verdict,
+        )
+    )

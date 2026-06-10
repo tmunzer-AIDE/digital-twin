@@ -32,7 +32,7 @@
 - Create: `src/digital_twin/analysis/context.py`
 - Test: `tests/analysis/__init__.py`, `tests/analysis/test_context.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/analysis/__init__.py  (empty)
@@ -75,12 +75,12 @@ def test_ir_and_capabilities_exposed():
     assert ctx.capabilities == ir.capabilities
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/analysis/ -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'digital_twin.analysis'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/analysis/__init__.py
@@ -133,12 +133,12 @@ class AnalysisContext:
         return self._vlan_graphs[vlan_id]
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/analysis/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/analysis tests/analysis
@@ -154,7 +154,7 @@ git commit -m "Plan 4: AnalysisContext (per-IR memoized representations)"
 - Modify: `src/digital_twin/analysis/context.py` (add `cycles(vlan_id)` memo)
 - Test: `tests/analysis/test_cycles.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/analysis/test_cycles.py
@@ -233,12 +233,12 @@ def test_no_cycle_on_a_tree():
     assert AnalysisContext(b.build()).cycles(10) == ()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/analysis/test_cycles.py -q`
 Expected: FAIL — ImportError / AttributeError (cycles)
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/analysis/cycles.py
@@ -324,12 +324,12 @@ Add to `AnalysisContext` (in `context.py`):
 with `self._cycles: dict[int, tuple[Cycle, ...]] = {}` in `__init__` and
 `from digital_twin.analysis.cycles import Cycle, find_cycles` at module top.
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/analysis/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/analysis tests/analysis
@@ -345,7 +345,7 @@ git commit -m "Plan 4: cycle analysis (parallel-edge + simple cycles, MIN confid
 - Modify: `src/digital_twin/analysis/context.py` (add `exit_for(vlan_id)` memo)
 - Test: `tests/analysis/test_exits.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/analysis/test_exits.py
@@ -406,12 +406,12 @@ def test_rule3_no_exit_found():
     assert res.confidence is None  # absent -> INSUFFICIENT_DATA at the check
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/analysis/test_exits.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/analysis/exits.py
@@ -491,12 +491,12 @@ def resolve_exit(ir: IR, vlan_graph: nx.MultiGraph) -> ExitResolution:
 Add to `AnalysisContext`: memoized `exit_for(vlan_id)` calling
 `resolve_exit(self._ir, self.vlan_graph(vlan_id))` (same dict-memo pattern as `cycles`).
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/analysis/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/analysis tests/analysis
@@ -512,7 +512,7 @@ git commit -m "Plan 4: VLAN-exit resolution (IRB > boundary uplink > none)"
 - Modify: `src/digital_twin/analysis/context.py` (add `vlan_components(vlan_id)` memo)
 - Test: `tests/analysis/test_vlan_reachability.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/analysis/test_vlan_reachability.py
@@ -558,12 +558,12 @@ def test_single_component_when_connected():
     assert len(comps) == 1 and comps[0].reaches_exit
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/analysis/test_vlan_reachability.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/analysis/vlan_reachability.py
@@ -611,12 +611,12 @@ Add to `AnalysisContext`: memoized `vlan_components(vlan_id)` calling
 `vlan_components(self.vlan_graph(vlan_id), self.exit_for(vlan_id))` (dict-memo as before;
 import the function as `compute_vlan_components` to avoid the name clash).
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/analysis/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/analysis tests/analysis
@@ -632,7 +632,7 @@ git commit -m "Plan 4: VLAN reachability (components, membership, exit reach)"
 - Create: `src/digital_twin/checks/base.py`
 - Test: `tests/checks/__init__.py`, `tests/checks/test_base.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/__init__.py  (empty)
@@ -667,12 +667,12 @@ def test_check_result_constructs():
     assert r.status is Status.PASS and r.coverage.notes == ()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/ -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/__init__.py
@@ -752,12 +752,12 @@ class Check(Protocol):
     def run(self, ctx: CheckContext) -> CheckResult: ...
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -772,7 +772,7 @@ git commit -m "Plan 4: check contract (Status/Coverage/CheckContext/CheckResult)
 - Create: `src/digital_twin/checks/registry.py`
 - Test: `tests/checks/test_registry.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/test_registry.py
@@ -860,12 +860,12 @@ def test_crash_is_isolated_to_check_error_with_operational_finding():
     assert by_id["test.ok"].status is Status.PASS  # one bad check cannot sink the rest
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/test_registry.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/registry.py
@@ -945,12 +945,12 @@ class CheckRegistry:
             )
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -966,7 +966,7 @@ git commit -m "Plan 4: check registry (gating order + crash isolation)"
 - Create: `src/digital_twin/checks/wired/l2_loop.py`
 - Test: `tests/checks/test_l2_loop.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/test_l2_loop.py
@@ -1046,12 +1046,12 @@ def test_applies_to_link_and_port_changes_only():
     assert check.applies_to(diff_ir(base, base)) is False
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/test_l2_loop.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/wired/__init__.py
@@ -1224,12 +1224,12 @@ def _worse(a: Status, b: Status) -> Status:
     return a if _ORDER.index(a) >= _ORDER.index(b) else b
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -1244,7 +1244,7 @@ git commit -m "Plan 4: wired.l2.loop check (cycle + STP state, spec table)"
 - Create: `src/digital_twin/checks/wired/l2_blackhole.py`
 - Test: `tests/checks/test_l2_blackhole.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/test_l2_blackhole.py
@@ -1313,12 +1313,12 @@ def test_preexisting_strand_is_context_not_failure():
     assert any(f.severity is Severity.INFO for f in result.findings)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/test_l2_blackhole.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/wired/l2_blackhole.py
@@ -1498,12 +1498,12 @@ def _aggregate(statuses: list[Status]) -> Status:
     return max(statuses, key=_ORDER.index) if statuses else Status.PASS
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -1518,7 +1518,7 @@ git commit -m "Plan 4: wired.l2.blackhole check (exit contract, FAIL only at HIG
 - Create: `src/digital_twin/checks/wired/l2_vlan_segmentation.py`
 - Test: `tests/checks/test_l2_vlan_segmentation.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/test_l2_vlan_segmentation.py
@@ -1580,12 +1580,12 @@ def test_no_structural_change_passes_quietly():
     assert result.status is Status.PASS and result.findings == ()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/test_l2_vlan_segmentation.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/wired/l2_vlan_segmentation.py
@@ -1702,12 +1702,12 @@ class L2VlanSegmentationCheck:
         )
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -1722,7 +1722,7 @@ git commit -m "Plan 4: wired.l2.vlan_segmentation check (split=WARN, reshape=INF
 - Create: `src/digital_twin/checks/wired/client_impact.py`
 - Test: `tests/checks/test_client_impact.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/checks/test_client_impact.py
@@ -1787,12 +1787,12 @@ def test_no_clients_affected_passes_with_caveat():
     assert any("currently-connected" in n for n in result.coverage.notes)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/checks/test_client_impact.py -q`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/checks/wired/client_impact.py
@@ -1919,13 +1919,13 @@ class ClientImpactCheck:
         }
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/checks/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean. *Note: `IR.ports` is a `Mapping[str, Port]` (verify `.get` exists —
 the lldp tests use `ir.port(pid)` which raises on missing; `.ports.get` is the safe form here).*
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/checks
@@ -1944,7 +1944,7 @@ git commit -m "Plan 4: wired.client.impact check (vlan_move/disconnect/blackhole
 - Create: `src/digital_twin/verdict/verdict.py`
 - Test: `tests/verdict/__init__.py`, `tests/verdict/test_decision.py`, `tests/verdict/test_assembly.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/verdict/__init__.py  (empty)
@@ -2103,12 +2103,12 @@ def test_assemble_flattens_findings_and_rolls_up():
     assert verdict.coverage["wired.l2"].complete == 1
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/verdict/ -q`
 Expected: FAIL — ModuleNotFoundError
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # src/digital_twin/verdict/__init__.py
@@ -2331,12 +2331,12 @@ def assemble(
     )
 ```
 
-- [ ] **Step 4: Run tests + quality gate**
+- [x] **Step 4: Run tests + quality gate**
 
 Run: `uv run pytest tests/verdict/ -q && uv run ruff check . && uv run mypy`
 Expected: PASS, clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/digital_twin/verdict tests/verdict
@@ -2351,7 +2351,7 @@ git commit -m "Plan 4: verdict (decision precedence, coverage/confidence rollups
 - Create: `src/digital_twin/checks/wired/__init__.py` (modify: export ALL_WIRED_CHECKS)
 - Test: `tests/test_plan4_flow.py`
 
-- [ ] **Step 1: Update `checks/wired/__init__.py`**
+- [x] **Step 1: Update `checks/wired/__init__.py`**
 
 ```python
 # src/digital_twin/checks/wired/__init__.py
@@ -2378,7 +2378,7 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 2: Write the end-to-end test**
+- [x] **Step 2: Write the end-to-end test**
 
 ```python
 # tests/test_plan4_flow.py
@@ -2473,14 +2473,14 @@ def test_missing_client_capability_floors_review_not_safe():
     assert verdict.decision is not Decision.SAFE  # blind spot can never be SAFE
 ```
 
-- [ ] **Step 3: Run the slice + the FULL quality gate**
+- [x] **Step 3: Run the slice + the FULL quality gate**
 
 Run: `uv run pytest tests/test_plan4_flow.py -q`
 Expected: PASS
 Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q`
 Expected: all clean, all tests pass
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/digital_twin/checks tests/test_plan4_flow.py
@@ -2495,7 +2495,7 @@ git commit -m "Plan 4: e2e slice (four checks + registry + verdict compose)"
 - Modify: `tests/test_public_api.py`
 - Modify: `docs/superpowers/plans/2026-06-09-network-digital-twin-analysis-checks-verdict.md` (check boxes)
 
-- [ ] **Step 1: Extend the public-API test** (follow the existing style)
+- [x] **Step 1: Extend the public-API test** (follow the existing style)
 
 ```python
 def test_plan4_public_api():
@@ -2528,12 +2528,12 @@ def test_plan4_public_api():
     )
 ```
 
-- [ ] **Step 2: Full gate**
+- [x] **Step 2: Full gate**
 
 Run: `uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -q`
 Expected: all clean
 
-- [ ] **Step 3: Mark all checkboxes in this plan document, then commit**
+- [x] **Step 3: Mark all checkboxes in this plan document, then commit**
 
 ```bash
 git add tests/test_public_api.py docs/superpowers/plans/2026-06-09-network-digital-twin-analysis-checks-verdict.md
