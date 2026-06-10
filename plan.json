@@ -53,7 +53,7 @@
             "reauth_interval": 36000
           },
           "ap": {
-            "mode": "trunk",
+            "mode": "access",
             "all_networks": true,
             "stp_edge": true,
             "port_network": "default",
@@ -61,7 +61,7 @@
             "speed": "auto",
             "duplex": "auto",
             "persist_mac": false,
-            "poe_disabled": true,
+            "poe_disabled": false,
             "enable_qos": false,
             "disable_autoneg": false,
             "description": "",

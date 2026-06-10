@@ -1,0 +1,35 @@
+{
+  "source": "mist",
+  "scope": {
+    "org_id": "9777c1a0-6ef6-11e6-8bbf-02e208b2d34f",
+    "site_id": "978c48e6-6ef6-11e6-8bbf-02e208b2d34f"
+  },
+  "ops": [
+    {
+      "action": "update",
+      "order": 0,
+      "object_type": "device",
+      "object_id": "00000000-0000-0000-1000-60c78d939c0f",
+      "payload": {
+        "type": "switch",
+        "port_config": {
+          "ge-0/0/17": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "new_dot1x"},
+          "ge-0/0/19": {"critical": false, "description": "test", "dynamic_usage": null, "no_local_overwrite": true, "usage": "ap"},
+          "ge-0/0/20": {"usage": "ap"},
+          "ge-0/0/22": {"usage": "ap"},
+          "ge-0/0/25": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "new_dot1x"},
+          "ge-0/0/30": {"critical": false, "description": "", "dynamic_usage": "dynamic", "no_local_overwrite": true, "usage": "default"},
+          "ge-0/0/31": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "mist-edge"},
+          "ge-0/0/32": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "default"},
+          "ge-0/0/33, ge-0/0/35": {"ae_disable_lacp": false, "ae_lacp_force_up": false, "ae_lacp_slow": false, "aggregated": true, "critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "iot"},
+          "ge-0/0/41": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "default"},
+          "ge-0/0/43": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "disabled"},
+          "ge-0/0/46": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "disabled"},
+          "ge-0/0/47": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "ap_port"},
+          "mge-0/0/19": {"critical": false, "description": "", "dynamic_usage": "dynamic", "no_local_overwrite": true, "usage": "ap"},
+          "xe-0/2/2": {"critical": false, "description": "", "dynamic_usage": null, "no_local_overwrite": true, "usage": "default"}
+        }
+      }
+    }
+  ]
+}

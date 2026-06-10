@@ -1,0 +1,19 @@
+{
+  "source": "mist",
+  "scope": {
+    "org_id": "9777c1a0-6ef6-11e6-8bbf-02e208b2d34f",
+    "site_id": "978c48e6-6ef6-11e6-8bbf-02e208b2d34f"
+  },
+  "ops": [
+    {
+      "action": "update",
+      "order": 0,
+      "object_type": "device",
+      "object_id": "00000000-0000-0000-1000-60c78d939c0f",
+      "payload": {
+        "type": "switch",
+        "-notes": ""
+      }
+    }
+  ]
+}

@@ -129,10 +129,41 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   the whole simulation rests on (`tools/equivalence_gate.py`).
 - **Checks (M1)**: `wired.l2.loop` (a cycle is only a loop without STP),
   `wired.l2.blackhole` (a member segment that loses its VLAN exit),
-  `wired.l2.vlan_segmentation` (broadcast-domain shape change),
-  `wired.client.impact` (currently-connected wired + wireless clients affected).
-  Checks consume only the IR — never raw vendor payloads — so new vendors plug in
-  at the adapter seam.
+  `wired.l2.isolation` (a member/client-bearing segment PHYSICALLY severed from
+  the rest of its L2 domain — e.g. disabling a switch's only uplink; needs no
+  exit modeling, the severance itself is the evidence, at the severed links'
+  LLDP confidence), `wired.l2.vlan_segmentation` (broadcast-domain shape
+  change), `wired.client.impact` (currently-connected wired + wireless clients
+  affected). Checks consume only the IR — never raw vendor payloads — so new
+  vendors plug in at the adapter seam.
+- **WLAN-aware AP VLANs**: the twin reads the site's **derived** WLAN config
+  (org-template WLANs included) and records, per AP, the VLANs its enabled
+  WLANs need delivered on the wired uplink — so changing an AP's switch port
+  from trunk to access (dropping a tagged WLAN VLAN) is caught as a **member
+  strand** even with *no clients currently connected* (UNSAFE when the VLAN has
+  a known exit, REVIEW when it is exit-less or the WLAN's scope/VLAN can't be
+  statically resolved — wxtag-scoped, template VLAN). Without WLAN config
+  (fetch absent), AP VLAN coverage falls back to the observation-based
+  blind-spot note — still never a silent SAFE.
+- **Dynamic port profiles are an honesty boundary**: Mist can assign a port's
+  usage at runtime (`dynamic_usage`), and no fetched stat exposes the applied
+  profile — so a delta that *redefines* a `port_usages` entry or a `networks`
+  VLAN on an object whose blast radius includes dynamic ports returns
+  **REVIEW** with `scope.dynamic_ports.unverifiable`, never a silent SAFE
+  (the model keeps dynamic ports at their static usage and cannot bound the
+  impact on them or the devices attached — typically APs).
+- **LLDP link building** uses `neighbor_mac` when present and falls back to
+  `neighbor_system_name` matched against the site's managed devices — some
+  orgs' port stats carry only the name, and without the fallback the site
+  model would be edgeless.
+- **Unknown ≠ empty.** Mist's system-defined port usages (`ap`, `uplink`,
+  `default`, `disabled`) appear in no config object; the twin resolves them
+  from documented semantics at **INFERRED/MEDIUM** confidence. A usage name
+  with *no* definition anywhere, or a stat-ensured peer port, has **unknown**
+  carriage — the edge then delivers the configured side's offered set capped
+  at MEDIUM instead of silently computing to "carries nothing". Conclusions
+  that relied on assumed facts floor to REVIEW; pre-existing context (INFO
+  findings on delta-untouched conditions) never gates the verdict.
 - **Capabilities**: ingesters *earn* capabilities from data they actually produced;
   a check whose requirements aren't met reports `INSUFFICIENT_DATA` (→ REVIEW),
   never a fake pass.
