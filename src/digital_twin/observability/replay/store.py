@@ -107,14 +107,41 @@ def load_fixture_raw(path: Path | str) -> RawSiteState:
 
 
 class FixtureProvider:
-    """StateProvider over ONE saved fixture (offline replay / golden scenarios)."""
+    """StateProvider over ONE saved fixture (offline replay / golden scenarios).
 
-    def __init__(self, path: Path | str) -> None:
+    STRICT by default: scope is explicit in the contract, so asking for a
+    different org/site than the fixture holds is a FetchError (-> UNKNOWN),
+    never a silently-wrong verdict. strict=False is the test-only escape hatch.
+    """
+
+    def __init__(self, path: Path | str, *, strict: bool = True) -> None:
         self._raw = load_fixture_raw(path)
+        self._strict = strict
+
+    @property
+    def fixture_scope(self) -> SiteScope:
+        return self._raw.scope
 
     def fetch_site(
         self, scope: SiteScope, *, include_derived: bool = False
     ) -> RawSiteState | FetchError:
+        if self._strict and (
+            scope.org_id != self._raw.scope.org_id or scope.site_id != self._raw.scope.site_id
+        ):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="fixture",
+                        error=(
+                            f"fixture holds {self._raw.scope.org_id}/"
+                            f"{self._raw.scope.site_id}, not the requested scope"
+                        ),
+                    ),
+                ),
+                acquired_at=self._raw.meta.acquired_at,
+                host=self._raw.meta.host,
+            )
         return self._raw
 
     def fetch_sites(

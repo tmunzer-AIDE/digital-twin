@@ -41,10 +41,30 @@ def test_load_round_trips_to_raw_site_state(tmp_path):
     assert raw.devices and raw.setting  # payloads intact (values redacted)
 
 
-def test_fixture_provider_serves_the_fixture(tmp_path):
+def test_fixture_provider_serves_matching_scope(tmp_path):
     store = ReplayStore(tmp_path)
     path = store.save_raw("run1", raw_site())
     provider = FixtureProvider(path)
+    fixture_scope = provider.fixture_scope
+    raw = provider.fetch_site(fixture_scope)
+    assert isinstance(raw, RawSiteState)
+
+
+def test_fixture_provider_rejects_mismatched_scope(tmp_path):
+    # scope is explicit in the contract: simulating site A against fixture B
+    # must be a FetchError (-> UNKNOWN), never a silently-wrong verdict
+    from digital_twin.providers.base import FetchError
+
+    path = ReplayStore(tmp_path).save_raw("run1", raw_site())
+    provider = FixtureProvider(path)
+    err = provider.fetch_site(SiteScope("other-org", "other-site"))
+    assert isinstance(err, FetchError)
+    assert any("fixture" in f.error for f in err.failures)
+
+
+def test_fixture_provider_strict_false_escape_hatch(tmp_path):
+    path = ReplayStore(tmp_path).save_raw("run1", raw_site())
+    provider = FixtureProvider(path, strict=False)
     raw = provider.fetch_site(SiteScope("ignored", "ignored"))
     assert isinstance(raw, RawSiteState)
 

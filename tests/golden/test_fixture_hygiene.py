@@ -8,6 +8,13 @@ FIXTURES = sorted(Path(__file__).parent.glob("fixtures/*.json"))
 _MAC = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.IGNORECASE)
 _PRIVATE_IP = re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
 _SECRET_KEYS = ("psk", "password", "secret", "token", "community", "passphrase")
+# credential material EMBEDDED in ordinary strings (cmd lines, URLs, key blobs)
+_EMBEDDED_CRED = re.compile(
+    r"encrypted-password|plain-text-password|pre-shared-key|ssh-rsa|ssh-ed25519"
+    r"|BEGIN (?:RSA |EC )?PRIVATE KEY"
+    r"|[?&](?:token|key|secret|password|apikey)=(?!redacted-)",
+    re.IGNORECASE,
+)
 
 
 def test_fixtures_exist():
@@ -19,6 +26,8 @@ def test_no_unredacted_identifiers_or_secrets():
         blob = path.read_text()
         assert not _MAC.search(blob), f"{path}: colon-MAC survived redaction"
         assert not _PRIVATE_IP.search(blob), f"{path}: private IP survived redaction"
+        leak = _EMBEDDED_CRED.search(blob)
+        assert not leak, f"{path}: embedded credential survived redaction: {leak.group()[:40]}"
         data = json.loads(blob)
 
         def walk(node, path=path):

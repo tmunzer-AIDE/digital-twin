@@ -99,6 +99,24 @@ def test_total_fetch_failure_is_unknown():
     assert any("baseline" in r or "fetch" in r for r in v.decision_reasons)
 
 
+def test_total_fetch_failure_still_carries_state_meta():
+    # FetchError has host/acquired_at/failures — agents must see WHAT failed
+    # even when no baseline is usable (acceptance: state_meta rides every
+    # verdict that had a fetch)
+    from digital_twin.providers.base import FetchFailure
+
+    err = FetchError(
+        scope=SiteScope("o1", SITE),
+        failures=(FetchFailure(object="setting", error="503"),),
+        acquired_at=datetime.now(UTC),
+        host="api.test",
+    )
+    v = simulate(_plan([_op()]), provider=FakeProvider(raw=err))
+    assert v.state_meta is not None
+    assert v.state_meta.host == "api.test"
+    assert ("setting", "503") in v.state_meta.fetch_failures
+
+
 def test_out_of_scope_raw_path_unknown():
     bad = {**SETTING, "dhcpd_config": {"corp": {"ip": "9.9.9.9"}}}
     v = simulate(_plan([_op(payload=bad)]), provider=FakeProvider())

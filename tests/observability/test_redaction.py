@@ -55,5 +55,36 @@ def test_embedded_identifiers_in_composite_strings_are_redacted():
     assert "192.168.1.1" not in blob
 
 
+def test_credential_command_lines_are_redacted():
+    # Junos CLI lines (additional_config_cmds) can EMBED credentials in plain
+    # strings — the class the first committed fixture leaked
+    out = redact(
+        {
+            "additional_config_cmds": [
+                'set system login user helpdesk authentication encrypted-password "$6$abc"',
+                "#set system login user netadmin authentication encrypted-password $6$def",
+                "set interfaces ge-0/0/0 description uplink",  # harmless line survives
+            ]
+        }
+    )
+    cmds = out["additional_config_cmds"]
+    assert "encrypted-password" not in cmds[0] and "$6$abc" not in cmds[0]
+    assert "$6$def" not in cmds[1]
+    assert cmds[2] == "set interfaces ge-0/0/0 description uplink"
+
+
+def test_url_query_credentials_are_redacted():
+    out = redact({"blacklist_url": "https://x.example/occupancy?token=OTc4yZS&x=1"})
+    assert "OTc4yZS" not in out["blacklist_url"]
+    assert "token=" in out["blacklist_url"]  # param name survives, value tokenized
+
+
+def test_prose_mentioning_password_survives():
+    # tight manifest: only command lines / url params / credential keywords are
+    # scrubbed — human prose must not be destroyed
+    out = redact({"portal_text": "Enter the password to continue"})
+    assert out["portal_text"] == "Enter the password to continue"
+
+
 def test_version_present():
     assert isinstance(REDACTION_VERSION, str) and REDACTION_VERSION

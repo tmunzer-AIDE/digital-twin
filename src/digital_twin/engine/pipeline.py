@@ -31,7 +31,7 @@ from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.contracts import Finding, Rejection
 from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
-from digital_twin.providers.base import RawSiteState, SiteScope, StateProvider
+from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta, StateProvider
 from digital_twin.scope.derived_gate import check_derived
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
@@ -100,7 +100,21 @@ def simulate(
         assert plan.scope.site_id is not None  # object gate guaranteed it
         raw = provider.fetch_site(SiteScope(org_id=plan.scope.org_id, site_id=plan.scope.site_id))
         if not isinstance(raw, RawSiteState):
-            return unknown(None, baseline_unavailable=True)
+            # the FetchError still carries host/acquired_at/failures — agents
+            # must see WHAT failed even when no baseline is usable
+            return unknown(
+                None,
+                baseline_unavailable=True,
+                state_meta=build_state_meta(
+                    StateMeta(
+                        acquired_at=raw.acquired_at,
+                        host=raw.host,
+                        fetched=(),
+                        failures=raw.failures,
+                    ),
+                    now=datetime.now(UTC),
+                ),
+            )
     state_meta = build_state_meta(raw.meta, now=datetime.now(UTC))
 
     # 4+6 — field gate against the ROLLING pre-op state, then apply that op

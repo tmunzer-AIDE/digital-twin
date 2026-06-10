@@ -16,10 +16,36 @@ from digital_twin.drivers.render import render_human, verdict_to_dict
 from digital_twin.engine.pipeline import simulate
 from digital_twin.engine.run_context import RunContext
 from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
-from digital_twin.providers.base import RawSiteState, SiteScope, StateProvider
+from digital_twin.providers.base import FetchError, OrgScope, RawSiteState, SiteScope, StateProvider
 from digital_twin.verdict.decision import Decision
 
 EXIT_CODES = {Decision.SAFE: 0, Decision.REVIEW: 10, Decision.UNSAFE: 20, Decision.UNKNOWN: 30}
+
+
+class _RecordingProvider:
+    """Records the run's OWN fetch so --replay-store saves the exact state the
+    verdict judged — never a second fetch that could differ on a live source."""
+
+    def __init__(self, inner: StateProvider) -> None:
+        self._inner = inner
+        self.recorded: RawSiteState | None = None
+
+    def fetch_site(
+        self, scope: SiteScope, *, include_derived: bool = False
+    ) -> RawSiteState | FetchError:
+        result = self._inner.fetch_site(scope, include_derived=include_derived)
+        if isinstance(result, RawSiteState):
+            self.recorded = result
+        return result
+
+    def fetch_sites(
+        self,
+        scope: OrgScope,
+        site_ids: object = None,
+        *,
+        include_derived: bool = False,
+    ) -> dict[str, RawSiteState | FetchError]:
+        return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)  # type: ignore[arg-type]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,24 +66,20 @@ def main(argv: list[str] | None = None) -> int:
         from digital_twin.providers.mist_api import MistApiProvider
 
         provider = MistApiProvider()
+    recording = _RecordingProvider(provider)
 
     run = RunContext()
-    verdict = simulate(plan_data, provider=provider, run=run)
+    verdict = simulate(plan_data, provider=recording, run=run)
 
-    if args.replay_store:
-        scope = plan_data.get("scope", {}) if isinstance(plan_data, dict) else {}
-        raw = provider.fetch_site(  # the same state the run used (fixture or on-demand)
-            SiteScope(str(scope.get("org_id", "")), str(scope.get("site_id", "")))
+    if args.replay_store and recording.recorded is not None:
+        assert run.trace is not None
+        ReplayStore(args.replay_store).save_run(
+            run.run_id,
+            raw=recording.recorded,  # the EXACT state the verdict judged
+            plan=plan_data,
+            verdict_doc=verdict_to_dict(verdict),
+            trace=run.trace,
         )
-        if isinstance(raw, RawSiteState):
-            assert run.trace is not None
-            ReplayStore(args.replay_store).save_run(
-                run.run_id,
-                raw=raw,
-                plan=plan_data,
-                verdict_doc=verdict_to_dict(verdict),
-                trace=run.trace,
-            )
 
     print(json.dumps(verdict_to_dict(verdict), indent=1) if args.json else render_human(verdict))
     return EXIT_CODES[verdict.decision]

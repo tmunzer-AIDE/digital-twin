@@ -10,10 +10,14 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from digital_twin.contracts import Rejection
 from digital_twin.drivers.render import verdict_to_dict
 from digital_twin.engine.pipeline import simulate
+from digital_twin.ir import IRDiff
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.providers.base import StateProvider
+from digital_twin.verdict.decision import DecisionInputs
+from digital_twin.verdict.verdict import assemble
 
 mcp = FastMCP("digital-twin")
 
@@ -33,11 +37,18 @@ def simulate_change(
         verdict = simulate(change_plan, provider=_provider(replay_fixture))
         return verdict_to_dict(verdict)
     except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
-        return {
-            "decision": "unknown",
-            "decision_reasons": [f"internal error: {e}"],
-            "findings": [],
-        }
+        # a REAL assembled UNKNOWN Verdict: agents get the identical document
+        # shape on the error path, exactly when they most need predictable fields
+        verdict = assemble(
+            inputs=DecisionInputs(
+                rejections=(Rejection(stage="driver", reasons=(f"internal error: {e}",)),),
+                l0_fatal=False,
+                baseline_unavailable=False,
+                check_results=(),
+            ),
+            ir_diff=IRDiff((), (), ()),
+        )
+        return verdict_to_dict(verdict)
 
 
 @mcp.tool()

@@ -17,7 +17,7 @@ import hashlib
 import re
 from typing import Any
 
-REDACTION_VERSION = "2"  # v2: embedded-substring pass (composite strings, free text)
+REDACTION_VERSION = "3"  # v3: credential command lines + URL query credentials
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -37,6 +37,17 @@ _MAC = re.compile(r"^(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}$|^[0-9a-fA-F]{12}$
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _IPV4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$")
 _IPV6 = re.compile(r"^[0-9a-fA-F:]+:[0-9a-fA-F:]+$")
+
+# credential material EMBEDDED in ordinary strings (the class the first fixture
+# leaked): Junos config command lines carrying secrets, and URL query credentials
+_CRED_CMD = re.compile(
+    r"^#?\s*(set|delete)\s.*("
+    r"encrypted-password|plain-text-password|pre-shared-key|authentication-key"
+    r"|ssh-rsa|ssh-dss|ssh-ed25519|\bsecret\b|\bcommunity\b"
+    r")",
+    re.IGNORECASE,
+)
+_URL_CRED = re.compile(r"([?&](?:token|key|secret|password|auth|apikey)=)[^&\"'\s]+")
 
 # embedded (substring) forms — composite address lists, free-text notes, URLs
 _MAC_ANY = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
@@ -78,8 +89,14 @@ def _ipv4_token(match: re.Match[str]) -> str:
 
 
 def _sub_embedded(value: str) -> str:
-    """Composite strings (comma-joined address lists, free text) can EMBED
-    identifiers the exact-match rules cannot see — replace them in place."""
+    """Composite strings (comma-joined address lists, free text, config command
+    lines, URLs) can EMBED identifiers and credentials the exact-match rules
+    cannot see — replace them in place. A config command line carrying any
+    credential keyword is replaced WHOLLY (we never compile CLI cmds, so no
+    structure is lost); URL query credential values are tokenized in place."""
+    if _CRED_CMD.match(value):
+        return f"redacted-cmd-{_h(value, 8)}"
+    value = _URL_CRED.sub(lambda m: f"{m.group(1)}redacted-{_h(m.group(), 8)}", value)
     value = _MAC_ANY.sub(lambda m: _h(m.group().lower().replace(":", ""), 12), value)
     value = _UUID_ANY.sub(lambda m: f"uuid-{_h(m.group().lower(), 12)}", value)
     value = _IPV6_ANY.sub(lambda m: f"2001:db8::{_h(m.group(), 8)}", value)
