@@ -58,8 +58,11 @@ class L2BlackholeCheck:
         wireless_in_play = False
         for vid in sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans)):
             statuses.append(self._check_vlan(ctx, vid, findings, confidences))
-            wireless_in_play = wireless_in_play or any(
-                c.wireless_members for c in ctx.proposed.vlan_components(vid)
+            # observation-based coverage matters only for conclusions that RELIED
+            # on it: the delta touched this vlan AND wireless members are in play
+            wireless_in_play = wireless_in_play or (
+                _vlan_changed(ctx, vid)
+                and any(c.wireless_members for c in ctx.proposed.vlan_components(vid))
             )
             notes.extend(self._ap_blind_spots(ctx, vid))
         if wireless_in_play:
@@ -91,35 +94,36 @@ class L2BlackholeCheck:
         )
 
     def _ap_blind_spots(self, ctx: CheckContext, vid: int) -> list[str]:
-        """APs that carried this vlan in the BASELINE but no longer reach it in
-        the proposed state, with ZERO observed clients: the wireless impact is
-        UNKNOWABLE (future clients), not absent — a coverage blind spot (spec:
-        AP-side VLAN coverage is observation-based -> partial -> REVIEW).
-        APs with observed clients are handled by the member path instead."""
+        """APs that the DELTA cut off this vlan, with ZERO observed clients: the
+        wireless impact is UNKNOWABLE (future clients), not absent — a coverage
+        blind spot (spec: AP-side VLAN coverage is observation-based -> partial
+        -> REVIEW). Delta-conditioned: an AP that did not reach the vlan in the
+        BASELINE either is pre-existing context, not a blind spot (else every
+        delta on a site with exit-less AP vlans would flood REVIEW). APs with
+        observed clients are handled by the member path instead."""
+        baseline_reached: set[str] = set()
+        for comp in ctx.baseline.vlan_components(vid):
+            if comp.reaches_exit:
+                baseline_reached |= comp.nodes
         baseline_aps = {
             n
-            for n in ctx.baseline.vlan_graph(vid).nodes
+            for n in baseline_reached
             if (dev := ctx.baseline.ir.devices.get(n)) is not None and dev.role is DeviceRole.AP
         }
         if not baseline_aps:
             return []
-        proposed_graph_nodes = set(ctx.proposed.vlan_graph(vid).nodes)
-        reaching_nodes: set[str] = set()
+        proposed_reached: set[str] = set()
+        observed_ap_nodes: set[str] = set()
         for comp in ctx.proposed.vlan_components(vid):
             if comp.reaches_exit:
-                reaching_nodes |= comp.nodes
-        observed_ap_nodes = {
-            n
-            for comp in ctx.proposed.vlan_components(vid)
-            if comp.wireless_members
-            for n in comp.nodes
-        }
+                proposed_reached |= comp.nodes
+            if comp.wireless_members:
+                observed_ap_nodes |= comp.nodes
         return [
             f"vlan {vid}: AP {n} no longer reaches the vlan and has no observed "
             "clients — wireless impact unknowable (observation-based coverage)"
             for n in sorted(baseline_aps)
-            if (n not in proposed_graph_nodes or n not in reaching_nodes)
-            and n not in observed_ap_nodes
+            if n not in proposed_reached and n not in observed_ap_nodes
         ]
 
     def _check_vlan(
@@ -141,6 +145,25 @@ class L2BlackholeCheck:
         if not stranded:
             return Status.PASS
         if proposed_exit.kind is ExitKind.NONE:
+            if not _vlan_changed(ctx, vid):
+                # the delta did not touch this vlan: a pre-existing strand with an
+                # unlocatable exit is CONTEXT (spec: pre-existing = not caused),
+                # else every cosmetic delta on such a site would floor to REVIEW
+                findings.append(
+                    self._finding(
+                        code="wired.l2.blackhole.preexisting_unlocatable",
+                        severity=Severity.INFO,
+                        category=FindingCategory.NETWORK,
+                        confidence=Confidence(level=ConfidenceLevel.HIGH),
+                        message=(
+                            f"vlan {vid}: pre-existing member strand with unlocatable "
+                            "exit, unchanged by the delta (context)"
+                        ),
+                        vid=vid,
+                        nodes=sorted(n for c in stranded for n in c.nodes),
+                    )
+                )
+                return Status.PASS
             findings.append(
                 self._finding(
                     code="wired.l2.blackhole.exit_unlocatable",
@@ -259,6 +282,12 @@ class L2BlackholeCheck:
             affected_entities=tuple(nodes),
             evidence=evidence,
         )
+
+
+def _vlan_changed(ctx: CheckContext, vid: int) -> bool:
+    """Did the delta touch this vlan's structure? Components capture nodes,
+    member ports, wireless members and exit reach — equality means unchanged."""
+    return ctx.baseline.vlan_components(vid) != ctx.proposed.vlan_components(vid)
 
 
 _ORDER = [Status.PASS, Status.INSUFFICIENT_DATA, Status.WARN, Status.FAIL]

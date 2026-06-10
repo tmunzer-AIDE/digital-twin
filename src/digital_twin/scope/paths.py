@@ -41,6 +41,9 @@ def _walk(cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, 
                 continue
             sub = f"{path}.{key}" if path else key
             cv, nv = cur.get(key, _MISSING), new.get(key, _MISSING)
+            # null == absent (Mist PUT semantics, same canon as compile equivalence)
+            if cv is _MISSING and nv is None or nv is _MISSING and cv is None:
+                continue
             # descend into an added/removed SUBTREE so its leaves gate individually
             if cv is _MISSING and isinstance(nv, dict):
                 cv = {}
@@ -51,8 +54,18 @@ def _walk(cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, 
             else:
                 _walk(cv, nv, sub, out, ignore_top)
         return
-    if cur != new:
+    if _normalized(cur) != _normalized(new):
         out.append(path)
+
+
+def _normalized(value: Any) -> Any:
+    """null==absent must hold DEEPLY: lists compare atomically, so None-valued
+    dict keys inside list elements are stripped before comparison."""
+    if isinstance(value, dict):
+        return {k: _normalized(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_normalized(v) for v in value]
+    return value
 
 
 def matches(path: str, entry: str) -> bool:

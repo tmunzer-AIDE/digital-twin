@@ -31,6 +31,27 @@ _SCHEMA_FILES: dict[str, str] = {
 _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 
+# Violations on secret-bearing keys are SUPPRESSED: the twin never stores or
+# simulates secrets (replay fixtures strip them by design — see the redaction
+# manifest in observability/replay/redaction.py, kept in sync), and Mist's own
+# API still validates real payloads at apply time.
+_SECRET_KEY_PARTS: tuple[str, ...] = (
+    "psk",
+    "password",
+    "passphrase",
+    "secret",
+    "token",
+    "community",
+    "private_key",
+    "cert",
+)
+
+
+def _touches_secret(err: jsonschema.ValidationError) -> bool:
+    path_keys = [str(p).lower() for p in err.absolute_path]
+    blob = " ".join((*path_keys, err.message.lower()))
+    return any(part in blob for part in _SECRET_KEY_PARTS)
+
 
 @dataclass(frozen=True)
 class L0Result:
@@ -98,14 +119,17 @@ def validate_payload(object_type: str, payload: Mapping[str, Any]) -> L0Result:
             ),
             fatal=True,
         )
+    errors = (
+        err
+        for err in _validator(object_type).iter_errors(dict(payload))
+        if not _touches_secret(err)
+    )
     findings = tuple(
         _finding(
             "l0.schema.violation",
             err.message,
             path=".".join(str(p) for p in err.absolute_path),
         )
-        for _, err in zip(
-            range(_MAX_FINDINGS), _validator(object_type).iter_errors(dict(payload)), strict=False
-        )
+        for _, err in zip(range(_MAX_FINDINGS), errors, strict=False)
     )
     return L0Result(findings=findings, fatal=False)

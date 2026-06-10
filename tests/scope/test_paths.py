@@ -31,6 +31,24 @@ def test_removed_subtree_descends_to_leaves():
     assert changed_leaf_paths(cur, {}) == ("dhcpd_config.corp.ip",)
 
 
+def test_null_and_absent_are_equivalent():
+    # Mist PUT semantics (and the compile-equivalence canon): sending null and
+    # omitting the key are the same statement — not a change. Matters for
+    # payloads derived from REDACTED fixtures, where secrets are nulled out.
+    cur = {"radius_config": {"secret": None, "port": 1812}, "x": None}
+    new = {"radius_config": {"port": 1812}}
+    assert changed_leaf_paths(cur, new) == ()
+    assert changed_leaf_paths(new, cur) == ()  # symmetric
+
+
+def test_null_absent_equivalence_applies_inside_lists():
+    # lists compare atomically, so the rule must hold DEEPLY: a nulled secret
+    # inside a list element (auth_servers[]) is not a change when omitted
+    cur = {"radius_config": {"auth_servers": [{"host": "h", "secret": None}]}}
+    new = {"radius_config": {"auth_servers": [{"host": "h"}]}}
+    assert changed_leaf_paths(cur, new) == ()
+
+
 def test_allowed_checks_any_entry():
     allowlist = ("networks.*.vlan_id", "vars.*")
     assert allowed("networks.corp.vlan_id", allowlist)

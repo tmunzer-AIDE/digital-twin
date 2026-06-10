@@ -55,6 +55,17 @@ def test_no_locatable_exit_is_insufficient_data():
     assert result.status is Status.INSUFFICIENT_DATA  # exit unlocatable, never PASS
 
 
+def test_unchanged_unlocatable_strand_is_context_not_insufficient():
+    # the vlan's structure is IDENTICAL in baseline and proposed (the delta did
+    # not touch it): a pre-existing unlocatable-exit strand is CONTEXT, else
+    # every cosmetic change on a site with such vlans would cry REVIEW forever
+    base = _ir(connected=False, with_irb=False)
+    prop = _ir(connected=False, with_irb=False)
+    result = L2BlackholeCheck().run(_ctx(base, prop))
+    assert result.status is Status.PASS
+    assert any("preexisting_unlocatable" in f.code for f in result.findings)
+
+
 def test_newly_added_member_on_isolated_switch_fails():
     # the review's P1: the delta ADDS the first member (access port) on a switch
     # with no path to the vlan's exit — a newly INTRODUCED blackhole, not
@@ -193,14 +204,18 @@ def test_no_ap_change_keeps_complete_coverage():
     assert result.coverage.state is CoverageState.COMPLETE
 
 
-def test_wireless_membership_marks_coverage_partial():
-    # spec: AP-side membership is observation-based — not-yet-connected clients
-    # are a KNOWN coverage gap, so the conclusion's coverage is PARTIAL
+def test_wireless_membership_marks_coverage_partial_when_vlan_changed():
+    # spec: AP-side membership is observation-based — a KNOWN coverage gap, but
+    # only for conclusions that RELIED on it (the delta touched that vlan);
+    # an unchanged wireless vlan must not floor every cosmetic delta to REVIEW
     from digital_twin.checks.base import CoverageState
 
-    result = L2BlackholeCheck().run(_ctx(_gs7_site(True), _gs7_site(True)))
-    assert result.coverage.state is CoverageState.PARTIAL
-    assert any("observation-based" in n for n in result.coverage.notes)
+    changed = L2BlackholeCheck().run(_ctx(_gs7_site(True), _gs7_site(False)))
+    assert changed.coverage.state is CoverageState.PARTIAL
+    assert any("observation-based" in n for n in changed.coverage.notes)
+
+    unchanged = L2BlackholeCheck().run(_ctx(_gs7_site(True), _gs7_site(True)))
+    assert unchanged.coverage.state is CoverageState.COMPLETE
 
 
 def test_preexisting_strand_is_context_not_failure():

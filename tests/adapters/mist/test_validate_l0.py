@@ -49,6 +49,20 @@ def test_nullable_enum_field_accepts_explicit_null():
     assert res.findings == ()
 
 
+def test_secret_key_violations_are_suppressed():
+    # replay fixtures strip secrets (None/absent by design) and the twin never
+    # simulates them — schema noise about secret-manifest keys adds nothing
+    # (Mist's own API still validates real payloads on actual apply)
+    res = validate_payload(
+        "device",
+        {
+            "type": "switch",
+            "radius_config": {"auth_servers": [{"host": "h", "port": 1812}]},  # no secret
+        },
+    )
+    assert not any("secret" in str(f.evidence.get("path", "")) + f.message for f in res.findings)
+
+
 def test_non_object_payload_is_fatal():
     res = validate_payload("site_setting", "just-a-string")  # type: ignore[arg-type]
     assert res.fatal is True and len(res.findings) == 1
