@@ -93,10 +93,12 @@ modeling" below.
   on a transit interface → REVIEW; with live telemetry: peer IPs no longer
   reachable within predicted interface subnets → adjacency break.
 - 🔵 **BGP adjacency break** (GS28, MVP: ROUTE-BGP) — `bgp_config` on SWITCHES
-  too (EVPN / campus-fabric underlay+overlay, L3 switch peering), not just
-  gateway WAN peers: removing a neighbor that carries the fabric peering or
-  the default route → UNSAFE; with live telemetry: peer IPs vs predicted
-  subnets. NOTE: the committed `device_switch.schema.json` snapshot has
+  too, and NOT only in EVPN/campus-fabric deployments: a standalone L3 switch
+  can run plain BGP (peering to a router/firewall/upstream) with no fabric at
+  all. Cases: fabric underlay/overlay peers, standalone switch BGP, gateway
+  WAN peers. Removing a neighbor that carries the peering or the default
+  route → UNSAFE; with live telemetry: peer IPs vs predicted subnets. NOTE:
+  the committed `device_switch.schema.json` snapshot has
   ospf_areas/ospf_config but NO `bgp_config` — refresh the OAS snapshot when
   this lands, or switch-BGP plans will fail/act unvalidated at L0.
 - 🔵 **WAN failover impact** (GS29, MVP: ROUTE-WAN) — WAN port removed from a
