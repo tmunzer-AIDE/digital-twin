@@ -43,9 +43,27 @@ sharp UNSAFE during live testing on the Live-Demo site.
   symmetry as native_mismatch (shared `link_boundary.BoundaryView`). `mtu`
   modeled from port_usages + inline port_config/local_port_config (NOT
   port_config_overwrite — not in schema). GS19. [done 2026-06-10]
-- 🔵 STP topology: root-bridge change, a configured `stp_edge` on an uplink.
+- 🔵 STP topology: root-bridge change, a configured `stp_edge` or BPDU filter
+  on a switch-to-switch uplink (MVP: STP-BPDU — disables loop protection).
 - 🔵 loop check FAIL path — currently maxes at WARN because Mist live data never
   asserts STP *disabled*; revisit if a config source for that appears.
+
+### Config-lint tier (single-state checks over the PROPOSED IR — MVP carryover)
+
+The delta checks compare baseline vs proposed; these validate the proposed
+state on its own. Cheap: the data is already fetched and in the IR.
+
+- 🔵 **VLAN ID collision** (MVP: CFG-VLAN) — one vlan_id claimed by multiple
+  networks → forwarding ambiguity. NOTE: today's vlan ingest silently dedups
+  (`seen` set) — a collision would fold invisibly; the check must read the raw
+  networks maps.
+- 🔵 **IP subnet overlap** (MVP: CFG-SUBNET) — pairwise overlap across
+  networks/other_ip_configs subnets. Needs subnets in the IR (rides the
+  richer-L3 work).
+- 🔵 **Duplicate SSID** (MVP: CFG-SSID) — same SSID on multiple enabled WLANs
+  of the site; derived WLAN list is already fetched (`RawSiteState.wlans`).
+- 🔵 **Open guest SSID without isolation** (MVP: SEC-GUEST) — open auth +
+  no client isolation → lateral traffic; same WLAN data.
 
 ### Routing & services tier (needs the L3/routing IR extension)
 
@@ -56,13 +74,25 @@ modeling" below.
 
 - 🔵 **DHCP** — `dhcpd_config` / relay per network: removing the DHCP
   path for a VLAN with observed clients → UNSAFE (clients lose addressing);
-  `dhcp_snooping` enable with an untrusted uplink → REVIEW.
+  `dhcp_snooping` enable with an untrusted uplink → REVIEW. Lint side (MVP:
+  CFG-DHCP-RNG / CFG-DHCP-CFG): pairwise scope overlap; scope gateway/range
+  inside the network's subnet.
+- 🔵 **Default gateway gap** (MVP: ROUTE-GW) — a routed network
+  (subnet/gateway configured) with NO L3 interface on any gateway device
+  after the change → ERROR. The explicit-check form of "richer L3 exits".
 - 🔵 **OSPF** — `ospf_areas` / interface ospf config: withdrawing the area or
   interface that is a segment's L3 exit → UNSAFE; passive/metric changes on a
-  transit interface → REVIEW.
+  transit interface → REVIEW. With live telemetry (MVP: ROUTE-OSPF): peer IPs
+  no longer reachable within predicted interface subnets → adjacency break.
 - 🔵 **BGP** — `bgp_config` (campus-fabric underlay/overlay, gateway WAN
   peers): removing a neighbor that carries the fabric peering or the default
-  route → UNSAFE.
+  route → UNSAFE. With live telemetry (MVP: ROUTE-BGP): peer IPs vs predicted
+  subnets, as for OSPF.
+- 🔵 **WAN failover impact** (MVP: ROUTE-WAN) — WAN port removed from a
+  gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
+- 🔵 **Security policy / NAC rule deltas** (MVP: SEC-POLICY, SEC-NAC) — new
+  object types (out-of-scope → UNKNOWN today); first step is honest diff
+  REPORTING of additions/removals/changes, before any impact modeling.
 
 ## 3. New scope — more fields / objects / sites
 
