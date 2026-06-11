@@ -33,6 +33,7 @@ from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.apply import get_object
 from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
 from digital_twin.adapters.mist.ingest.dynamic_usage import unresolved_dynamic_findings
+from digital_twin.adapters.mist.ingest.switch import invalid_bridge_priority_findings
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
@@ -194,6 +195,14 @@ def simulate(
     with trace.stage("dynamic_gate"):
         adapter_findings += unresolved_dynamic_findings(
             baseline.device_effective, proposed.device_effective, raw.port_stats
+        )
+        # in-scope but uninterpretable bridge_priority (either side) — the
+        # root election cannot be predicted -> WARNING, never silently
+        # simulated as the platform default
+        adapter_findings += tuple(
+            invalid_bridge_priority_findings(
+                baseline.device_effective, proposed.device_effective
+            )
         )
 
     # 8 — derived-impact gate (site + every device effective)

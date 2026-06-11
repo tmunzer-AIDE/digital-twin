@@ -507,6 +507,28 @@ def test_gs21_variant_bridge_priority_moves_the_root_is_review(tmp_path):
     assert f.evidence["proposed_root"] == EDGE
 
 
+def test_gs21_variant_invalid_bridge_priority_is_review(tmp_path):
+    # the field is in scope and L0-valid (OAS types it as plain string), but
+    # the VALUE is uninterpretable — simulating it as the default would be a
+    # quiet false state. The adapter flags it -> REVIEW, never silence.
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev["stp_config"] = {"bridge_priority": "banana"}
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "scope.stp.bridge_priority_invalid")
+    assert f.evidence["proposed"] == "banana"
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

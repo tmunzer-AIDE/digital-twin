@@ -45,8 +45,13 @@ def _root_of(ir: IR, component: frozenset[str]) -> tuple[str, bool] | None:
     if len(switches) < 2:
         return None
     assumed = any(ir.devices[d].stp_priority is None for d in switches)
-    root = min(switches, key=lambda d: (ir.devices[d].stp_priority or _DEFAULT_PRIORITY, d))
-    return root, assumed
+
+    def election_key(d: str) -> tuple[int, str]:
+        prio = ir.devices[d].stp_priority
+        # explicit `is None`: 0 is a VALID priority — the strongest one
+        return (_DEFAULT_PRIORITY if prio is None else prio, d)
+
+    return min(switches, key=election_key), assumed
 
 
 class StpRootChangeCheck:

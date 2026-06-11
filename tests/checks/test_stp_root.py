@@ -49,6 +49,16 @@ def test_explicit_priorities_on_both_roots_give_high_confidence():
     assert result.findings[0].confidence.level is ConfidenceLevel.HIGH
 
 
+def test_priority_zero_is_the_highest_priority_not_default():
+    # review regression (3f442f3): 0 is a VALID priority — the strongest one.
+    # `or _DEFAULT_PRIORITY` swallowed it as falsy -> false negative.
+    result = _run(_ir(), _ir(b_prio=0))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.stp.root_change.moved"
+    assert f.evidence["proposed_root"] == "bb02"
+
+
 def test_no_root_movement_is_silent():
     assert _run(_ir(), _ir()).findings == ()
     # priority change that does NOT move the root (aa01 stays lowest)

@@ -262,6 +262,38 @@ def test_device_stp_config_survives_compile():
     assert eff["stp_config"] == {"bridge_priority": "4096"}
 
 
+def test_bridge_priority_parser_validates_the_junos_range():
+    # valid = {0, 4096 .. 61440 step 4096} (or the "4k" form); anything else —
+    # malformed OR out-of-step — must NOT silently simulate as some priority
+    from digital_twin.adapters.mist.ingest.switch import _bridge_priority
+
+    assert _bridge_priority({"bridge_priority": "0"}) == 0
+    assert _bridge_priority({"bridge_priority": 4096}) == 4096
+    assert _bridge_priority({"bridge_priority": "4k"}) == 4096
+    assert _bridge_priority({"bridge_priority": "60k"}) == 61440
+    assert _bridge_priority({"bridge_priority": "banana"}) is None
+    assert _bridge_priority({"bridge_priority": "5000"}) is None  # not a 4k step
+    assert _bridge_priority(None) is None
+
+
+def test_invalid_bridge_priority_raises_an_adapter_finding():
+    # an IN-SCOPE field whose value the model cannot interpret must never be
+    # silently simulated as the default — that would be a quiet false state
+    from digital_twin.adapters.mist.ingest.switch import invalid_bridge_priority_findings
+
+    good = {"stp_config": {"bridge_priority": "4096"}}
+    bad = {"stp_config": {"bridge_priority": "banana"}}
+    assert invalid_bridge_priority_findings({"d1": good}, {"d1": good}) == []
+    findings = invalid_bridge_priority_findings({"d1": good}, {"d1": bad})
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.code == "scope.stp.bridge_priority_invalid"
+    assert f.severity.value == "warning"
+    assert f.evidence == {"device": "d1", "baseline": "4096", "proposed": "banana"}
+    # a malformed BASELINE poisons the prediction too — both sides checked
+    assert invalid_bridge_priority_findings({"d1": bad}, {"d1": good}) != []
+
+
 def test_stp_config_flags_and_bridge_priority():
     eff = {
         "networks": {"corp": {"vlan_id": 10}},

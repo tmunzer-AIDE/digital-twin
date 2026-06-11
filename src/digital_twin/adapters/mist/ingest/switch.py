@@ -10,7 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import (
+    Confidence,
+    ConfidenceLevel,
     Device,
     DeviceRole,
     IRCapability,
@@ -33,17 +36,63 @@ _Json = Mapping[str, Any]
 _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole.GATEWAY}
 
 
+# Junos bridge priorities: 0..61440 in 4096 steps ("Range [0, 4k, 8k.. 60k]")
+_VALID_PRIORITIES = frozenset(range(0, 61441, 4096))
+
+
 def _bridge_priority(stp_config: Any) -> int | None:
-    """`stp_config.bridge_priority` — OAS says string, '4096' or '4k' shaped;
-    unparseable/absent -> None (the platform default, treated as ASSUMED)."""
+    """`stp_config.bridge_priority` — OAS types it as a bare string; accepts
+    '4096'/4096/'4k' shapes but ONLY values in the Junos range {0, 4k..60k}.
+    None = absent OR uninterpretable — callers must distinguish via the raw
+    value (invalid_bridge_priority_findings), never silently simulate."""
     raw = (stp_config or {}).get("bridge_priority")
     if raw is None:
         return None
     text = str(raw).strip().lower()
     try:
-        return int(text[:-1]) * 1024 if text.endswith("k") else int(text)
+        value = int(text[:-1]) * 1024 if text.endswith("k") else int(text)
     except ValueError:
         return None
+    return value if value in _VALID_PRIORITIES else None
+
+
+def invalid_bridge_priority_findings(
+    baseline_effective: Mapping[str, _Json], proposed_effective: Mapping[str, _Json]
+) -> list[Finding]:
+    """An IN-SCOPE `bridge_priority` whose value the model cannot interpret
+    (malformed, or outside the Junos 4k-step range) must never be silently
+    simulated as the platform default — a malformed BASELINE poisons the root
+    prediction just as much as a malformed proposal -> WARNING (-> REVIEW)."""
+    findings: list[Finding] = []
+    for did in sorted(set(baseline_effective) | set(proposed_effective)):
+        sides: dict[str, Any] = {}
+        invalid = False
+        for side, effs in (("baseline", baseline_effective), ("proposed", proposed_effective)):
+            cfg = (effs.get(did) or {}).get("stp_config") or {}
+            raw = cfg.get("bridge_priority")
+            sides[side] = raw
+            if raw is not None and _bridge_priority(cfg) is None:
+                invalid = True
+        if not invalid:
+            continue
+        findings.append(
+            Finding(
+                source=FindingSource.ADAPTER,
+                category=FindingCategory.OPERATIONAL,
+                code="scope.stp.bridge_priority_invalid",
+                severity=Severity.WARNING,
+                confidence=Confidence(level=ConfidenceLevel.HIGH),
+                message=(
+                    f"device {did}: stp_config.bridge_priority "
+                    f"{sides['baseline']!r} -> {sides['proposed']!r} is not a valid "
+                    "Junos priority (0..61440 in 4096 steps) — the root election "
+                    "cannot be predicted"
+                ),
+                affected_entities=(did,),
+                evidence={"device": did, **sides},
+            )
+        )
+    return findings
 
 
 def _poe_draw(row: _Json | None) -> bool | None:
