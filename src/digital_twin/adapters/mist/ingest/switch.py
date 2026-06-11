@@ -58,6 +58,17 @@ def _literal_subnet(value: Any) -> str | None:
     return str(value)
 
 
+def _dhcp_active(entry: Any) -> bool:
+    """A dhcpd_config entry IS a DHCP path when it serves (type local, the
+    default) or forwards somewhere (relay WITH servers); 'none' is an explicit
+    no-path statement."""
+    entry = entry or {}
+    kind = str(entry.get("type") or "local")
+    if kind == "local":
+        return True
+    return kind == "relay" and bool(entry.get("servers"))
+
+
 # Junos bridge priorities: 0..61440 in 4096 steps ("Range [0, 4k, 8k.. 60k]")
 _VALID_PRIORITIES = frozenset(range(0, 61441, 4096))
 
@@ -187,11 +198,17 @@ class SwitchIngester:
         # ORG networks carry the routed intent (subnet) the gateway serves —
         # overlay it onto vlans the switch side knows only by id
         org_subnets: dict[int, str] = {}
+        org_vlan_by_name: dict[str, int] = {}
         for net in ctx.raw.org_networks:
             vid = _vlan_int(net.get("vlan_id"))
+            if vid is None:
+                continue
+            if net.get("name"):
+                org_vlan_by_name[str(net["name"])] = vid
             subnet = _literal_subnet(net.get("subnet"))
-            if vid is not None and subnet:
+            if subnet:
                 org_subnets.setdefault(vid, subnet)
+        dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
         sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
@@ -204,8 +221,36 @@ class SwitchIngester:
                             name=name,
                             scope=ctx.raw.scope.site_id,
                             subnet=net.get("subnet") or org_subnets.get(int(vid)),
+                            dhcp_sources=tuple(sorted(dhcp_sources.get(int(vid), ()))),
                         )
                     )
+
+    @staticmethod
+    def _dhcp_sources(
+        ctx: IngestContext, org_vlan_by_name: Mapping[str, int]
+    ) -> dict[int, set[str]]:
+        """vlan -> modeled DHCP providers. 'site' = the switch-hosted
+        server/relay (site dhcpd_config, names in the SWITCH namespace);
+        gateway device ids = their OWN dhcpd_config (names in the ORG
+        namespace). Device-level SWITCH dhcpd_config is intentionally
+        unmodeled (the compiler does not carry it; see ROADMAP)."""
+        out: dict[int, set[str]] = {}
+        site_nets: dict[str, Any] = ctx.site_effective.get("networks") or {}
+        for name, entry in (ctx.site_effective.get("dhcpd_config") or {}).items():
+            vid = _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
+            if vid is not None and _dhcp_active(entry):
+                out.setdefault(vid, set()).add("site")
+        for dev in ctx.raw.devices:
+            if dev.get("type") != "gateway" or not dev.get("mac"):
+                continue
+            did = device_id(str(dev["mac"]))
+            for name, entry in (dev.get("dhcpd_config") or {}).items():
+                vid = org_vlan_by_name.get(str(name))
+                if vid is None:
+                    vid = _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
+                if vid is not None and _dhcp_active(entry):
+                    out.setdefault(vid, set()).add(did)
+        return out
 
     def _gateway_ports_and_l3(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:
         """GS22: the gateway's OWN config — its LAN trunk carriage (so the

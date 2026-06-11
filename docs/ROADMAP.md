@@ -96,9 +96,19 @@ plan 02 pins it) — never false-SAFE, but not yet useful. Each item = model
 the config (allowlist + IR) + a check + a GS. Builds on "richer L3 exit
 modeling" below.
 
-- 🔵 **DHCP path removal** (GS24) — `dhcpd_config` / relay per network:
-  removing the DHCP path for a VLAN with observed clients → UNSAFE (clients
-  lose addressing).
+- ✅ **DHCP path removal** (GS24) — done 2026-06-11. `Vlan.dhcp_sources`
+  models the providers: site-level `dhcpd_config` (type local, or relay WITH
+  servers; 'none' = explicit no-path) + gateways' own `dhcpd_config` (names
+  via org networks — the live SRX serves LD_VLAN2 this way). Check
+  `wired.dhcp.path` (12th): removal with observed clients → UNSAFE; without →
+  REVIEW; never-served vlans silent (external servers invisible). Review-series
+  rails built in: blind gateway caps at MEDIUM/REVIEW; clients-unfetched
+  degrades coverage (GS6), never silently downgrades. Allowlist:
+  `dhcpd_config.*.{type,servers}` on site_setting ONLY — device-level switch
+  dhcpd_config stays unmodeled (compile_device does not carry it; allowlisting
+  it would be a GS21-class false-SAFE shape — model it together with the
+  compile carry-through if needed). GS24 + clientless variant (first goldens
+  exercising a site_setting op).
 - 🔵 **DHCP lint** (GS25, MVP: CFG-DHCP-RNG / CFG-DHCP-CFG + snooping) —
   `dhcp_snooping` enable with an untrusted uplink → REVIEW; pairwise scope
   overlap; scope gateway/range inside the network's subnet.

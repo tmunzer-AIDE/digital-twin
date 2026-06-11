@@ -49,6 +49,14 @@ _IRB_LEAVES: tuple[str, ...] = (
     "other_ip_configs.*.ip",
     "other_ip_configs.*.netmask",
 )
+# Site-level DHCP path facts (Vlan.dhcp_sources, the wired.dhcp.path check):
+# type decides serve/relay/none; servers decide whether a relay goes anywhere.
+# SITE_SETTING ONLY — device-level switch dhcpd_config is unmodeled (the
+# compiler does not carry it; allowlisting it would be a false-SAFE shape).
+_DHCP_LEAVES: tuple[str, ...] = (
+    "dhcpd_config.*.type",
+    "dhcpd_config.*.servers",
+)
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"
     for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS, *_STP_USAGE_ATTRS)
@@ -82,7 +90,13 @@ _DEVICE_PORT_LEAVES: tuple[str, ...] = (
 # vars.* is a whole subtree ONLY because the post-compile derived gate catches
 # its ripple into out-of-scope effective fields.
 RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "site_setting": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_STP_CONFIG_LEAVES, "vars.*"),
+    "site_setting": (
+        *_NETWORK_LEAVES,
+        *_USAGE_LEAVES,
+        *_STP_CONFIG_LEAVES,
+        *_DHCP_LEAVES,
+        "vars.*",
+    ),
     "device": (
         *_NETWORK_LEAVES,
         *_USAGE_LEAVES,
@@ -128,5 +142,6 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_DEVICE_PORT_LEAVES,
     *_STP_CONFIG_LEAVES,
     *_IRB_LEAVES,
+    *_DHCP_LEAVES,
     "vars.*",
 )

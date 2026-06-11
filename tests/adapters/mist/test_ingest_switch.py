@@ -407,6 +407,60 @@ def test_gateway_is_not_l3_unmodeled_when_org_networks_fetched():
     assert ir.devices["cc0000000001"].l3_unmodeled is False
 
 
+def test_vlan_dhcp_sources_from_site_and_gateway():
+    # GS24: a vlan's modeled DHCP providers — site-level dhcpd_config (the
+    # switch-hosted server/relay) and the gateway's own dhcpd_config (resolved
+    # via org networks). type 'none' is an explicit NO-path statement; a relay
+    # without servers forwards nowhere.
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {
+        "networks": {
+            "corp_sw": {"vlan_id": 10},
+            "iot_sw": {"vlan_id": 20},
+            "lab": {"vlan_id": 30},
+            "stale": {"vlan_id": 40},
+        },
+        "dhcpd_config": {
+            "iot_sw": {"type": "local", "ip_start": "10.0.0.10"},
+            "lab": {"type": "relay", "servers": ["10.9.9.9"]},
+            "stale": {"type": "none"},
+        },
+    }
+    gw = {**_GATEWAY, "dhcpd_config": {"corp": {"type": "local"}}, "ip_configs": {}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=_ORG_NETWORKS),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].dhcp_sources == ("cc0000000001",)  # gateway serves corp
+    assert ir.vlans[20].dhcp_sources == ("site",)  # switch-hosted local server
+    assert ir.vlans[30].dhcp_sources == ("site",)  # relay WITH servers = a path
+    assert ir.vlans[40].dhcp_sources == ()  # type none = explicitly no path
+
+
+def test_relay_without_servers_is_not_a_dhcp_path():
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {
+        "networks": {"corp_sw": {"vlan_id": 10}},
+        "dhcpd_config": {"corp_sw": {"type": "relay", "servers": []}},
+    }
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    assert ctx.builder.build().vlans[10].dhcp_sources == ()
+
+
 def test_org_network_subnet_marks_the_vlan_routed():
     eff = {"networks": {"corp_sw": {"vlan_id": 10}}}
     from digital_twin.adapters.mist.ingest.base import IngestContext

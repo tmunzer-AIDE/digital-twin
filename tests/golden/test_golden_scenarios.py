@@ -603,6 +603,47 @@ def test_gs22_variant_newly_routed_network_without_l3_is_review(tmp_path):
     assert f.evidence["vlan"] == 997
 
 
+def _gs24_doc(*, dhcp_net, gateway_namespace_fetched=True):
+    doc = augmented_doc(parallel_carries_gs=True)
+    if gateway_namespace_fetched:
+        doc["org_networks"] = []
+        doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
+    if dhcp_net != GS_NET_NAME:
+        doc["setting"]["networks"][dhcp_net] = {"vlan_id": 997}
+    doc["setting"]["dhcpd_config"] = {dhcp_net: {"type": "local"}}
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {"dhcpd_config": {dhcp_net: {"type": "none"}}},
+    }
+    return doc, op
+
+
+GS_NET_NAME = "gs_net"
+
+
+def test_gs24_removing_the_dhcp_path_of_a_client_vlan_is_unsafe(tmp_path):
+    # vlan 999 has an observed wired client; the site-level DHCP server for it
+    # is switched to type 'none' -> clients lose addressing at lease renewal
+    doc, op = _gs24_doc(dhcp_net=GS_NET_NAME)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.dhcp.path.removed")
+    assert f.evidence["vlan"] == 999 and f.evidence["observed_clients"] >= 1
+
+
+def test_gs24_variant_clientless_vlan_dhcp_removal_is_review(tmp_path):
+    # same removal on a vlan with no observed clients: future joiners still
+    # break -> REVIEW, not UNSAFE and never silence
+    doc, op = _gs24_doc(dhcp_net="gs_dhcp_only")
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.dhcp.path.removed")
+    assert f.evidence["vlan"] == 997 and f.severity.value == "warning"
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

@@ -3,6 +3,7 @@
 from digital_twin.checks.base import Check
 
 from .client_impact import ClientImpactCheck
+from .dhcp_path import DhcpPathCheck
 from .gateway_gap import GatewayGapCheck
 from .l2_blackhole import L2BlackholeCheck
 from .l2_isolation import L2IsolationCheck
@@ -24,6 +25,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     StpEdgeOnUplinkCheck(),
     StpRootChangeCheck(),
     GatewayGapCheck(),
+    DhcpPathCheck(),
     PoeDisconnectCheck(),
     ClientImpactCheck(),
 ]
@@ -31,6 +33,7 @@ ALL_WIRED_CHECKS: list[Check] = [
 __all__ = [
     "ALL_WIRED_CHECKS",
     "ClientImpactCheck",
+    "DhcpPathCheck",
     "GatewayGapCheck",
     "L2BlackholeCheck",
     "L2IsolationCheck",

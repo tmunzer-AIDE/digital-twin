@@ -150,6 +150,11 @@ class Vlan:
     # ROUTED intent: the network declares a subnet — someone must provide its
     # L3 interface (the wired.l3.gateway_gap check consumes this)
     subnet: str | None = None
+    # modeled DHCP providers for this vlan: "site" (switch-hosted server/relay
+    # from the site dhcpd_config) and/or gateway device ids (their own
+    # dhcpd_config). Empty = NO modeled path (which is normal — external
+    # servers are invisible); the wired.dhcp.path check reasons about REMOVAL.
+    dhcp_sources: tuple[str, ...] = ()
     meta: FactMeta = CONFIG_META
 
     @property

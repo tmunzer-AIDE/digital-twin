@@ -185,6 +185,22 @@ def test_routed_network_and_irb_leaves_are_in_scope():
     assert isinstance(screen_op("device", SWITCH_CUR, odd), Rejection)
 
 
+def test_dhcpd_leaves_are_in_scope_on_site_setting_only():
+    # GS24: the IR models the site-level DHCP path (type + relay servers).
+    # Device-level switch dhcpd_config is intentionally UNMODELED (the
+    # compiler does not carry it) and must stay out of scope.
+    cur = {"networks": {"corp": {"vlan_id": 10}},
+           "dhcpd_config": {"corp": {"type": "local"}}}
+    new = {"networks": {"corp": {"vlan_id": 10}},
+           "dhcpd_config": {"corp": {"type": "none"}}}
+    assert screen_op("site_setting", cur, new) is None
+    relay = {"networks": {"corp": {"vlan_id": 10}},
+             "dhcpd_config": {"corp": {"type": "relay", "servers": ["10.9.9.9"]}}}
+    assert screen_op("site_setting", cur, relay) is None
+    dev = {**SWITCH_CUR, "dhcpd_config": {"corp": {"type": "none"}}}
+    assert isinstance(screen_op("device", SWITCH_CUR, dev), Rejection)
+
+
 def test_stp_leaves_are_in_scope():
     # stp_edge/stp_disable on port_usages + inline stp_edge on
     # local_port_config (schema: NOT on port_config) + stp_config.bridge_priority

@@ -146,6 +146,9 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   `wired.l3.gateway_gap` (a network that declares a subnet must have an L3
   interface — switch IRB or gateway — somewhere; removing the only modeled one
   UNSAFE, newly-routed-but-unserved REVIEW),
+  `wired.dhcp.path` (a vlan losing its only modeled DHCP server/relay — site
+  dhcpd_config or a gateway's own — strands its clients at lease renewal;
+  UNSAFE with observed clients, REVIEW without),
   `wired.poe.disconnect` (cutting `poe_disabled` to a
   port that powers a device — an LLDP-confirmed AP or one observed drawing
   power — disconnects it and everything behind it; UNSAFE), `wired.client.impact`
@@ -202,7 +205,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the eleven wired checks + registry (the ONLY layer with severity)
+├── checks/           the twelve wired checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)
