@@ -84,10 +84,13 @@ modeling" below.
   interface that is a segment's L3 exit → UNSAFE; passive/metric changes on a
   transit interface → REVIEW. With live telemetry (MVP: ROUTE-OSPF): peer IPs
   no longer reachable within predicted interface subnets → adjacency break.
-- 🔵 **BGP** — `bgp_config` (campus-fabric underlay/overlay, gateway WAN
-  peers): removing a neighbor that carries the fabric peering or the default
-  route → UNSAFE. With live telemetry (MVP: ROUTE-BGP): peer IPs vs predicted
-  subnets, as for OSPF.
+- 🔵 **BGP** — `bgp_config` on SWITCHES too (EVPN / campus-fabric
+  underlay+overlay, L3 switch peering), not just gateway WAN peers: removing
+  a neighbor that carries the fabric peering or the default route → UNSAFE.
+  With live telemetry (MVP: ROUTE-BGP): peer IPs vs predicted subnets, as for
+  OSPF. NOTE: the committed `device_switch.schema.json` snapshot has
+  ospf_areas/ospf_config but NO `bgp_config` — refresh the OAS snapshot when
+  this lands, or switch-BGP plans will fail/act unvalidated at L0.
 - 🔵 **WAN failover impact** (MVP: ROUTE-WAN) — WAN port removed from a
   gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
 - 🔵 **Security policy / NAC rule deltas** (MVP: SEC-POLICY, SEC-NAC) — new
