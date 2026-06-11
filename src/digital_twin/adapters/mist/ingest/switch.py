@@ -33,6 +33,18 @@ _Json = Mapping[str, Any]
 _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole.GATEWAY}
 
 
+def _poe_draw(row: _Json | None) -> bool | None:
+    """Observed power delivery — honest about missing telemetry (real rows lack
+    `poe_on` on some ports): no stat row -> UNKNOWN; `poe_on` present -> the
+    observed value; absent on a DOWN port -> False (a down port powers
+    nothing); absent on an UP port -> UNKNOWN, never 'not drawing'."""
+    if row is None:
+        return None
+    if row.get("poe_on") is not None:
+        return bool(row["poe_on"])
+    return False if not row.get("up") else None
+
+
 class SwitchIngester:
     name = "switch"
 
@@ -111,7 +123,7 @@ class SwitchIngester:
                     profile=usage_name,
                     # config PoE intent: None when the usage is blind/unresolved
                     poe=None if not usage else not bool(usage.get("poe_disabled")),
-                    poe_draw=bool(row.get("poe_on")) if row else False,
+                    poe_draw=_poe_draw(row),
                     disabled=bool(usage.get("disabled")),
                     meta=meta,
                 )

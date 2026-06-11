@@ -91,11 +91,14 @@ def test_modeled_port_config_overwrite_leaf_passes():
     # port_config_overwrite.port_network moves the access VLAN (resolver-honored)
     payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"port_network": "voice"}}}
     assert screen_op("device", SWITCH_CUR, payload) is None
+    # poe_disabled is resolver-honored too (Port.poe + the poe.disconnect check)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"poe_disabled": True}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
 
 
 def test_unmodeled_overwrite_leaf_still_rejects():
-    # the resolver honors ONLY port_network from port_config_overwrite — speed
-    # et al. are not modeled, so they stay out of scope (leaf-tightened)
+    # the resolver honors ONLY port_network + poe_disabled from
+    # port_config_overwrite — speed et al. stay out of scope (leaf-tightened)
     payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"speed": "10g"}}}
     r = screen_op("device", SWITCH_CUR, payload)
     assert isinstance(r, Rejection)

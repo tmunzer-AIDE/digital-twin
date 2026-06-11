@@ -220,4 +220,20 @@ def test_observed_poe_on_sets_poe_draw():
           "power_draw": 6.6}]
     )
     assert ir.ports["aa0000000001:ge-0/0/1"].poe_draw is True
-    assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is False  # no stat row
+    assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is None  # no stat row: UNKNOWN
+
+
+def test_poe_draw_unknown_is_not_observed_off():
+    # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
+    # UP -> powered state unknowable (None); absent + port DOWN -> a down port
+    # powers nothing (False); present -> the observed value.
+    ir = _poe_ir(
+        [
+            {"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": True},
+            {"mac": "aa0000000001", "port_id": "ge-0/0/2", "up": False},
+            {"mac": "aa0000000001", "port_id": "ge-0/0/3", "up": True, "poe_on": False},
+        ]
+    )
+    assert ir.ports["aa0000000001:ge-0/0/1"].poe_draw is None
+    assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is False
+    assert ir.ports["aa0000000001:ge-0/0/3"].poe_draw is False

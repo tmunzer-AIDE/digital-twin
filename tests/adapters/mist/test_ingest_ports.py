@@ -109,6 +109,18 @@ def test_port_config_overwrite_moves_the_access_vlan_without_a_new_usage():
     assert usage_vlans(usage, NETWORKS) == (30, ())  # but VLAN is now voice(30)
 
 
+def test_port_config_overwrite_can_disable_poe():
+    # schema-confirmed: port_config_overwrite carries poe_disabled; the IR
+    # models PoE now, so the overwrite layer must honor it (else a valid PoE
+    # change through overwrite is invisible -> UNKNOWN)
+    eff = _eff(
+        port_config={"ge-0/0/9": {"usage": "office"}},
+        port_config_overwrite={"ge-0/0/9": {"poe_disabled": True}},
+    )
+    usage, _name = _resolved(eff)["ge-0/0/9"]
+    assert usage.get("poe_disabled") is True
+
+
 def test_resolve_port_bases_merges_local_over_port_config_and_keeps_dynamic_flag():
     eff = {
         "port_config": {

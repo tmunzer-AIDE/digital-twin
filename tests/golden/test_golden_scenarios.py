@@ -378,6 +378,31 @@ def test_gs16_cutting_poe_to_an_ap_is_unsafe(tmp_path):
     assert f.evidence["affected_wireless_clients"] == 1
 
 
+def test_gs17_poe_cut_with_unknown_powered_state_is_review(tmp_path):
+    # review finding (2026-06-10): missing PoE telemetry must not read as "not
+    # drawing power". Cutting PoE on a port that is UP but exposes no `poe_on`
+    # stat (real rows lack it) -> the powered state is unknowable -> REVIEW,
+    # never a silent PASS (a camera/phone could be on it).
+    doc = augmented_doc(parallel_carries_gs=True)
+    from .builders import _device
+
+    _device(doc, EDGE)["port_config"]["ge-0/0/96"] = {"usage": "gs_poe_trunk"}
+    doc["setting"]["port_usages"]["gs_poe_trunk"] = {"mode": "trunk", "networks": ["gs_net"]}
+    doc["setting"]["port_usages"]["gs_nopoe_trunk"] = {
+        "mode": "trunk",
+        "networks": ["gs_net"],
+        "poe_disabled": True,
+    }
+    doc["port_stats"] = list(doc["port_stats"]) + [
+        {"mac": EDGE, "port_id": "ge-0/0/96", "up": True}  # no poe_on stat
+    ]
+    op = device_op(doc, EDGE, **{"ge-0__0__96": "gs_nopoe_trunk"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.poe.disconnect.unverified")
+    assert f.evidence["port"].endswith("ge-0/0/96")
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

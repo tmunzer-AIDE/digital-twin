@@ -78,3 +78,54 @@ def test_cutting_poe_on_an_unpowered_port_is_harmless():
 def test_already_disabled_is_not_attributed_to_the_delta():
     # base already poe=False -> cutting nothing -> no finding
     assert _run(_ap_uplink_ir(poe=False), _ap_uplink_ir(poe=False)).status is Status.PASS
+
+
+def test_unknown_powered_state_is_a_warning_not_silence():
+    # poe_draw=None (no/blind telemetry): cutting PoE on a port whose powered
+    # state is unobservable can never silently PASS — a camera/phone could be
+    # on it. WARNING (-> REVIEW) at MEDIUM, distinct code.
+    def ir(poe):
+        b = IRBuilder().add_device(sw("S"))
+        b.add_port(_switch_port("S:ge-0/0/3", poe=poe, poe_draw=None))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    result = _run(ir(True), ir(False))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.poe.disconnect.unverified"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_blind_baseline_intent_with_an_ap_downgrades_to_warning():
+    # baseline poe=None (usage blind): the AP is LLDP-confirmed but whether the
+    # baseline even delivered power is unknown -> WARNING/MEDIUM, not ERROR/HIGH
+    result = _run(_ap_uplink_ir(poe=None), _ap_uplink_ir(poe=False))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_observed_draw_trumps_blind_baseline_intent():
+    # direct evidence: the port IS delivering power -> UNSAFE regardless of
+    # whether the baseline config intent resolved
+    result = _run(
+        _ap_uplink_ir(poe=None, poe_draw=True), _ap_uplink_ir(poe=False, poe_draw=True)
+    )
+    assert result.status is Status.FAIL
+    f = result.findings[0]
+    assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_blind_baseline_with_nothing_observed_is_silent():
+    # poe=None AND poe_draw=None AND no AP: nothing says power was ever
+    # delivered — the usage blindness itself is gated elsewhere (dynamic gate)
+    def ir(poe):
+        b = IRBuilder().add_device(sw("S"))
+        b.add_port(_switch_port("S:ge-0/0/4", poe=poe, poe_draw=None))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    assert _run(ir(None), ir(False)).status is Status.PASS

@@ -37,14 +37,18 @@ _USAGE_LEAVES: tuple[str, ...] = tuple(
 # Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map:
 # port_config and local_port_config take usage + the usage-override attrs +
 # dynamic_usage (the runtime-profile pointer, ingest.dynamic_usage);
-# port_config_overwrite is honored for port_network ONLY (_OVERWRITE_ATTRS).
+# port_config_overwrite is honored for port_network + poe_disabled ONLY
+# (_OVERWRITE_ATTRS).
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
     f"port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
 )
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
     f"local_port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
 )
-_OVERWRITE_LEAVES: tuple[str, ...] = ("port_config_overwrite.*.port_network",)
+_OVERWRITE_LEAVES: tuple[str, ...] = (
+    "port_config_overwrite.*.port_network",
+    "port_config_overwrite.*.poe_disabled",
+)
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,
     *_LOCAL_PORT_CONFIG_LEAVES,

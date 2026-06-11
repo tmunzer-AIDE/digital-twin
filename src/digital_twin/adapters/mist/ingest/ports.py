@@ -32,8 +32,9 @@ _USAGE_OVERRIDE_ATTRS = (
     "poe_disabled",
 )
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
-# port_network is the VLAN-relevant one (disabled/speed/poe are not VLAN state).
-_OVERWRITE_ATTRS = ("port_network",)
+# port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the
+# poe.disconnect check). disabled/speed et al. remain unmodeled -> out of scope.
+_OVERWRITE_ATTRS = ("port_network", "poe_disabled")
 
 # Mist SYSTEM-DEFINED port usages: referenced by port_config but defined in NO
 # config object (template/site/device — not even getSiteSettingDerived exposes

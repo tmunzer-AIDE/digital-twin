@@ -98,7 +98,9 @@ class Port:
     tagged_vlans: tuple[int, ...] = ()
     speed: int | None = None
     poe: bool | None = None  # CONFIG intent: PoE enabled (True) / `poe_disabled` (False) / unknown
-    poe_draw: bool = False  # OBSERVED: port currently delivering power (stats `poe_on`)
+    # OBSERVED: port currently delivering power (stats `poe_on`); None = the
+    # powered state is UNKNOWABLE (no stat row, or an UP port without the stat)
+    poe_draw: bool | None = None
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     stp_enabled: bool | None = None
