@@ -111,6 +111,27 @@ def test_activating_a_link_against_a_blind_peer_is_unverifiable():
     assert result.findings[0].code == "wired.l2.native_mismatch.unverified"
 
 
+def test_adding_a_link_between_mismatched_ports_is_attributed():
+    # review regression (6a24baf): both ports pre-exist enabled with natives
+    # 10/30 but the LINK only appears in the proposed IR. A link-only diff must
+    # (a) make the check applicable at the registry and (b) read as introduced,
+    # not pre-existing — the baseline hazard needs the baseline LINK to exist.
+    def ir(with_link):
+        b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
+        b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_port(trunk_port("T", "ge-0/0/1", tagged=(20,), native=30))
+        if with_link:
+            b.add_link(link("S:ge-0/0/1", "T:ge-0/0/1"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    base, prop = ir(False), ir(True)
+    assert NativeVlanMismatchCheck().applies_to(diff_ir(base, prop))
+    result = _run(base, prop)
+    assert result.status is Status.FAIL
+    assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
+
+
 def test_matching_natives_and_removed_native_are_silent():
     assert _run(_two_switch_ir(10, 10), _two_switch_ir(10, 10)).findings == ()
     # removing the native (None) means no untagged traffic -> nothing to leak

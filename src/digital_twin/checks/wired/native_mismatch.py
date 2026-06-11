@@ -69,18 +69,26 @@ class NativeVlanMismatchCheck:
         return frozenset({IRCapability.WIRED_L2})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        return diff.touches("port")
+        # links are facts too (LLDP-derived today, but the contract is two IRs):
+        # a link-only delta can activate a mismatch between unchanged ports
+        return any(diff.touches(k) for k in ("link", "port"))
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         vc_root = vc_root_map(prop_ir)
         base_vc_root = vc_root_map(base_ir)
+        base_link_ids = {lk.id for lk in base_ir.links}
 
-        def baseline_active_pair(a_port: str, b_port: str) -> tuple[int | None, int | None] | None:
+        def baseline_active_pair(
+            link_id: str, a_port: str, b_port: str
+        ) -> tuple[int | None, int | None] | None:
             """The baseline native pair IF the link was a live external L2
             boundary there — else None. 'Pre-existing' requires the hazard was
-            ACTIVE before the delta: a disabled, absent or chassis-internal
-            baseline link means the delta is what brings the leak to life."""
+            ACTIVE before the delta: an absent baseline LINK, a missing or
+            disabled port, or a chassis-internal pairing all mean the delta is
+            what brings the leak to life."""
+            if link_id not in base_link_ids:
+                return None
             bpa, bpb = base_ir.ports.get(a_port), base_ir.ports.get(b_port)
             if bpa is None or bpb is None or bpa.disabled or bpb.disabled:
                 return None
@@ -101,7 +109,7 @@ class NativeVlanMismatchCheck:
                 continue  # AP uplink: vlan-transparent, the AP end has no native
             na, nb = pa.native_vlan, pb.native_vlan
             if na is not None and nb is not None and na != nb:
-                preexisting = baseline_active_pair(pa.id, pb.id) == (na, nb)
+                preexisting = baseline_active_pair(lnk.id, pa.id, pb.id) == (na, nb)
                 confidence = min_confidence(
                     pa.meta.confidence, pb.meta.confidence, lnk.meta.confidence
                 )
@@ -124,7 +132,7 @@ class NativeVlanMismatchCheck:
                 if cfg.native_vlan is None:
                     continue  # nothing untagged on the configured side: no leak
                 if (
-                    baseline_active_pair(pa.id, pb.id) is not None
+                    baseline_active_pair(lnk.id, pa.id, pb.id) is not None
                     and _native(base_ir, cfg.id) == cfg.native_vlan
                 ):
                     continue  # native unchanged on an already-live link: nothing new
