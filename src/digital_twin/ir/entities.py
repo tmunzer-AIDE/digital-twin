@@ -97,6 +97,10 @@ class Device:
     # carriage and L3 interfaces are UNKNOWN, not absent — checks making
     # negative-existence L3 claims must degrade coverage over it
     l3_unmodeled: bool = False
+    # GATEWAY with an ACTIVE dhcpd_config entry whose network name did not
+    # resolve to a vlan (namespace fetched, name missing/templated): it may
+    # serve DHCP on a vlan we cannot identify — UNKNOWN, not absent
+    dhcp_unresolved: bool = False
     meta: FactMeta = CONFIG_META
 
 

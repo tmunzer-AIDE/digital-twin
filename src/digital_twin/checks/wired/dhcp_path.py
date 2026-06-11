@@ -54,12 +54,22 @@ class DhcpPathCheck:
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
-        clients_known = IRCapability.CLIENTS_ACTIVE in prop_ir.capabilities
+        # the client count is BASELINE-derived: both sides must have earned
+        # the capability or stale baseline rows could mint a confident ERROR
+        clients_known = (
+            IRCapability.CLIENTS_ACTIVE in base_ir.capabilities
+            and IRCapability.CLIENTS_ACTIVE in prop_ir.capabilities
+        )
         blind_notes = tuple(
-            f"gateway {d.id}: network namespace unmodeled — its DHCP servers "
-            "are invisible to this check"
+            f"gateway {d.id}: "
+            + (
+                "network namespace unmodeled"
+                if d.l3_unmodeled
+                else "a dhcpd entry references an unresolvable network"
+            )
+            + " — its DHCP service is (partly) invisible to this check"
             for d in sorted(prop_ir.devices.values(), key=lambda d: d.id)
-            if d.l3_unmodeled
+            if d.l3_unmodeled or d.dhcp_unresolved
         )
         findings: list[Finding] = []
         notes: list[str] = []

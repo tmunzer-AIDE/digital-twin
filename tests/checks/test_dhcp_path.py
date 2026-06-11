@@ -14,13 +14,28 @@ from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff
 from tests.factories import access_port, sw, wired_client
 
 
-def _ir(*, served=True, with_client=True, blind_gateway=False, clients_fetched=True):
+def _ir(
+    *,
+    served=True,
+    with_client=True,
+    blind_gateway=False,
+    dhcp_unresolved_gateway=False,
+    clients_fetched=True,
+):
     b = IRBuilder().add_device(sw("S"))
     b.add_port(access_port("S", "ge-0/0/1", vlan=10))
-    if blind_gateway:
+    if blind_gateway or dhcp_unresolved_gateway:
         from digital_twin.ir.entities import Device, DeviceRole
 
-        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1", l3_unmodeled=True))
+        b.add_device(
+            Device(
+                id="GW",
+                role=DeviceRole.GATEWAY,
+                site="s1",
+                l3_unmodeled=blind_gateway,
+                dhcp_unresolved=dhcp_unresolved_gateway,
+            )
+        )
     b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("site",) if served else ()))
     if with_client:
         b.add_client(wired_client("aa:00", "S:ge-0/0/1", vlan=10))
@@ -71,6 +86,34 @@ def test_blind_gateway_caps_the_removal_at_review():
     f = result.findings[0]
     assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
     assert result.coverage.state is CoverageState.PARTIAL
+
+
+def test_unresolved_gateway_dhcp_reference_caps_the_removal_at_review():
+    # review on 80c4c48 (P1): the namespace WAS fetched but a gateway dhcpd
+    # entry's name did not resolve — the gateway may serve DHCP on a vlan we
+    # cannot identify; the removal claim cannot be ERROR/HIGH/COMPLETE
+    result = _run(
+        _ir(served=True, dhcp_unresolved_gateway=True),
+        _ir(served=False, dhcp_unresolved_gateway=True),
+    )
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
+    assert result.coverage.state is CoverageState.PARTIAL
+
+
+def test_clients_known_requires_the_capability_on_both_sides():
+    # review on 80c4c48 (P2): the count is BASELINE-derived — a baseline
+    # without CLIENTS_ACTIVE but carrying stale client rows must not yield a
+    # confident ERROR from those rows
+    result = _run(
+        _ir(served=True, with_client=True, clients_fetched=False),
+        _ir(served=False, with_client=False, clients_fetched=True),
+    )
+    assert result.status is Status.WARN
+    assert result.findings[0].severity is Severity.WARNING
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("client" in n for n in result.coverage.notes)
 
 
 def test_unknown_client_data_does_not_silently_downgrade():

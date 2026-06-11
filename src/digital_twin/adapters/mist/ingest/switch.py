@@ -58,6 +58,24 @@ def _literal_subnet(value: Any) -> str | None:
     return str(value)
 
 
+def _org_vlan_map(ctx: IngestContext) -> dict[str, int]:
+    """name -> vlan_id over the ORG networks (the gateway namespace);
+    templated/unparseable vlan_ids are absent (unknown, never guessed)."""
+    out: dict[str, int] = {}
+    for net in ctx.raw.org_networks:
+        vid = _vlan_int(net.get("vlan_id"))
+        if vid is not None and net.get("name"):
+            out[str(net["name"])] = vid
+    return out
+
+
+def _gw_net_vlan(name: Any, org_map: Mapping[str, int], site_nets: Mapping[str, Any]) -> int | None:
+    vid = org_map.get(str(name))
+    if vid is not None:
+        return vid
+    return _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
+
+
 def _dhcp_active(entry: Any) -> bool:
     """A dhcpd_config entry IS a DHCP path when it serves (type local, the
     default) or forwards somewhere (relay WITH servers); 'none' is an explicit
@@ -159,6 +177,8 @@ class SwitchIngester:
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def _devices(self, ctx: IngestContext) -> None:
+        org_map = _org_vlan_map(ctx)
+        site_nets: dict[str, Any] = ctx.site_effective.get("networks") or {}
         for dev in ctx.raw.devices:
             role = _ROLE.get(str(dev.get("type")))
             if role is None or not dev.get("mac"):
@@ -186,6 +206,16 @@ class SwitchIngester:
                     l3_unmodeled=(
                         role is DeviceRole.GATEWAY
                         and "org_networks" not in ctx.raw.meta.fetched
+                    ),
+                    # an ACTIVE gateway dhcpd entry whose name does not resolve:
+                    # it may serve DHCP on a vlan we cannot identify
+                    dhcp_unresolved=(
+                        role is DeviceRole.GATEWAY
+                        and any(
+                            _dhcp_active(entry)
+                            and _gw_net_vlan(name, org_map, site_nets) is None
+                            for name, entry in (dev.get("dhcpd_config") or {}).items()
+                        )
                     ),
                 )
             )
@@ -245,11 +275,11 @@ class SwitchIngester:
                 continue
             did = device_id(str(dev["mac"]))
             for name, entry in (dev.get("dhcpd_config") or {}).items():
-                vid = org_vlan_by_name.get(str(name))
-                if vid is None:
-                    vid = _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
+                vid = _gw_net_vlan(name, org_vlan_by_name, site_nets)
                 if vid is not None and _dhcp_active(entry):
                     out.setdefault(vid, set()).add(did)
+                # unresolvable ACTIVE entries are NOT dropped silently: the
+                # device carries dhcp_unresolved (set in _devices) for them
         return out
 
     def _gateway_ports_and_l3(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:

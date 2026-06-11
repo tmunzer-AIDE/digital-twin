@@ -606,7 +606,9 @@ def test_gs22_variant_newly_routed_network_without_l3_is_review(tmp_path):
 def _gs24_doc(*, dhcp_net, gateway_namespace_fetched=True):
     doc = augmented_doc(parallel_carries_gs=True)
     if gateway_namespace_fetched:
-        doc["org_networks"] = []
+        # the fixture SRX's own dhcpd entry (LD_VLAN2) must RESOLVE, or its
+        # dhcp_unresolved flag honestly caps every removal claim at REVIEW
+        doc["org_networks"] = [{"name": "LD_VLAN2", "vlan_id": 2}]
         doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
     if dhcp_net != GS_NET_NAME:
         doc["setting"]["networks"][dhcp_net] = {"vlan_id": 997}

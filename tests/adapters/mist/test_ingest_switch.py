@@ -443,6 +443,41 @@ def test_vlan_dhcp_sources_from_site_and_gateway():
     assert ir.vlans[40].dhcp_sources == ()  # type none = explicitly no path
 
 
+def test_unresolvable_gateway_dhcp_reference_marks_the_gateway_unresolved():
+    # review on 80c4c48 (P1): org networks FETCHED but the gateway's dhcpd
+    # entry references a name that is not there (or has a templated vlan_id).
+    # GS22 rule: unresolved = UNKNOWN, not absent — the gateway may be serving
+    # DHCP on a vlan we cannot identify, and the check must know.
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    gw = {**_GATEWAY, "dhcpd_config": {"mystery_net": {"type": "local"}}, "ip_configs": {}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=_ORG_NETWORKS),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    dev = ctx.builder.build().devices["cc0000000001"]
+    assert dev.dhcp_unresolved is True
+
+
+def test_resolvable_gateway_dhcp_reference_is_not_flagged():
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    gw = {**_GATEWAY, "dhcpd_config": {"corp": {"type": "local"}}, "ip_configs": {}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=_ORG_NETWORKS),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    assert ctx.builder.build().devices["cc0000000001"].dhcp_unresolved is False
+
+
 def test_relay_without_servers_is_not_a_dhcp_path():
     from digital_twin.adapters.mist.ingest.base import IngestContext
     from digital_twin.ir import IRBuilder
