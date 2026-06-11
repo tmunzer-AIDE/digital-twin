@@ -47,6 +47,23 @@ sharp UNSAFE during live testing on the Live-Demo site.
 - 🔵 loop check FAIL path — currently maxes at WARN because Mist live data never
   asserts STP *disabled*; revisit if a config source for that appears.
 
+### Routing & services tier (needs the L3/routing IR extension)
+
+Today every plan touching these resolves to UNKNOWN by default-deny (test
+plan 02 pins it) — never false-SAFE, but not yet useful. Each item = model
+the config (allowlist + IR) + a check + a GS. Builds on "richer L3 exit
+modeling" below.
+
+- 🔵 **DHCP** — `dhcpd_config` / relay per network: removing the DHCP
+  path for a VLAN with observed clients → UNSAFE (clients lose addressing);
+  `dhcp_snooping` enable with an untrusted uplink → REVIEW.
+- 🔵 **OSPF** — `ospf_areas` / interface ospf config: withdrawing the area or
+  interface that is a segment's L3 exit → UNSAFE; passive/metric changes on a
+  transit interface → REVIEW.
+- 🔵 **BGP** — `bgp_config` (campus-fabric underlay/overlay, gateway WAN
+  peers): removing a neighbor that carries the fabric peering or the default
+  route → UNSAFE.
+
 ## 3. New scope — more fields / objects / sites
 
 - 🟡 widen the field allowlist case-by-case (each needs an IR model + check, or
