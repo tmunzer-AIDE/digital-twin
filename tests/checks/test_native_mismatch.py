@@ -1,0 +1,132 @@
+"""wired.l2.native_mismatch: a link whose two ends disagree on the native VLAN
+leaks untagged traffic between the two vlans — invisible to reachability
+analysis (the graph simply doesn't carry a mismatched native), so it needs its
+own check. Introduced by the delta -> ERROR; pre-existing -> INFO context;
+native changed against a vlan-blind peer -> WARNING (mismatch unverifiable);
+AP uplinks are vlan-transparent and never fire."""
+
+from digital_twin.analysis.context import AnalysisContext
+from digital_twin.checks.base import CheckContext, Status
+from digital_twin.checks.wired.native_mismatch import NativeVlanMismatchCheck
+from digital_twin.contracts import Severity
+from digital_twin.ir import (
+    ConfidenceLevel,
+    IRBuilder,
+    IRCapability,
+    Port,
+    PortMode,
+    diff_ir,
+)
+from digital_twin.ir.provenance import Provenance, fact_meta
+from tests.factories import ap, link, sw, trunk_port
+
+
+def _blind_port(pid):
+    # stat-ensured: OBSERVED, no vlan facts -> carriage unknown
+    did, name = pid.split(":")
+    return Port(
+        id=pid,
+        device_id=did,
+        name=name,
+        mode=PortMode.TRUNK,
+        meta=fact_meta(Provenance.OBSERVED, ("port ensured from stats",)),
+    )
+
+
+def _two_switch_ir(a_native, b_native, *, b_port=None):
+    b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
+    b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=a_native))
+    b.add_port(b_port or trunk_port("T", "ge-0/0/1", tagged=(20,), native=b_native))
+    b.add_link(link("S:ge-0/0/1", "T:ge-0/0/1"))  # two-sided -> HIGH
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def _run(base, prop):
+    return NativeVlanMismatchCheck().run(
+        CheckContext(
+            baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)
+        )
+    )
+
+
+def test_introduced_mismatch_is_unsafe():
+    result = _run(_two_switch_ir(10, 10), _two_switch_ir(10, 30))
+    assert result.status is Status.FAIL
+    f = result.findings[0]
+    assert f.code == "wired.l2.native_mismatch.introduced"
+    assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["a_native"] == 10 and f.evidence["b_native"] == 30
+
+
+def test_preexisting_mismatch_is_info_context_only():
+    result = _run(_two_switch_ir(10, 30), _two_switch_ir(10, 30))
+    assert result.status is Status.PASS
+    f = result.findings[0]
+    assert f.code == "wired.l2.native_mismatch.preexisting"
+    assert f.severity is Severity.INFO
+    # context must not drag the check-result confidence floor down
+    assert result.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_changing_an_already_mismatched_pair_is_still_attributed():
+    # (10,30) -> (10,40): the delta did not create the mismatch but it ALTERED
+    # it — the new leak pair is the delta's doing
+    result = _run(_two_switch_ir(10, 30), _two_switch_ir(10, 40))
+    assert result.status is Status.FAIL
+    assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
+
+
+def test_matching_natives_and_removed_native_are_silent():
+    assert _run(_two_switch_ir(10, 10), _two_switch_ir(10, 10)).findings == ()
+    # removing the native (None) means no untagged traffic -> nothing to leak
+    assert _run(_two_switch_ir(10, 10), _two_switch_ir(None, 10)).findings == ()
+
+
+def test_inferred_end_caps_severity_and_confidence():
+    # one end's native comes from an INFERRED usage (e.g. system-defined) ->
+    # the mismatch claim cannot exceed MEDIUM -> WARNING, not ERROR
+    inferred = Port(
+        id="T:ge-0/0/1",
+        device_id="T",
+        name="ge-0/0/1",
+        mode=PortMode.TRUNK,
+        native_vlan=30,
+        tagged_vlans=(20,),
+        meta=fact_meta(Provenance.INFERRED, ("system-defined usage",)),
+    )
+    result = _run(_two_switch_ir(10, 10), _two_switch_ir(10, None, b_port=inferred))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_native_change_against_a_blind_peer_is_unverifiable():
+    blind = _blind_port("T:ge-0/0/1")
+    result = _run(
+        _two_switch_ir(10, None, b_port=blind), _two_switch_ir(30, None, b_port=blind)
+    )
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.l2.native_mismatch.unverified"
+    assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_unchanged_native_against_a_blind_peer_is_silent():
+    blind = _blind_port("T:ge-0/0/1")
+    result = _run(
+        _two_switch_ir(10, None, b_port=blind), _two_switch_ir(10, None, b_port=blind)
+    )
+    assert result.findings == ()
+
+
+def test_ap_uplinks_are_vlan_transparent_and_never_fire():
+    def ir(native):
+        b = IRBuilder().add_device(sw("S")).add_device(ap("A"))
+        b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=native))
+        b.add_port(Port(id="A:eth0", device_id="A", name="eth0", mode=PortMode.TRUNK))
+        b.add_link(link("S:ge-0/0/1", "A:eth0"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    assert _run(ir(10), ir(30)).findings == ()

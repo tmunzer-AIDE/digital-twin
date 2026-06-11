@@ -133,9 +133,12 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   the rest of its L2 domain — e.g. disabling a switch's only uplink; needs no
   exit modeling, the severance itself is the evidence, at the severed links'
   LLDP confidence), `wired.l2.vlan_segmentation` (broadcast-domain shape
-  change), `wired.poe.disconnect` (cutting `poe_disabled` to a port that powers
-  a device — an LLDP-confirmed AP or one observed drawing power — disconnects
-  it and everything behind it; UNSAFE), `wired.client.impact`
+  change), `wired.l2.native_mismatch` (a link whose ends disagree on the
+  native VLAN silently leaks untagged traffic between the two vlans —
+  introduced by the delta UNSAFE, pre-existing context, changed against a
+  vlan-blind peer REVIEW), `wired.poe.disconnect` (cutting `poe_disabled` to a
+  port that powers a device — an LLDP-confirmed AP or one observed drawing
+  power — disconnects it and everything behind it; UNSAFE), `wired.client.impact`
   (currently-connected wired + wireless clients affected). Checks consume only
   the IR — never raw vendor payloads — so new vendors plug in at the adapter
   seam.
@@ -189,7 +192,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the four wired checks + registry (the ONLY layer with severity)
+├── checks/           the seven wired checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

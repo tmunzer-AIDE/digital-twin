@@ -403,6 +403,30 @@ def test_gs17_poe_cut_with_unknown_powered_state_is_review(tmp_path):
     assert f.evidence["port"].endswith("ge-0/0/96")
 
 
+def test_gs18_introduced_native_vlan_mismatch_is_unsafe(tmp_path):
+    # both ends of the augmented parallel link get config natives (998) in the
+    # baseline; the op moves ONE side's native to 997 -> untagged traffic now
+    # crosses between vlan 998 and 997 on a HIGH two-sided link -> UNSAFE.
+    from .builders import GS_NET, HUB, HUB_PAR_PORT, _device
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["setting"]["networks"]["gs_nat"] = {"vlan_id": 998}
+    doc["setting"]["networks"]["gs_nat2"] = {"vlan_id": 997}
+    doc["setting"]["port_usages"]["gs_nat_trunk"] = {
+        "mode": "trunk", "networks": [GS_NET], "port_network": "gs_nat"
+    }
+    doc["setting"]["port_usages"]["gs_nat2_trunk"] = {
+        "mode": "trunk", "networks": [GS_NET], "port_network": "gs_nat2"
+    }
+    _device(doc, EDGE)["port_config"][EDGE_PAR_PORT] = {"usage": "gs_nat_trunk"}
+    _device(doc, HUB)["port_config"][HUB_PAR_PORT] = {"usage": "gs_nat_trunk"}
+    op = device_op(doc, EDGE, **{EDGE_PAR_PORT.replace("/", "__"): "gs_nat2_trunk"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l2.native_mismatch.introduced")
+    assert {f.evidence["a_native"], f.evidence["b_native"]} == {997, 998}
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

@@ -31,7 +31,12 @@ sharp UNSAFE during live testing on the Live-Demo site.
 
 ## 2. New coverage — more checks over the existing IR
 
-- 🔵 native-VLAN mismatch on a trunk link (silent VLAN leak / black hole).
+- ✅ **native-VLAN mismatch** — `wired.l2.native_mismatch`: both-ends-known
+  mismatch introduced/altered by the delta → UNSAFE (the leak is invisible to
+  reachability analysis — the graph just drops the native); pre-existing →
+  INFO context; native changed against a vlan-blind peer → REVIEW
+  (unverifiable, never silent); AP uplinks vlan-transparent. GS18.
+  [done 2026-06-10]
 - 🔵 MTU mismatch across a link.
 - 🔵 STP topology: root-bridge change, a configured `stp_edge` on an uplink.
 - 🔵 loop check FAIL path — currently maxes at WARN because Mist live data never
