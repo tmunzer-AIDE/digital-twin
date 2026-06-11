@@ -38,17 +38,19 @@ _ASSUMED_DEFAULT = Confidence(
 )
 
 
-def _root_of(ir: IR, component: frozenset[str]) -> tuple[str, bool] | None:
+_ABSTAIN = "abstain"
+
+
+def _root_of(ir: IR, component: frozenset[str]) -> tuple[str, bool] | str | None:
     """(root device id, any-default-assumed) for the component's switches —
-    None when fewer than two switches (no election to disturb)."""
+    None when fewer than two switches (no election to disturb), _ABSTAIN when
+    an uninterpretable priority makes the election unpredictable (the caller
+    must surface that as PARTIAL coverage, never a clean pass)."""
     switches = [d for d in component if ir.devices[d].role is DeviceRole.SWITCH]
     if len(switches) < 2:
         return None
     if any(ir.devices[d].stp_priority_invalid for d in switches):
-        # an uninterpretable priority in the component: the election cannot be
-        # predicted — ABSTAIN rather than simulate the default; the adapter
-        # finding scope.stp.bridge_priority_invalid owns the REVIEW
-        return None
+        return _ABSTAIN
     assumed = any(ir.devices[d].stp_priority is None for d in switches)
 
     def election_key(d: str) -> tuple[int, str]:
@@ -76,9 +78,16 @@ class StpRootChangeCheck:
         base_comps = [frozenset(c) for c in nx.connected_components(ctx.baseline.l2_graph())]
         prop_comps = [frozenset(c) for c in nx.connected_components(ctx.proposed.l2_graph())]
         findings: list[Finding] = []
+        notes: list[str] = []
         for comp in prop_comps:
             elected = _root_of(prop_ir, comp)
             if elected is None:
+                continue
+            if not isinstance(elected, tuple):
+                notes.append(
+                    f"proposed component of {len(comp)} devices: uninterpretable "
+                    "bridge priority — root election abstained"
+                )
                 continue
             prop_root, prop_assumed = elected
             for base_comp in base_comps:
@@ -86,6 +95,12 @@ class StpRootChangeCheck:
                     continue
                 base_elected = _root_of(base_ir, base_comp)
                 if base_elected is None:
+                    continue
+                if not isinstance(base_elected, tuple):
+                    notes.append(
+                        f"baseline component of {len(base_comp)} devices: uninterpretable "
+                        "bridge priority — root election abstained"
+                    )
                     continue
                 base_root, base_assumed = base_elected
                 if base_root == prop_root:
@@ -119,7 +134,10 @@ class StpRootChangeCheck:
             check_id=self.id,
             status=Status.WARN if findings else Status.PASS,
             findings=tuple(findings),
-            coverage=Coverage(state=CoverageState.COMPLETE),
+            coverage=Coverage(
+                state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
+                notes=tuple(notes),
+            ),
             confidence=(
                 min_confidence(*(f.confidence for f in findings)) if findings else _HIGH
             ),

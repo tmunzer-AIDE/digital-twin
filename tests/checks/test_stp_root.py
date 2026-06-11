@@ -88,7 +88,15 @@ def test_invalid_priority_abstains_instead_of_predicting():
         b.with_capability(IRCapability.WIRED_L2)
         return b.build()
 
-    assert _run(ir(False), ir(True)).findings == ()
+    result = _run(ir(False), ir(True))
+    assert result.findings == ()
+    # review (ca71a58 follow-up): the abstention must be visible on the check
+    # result itself — PARTIAL coverage (-> REVIEW floor), never a clean
+    # PASS/COMPLETE that only the Mist adapter finding rescues
+    from digital_twin.checks.base import CoverageState
+
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("abstain" in n for n in result.coverage.notes)
 
 
 def test_single_switch_component_is_silent():
