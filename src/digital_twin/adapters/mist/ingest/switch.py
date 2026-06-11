@@ -268,6 +268,12 @@ class SwitchIngester:
             vid = _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
             if vid is not None and _dhcp_active(entry):
                 out.setdefault(vid, set()).add("site")
+        if "org_networks" not in ctx.raw.meta.fetched:
+            # the gateway namespace is UNKNOWN: crediting a gateway as a DHCP
+            # source via a same-named site network would be a guess — worse, a
+            # POSITIVE one that suppresses removal findings before the
+            # l3_unmodeled cap can run. No facts from blind gateways.
+            return out
         for dev in ctx.raw.devices:
             if dev.get("type") != "gateway" or not dev.get("mac"):
                 continue
@@ -298,10 +304,16 @@ class SwitchIngester:
         LAN port is terminated by the gateway per the Mist gateway model —
         real but inferred (INFERRED/MEDIUM)."""
         did = device_id(str(dev["mac"]))
+        org_fetched = "org_networks" in ctx.raw.meta.fetched
         org_nets = {str(n.get("name")): n for n in ctx.raw.org_networks if n.get("name")}
         site_nets: dict[str, Any] = ctx.site_effective.get("networks") or {}
 
         def net_of(name: Any) -> Mapping[str, Any] | None:
+            # namespace UNFETCHED -> no resolution at all (a same-named site
+            # network would be a cross-namespace guess); the device is marked
+            # l3_unmodeled and its ports stay vlan-blind
+            if not org_fetched:
+                return None
             return org_nets.get(str(name)) or site_nets.get(str(name))
 
         def vlan_of(name: Any) -> int | None:

@@ -488,6 +488,31 @@ def test_templated_org_vlan_must_not_be_guessed_from_the_site_namespace():
     assert "cc0000000001" not in ir.vlans[10].dhcp_sources
 
 
+def test_unfetched_namespace_never_credits_the_gateway_as_a_dhcp_source():
+    # review on fa9c0a9: org_networks UNFETCHED -> the org map is empty, every
+    # name looks "missing", and the site fallback guessed a vlan — crediting
+    # the blind gateway as a DHCP source SUPPRESSES removal findings before
+    # the l3_unmodeled cap can run. Unfetched namespace = no gateway facts.
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    fetched = tuple(f for f in ALL_FETCHED if f != "org_networks")
+    eff = {"networks": {"corp": {"vlan_id": 10}},
+           "dhcpd_config": {"corp": {"type": "local"}}}
+    gw = {**_GATEWAY, "port_config": {}, "ip_configs": {},
+          "dhcpd_config": {"corp": {"type": "local"}}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), fetched=fetched),
+        site_effective=eff,
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].dhcp_sources == ("site",)  # the gateway is NOT credited
+    assert ir.devices["cc0000000001"].l3_unmodeled is True
+
+
 def test_resolvable_gateway_dhcp_reference_is_not_flagged():
     from digital_twin.adapters.mist.ingest.base import IngestContext
     from digital_twin.ir import IRBuilder
