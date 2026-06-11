@@ -29,11 +29,33 @@ from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_m
 
 from .base import IngestContext
 from .dynamic_usage import classify_dynamic_port
-from .ports import resolve_effective_ports, resolve_port_bases, usage_definition, usage_vlans
+from .ports import (
+    expand_port_members,
+    resolve_effective_ports,
+    resolve_port_bases,
+    usage_definition,
+    usage_vlans,
+)
 
 _Json = Mapping[str, Any]
 
 _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole.GATEWAY}
+
+
+def _vlan_int(value: Any) -> int | None:
+    """Org-level objects can carry UNRESOLVED template vars ('{{guest_vlan}}')
+    — found live 2026-06-11; unparseable = UNKNOWN, never a crash or a guess."""
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _literal_subnet(value: Any) -> str | None:
+    """A subnet still carrying '{{vars}}' is unresolved intent — not a fact."""
+    if not value or "{{" in str(value):
+        return None
+    return str(value)
 
 
 # Junos bridge priorities: 0..61440 in 4096 steps ("Range [0, 4k, 8k.. 60k]")
@@ -121,6 +143,8 @@ class SwitchIngester:
         for dev in ctx.raw.devices:
             if dev.get("type") == "switch":
                 self._switch_ports_and_l3(ctx, dev)
+            elif dev.get("type") == "gateway":
+                self._gateway_ports_and_l3(ctx, dev)
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def _devices(self, ctx: IngestContext) -> None:
@@ -155,6 +179,14 @@ class SwitchIngester:
         # device-local network must still yield a Vlan entity (per-VLAN graphs
         # enumerate ir.vlans; a missing entity would hide it from analysis).
         seen: set[int] = set()
+        # ORG networks carry the routed intent (subnet) the gateway serves —
+        # overlay it onto vlans the switch side knows only by id
+        org_subnets: dict[int, str] = {}
+        for net in ctx.raw.org_networks:
+            vid = _vlan_int(net.get("vlan_id"))
+            subnet = _literal_subnet(net.get("subnet"))
+            if vid is not None and subnet:
+                org_subnets.setdefault(vid, subnet)
         sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
@@ -162,8 +194,116 @@ class SwitchIngester:
                 if vid is not None and int(vid) not in seen:
                     seen.add(int(vid))
                     ctx.builder.add_vlan(
-                        Vlan(vlan_id=int(vid), name=name, scope=ctx.raw.scope.site_id)
+                        Vlan(
+                            vlan_id=int(vid),
+                            name=name,
+                            scope=ctx.raw.scope.site_id,
+                            subnet=net.get("subnet") or org_subnets.get(int(vid)),
+                        )
                     )
+
+    def _gateway_ports_and_l3(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:
+        """GS22: the gateway's OWN config — its LAN trunk carriage (so the
+        core<->gateway link end stops being vlan-blind) and its L3 interfaces
+        (HIGH/MEDIUM exits instead of MEDIUM boundary assumptions).
+
+        Gateways are not a compile target in M1: facts come from the RAW
+        device object, and network names resolve via the ORG networks list
+        (the gateway namespace — real orgs use DIFFERENT names there than in
+        the switch-side site networks; found live 2026-06-11), with the site
+        networks as fallback. A port referencing ANY unresolvable name stays
+        VLAN-BLIND (carriage unknown, assumed-carriage applies) — claiming a
+        config-empty trunk would be a false 'carries nothing'.
+
+        L3 interfaces, two grades: an `ip_configs` entry is an explicit
+        statement (CONFIG/HIGH); a ROUTED org network (subnet) attached to a
+        LAN port is terminated by the gateway per the Mist gateway model —
+        real but inferred (INFERRED/MEDIUM)."""
+        did = device_id(str(dev["mac"]))
+        org_nets = {str(n.get("name")): n for n in ctx.raw.org_networks if n.get("name")}
+        site_nets: dict[str, Any] = ctx.site_effective.get("networks") or {}
+
+        def net_of(name: Any) -> Mapping[str, Any] | None:
+            return org_nets.get(str(name)) or site_nets.get(str(name))
+
+        def vlan_of(name: Any) -> int | None:
+            return _vlan_int((net_of(name) or {}).get("vlan_id"))
+
+        lan_networks: set[str] = set()
+        for key, attrs in (dev.get("port_config") or {}).items():
+            attrs = attrs or {}
+            referenced = [str(n) for n in attrs.get("networks") or []]
+            if attrs.get("port_network"):
+                referenced.append(str(attrs["port_network"]))
+            lan_networks.update(referenced)
+            unresolved = [n for n in referenced if vlan_of(n) is None]
+            if unresolved:
+                native: int | None = None
+                tagged: tuple[int, ...] = ()
+                meta = fact_meta(
+                    Provenance.INFERRED,
+                    (f"gateway port references unresolvable network(s) {unresolved!r}"
+                     " — carriage unknown",),
+                )
+            else:
+                native = vlan_of(attrs.get("port_network"))
+                tagged = tuple(
+                    sorted(
+                        v
+                        for v in (vlan_of(n) for n in attrs.get("networks") or [])
+                        if v is not None and v != native
+                    )
+                )
+                meta = CONFIG_META
+            for member in expand_port_members(str(key)):
+                ctx.builder.add_port(
+                    Port(
+                        id=port_id(did, member),
+                        device_id=did,
+                        name=member,
+                        mode=PortMode.TRUNK if tagged else PortMode.ACCESS,
+                        native_vlan=native,
+                        tagged_vlans=tagged,
+                        profile=attrs.get("usage"),
+                        disabled=bool(attrs.get("disabled")),
+                        meta=meta,
+                    )
+                )
+        l3_vlans: set[int] = set()
+        for net_name, ipc in (dev.get("ip_configs") or {}).items():
+            vid = vlan_of(net_name)
+            if vid is not None:
+                l3_vlans.add(vid)
+                ctx.builder.add_l3intf(
+                    L3Intf(
+                        device_id=did,
+                        role=L3Role.GATEWAY,
+                        vlan_id=vid,
+                        ip=(ipc or {}).get("ip"),
+                        subnet=None,
+                    )
+                )
+        for name in sorted(lan_networks):
+            net = net_of(name)
+            vid = vlan_of(name)
+            subnet = _literal_subnet((net or {}).get("subnet"))
+            if net is None or vid is None or vid in l3_vlans or subnet is None:
+                continue
+            l3_vlans.add(vid)
+            ctx.builder.add_l3intf(
+                L3Intf(
+                    device_id=did,
+                    role=L3Role.GATEWAY,
+                    vlan_id=vid,
+                    ip=net.get("gateway"),
+                    subnet=subnet,
+                    meta=fact_meta(
+                        Provenance.INFERRED,
+                        (f"routed network {name!r} attached to a gateway LAN port — "
+                         "L3 termination per the Mist gateway model",),
+                    ),
+                )
+            )
 
     def _switch_ports_and_l3(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:
         did = device_id(str(dev["mac"]))

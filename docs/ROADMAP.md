@@ -24,10 +24,21 @@ sharp UNSAFE during live testing on the Live-Demo site.
   UNSAFE when a port that powers an LLDP-confirmed AP or an observed-drawing
   device loses PoE. Verified live: `plan.json` now → UNSAFE naming the exact
   APs and their client counts (was UNKNOWN). [done 2026-06-10]
-- 🔵 **Richer L3 exit modeling** (GS22) — many verdicts cap at MEDIUM because the only
-  exit is a `boundary_uplink` over an assumed-carriage edge (no IRB on the
-  switches; L3 lives on the SRX). Model the gateway/SRX side and the neighbor
-  switch's downlink config so VLAN-2-class exits resolve at HIGH.
+- ✅ **Richer L3 exit modeling** (GS22) — done 2026-06-11. The gateway/SRX is
+  modeled from its OWN config: LAN-port carriage (names resolved via the new
+  `org_networks` fetch — the GATEWAY namespace, different names than the
+  switch-side site networks; unresolvable names → vlan-BLIND port, never
+  config-empty) and L3 interfaces (ip_configs → CONFIG/HIGH; routed org
+  network attached to a LAN port → INFERRED/MEDIUM per the Mist gateway
+  model). `Vlan.subnet` carries routed intent (site + org overlay; `{{var}}`
+  values stay unresolved, never guessed — live org crash caught this). New
+  check `wired.l3.gateway_gap` (MVP: ROUTE-GW): removing the only modeled L3
+  interface of a routed network → UNSAFE; newly-routed-unserved → REVIEW.
+  Live: vlan 2 + vlan 250 lost their "unlocatable exit" blind spots (the SRX
+  terminating LD_VLAN2 is now a modeled exit); only vlan 22 remains, honestly.
+  NOTE remaining: fixture re-captures need redaction to hash network-NAME
+  references consistently (org network `name` vs port_config lists) or
+  gateway joins break in fixtures — tracked in section 5.
 - 🔵 **Dynamic profiles on neighbor switches** (GS23) — the core's downlink to an IDF
   isn't in its `port_config` (system/dynamic), so inter-switch links are
   blind-peer (MEDIUM). Resolving the *neighbor's* dynamic/system ports would
@@ -143,6 +154,12 @@ modeling" below.
   (all 12 values → `REDACTED-EXPIRED-HISTORY` across 102 commits; SHAs
   changed; pre-rewrite mirror kept at `../digital-twin-pre-rewrite-backup.git`
   — delete it after a sanity period, it still holds the expired values).
+- 🟡 redaction network-name joins — `name` VALUES are hashed (NAME_KEYS) but
+  references to networks inside lists (gateway `port_config.networks`,
+  `ip_configs` keys) are not, so the gateway↔org-network join breaks in
+  redacted fixtures (carriage falls back to blind — honest but imprecise).
+  Extend redaction to hash network-name references consistently before the
+  next fixture capture.
 - ✅ redaction entropy catch-all — backstop added (REDACTION_VERSION 6,
   2026-06-11): contiguous hex ≥36 chars (longer than any pseudonym the module
   mints) redacted unconditionally; base64-ish tokens ≥24 chars redacted when

@@ -173,6 +173,7 @@ class MistApiProvider(StateProvider):
             ),
             wired_clients=tuple(attempt("wired_clients", wired_clients_fn, [])),
             wlans=tuple(attempt("wlans", lambda: self._wlans(scope), [])),
+            org_networks=tuple(attempt("org_networks", lambda: self._org_networks(scope), [])),
             derived_setting=derived,
             meta=StateMeta(
                 acquired_at=_now(),
@@ -267,6 +268,15 @@ class MistApiProvider(StateProvider):
         # the plain per-site list EMPTY (found in real use, 2026-06-10) — the
         # twin would then falsely "know" there are no WLAN requirements.
         resp = mistapi.api.v1.sites.wlans.listSiteWlansDerived(self._session, s.site_id)
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
+    def _org_networks(self, s: SiteScope) -> list[_Json]:
+        # the GATEWAY's network namespace: org networks carry name + vlan_id +
+        # subnet; gateway port_config/ip_configs reference them BY NAME (the
+        # site/template networks are the switch namespace — different names,
+        # found in real use 2026-06-11). NOTE: the list endpoint omits unset
+        # fields; vlan_id is present on the full objects where configured.
+        resp = mistapi.api.v1.orgs.networks.listOrgNetworks(self._session, s.org_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     # -- org-batched endpoints (payload identical to the per-site call) --------

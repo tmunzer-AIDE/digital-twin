@@ -36,6 +36,7 @@ _RAW_FIELDS = (
     "wireless_clients",
     "wired_clients",
     "wlans",
+    "org_networks",
     "derived_setting",
 )
 
@@ -98,6 +99,7 @@ def load_fixture_raw(path: Path | str) -> RawSiteState:
         wireless_clients=tuple(data["wireless_clients"]),
         wired_clients=tuple(data["wired_clients"]),
         wlans=tuple(data.get("wlans", ())),  # .get: fixtures predating WLAN support
+        org_networks=tuple(data.get("org_networks", ())),  # .get: pre-GS22 fixtures
         derived_setting=data["derived_setting"],
         meta=StateMeta(
             acquired_at=datetime.fromisoformat(meta["acquired_at"]).astimezone(UTC),

@@ -35,7 +35,20 @@ _DYNAMIC_PROFILE_ATTRS: tuple[str, ...] = ("rules", "reset_default_when")
 # local_port_config (schema) — hence not in _MODELED_USAGE_ATTRS.
 _STP_USAGE_ATTRS: tuple[str, ...] = ("stp_edge", "stp_disable")
 
-_NETWORK_LEAVES: tuple[str, ...] = ("networks.*.vlan_id",)
+# vlan_id = the L2 fact; subnet/gateway = ROUTED intent (Vlan.subnet feeds the
+# wired.l3.gateway_gap check).
+_NETWORK_LEAVES: tuple[str, ...] = (
+    "networks.*.vlan_id",
+    "networks.*.subnet",
+    "networks.*.gateway",
+)
+# Switch IRB facts the IR ingests (other_ip_configs -> L3Intf): existence +
+# addressing. Other leaves (evpn flags, dhcp relay knobs) stay denied.
+_IRB_LEAVES: tuple[str, ...] = (
+    "other_ip_configs.*.type",
+    "other_ip_configs.*.ip",
+    "other_ip_configs.*.netmask",
+)
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"
     for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS, *_STP_USAGE_ATTRS)
@@ -75,6 +88,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_USAGE_LEAVES,
         *_DEVICE_PORT_LEAVES,
         *_STP_CONFIG_LEAVES,
+        *_IRB_LEAVES,
         "name",
         "notes",
     ),
@@ -113,5 +127,6 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_USAGE_LEAVES,
     *_DEVICE_PORT_LEAVES,
     *_STP_CONFIG_LEAVES,
+    *_IRB_LEAVES,
     "vars.*",
 )

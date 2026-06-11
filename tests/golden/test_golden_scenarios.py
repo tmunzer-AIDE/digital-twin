@@ -531,6 +531,57 @@ def test_gs21_variant_invalid_bridge_priority_is_review(tmp_path):
     assert not any(f.code == "wired.stp.root_change.moved" for f in v.findings)
 
 
+def test_gs22_removing_the_irb_of_a_routed_network_is_unsafe(tmp_path):
+    # ROUTE-GW: a network that declares a subnet states routed intent. The
+    # delta deletes the only modeled L3 interface (EDGE's IRB) — no members
+    # needed, the config break itself is the harm -> UNSAFE.
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["setting"]["networks"]["gs_routed"] = {"vlan_id": 998, "subnet": "203.0.113.0/24"}
+    _device(doc, EDGE).setdefault("other_ip_configs", {})["gs_routed"] = {
+        "type": "static", "ip": "203.0.113.1", "netmask": "255.255.255.0"
+    }
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev["other_ip_configs"] = {
+        k: v for k, v in dev["other_ip_configs"].items() if k != "gs_routed"
+    }
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.removed")
+    assert f.evidence["vlan"] == 998
+
+
+def test_gs22_variant_newly_routed_network_without_l3_is_review(tmp_path):
+    # declaring routed intent for a network nothing serves: the L3 interface
+    # could live on an unmodeled box -> REVIEW, never silence
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev.setdefault("networks", {})["gs_unserved"] = {
+        "vlan_id": 997, "subnet": "203.0.113.0/24"
+    }
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.unserved")
+    assert f.evidence["vlan"] == 997
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

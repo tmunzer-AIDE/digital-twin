@@ -45,6 +45,7 @@ class L3Role(StrEnum):
     SVI = "svi"
     WAN = "wan"
     LOOPBACK = "loopback"
+    GATEWAY = "gateway"  # gateway/SRX-side L3 interface (device ip_configs)
 
 
 class ClientKind(StrEnum):
@@ -142,6 +143,9 @@ class Vlan:
     vlan_id: int
     name: str | None = None
     scope: str = "site"
+    # ROUTED intent: the network declares a subnet — someone must provide its
+    # L3 interface (the wired.l3.gateway_gap check consumes this)
+    subnet: str | None = None
     meta: FactMeta = CONFIG_META
 
     @property

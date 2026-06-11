@@ -57,6 +57,7 @@ def raw_site(
     wireless_clients: tuple[dict[str, Any], ...] = (),
     wired_clients: tuple[dict[str, Any], ...] = (),
     wlans: tuple[dict[str, Any], ...] = (),
+    org_networks: tuple[dict[str, Any], ...] = (),
     fetched: tuple[str, ...] = ALL_FETCHED,
 ) -> RawSiteState:
     return RawSiteState(
@@ -70,6 +71,7 @@ def raw_site(
         wireless_clients=wireless_clients,
         wired_clients=wired_clients,
         wlans=wlans,
+        org_networks=org_networks,
         derived_setting=None,
         meta=StateMeta(acquired_at=datetime.now(UTC), host="test", fetched=fetched, failures=()),
     )

@@ -168,6 +168,23 @@ def test_poe_disabled_is_in_scope():
     assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
 
 
+def test_routed_network_and_irb_leaves_are_in_scope():
+    # GS22: networks.*.{subnet,gateway} declare ROUTED intent (Vlan.subnet,
+    # the wired.l3.gateway_gap check); other_ip_configs.*.{type,ip,netmask}
+    # are the switch IRB facts the IR already ingests
+    cur = {"networks": {"corp": {"vlan_id": 10}}}
+    new = {"networks": {"corp": {"vlan_id": 10, "subnet": "198.51.100.0/24",
+                                 "gateway": "198.51.100.1"}}}
+    assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
+    irb = {**SWITCH_CUR, "other_ip_configs": {"corp": {"type": "static",
+                                                       "ip": "198.51.100.2",
+                                                       "netmask": "255.255.255.0"}}}
+    assert screen_op("device", SWITCH_CUR, irb) is None
+    # unmodeled other_ip_configs leaves stay out of scope (leaf-tightened)
+    odd = {**SWITCH_CUR, "other_ip_configs": {"corp": {"evpn_anycast": True}}}
+    assert isinstance(screen_op("device", SWITCH_CUR, odd), Rejection)
+
+
 def test_stp_leaves_are_in_scope():
     # stp_edge/stp_disable on port_usages + inline stp_edge on
     # local_port_config (schema: NOT on port_config) + stp_config.bridge_priority

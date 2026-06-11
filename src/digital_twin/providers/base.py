@@ -62,6 +62,11 @@ class RawSiteState:
     # (and trailing) so existing constructors/fixtures predating it stay valid;
     # absence is "not fetched", which leaves the WLAN_CONFIG capability unearned.
     wlans: tuple[JsonObj, ...] = ()
+    # ORG networks (GET /orgs/{org}/networks) — the GATEWAY's network
+    # namespace: name -> (vlan_id, subnet). Gateways reference these by name in
+    # port_config/ip_configs; site/template networks are the SWITCH namespace.
+    # Defaulted: absence leaves gateway carriage vlan-blind (never config-empty).
+    org_networks: tuple[JsonObj, ...] = ()
 
 
 @dataclass(frozen=True)

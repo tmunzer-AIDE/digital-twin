@@ -252,6 +252,168 @@ def test_mtu_from_usage_and_inline_override():
     assert ir.ports["aa0000000001:ge-0/0/3"].mtu == 9000
 
 
+_GATEWAY = {
+    "type": "gateway",
+    "mac": "cc0000000001",
+    "id": "00000000-0000-0000-2000-cc0000000001",
+    "port_config": {
+        "ge-0/0/3": {
+            "usage": "lan",
+            "networks": ["corp", "iot"],
+            "port_network": "mgmt",
+        },
+        "ge-0/0/0": {"usage": "wan"},
+    },
+    "ip_configs": {"corp": {"type": "static", "ip": "198.51.100.1"}},
+}
+
+# the GATEWAY namespace is the ORG networks list (real orgs use different
+# names there than in the switch-side site networks — found live 2026-06-11)
+_ORG_NETWORKS = (
+    {"name": "corp", "vlan_id": 10, "subnet": "198.51.100.0/24"},
+    {"name": "iot", "vlan_id": "20"},
+    {"name": "mgmt", "vlan_id": 1},
+)
+
+
+def _gateway_ir(org_networks=_ORG_NETWORKS):
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=(_GATEWAY,), org_networks=org_networks),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    return ctx.builder.build()
+
+
+def test_gateway_lan_port_carriage_resolves_via_org_networks():
+    # GS22: the gateway's LAN trunk declares its carriage — that end of the
+    # core<->gateway link must stop being vlan-blind (assumed/MEDIUM)
+    ir = _gateway_ir()
+    p = ir.ports["cc0000000001:ge-0/0/3"]
+    assert p.native_vlan == 1 and p.tagged_vlans == (10, 20)
+    assert p.meta.provenance.value == "config"
+
+
+def test_gateway_unresolvable_network_names_make_the_port_blind_not_empty():
+    # a config-empty trunk claims "carries NOTHING" — false if the names just
+    # don't resolve (e.g. org networks not fetched). Carriage UNKNOWN -> the
+    # L2 graph's assumed-carriage rule takes over (unknown != empty)
+    ir = _gateway_ir(org_networks=())
+    p = ir.ports["cc0000000001:ge-0/0/3"]
+    assert p.native_vlan is None and p.tagged_vlans == ()
+    assert p.meta.provenance.value == "inferred"
+
+
+def test_gateway_wan_port_carries_no_site_vlans():
+    ir = _gateway_ir()
+    p = ir.ports["cc0000000001:ge-0/0/0"]
+    assert p.native_vlan is None and p.tagged_vlans == ()
+
+
+def test_gateway_l3_interfaces_from_ip_configs_and_attached_routed_networks():
+    from digital_twin.ir.entities import L3Role
+
+    ir = _gateway_ir()
+    gw_intfs = {i.vlan_id: i for i in ir.l3intfs if i.device_id == "cc0000000001"}
+    # ip_configs entry: an explicit config statement -> HIGH
+    assert gw_intfs[10].role is L3Role.GATEWAY and gw_intfs[10].ip == "198.51.100.1"
+    assert gw_intfs[10].meta.confidence.level.name == "HIGH"
+    # 'corp' is ALSO routed (subnet) + attached to the LAN port — same intf;
+    # 'iot' has no subnet and no ip_config -> no L3 claim for vlan 20
+    assert 20 not in gw_intfs
+
+
+def test_gateway_attached_routed_network_without_ip_config_is_an_inferred_exit():
+    from digital_twin.ir.entities import L3Role
+
+    org_nets = ({"name": "corp", "vlan_id": 10, "subnet": "198.51.100.0/24"},
+                {"name": "iot", "vlan_id": 20}, {"name": "mgmt", "vlan_id": 1})
+    gw = {**_GATEWAY, "ip_configs": {}}
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=org_nets),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    intfs = {i.vlan_id: i for i in ir.l3intfs if i.device_id == "cc0000000001"}
+    # routed + attached to a LAN port: the Mist gateway model terminates it
+    # there — INFERRED (the claim rides the model, not an explicit statement)
+    assert intfs[10].role is L3Role.GATEWAY
+    assert intfs[10].meta.provenance.value == "inferred"
+
+
+def test_templated_org_network_values_never_crash_and_stay_unresolved():
+    # real orgs carry org-level template vars in networks (vlan_id
+    # '{{guest_vlan}}', subnet '{{guest_net}}/{{cidr}}') — found live
+    # 2026-06-11, crashed the whole ingester. Unresolvable = UNKNOWN: the
+    # referencing port stays blind, no routed intent is invented.
+    org_nets = (
+        {"name": "guest", "vlan_id": "{{guest_vlan}}", "subnet": "{{guest_net}}/{{cidr}}"},
+        {"name": "mgmt", "vlan_id": 1},
+        {"name": "corp", "vlan_id": 10},
+        {"name": "iot", "vlan_id": 20},
+    )
+    gw = {**_GATEWAY, "port_config": {"ge-0/0/3": {"usage": "lan",
+                                                   "networks": ["corp", "guest"],
+                                                   "port_network": "mgmt"}}}
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=org_nets),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    p = ir.ports["cc0000000001:ge-0/0/3"]
+    assert p.tagged_vlans == () and p.meta.provenance.value == "inferred"  # blind
+    assert all("{{" not in str(v.subnet) for v in ir.vlans.values() if v.subnet)
+
+
+def test_org_network_subnet_marks_the_vlan_routed():
+    eff = {"networks": {"corp_sw": {"vlan_id": 10}}}
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A,), org_networks=_ORG_NETWORKS),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].subnet == "198.51.100.0/24"  # org net 'corp' overlay
+
+
+def test_vlan_carries_routed_intent_subnet():
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {"networks": {"corp": {"vlan_id": 10, "subnet": "198.51.100.0/24"}}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].subnet == "198.51.100.0/24"
+
+
 def test_device_stp_config_survives_compile():
     # found via GS21: compile_device only carries listed device fields — a
     # device-level stp_config was silently dropped from the effective config
