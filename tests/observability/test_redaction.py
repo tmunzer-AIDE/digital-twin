@@ -113,5 +113,42 @@ def test_prose_mentioning_password_survives():
     assert out["portal_text"] == "Enter the password to continue"
 
 
+def test_high_entropy_values_are_caught_by_the_backstop():
+    # the catch-all for secret SHAPES no key-name or known-pattern rule
+    # anticipated: long random base64-ish blobs and long hex digests
+    b64_secret = "Zk9xR3T7mQpL2vXc8JwYbN4aDsE6hUgK1iOfPrSt"  # 40 chars, mixed
+    hex_secret = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928"  # 48 hex
+    out = redact({"some_field": b64_secret, "note": f"value {hex_secret} inline"})
+    assert b64_secret not in str(out)
+    assert hex_secret not in str(out)
+    assert out["some_field"].startswith("redacted-entropy-")
+    # deterministic: same input -> same token
+    assert redact({"some_field": b64_secret})["some_field"] == out["some_field"]
+
+
+def test_entropy_backstop_spares_legitimate_content():
+    benign = {
+        "descr": "a fairly long descriptive note about the access network setup",
+        "port_range": "ge-0/0/0-23,ge-0/0/47",
+        "model": "EX4300-48MP",
+        "image": "device_image1/photo.jpeg",
+    }
+    assert redact(benign) == benign
+
+
+def test_entropy_backstop_is_idempotent_over_its_own_output():
+    # the module's own tokens (redacted-*/uuid-*/name-* + <=32-char hashes)
+    # must never re-trip the BACKSTOP — fixtures are redacted once at capture,
+    # but a re-run must not mangle backstop output into a different token.
+    # (uuid/ip pseudonyms re-hash by design — they stay shape-preserving.)
+    doc = {
+        "some_field": "Zk9xR3T7mQpL2vXc8JwYbN4aDsE6hUgK1iOfPrSt",
+        "note": "see uuid-1f2e3d4c5b6a and name-0a1b2c3d and a9b2ad6f4919",
+    }
+    once = redact(doc)
+    assert redact(once)["some_field"] == once["some_field"]
+    assert redact(once)["note"] == once["note"]
+
+
 def test_version_present():
     assert isinstance(REDACTION_VERSION, str) and REDACTION_VERSION

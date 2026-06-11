@@ -143,5 +143,9 @@ modeling" below.
   (all 12 values → `REDACTED-EXPIRED-HISTORY` across 102 commits; SHAs
   changed; pre-rewrite mirror kept at `../digital-twin-pre-rewrite-backup.git`
   — delete it after a sanity period, it still holds the expired values).
-- 🟡 redaction entropy catch-all — current redactor is key-name + known-pattern
-  based; a high-entropy-value backstop would catch unknown secret shapes.
+- ✅ redaction entropy catch-all — backstop added (REDACTION_VERSION 6,
+  2026-06-11): contiguous hex ≥36 chars (longer than any pseudonym the module
+  mints) redacted unconditionally; base64-ish tokens ≥24 chars redacted when
+  Shannon entropy ≥4.0 bits/char AND mixed case+digits. Applied LAST in
+  `_sub_embedded`; own tokens (`redacted-*`/`uuid-*`/`name-*`) never re-trip
+  (backstop idempotent); prose, port ranges, model names spared.

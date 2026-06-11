@@ -14,10 +14,12 @@ the GS suite validates the fixture end-to-end.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+from collections import Counter
 from typing import Any
 
-REDACTION_VERSION = "5"  # v5: jwt URL params + bare JWTs (eyJ*.eyJ*.sig) anywhere
+REDACTION_VERSION = "6"  # v6: high-entropy value backstop (unknown secret shapes)
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -58,6 +60,19 @@ _URL_CRED = re.compile(
 # bare JWTs are self-identifying — eyJ<header>.eyJ<payload>.<signature> — and can
 # appear OUTSIDE query params (paths, prose); catch them anywhere
 _JWT_ANY = re.compile(r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
+
+# ENTROPY BACKSTOP — the catch-all for secret shapes no key-name or known
+# pattern anticipated. Two classes, applied LAST (after every structured rule):
+# - contiguous hex >= 36 chars: longer than any pseudonym this module mints
+#   (max 32), so digests/signatures only — redacted unconditionally;
+# - base64-ish tokens >= 24 chars: redacted when Shannon entropy >= 4.0
+#   bits/char AND the token mixes cases and digits (random material does;
+#   prose, port ranges and model names do not).
+_HEX_LONG = re.compile(r"\b[0-9a-fA-F]{36,}\b")
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/=_\-]{24,}")
+_ENTROPY_THRESHOLD = 4.0
+# our own deterministic tokens must never re-trip the backstop (idempotence)
+_OWN_TOKEN_PREFIXES = ("redacted-", "uuid-", "name-")
 
 # embedded (substring) forms — composite address lists, free-text notes, URLs
 _MAC_ANY = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
@@ -112,7 +127,29 @@ def _sub_embedded(value: str) -> str:
     value = _UUID_ANY.sub(lambda m: f"uuid-{_h(m.group().lower(), 12)}", value)
     value = _IPV6_ANY.sub(lambda m: f"2001:db8::{_h(m.group(), 8)}", value)
     value = _IPV4_ANY.sub(_ipv4_token, value)
+    value = _HEX_LONG.sub(lambda m: f"redacted-entropy-{_h(m.group(), 8)}", value)
+    value = _B64_TOKEN.sub(_entropy_token, value)
     return value
+
+
+def _shannon_entropy(s: str) -> float:
+    counts = Counter(s)
+    n = len(s)
+    return -sum(c / n * math.log2(c / n) for c in counts.values())
+
+
+def _entropy_token(match: re.Match[str]) -> str:
+    token = match.group()
+    if token.startswith(_OWN_TOKEN_PREFIXES):
+        return token
+    mixed = (
+        any(c.isupper() for c in token)
+        and any(c.islower() for c in token)
+        and any(c.isdigit() for c in token)
+    )
+    if mixed and _shannon_entropy(token) >= _ENTROPY_THRESHOLD:
+        return f"redacted-entropy-{_h(token, 8)}"
+    return token
 
 
 def redact(obj: Any, key: str = "") -> Any:
