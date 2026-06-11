@@ -135,9 +135,13 @@ modeling" below.
 
 ## 5. Open debt / hygiene
 
-- 🔴 **leaked fixtures in git history** — early redaction rounds committed
-  password hashes / a pre-signed URL / JWTs before the redactor caught them.
-  Repo has no remote (local-only exposure). Decide `git filter-repo` history
-  rewrite vs credential rotation **before any push**.
+- ✅ **leaked fixtures in git history** — resolved 2026-06-11. Inventory: 4
+  pre-signed S3 URL signatures + 2 STS key ids + 2 STS session tokens (1h TTL,
+  expired 2026-06-10) and 4 Mist JWTs scoped to one device thumbnail (expired
+  2026-06-10T16:32Z); NO password hashes or long-lived credentials found, so
+  rotation was moot. History rewritten with `git filter-repo --replace-text`
+  (all 12 values → `REDACTED-EXPIRED-HISTORY` across 102 commits; SHAs
+  changed; pre-rewrite mirror kept at `../digital-twin-pre-rewrite-backup.git`
+  — delete it after a sanity period, it still holds the expired values).
 - 🟡 redaction entropy catch-all — current redactor is key-name + known-pattern
   based; a high-entropy-value backstop would catch unknown secret shapes.
