@@ -58,21 +58,24 @@ def _literal_subnet(value: Any) -> str | None:
     return str(value)
 
 
-def _org_vlan_map(ctx: IngestContext) -> dict[str, int]:
-    """name -> vlan_id over the ORG networks (the gateway namespace);
-    templated/unparseable vlan_ids are absent (unknown, never guessed)."""
-    out: dict[str, int] = {}
+def _org_vlan_map(ctx: IngestContext) -> dict[str, int | None]:
+    """name -> vlan_id over the ORG networks (the gateway namespace). The
+    dynamic-usage sources contract applies: a name PRESENT with None means
+    known-but-unresolvable (templated/unparseable vlan_id) and SHADOWS any
+    same-named site network — falling back there would be a cross-namespace
+    guess; a name MISSING falls through."""
+    out: dict[str, int | None] = {}
     for net in ctx.raw.org_networks:
-        vid = _vlan_int(net.get("vlan_id"))
-        if vid is not None and net.get("name"):
-            out[str(net["name"])] = vid
+        if net.get("name"):
+            out[str(net["name"])] = _vlan_int(net.get("vlan_id"))
     return out
 
 
-def _gw_net_vlan(name: Any, org_map: Mapping[str, int], site_nets: Mapping[str, Any]) -> int | None:
-    vid = org_map.get(str(name))
-    if vid is not None:
-        return vid
+def _gw_net_vlan(
+    name: Any, org_map: Mapping[str, int | None], site_nets: Mapping[str, Any]
+) -> int | None:
+    if str(name) in org_map:
+        return org_map[str(name)]  # None = unresolvable, NOT a site fallback
     return _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
 
 
@@ -228,17 +231,12 @@ class SwitchIngester:
         # ORG networks carry the routed intent (subnet) the gateway serves —
         # overlay it onto vlans the switch side knows only by id
         org_subnets: dict[int, str] = {}
-        org_vlan_by_name: dict[str, int] = {}
         for net in ctx.raw.org_networks:
             vid = _vlan_int(net.get("vlan_id"))
-            if vid is None:
-                continue
-            if net.get("name"):
-                org_vlan_by_name[str(net["name"])] = vid
             subnet = _literal_subnet(net.get("subnet"))
-            if subnet:
+            if vid is not None and subnet:
                 org_subnets.setdefault(vid, subnet)
-        dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
+        dhcp_sources = self._dhcp_sources(ctx, _org_vlan_map(ctx))
         sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
@@ -257,7 +255,7 @@ class SwitchIngester:
 
     @staticmethod
     def _dhcp_sources(
-        ctx: IngestContext, org_vlan_by_name: Mapping[str, int]
+        ctx: IngestContext, org_vlan_by_name: Mapping[str, int | None]
     ) -> dict[int, set[str]]:
         """vlan -> modeled DHCP providers. 'site' = the switch-hosted
         server/relay (site dhcpd_config, names in the SWITCH namespace);

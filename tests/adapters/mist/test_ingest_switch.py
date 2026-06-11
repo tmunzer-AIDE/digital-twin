@@ -463,6 +463,31 @@ def test_unresolvable_gateway_dhcp_reference_marks_the_gateway_unresolved():
     assert dev.dhcp_unresolved is True
 
 
+def test_templated_org_vlan_must_not_be_guessed_from_the_site_namespace():
+    # review on d90fa15 (P1): org 'corp' has vlan_id '{{corp_vlan}}' and a
+    # SITE network happens to share the name with vlan 10. The gateway's
+    # reference is to the ORG network — present-but-unparseable SHADOWS the
+    # site fallback (same contract as the dynamic-usage sources: key present
+    # with None = known-but-unresolvable, key missing = fall through).
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    org_nets = ({"name": "corp", "vlan_id": "{{corp_vlan}}"},)
+    eff = {"networks": {"corp": {"vlan_id": 10}}}
+    gw = {**_GATEWAY, "port_config": {}, "ip_configs": {},
+          "dhcpd_config": {"corp": {"type": "local"}}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=org_nets),
+        site_effective=eff,
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.devices["cc0000000001"].dhcp_unresolved is True
+    assert "cc0000000001" not in ir.vlans[10].dhcp_sources
+
+
 def test_resolvable_gateway_dhcp_reference_is_not_flagged():
     from digital_twin.adapters.mist.ingest.base import IngestContext
     from digital_twin.ir import IRBuilder
