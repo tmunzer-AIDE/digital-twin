@@ -12,13 +12,44 @@ from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff
 from tests.factories import irb, sw
 
 
-def _ir(*, routed=True, with_irb=True):
+def _ir(*, routed=True, with_irb=True, blind_gateway=False):
     b = IRBuilder().add_device(sw("S"))
+    if blind_gateway:
+        from digital_twin.ir.entities import Device, DeviceRole
+
+        b.add_device(
+            Device(id="GW", role=DeviceRole.GATEWAY, site="s1", l3_unmodeled=True)
+        )
     b.add_vlan(Vlan(vlan_id=10, name="corp", subnet="198.51.100.0/24" if routed else None))
     if with_irb:
         b.add_l3intf(irb("S", 10, subnet="198.51.100.0/24"))
+    # the check's predicate consumes ir.l3intfs: it must demand the L3_EXITS
+    # capability, not just WIRED_L2 (review on 9b4dbe7)
     b.with_capability(IRCapability.WIRED_L2)
+    b.with_capability(IRCapability.L3_EXITS)
     return b.build()
+
+
+def test_requires_the_l3_exits_capability():
+    from digital_twin.ir import IRCapability as Cap
+
+    assert GatewayGapCheck().requires() == frozenset({Cap.WIRED_L2, Cap.L3_EXITS})
+
+
+def test_unmodeled_gateway_namespace_makes_coverage_partial():
+    # review on 9b4dbe7: a gateway whose network namespace was not fetched has
+    # UNKNOWN L3 interfaces — "no modeled device provides L3" must not claim
+    # COMPLETE coverage over it (PARTIAL -> REVIEW floor, standalone-honest)
+    from digital_twin.checks.base import CoverageState
+
+    result = _run(
+        _ir(routed=False, with_irb=False, blind_gateway=True),
+        _ir(routed=True, with_irb=False, blind_gateway=True),
+    )
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("unmodeled" in n for n in result.coverage.notes)
+    # the finding itself still ships (the uncertainty lives in the coverage)
+    assert result.findings[0].code == "wired.l3.gateway_gap.unserved"
 
 
 def _run(base, prop):

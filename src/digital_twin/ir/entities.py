@@ -93,6 +93,10 @@ class Device:
     # adapter finding scope.stp.bridge_priority_invalid carries the REVIEW)
     stp_priority: int | None = None
     stp_priority_invalid: bool = False
+    # GATEWAY whose network namespace (org networks) was NOT fetched: its
+    # carriage and L3 interfaces are UNKNOWN, not absent — checks making
+    # negative-existence L3 claims must degrade coverage over it
+    l3_unmodeled: bool = False
     meta: FactMeta = CONFIG_META
 
 

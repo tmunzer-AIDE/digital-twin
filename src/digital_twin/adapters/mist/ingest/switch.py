@@ -171,6 +171,11 @@ class SwitchIngester:
                     model=dev.get("model"),
                     stp_priority=stp_priority,
                     stp_priority_invalid=stp_invalid,
+                    # gateway namespace unfetched -> its L3 model is UNKNOWN
+                    l3_unmodeled=(
+                        role is DeviceRole.GATEWAY
+                        and "org_networks" not in ctx.raw.meta.fetched
+                    ),
                 )
             )
 

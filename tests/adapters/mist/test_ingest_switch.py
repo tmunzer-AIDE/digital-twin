@@ -1,7 +1,7 @@
 from digital_twin.adapters.mist.ingest.base import IngestContext
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
 from digital_twin.ir import DeviceRole, IRBuilder, IRCapability, L3Role, PortMode
-from tests.adapters.mist.fixtures import SITE_EFFECTIVE, SWITCH_A, raw_site
+from tests.adapters.mist.fixtures import ALL_FETCHED, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 
 def _ingest() -> IngestContext:
@@ -380,6 +380,31 @@ def test_templated_org_network_values_never_crash_and_stay_unresolved():
     p = ir.ports["cc0000000001:ge-0/0/3"]
     assert p.tagged_vlans == () and p.meta.provenance.value == "inferred"  # blind
     assert all("{{" not in str(v.subnet) for v in ir.vlans.values() if v.subnet)
+
+
+def test_gateway_is_marked_l3_unmodeled_when_org_networks_unfetched():
+    # review on 9b4dbe7: a failed/absent org_networks fetch silently degraded
+    # gateway facts while L3_EXITS was still earned — the blind spot must be
+    # IN the IR (checks never see raw fetch meta)
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    fetched = tuple(f for f in ALL_FETCHED if f != "org_networks")
+    ctx = IngestContext(
+        raw=raw_site(devices=(_GATEWAY, SWITCH_A), fetched=fetched),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.devices["cc0000000001"].l3_unmodeled is True
+    assert ir.devices["aa0000000001"].l3_unmodeled is False  # switches: IRBs modeled
+
+
+def test_gateway_is_not_l3_unmodeled_when_org_networks_fetched():
+    ir = _gateway_ir()  # raw_site defaults: org_networks in ALL_FETCHED
+    assert ir.devices["cc0000000001"].l3_unmodeled is False
 
 
 def test_org_network_subnet_marks_the_vlan_routed():

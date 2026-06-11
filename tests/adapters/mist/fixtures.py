@@ -47,6 +47,7 @@ ALL_FETCHED = (
     "wireless_clients",
     "wired_clients",
     "wlans",
+    "org_networks",
 )
 
 

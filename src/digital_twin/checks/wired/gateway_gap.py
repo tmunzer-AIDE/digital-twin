@@ -53,7 +53,9 @@ class GatewayGapCheck:
     default_severity = Severity.ERROR
 
     def requires(self) -> frozenset[Capability]:
-        return frozenset({IRCapability.WIRED_L2})
+        # the core predicate consumes ir.l3intfs: without L3_EXITS the check
+        # must be INSUFFICIENT_DATA, never a conclusion over missing facts
+        return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def applies_to(self, diff: IRDiff) -> bool:
         # routed intent lives on vlans; the interfaces are l3intf entities
@@ -62,6 +64,14 @@ class GatewayGapCheck:
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         base_l3, prop_l3 = _l3_by_vlan(base_ir), _l3_by_vlan(prop_ir)
+        # a gateway whose network namespace was not fetched has UNKNOWN L3
+        # interfaces — every "no modeled L3" conclusion is partial over it
+        notes = tuple(
+            f"gateway {d.id}: network namespace unmodeled (org networks not "
+            "fetched) — its L3 interfaces are invisible to this check"
+            for d in sorted(prop_ir.devices.values(), key=lambda d: d.id)
+            if d.l3_unmodeled
+        )
         findings: list[Finding] = []
         for vid, vlan in sorted(prop_ir.vlans.items()):
             if vlan.subnet is None or prop_l3.get(vid):
@@ -119,7 +129,10 @@ class GatewayGapCheck:
             check_id=self.id,
             status=worst,
             findings=tuple(findings),
-            coverage=Coverage(state=CoverageState.COMPLETE),
+            coverage=Coverage(
+                state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
+                notes=notes,
+            ),
             confidence=(
                 min_confidence(*(f.confidence for f in conclusions)) if conclusions else _HIGH
             ),
