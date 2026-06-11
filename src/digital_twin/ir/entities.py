@@ -97,6 +97,9 @@ class Port:
     native_vlan: int | None = None
     tagged_vlans: tuple[int, ...] = ()
     speed: int | None = None
+    # CONFIG intent: explicit interface MTU; None = no explicit MTU (platform
+    # default) OR the usage is blind — consumers disambiguate via `meta`
+    mtu: int | None = None
     poe: bool | None = None  # CONFIG intent: PoE enabled (True) / `poe_disabled` (False) / unknown
     # OBSERVED: port currently delivering power (stats `poe_on`); None = the
     # powered state is UNKNOWABLE (no stat row, or an UP port without the stat)

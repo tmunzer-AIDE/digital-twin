@@ -136,7 +136,10 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   change), `wired.l2.native_mismatch` (a link whose ends disagree on the
   native VLAN silently leaks untagged traffic between the two vlans —
   introduced by the delta UNSAFE, pre-existing context, changed against a
-  vlan-blind peer REVIEW), `wired.poe.disconnect` (cutting `poe_disabled` to a
+  vlan-blind peer REVIEW), `wired.l2.mtu_mismatch` (ends of a link disagreeing
+  on MTU silently drop large frames — explicit-vs-explicit introduced UNSAFE,
+  explicit-vs-platform-default or vs a blind peer REVIEW),
+  `wired.poe.disconnect` (cutting `poe_disabled` to a
   port that powers a device — an LLDP-confirmed AP or one observed drawing
   power — disconnects it and everything behind it; UNSAFE), `wired.client.impact`
   (currently-connected wired + wireless clients affected). Checks consume only
@@ -192,7 +195,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the seven wired checks + registry (the ONLY layer with severity)
+├── checks/           the eight wired checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

@@ -7,6 +7,7 @@ from .l2_blackhole import L2BlackholeCheck
 from .l2_isolation import L2IsolationCheck
 from .l2_loop import L2LoopCheck
 from .l2_vlan_segmentation import L2VlanSegmentationCheck
+from .mtu_mismatch import MtuMismatchCheck
 from .native_mismatch import NativeVlanMismatchCheck
 from .poe_disconnect import PoeDisconnectCheck
 
@@ -16,6 +17,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     L2IsolationCheck(),
     L2VlanSegmentationCheck(),
     NativeVlanMismatchCheck(),
+    MtuMismatchCheck(),
     PoeDisconnectCheck(),
     ClientImpactCheck(),
 ]
@@ -27,6 +29,7 @@ __all__ = [
     "L2IsolationCheck",
     "L2LoopCheck",
     "L2VlanSegmentationCheck",
+    "MtuMismatchCheck",
     "NativeVlanMismatchCheck",
     "PoeDisconnectCheck",
 ]

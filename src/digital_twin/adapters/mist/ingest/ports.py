@@ -30,6 +30,7 @@ _USAGE_OVERRIDE_ATTRS = (
     "all_networks",
     "voip_network",
     "poe_disabled",
+    "mtu",
 )
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the

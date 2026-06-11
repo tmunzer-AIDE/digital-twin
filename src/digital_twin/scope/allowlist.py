@@ -22,6 +22,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "networks",
     "all_networks",
     "poe_disabled",
+    "mtu",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff

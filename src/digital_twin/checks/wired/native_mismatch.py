@@ -6,19 +6,18 @@ whatever expected the untagged path). The L2 graph deliberately does NOT carry
 a mismatched native (link_carried_vlans), so reachability checks see the lost
 path — but the LEAK itself is invisible to them. This check names it.
 
-Attribution and honesty:
+Boundary selection and baseline parity live in link_boundary.BoundaryView —
+shared with the other link-walking checks. Attribution and honesty:
 - mismatch introduced or ALTERED by the delta -> ERROR at the claim's
   confidence (min over both port facts and the link's existence);
-- the same mismatch already ACTIVE in the baseline (live link: both ends
-  present, enabled, external) -> INFO context only; a disabled/absent baseline
-  link means the delta ACTIVATES the leak -> attributed;
+- the same mismatch already ACTIVE in the baseline (same evaluable boundary,
+  same pair) -> INFO context only; a disabled/absent/VC-internal/AP-transparent
+  baseline link means the delta ACTIVATES the leak -> attributed;
 - a native CHANGED against a vlan-blind peer (stat-ensured / unresolved usage:
   carriage unknown), a blind-peer link the delta ACTIVATES, or a peer that
   GOES blind after a verified match -> the mismatch is unverifiable -> WARNING
   at MEDIUM, never silence (pre-existing blind-peer uncertainty stays silent
   only when the baseline had the same live link, same blind end, same native);
-- AP uplinks are vlan-transparent (the AP end has no native facts by
-  construction) -> never a finding;
 - an end with NO native (config: nothing untagged) cannot leak -> silent.
 """
 
@@ -34,31 +33,14 @@ from digital_twin.ir import (
     IRDiff,
     min_confidence,
 )
-from digital_twin.ir.entities import DeviceRole, Port
-from digital_twin.ir.indexes import node_for, vc_root_map
-from digital_twin.ir.model import IR
-from digital_twin.ir.provenance import Provenance
+
+from .link_boundary import BoundaryView, vlan_blind
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _UNVERIFIED = Confidence(
     level=ConfidenceLevel.MEDIUM,
     reasons=("peer port has no vlan facts — a native mismatch cannot be ruled out",),
 )
-
-
-def _blind(port: Port) -> bool:
-    """Vlan-blind: no vlan facts and NOT a config statement (stat-ensured or
-    unresolved usage) — same notion as the L2 graph's assumed-carriage rule."""
-    return (
-        port.meta.provenance in (Provenance.OBSERVED, Provenance.INFERRED)
-        and port.native_vlan is None
-        and not port.tagged_vlans
-    )
-
-
-def _native(ir: IR, pid: str) -> int | None:
-    port = ir.ports.get(pid)
-    return port.native_vlan if port else None
 
 
 class NativeVlanMismatchCheck:
@@ -77,47 +59,21 @@ class NativeVlanMismatchCheck:
         return any(diff.touches(k) for k in ("link", "port", "device"))
 
     def run(self, ctx: CheckContext) -> CheckResult:
-        base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
-        vc_root = vc_root_map(prop_ir)
-        base_vc_root = vc_root_map(base_ir)
-        base_link_ids = {lk.id for lk in base_ir.links}
-
-        def baseline_active_pair(
-            link_id: str, a_port: str, b_port: str
-        ) -> tuple[int | None, int | None] | None:
-            """The baseline native pair IF the link was a live boundary this
-            check would have evaluated there — else None. 'Pre-existing'
-            requires the hazard was ACTIVE before the delta, so this mirrors
-            EVERY skip rule of the proposed-side loop: link absent, port
-            missing/disabled, chassis-internal (VC) pairing, or AP-transparent
-            (exactly one AP end) all mean the delta brings the hazard to life."""
-            if link_id not in base_link_ids:
-                return None
-            bpa, bpb = base_ir.ports.get(a_port), base_ir.ports.get(b_port)
-            if bpa is None or bpb is None or bpa.disabled or bpb.disabled:
-                return None
-            if node_for(base_vc_root, bpa.device_id) == node_for(base_vc_root, bpb.device_id):
-                return None
-            ba_ap = base_ir.devices[bpa.device_id].role is DeviceRole.AP
-            bb_ap = base_ir.devices[bpb.device_id].role is DeviceRole.AP
-            if ba_ap != bb_ap:
-                return None  # AP-transparent in the baseline: no boundary there
-            return (bpa.native_vlan, bpb.native_vlan)
-
+        prop_view = BoundaryView(ctx.proposed.ir)
+        base_view = BoundaryView(ctx.baseline.ir)
         findings: list[Finding] = []
-        for lnk in prop_ir.links:
-            pa, pb = prop_ir.ports.get(lnk.a_port), prop_ir.ports.get(lnk.b_port)
-            if pa is None or pb is None or pa.disabled or pb.disabled:
+        for lnk in ctx.proposed.ir.links:
+            pair = prop_view.pair(lnk)
+            if pair is None:
                 continue
-            if node_for(vc_root, pa.device_id) == node_for(vc_root, pb.device_id):
-                continue  # VC-internal / self: chassis backplane, not an L2 boundary
-            a_ap = prop_ir.devices[pa.device_id].role is DeviceRole.AP
-            b_ap = prop_ir.devices[pb.device_id].role is DeviceRole.AP
-            if a_ap != b_ap:
-                continue  # AP uplink: vlan-transparent, the AP end has no native
+            pa, pb = pair
             na, nb = pa.native_vlan, pb.native_vlan
+            base_pair = base_view.pair(lnk)
             if na is not None and nb is not None and na != nb:
-                preexisting = baseline_active_pair(lnk.id, pa.id, pb.id) == (na, nb)
+                preexisting = base_pair is not None and (
+                    base_pair[0].native_vlan,
+                    base_pair[1].native_vlan,
+                ) == (na, nb)
                 confidence = min_confidence(
                     pa.meta.confidence, pb.meta.confidence, lnk.meta.confidence
                 )
@@ -135,22 +91,24 @@ class NativeVlanMismatchCheck:
                         f"link {pa.id} <-> {pb.id}: native VLAN mismatch ({na} vs {nb}) — "
                         f"untagged traffic silently crosses between vlan {na} and vlan {nb}"
                     )
-            elif _blind(pa) != _blind(pb):
-                cfg, blind = (pb, pa) if _blind(pa) else (pa, pb)
+            elif vlan_blind(pa) != vlan_blind(pb):
+                cfg, blind = (pb, pa) if vlan_blind(pa) else (pa, pb)
                 if cfg.native_vlan is None:
                     continue  # nothing untagged on the configured side: no leak
-                base_blind = base_ir.ports.get(blind.id)
-                if (
-                    baseline_active_pair(lnk.id, pa.id, pb.id) is not None
-                    and base_blind is not None
-                    and _blind(base_blind)
-                    and _native(base_ir, cfg.id) == cfg.native_vlan
-                ):
-                    # suppress ONLY when the baseline already had this exact
-                    # uncertainty: same live link, same end blind, same native.
-                    # A peer that GOES blind (was known/matching) is a knowledge
-                    # regression the delta caused — that must surface.
-                    continue
+                if base_pair is not None:
+                    base_by_id = {p.id: p for p in base_pair}
+                    bb, bc = base_by_id.get(blind.id), base_by_id.get(cfg.id)
+                    if (
+                        bb is not None
+                        and vlan_blind(bb)
+                        and bc is not None
+                        and bc.native_vlan == cfg.native_vlan
+                    ):
+                        # suppress ONLY when the baseline already had this exact
+                        # uncertainty: same live link, same end blind, same
+                        # native. A peer that GOES blind (was known/matching) is
+                        # a knowledge regression the delta caused — surface it.
+                        continue
                 severity, code = Severity.WARNING, "unverified"
                 confidence = min_confidence(lnk.meta.confidence, _UNVERIFIED)
                 message = (

@@ -37,7 +37,12 @@ sharp UNSAFE during live testing on the Live-Demo site.
   INFO context; native changed against a vlan-blind peer → REVIEW
   (unverifiable, never silent); AP uplinks vlan-transparent. GS18.
   [done 2026-06-10]
-- 🔵 MTU mismatch across a link.
+- ✅ **MTU mismatch** — `wired.l2.mtu_mismatch`: explicit-vs-explicit
+  introduced/altered → UNSAFE; explicit vs platform-default (value unmodeled)
+  or vs a vlan-blind peer → REVIEW, with the same baseline-parity/uncertainty
+  symmetry as native_mismatch (shared `link_boundary.BoundaryView`). `mtu`
+  modeled from port_usages + inline port_config/local_port_config (NOT
+  port_config_overwrite — not in schema). GS19. [done 2026-06-10]
 - 🔵 STP topology: root-bridge change, a configured `stp_edge` on an uplink.
 - 🔵 loop check FAIL path — currently maxes at WARN because Mist live data never
   asserts STP *disabled*; revisit if a config source for that appears.

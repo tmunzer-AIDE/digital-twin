@@ -223,6 +223,35 @@ def test_observed_poe_on_sets_poe_draw():
     assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is None  # no stat row: UNKNOWN
 
 
+def test_mtu_from_usage_and_inline_override():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "jumbo": {"mode": "trunk", "networks": ["corp"], "mtu": 9200},
+            "plain": {"mode": "access", "port_network": "corp", "mtu": None},
+        },
+        "port_config": {
+            "ge-0/0/1": {"usage": "jumbo"},
+            "ge-0/0/2": {"usage": "plain"},
+            "ge-0/0/3": {"usage": "plain", "mtu": 9000},  # inline override
+        },
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.ports["aa0000000001:ge-0/0/1"].mtu == 9200
+    assert ir.ports["aa0000000001:ge-0/0/2"].mtu is None  # null == absent (default)
+    assert ir.ports["aa0000000001:ge-0/0/3"].mtu == 9000
+
+
 def test_poe_draw_unknown_is_not_observed_off():
     # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
     # UP -> powered state unknowable (None); absent + port DOWN -> a down port

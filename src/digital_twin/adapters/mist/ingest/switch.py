@@ -121,6 +121,8 @@ class SwitchIngester:
                     native_vlan=native,
                     tagged_vlans=tagged,
                     profile=usage_name,
+                    # explicit MTU only; null == absent (PUT semantics) == platform default
+                    mtu=int(usage["mtu"]) if usage.get("mtu") else None,
                     # config PoE intent: None when the usage is blind/unresolved
                     poe=None if not usage else not bool(usage.get("poe_disabled")),
                     poe_draw=_poe_draw(row),

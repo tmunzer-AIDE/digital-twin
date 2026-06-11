@@ -427,6 +427,28 @@ def test_gs18_introduced_native_vlan_mismatch_is_unsafe(tmp_path):
     assert {f.evidence["a_native"], f.evidence["b_native"]} == {997, 998}
 
 
+def test_gs19_introduced_mtu_mismatch_is_unsafe(tmp_path):
+    # both ends of the augmented parallel link run jumbo (9200) in the
+    # baseline; the op drops ONE side to 1500 — frames over 1500 now silently
+    # die on a HIGH two-sided link -> UNSAFE naming both MTUs.
+    from .builders import GS_NET, HUB, HUB_PAR_PORT, _device
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["setting"]["port_usages"]["gs_jumbo"] = {
+        "mode": "trunk", "networks": [GS_NET], "mtu": 9200
+    }
+    doc["setting"]["port_usages"]["gs_std"] = {
+        "mode": "trunk", "networks": [GS_NET], "mtu": 1500
+    }
+    _device(doc, EDGE)["port_config"][EDGE_PAR_PORT] = {"usage": "gs_jumbo"}
+    _device(doc, HUB)["port_config"][HUB_PAR_PORT] = {"usage": "gs_jumbo"}
+    op = device_op(doc, EDGE, **{EDGE_PAR_PORT.replace("/", "__"): "gs_std"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l2.mtu_mismatch.introduced")
+    assert {f.evidence["a_mtu"], f.evidence["b_mtu"]} == {9200, 1500}
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

@@ -166,3 +166,17 @@ def test_poe_disabled_is_in_scope():
     cur = {"port_usages": {"ap": {"mode": "trunk", "poe_disabled": False}}}
     new = {"port_usages": {"ap": {"mode": "trunk", "poe_disabled": True}}}
     assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
+
+
+def test_mtu_is_in_scope():
+    # mtu lives on port_usages + inline port_config/local_port_config
+    # (schema-confirmed; NOT on port_config_overwrite) — the IR models it now
+    # (Port.mtu + the mtu.mismatch check)
+    cur = {"port_usages": {"up": {"mode": "trunk"}}}
+    new = {"port_usages": {"up": {"mode": "trunk", "mtu": 9200}}}
+    assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
+    inline = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "up", "mtu": 9200}}}
+    assert screen_op("device", SWITCH_CUR, inline) is None
+    # still NOT honored from port_config_overwrite (resolver doesn't read it)
+    ow = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"mtu": 9200}}}
+    assert isinstance(screen_op("device", SWITCH_CUR, ow), Rejection)

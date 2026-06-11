@@ -28,7 +28,11 @@ def ap(did: str) -> Device:
 
 
 def trunk_port(
-    did: str, name: str, tagged: tuple[int, ...] = (), native: int | None = None
+    did: str,
+    name: str,
+    tagged: tuple[int, ...] = (),
+    native: int | None = None,
+    mtu: int | None = None,
 ) -> Port:
     return Port(
         id=f"{did}:{name}",
@@ -37,6 +41,7 @@ def trunk_port(
         mode=PortMode.TRUNK,
         native_vlan=native,
         tagged_vlans=tagged,
+        mtu=mtu,
     )
 
 
