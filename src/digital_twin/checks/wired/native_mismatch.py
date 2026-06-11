@@ -13,8 +13,10 @@ Attribution and honesty:
   present, enabled, external) -> INFO context only; a disabled/absent baseline
   link means the delta ACTIVATES the leak -> attributed;
 - a native CHANGED against a vlan-blind peer (stat-ensured / unresolved usage:
-  carriage unknown) -> the mismatch is unverifiable -> WARNING at MEDIUM,
-  never silence;
+  carriage unknown), a blind-peer link the delta ACTIVATES, or a peer that
+  GOES blind after a verified match -> the mismatch is unverifiable -> WARNING
+  at MEDIUM, never silence (pre-existing blind-peer uncertainty stays silent
+  only when the baseline had the same live link, same blind end, same native);
 - AP uplinks are vlan-transparent (the AP end has no native facts by
   construction) -> never a finding;
 - an end with NO native (config: nothing untagged) cannot leak -> silent.
@@ -137,11 +139,18 @@ class NativeVlanMismatchCheck:
                 cfg, blind = (pb, pa) if _blind(pa) else (pa, pb)
                 if cfg.native_vlan is None:
                     continue  # nothing untagged on the configured side: no leak
+                base_blind = base_ir.ports.get(blind.id)
                 if (
                     baseline_active_pair(lnk.id, pa.id, pb.id) is not None
+                    and base_blind is not None
+                    and _blind(base_blind)
                     and _native(base_ir, cfg.id) == cfg.native_vlan
                 ):
-                    continue  # native unchanged on an already-live link: nothing new
+                    # suppress ONLY when the baseline already had this exact
+                    # uncertainty: same live link, same end blind, same native.
+                    # A peer that GOES blind (was known/matching) is a knowledge
+                    # regression the delta caused — that must surface.
+                    continue
                 severity, code = Severity.WARNING, "unverified"
                 confidence = min_confidence(lnk.meta.confidence, _UNVERIFIED)
                 message = (

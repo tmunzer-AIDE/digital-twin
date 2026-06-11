@@ -169,6 +169,18 @@ def test_ap_to_switch_role_change_activates_the_blind_peer_path():
     assert result.findings[0].code == "wired.l2.native_mismatch.unverified"
 
 
+def test_peer_going_blind_after_a_verified_match_is_unverifiable():
+    # review regression (1b935a9): baseline had BOTH ends known and MATCHING —
+    # a verified no-mismatch. The proposed IR makes the peer vlan-blind, so
+    # that guarantee is gone: the cannot-rule-out condition is the delta's
+    # doing and must WARN, not be suppressed as "native unchanged"
+    base = _two_switch_ir(10, 10)
+    prop = _two_switch_ir(10, None, b_port=_blind_port("T:ge-0/0/1"))
+    result = _run(base, prop)
+    assert result.status is Status.WARN
+    assert result.findings[0].code == "wired.l2.native_mismatch.unverified"
+
+
 def test_matching_natives_and_removed_native_are_silent():
     assert _run(_two_switch_ir(10, 10), _two_switch_ir(10, 10)).findings == ()
     # removing the native (None) means no untagged traffic -> nothing to leak
