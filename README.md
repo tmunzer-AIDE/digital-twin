@@ -139,6 +139,10 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   vlan-blind peer REVIEW), `wired.l2.mtu_mismatch` (ends of a link disagreeing
   on MTU silently drop large frames — explicit-vs-explicit introduced UNSAFE,
   explicit-vs-platform-default or vs a blind peer REVIEW),
+  `wired.stp.edge_on_uplink` (`stp_disable`/BPDU-drop or `stp_edge` landing on
+  a switch-to-switch link — loop protection off exactly where it matters;
+  UNSAFE / REVIEW), `wired.stp.root_change` (the delta re-elects a component's
+  root bridge — spanning tree reconverges; REVIEW),
   `wired.poe.disconnect` (cutting `poe_disabled` to a
   port that powers a device — an LLDP-confirmed AP or one observed drawing
   power — disconnects it and everything behind it; UNSAFE), `wired.client.impact`
@@ -195,7 +199,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the eight wired checks + registry (the ONLY layer with severity)
+├── checks/           the ten wired checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

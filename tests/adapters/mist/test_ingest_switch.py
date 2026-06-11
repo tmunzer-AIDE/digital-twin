@@ -252,6 +252,50 @@ def test_mtu_from_usage_and_inline_override():
     assert ir.ports["aa0000000001:ge-0/0/3"].mtu == 9000
 
 
+def test_device_stp_config_survives_compile():
+    # found via GS21: compile_device only carries listed device fields — a
+    # device-level stp_config was silently dropped from the effective config
+    # (raw gate passes, effective never changes -> a false-SAFE shape)
+    from digital_twin.adapters.mist.compile.switch import compile_device
+
+    eff = compile_device(None, {}, {"stp_config": {"bridge_priority": "4096"}})
+    assert eff["stp_config"] == {"bridge_priority": "4096"}
+
+
+def test_stp_config_flags_and_bridge_priority():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "stp_config": {"bridge_priority": "4096"},
+        "port_usages": {
+            "nostp": {"mode": "trunk", "networks": ["corp"], "stp_disable": True},
+            "edge": {"mode": "access", "port_network": "corp", "stp_edge": True},
+            "plain": {"mode": "access", "port_network": "corp"},
+        },
+        "port_config": {
+            "ge-0/0/1": {"usage": "nostp"},
+            "ge-0/0/2": {"usage": "edge"},
+            "ge-0/0/3": {"usage": "plain"},
+        },
+        "local_port_config": {"ge-0/0/3": {"usage": "plain", "stp_edge": True}},
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.ports["aa0000000001:ge-0/0/1"].bpdu_filter is True  # stp_disable drops BPDUs
+    assert ir.ports["aa0000000001:ge-0/0/1"].stp_edge is False
+    assert ir.ports["aa0000000001:ge-0/0/2"].stp_edge is True
+    assert ir.ports["aa0000000001:ge-0/0/3"].stp_edge is True  # local inline override
+    assert ir.devices["aa0000000001"].stp_priority == 4096
+
+
 def test_poe_draw_unknown_is_not_observed_off():
     # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
     # UP -> powered state unknowable (None); absent + port DOWN -> a down port

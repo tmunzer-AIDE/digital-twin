@@ -47,9 +47,16 @@ sharp UNSAFE during live testing on the Live-Demo site.
   symmetry as native_mismatch (shared `link_boundary.BoundaryView`). `mtu`
   modeled from port_usages + inline port_config/local_port_config (NOT
   port_config_overwrite — not in schema). GS19. [done 2026-06-10]
-- 🔵 STP topology (GS21): root-bridge change, a configured `stp_edge` or BPDU
-  filter on a switch-to-switch uplink (MVP: STP-BPDU — disables loop
-  protection).
+- ✅ **STP topology** (GS21) — two checks: `wired.stp.edge_on_uplink`
+  (`stp_disable` = BPDU drop on a switch-to-switch link → UNSAFE, MVP:
+  STP-BPDU; `stp_edge` there → REVIEW; AP uplinks skipped — edge toward an AP
+  is correct practice) and `wired.stp.root_change` (predicted root election —
+  lowest (bridge_priority, mac) per L2 component, default 32768 ASSUMED →
+  MEDIUM — moves → REVIEW). Modeled: `port_usages.{stp_edge,stp_disable}`,
+  `local_port_config.stp_edge`, `stp_config.bridge_priority` (device override
+  required a compile fix — `_DEVICE_OWN_FIELDS` was silently dropping it).
+  GS21 + variant; live test plan 07 → REVIEW naming the real root move.
+  [done 2026-06-11]
 - 🔵 loop check FAIL path — currently maxes at WARN because Mist live data never
   asserts STP *disabled*; revisit if a config source for that appears.
 

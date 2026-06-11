@@ -30,11 +30,19 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
 # semantics). These live on port_usages ONLY — inline port_config rules are
 # not a thing the resolver honors.
 _DYNAMIC_PROFILE_ATTRS: tuple[str, ...] = ("rules", "reset_default_when")
+# STP config the IR models (Port.stp_edge / Port.bpdu_filter; the
+# wired.stp checks). On port_usages; inline ONLY stp_edge on
+# local_port_config (schema) — hence not in _MODELED_USAGE_ATTRS.
+_STP_USAGE_ATTRS: tuple[str, ...] = ("stp_edge", "stp_disable")
 
 _NETWORK_LEAVES: tuple[str, ...] = ("networks.*.vlan_id",)
 _USAGE_LEAVES: tuple[str, ...] = tuple(
-    f"port_usages.*.{a}" for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS)
+    f"port_usages.*.{a}"
+    for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS, *_STP_USAGE_ATTRS)
 )
+# Device/site-level STP: bridge priority feeds Device.stp_priority (root
+# election, wired.stp.root_change).
+_STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map:
 # port_config and local_port_config take usage + the usage-override attrs +
 # dynamic_usage (the runtime-profile pointer, ingest.dynamic_usage);
@@ -44,7 +52,8 @@ _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
     f"port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
 )
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
+    f"local_port_config.*.{a}"
+    for a in ("usage", "dynamic_usage", "stp_edge", *_MODELED_USAGE_ATTRS)
 )
 _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",
@@ -60,8 +69,15 @@ _DEVICE_PORT_LEAVES: tuple[str, ...] = (
 # vars.* is a whole subtree ONLY because the post-compile derived gate catches
 # its ripple into out-of-scope effective fields.
 RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "site_setting": (*_NETWORK_LEAVES, *_USAGE_LEAVES, "vars.*"),
-    "device": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, "name", "notes"),
+    "site_setting": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_STP_CONFIG_LEAVES, "vars.*"),
+    "device": (
+        *_NETWORK_LEAVES,
+        *_USAGE_LEAVES,
+        *_DEVICE_PORT_LEAVES,
+        *_STP_CONFIG_LEAVES,
+        "name",
+        "notes",
+    ),
 }
 
 # Server-managed fields excluded from the raw diff: a PUT payload never carries
@@ -96,5 +112,6 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_NETWORK_LEAVES,
     *_USAGE_LEAVES,
     *_DEVICE_PORT_LEAVES,
+    *_STP_CONFIG_LEAVES,
     "vars.*",
 )

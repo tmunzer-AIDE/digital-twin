@@ -19,8 +19,10 @@ from digital_twin.ir.entities import (
 from digital_twin.ir.provenance import Provenance, fact_meta
 
 
-def sw(did: str, *, vc_members: tuple[str, ...] = ()) -> Device:
-    return Device(id=did, role=DeviceRole.SWITCH, site="s1", vc_members=vc_members)
+def sw(did: str, *, vc_members: tuple[str, ...] = (), stp_priority: int | None = None) -> Device:
+    return Device(
+        id=did, role=DeviceRole.SWITCH, site="s1", vc_members=vc_members, stp_priority=stp_priority
+    )
 
 
 def ap(did: str) -> Device:

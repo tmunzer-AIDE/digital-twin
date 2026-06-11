@@ -168,6 +168,21 @@ def test_poe_disabled_is_in_scope():
     assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
 
 
+def test_stp_leaves_are_in_scope():
+    # stp_edge/stp_disable on port_usages + inline stp_edge on
+    # local_port_config (schema: NOT on port_config) + stp_config.bridge_priority
+    cur = {"port_usages": {"up": {"mode": "trunk"}}}
+    new = {"port_usages": {"up": {"mode": "trunk", "stp_disable": True, "stp_edge": False}}}
+    assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
+    local = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"usage": "up", "stp_edge": True}}}
+    assert screen_op("device", SWITCH_CUR, local) is None
+    prio = {**SWITCH_CUR, "stp_config": {"bridge_priority": "4096"}}
+    assert screen_op("device", SWITCH_CUR, prio) is None
+    # inline stp_edge on port_config is NOT a schema field -> stays out of scope
+    inline = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "up", "stp_edge": True}}}
+    assert isinstance(screen_op("device", SWITCH_CUR, inline), Rejection)
+
+
 def test_mtu_is_in_scope():
     # mtu lives on port_usages + inline port_config/local_port_config
     # (schema-confirmed; NOT on port_config_overwrite) — the IR models it now

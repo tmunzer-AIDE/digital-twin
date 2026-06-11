@@ -468,6 +468,45 @@ def test_gs19_variant_ap_uplink_mtu_change_is_review(tmp_path):
     assert f.evidence["a_mtu"] == 9200
 
 
+def test_gs21_bpdu_filter_on_an_uplink_is_unsafe(tmp_path):
+    # MVP STP-BPDU: stp_disable (drop BPDUs) lands on a real switch-to-switch
+    # uplink -> the port stops participating in loop protection exactly where
+    # a loop would hurt -> UNSAFE.
+    from .builders import GS_NET, _device
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["setting"]["port_usages"]["gs_nostp"] = {
+        "mode": "trunk", "networks": [GS_NET], "stp_disable": True
+    }
+    _device(doc, EDGE)  # ensure present
+    op = device_op(doc, EDGE, **{EDGE_PAR_PORT.replace("/", "__"): "gs_nostp"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.stp.edge_on_uplink.bpdu_filter")
+    assert f.evidence["port"].endswith(EDGE_PAR_PORT)
+
+
+def test_gs21_variant_bridge_priority_moves_the_root_is_review(tmp_path):
+    # dropping EDGE's bridge priority to 4096 (everything else on the 32768
+    # default) re-elects the root bridge -> reconvergence across the component
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev["stp_config"] = {"bridge_priority": "4096"}
+    op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": _drop_nones(dev),
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.stp.root_change.moved")
+    assert f.evidence["proposed_root"] == EDGE
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

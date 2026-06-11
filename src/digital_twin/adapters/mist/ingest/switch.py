@@ -33,6 +33,19 @@ _Json = Mapping[str, Any]
 _ROLE = {"switch": DeviceRole.SWITCH, "ap": DeviceRole.AP, "gateway": DeviceRole.GATEWAY}
 
 
+def _bridge_priority(stp_config: Any) -> int | None:
+    """`stp_config.bridge_priority` — OAS says string, '4096' or '4k' shaped;
+    unparseable/absent -> None (the platform default, treated as ASSUMED)."""
+    raw = (stp_config or {}).get("bridge_priority")
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    try:
+        return int(text[:-1]) * 1024 if text.endswith("k") else int(text)
+    except ValueError:
+        return None
+
+
 def _poe_draw(row: _Json | None) -> bool | None:
     """Observed power delivery — honest about missing telemetry (real rows lack
     `poe_on` on some ports): no stat row -> UNKNOWN; `poe_on` present -> the
@@ -66,12 +79,18 @@ class SwitchIngester:
             role = _ROLE.get(str(dev.get("type")))
             if role is None or not dev.get("mac"):
                 continue
+            did = device_id(str(dev["mac"]))
+            stp_priority: int | None = None
+            if role is DeviceRole.SWITCH:
+                eff = ctx.device_effective.get(did) or ctx.site_effective
+                stp_priority = _bridge_priority(eff.get("stp_config"))
             ctx.builder.add_device(
                 Device(
-                    id=device_id(str(dev["mac"])),
+                    id=did,
                     role=role,
                     site=ctx.raw.scope.site_id,
                     model=dev.get("model"),
+                    stp_priority=stp_priority,
                 )
             )
 
@@ -127,6 +146,8 @@ class SwitchIngester:
                     poe=None if not usage else not bool(usage.get("poe_disabled")),
                     poe_draw=_poe_draw(row),
                     disabled=bool(usage.get("disabled")),
+                    stp_edge=bool(usage.get("stp_edge")),
+                    bpdu_filter=bool(usage.get("stp_disable")),
                     meta=meta,
                 )
             )

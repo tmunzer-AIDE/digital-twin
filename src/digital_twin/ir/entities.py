@@ -85,6 +85,9 @@ class Device:
     site: str
     model: str | None = None
     vc_members: tuple[str, ...] = ()
+    # CONFIG intent: STP bridge priority (root election); None = the platform
+    # default (32768) — consumers must treat the default as ASSUMED, not known
+    stp_priority: int | None = None
     meta: FactMeta = CONFIG_META
 
 
@@ -106,6 +109,11 @@ class Port:
     poe_draw: bool | None = None
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
+    # CONFIG intent (usage stp_edge / stp_disable): an edge port does not
+    # expect BPDUs (self-heals on receipt); bpdu_filter DROPS them — the port
+    # stops participating in loop protection entirely
+    stp_edge: bool = False
+    bpdu_filter: bool = False
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None

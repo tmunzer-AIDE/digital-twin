@@ -10,6 +10,8 @@ from .l2_vlan_segmentation import L2VlanSegmentationCheck
 from .mtu_mismatch import MtuMismatchCheck
 from .native_mismatch import NativeVlanMismatchCheck
 from .poe_disconnect import PoeDisconnectCheck
+from .stp_edge import StpEdgeOnUplinkCheck
+from .stp_root import StpRootChangeCheck
 
 ALL_WIRED_CHECKS: list[Check] = [
     L2LoopCheck(),
@@ -18,6 +20,8 @@ ALL_WIRED_CHECKS: list[Check] = [
     L2VlanSegmentationCheck(),
     NativeVlanMismatchCheck(),
     MtuMismatchCheck(),
+    StpEdgeOnUplinkCheck(),
+    StpRootChangeCheck(),
     PoeDisconnectCheck(),
     ClientImpactCheck(),
 ]
@@ -32,4 +36,6 @@ __all__ = [
     "MtuMismatchCheck",
     "NativeVlanMismatchCheck",
     "PoeDisconnectCheck",
+    "StpEdgeOnUplinkCheck",
+    "StpRootChangeCheck",
 ]
