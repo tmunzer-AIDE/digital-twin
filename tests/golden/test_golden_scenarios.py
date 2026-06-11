@@ -527,6 +527,8 @@ def test_gs21_variant_invalid_bridge_priority_is_review(tmp_path):
     assert v.decision is Decision.REVIEW, v.decision_reasons
     f = next(f for f in v.findings if f.code == "scope.stp.bridge_priority_invalid")
     assert f.evidence["proposed"] == "banana"
+    # the election ABSTAINS: no contradictory concrete root-move prediction
+    assert not any(f.code == "wired.stp.root_change.moved" for f in v.findings)
 
 
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):

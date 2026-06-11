@@ -65,6 +65,32 @@ def test_no_root_movement_is_silent():
     assert _run(_ir(a_prio=4096), _ir(a_prio=8192)).findings == ()
 
 
+def test_invalid_priority_abstains_instead_of_predicting():
+    # review regression (4d4cd50): an INVALID priority read as None simulated
+    # as the 32768 default, so the check predicted a concrete root move while
+    # the adapter finding said the election cannot be predicted. The election
+    # must ABSTAIN — the adapter finding (scope.stp.bridge_priority_invalid)
+    # owns the REVIEW for this case.
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    def ir(invalid):
+        b = IRBuilder()
+        b.add_device(sw("aa01", stp_priority=4096))
+        if invalid:
+            b.add_device(
+                Device(id="bb02", role=DeviceRole.SWITCH, site="s1", stp_priority_invalid=True)
+            )
+        else:
+            b.add_device(sw("bb02"))
+        b.add_port(trunk_port("aa01", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_port(trunk_port("bb02", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    assert _run(ir(False), ir(True)).findings == ()
+
+
 def test_single_switch_component_is_silent():
     def lone(prio):
         b = IRBuilder().add_device(sw("aa01", stp_priority=prio))

@@ -276,6 +276,24 @@ def test_bridge_priority_parser_validates_the_junos_range():
     assert _bridge_priority(None) is None
 
 
+def test_invalid_bridge_priority_is_modeled_distinctly_from_absent():
+    # absent = platform default (assumed); INVALID = uninterpretable — the IR
+    # must distinguish them or the root check would simulate banana as 32768
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {"stp_config": {"bridge_priority": "banana"}, "port_config": {}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    dev = ctx.builder.build().devices["aa0000000001"]
+    assert dev.stp_priority is None and dev.stp_priority_invalid is True
+
+
 def test_invalid_bridge_priority_raises_an_adapter_finding():
     # an IN-SCOPE field whose value the model cannot interpret must never be
     # silently simulated as the default — that would be a quiet false state

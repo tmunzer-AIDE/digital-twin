@@ -130,9 +130,15 @@ class SwitchIngester:
                 continue
             did = device_id(str(dev["mac"]))
             stp_priority: int | None = None
+            stp_invalid = False
             if role is DeviceRole.SWITCH:
                 eff = ctx.device_effective.get(did) or ctx.site_effective
-                stp_priority = _bridge_priority(eff.get("stp_config"))
+                cfg = eff.get("stp_config")
+                stp_priority = _bridge_priority(cfg)
+                # present but uninterpretable != absent: never read as default
+                stp_invalid = (
+                    stp_priority is None and (cfg or {}).get("bridge_priority") is not None
+                )
             ctx.builder.add_device(
                 Device(
                     id=did,
@@ -140,6 +146,7 @@ class SwitchIngester:
                     site=ctx.raw.scope.site_id,
                     model=dev.get("model"),
                     stp_priority=stp_priority,
+                    stp_priority_invalid=stp_invalid,
                 )
             )
 

@@ -44,6 +44,11 @@ def _root_of(ir: IR, component: frozenset[str]) -> tuple[str, bool] | None:
     switches = [d for d in component if ir.devices[d].role is DeviceRole.SWITCH]
     if len(switches) < 2:
         return None
+    if any(ir.devices[d].stp_priority_invalid for d in switches):
+        # an uninterpretable priority in the component: the election cannot be
+        # predicted — ABSTAIN rather than simulate the default; the adapter
+        # finding scope.stp.bridge_priority_invalid owns the REVIEW
+        return None
     assumed = any(ir.devices[d].stp_priority is None for d in switches)
 
     def election_key(d: str) -> tuple[int, str]:

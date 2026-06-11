@@ -86,8 +86,12 @@ class Device:
     model: str | None = None
     vc_members: tuple[str, ...] = ()
     # CONFIG intent: STP bridge priority (root election); None = the platform
-    # default (32768) — consumers must treat the default as ASSUMED, not known
+    # default (32768) — consumers must treat the default as ASSUMED, not known.
+    # stp_priority_invalid marks a PRESENT but uninterpretable value: distinct
+    # from absent — an election over it cannot be predicted at all (the
+    # adapter finding scope.stp.bridge_priority_invalid carries the REVIEW)
     stp_priority: int | None = None
+    stp_priority_invalid: bool = False
     meta: FactMeta = CONFIG_META
 
 
