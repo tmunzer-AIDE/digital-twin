@@ -33,9 +33,19 @@ def _blind_port(pid):
     )
 
 
-def _two_switch_ir(a_native, b_native, *, b_port=None):
+def _two_switch_ir(a_native, b_native, *, b_port=None, a_disabled=False):
     b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
-    b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=a_native))
+    b.add_port(
+        Port(
+            id="S:ge-0/0/1",
+            device_id="S",
+            name="ge-0/0/1",
+            mode=PortMode.TRUNK,
+            native_vlan=a_native,
+            tagged_vlans=(20,),
+            disabled=a_disabled,
+        )
+    )
     b.add_port(b_port or trunk_port("T", "ge-0/0/1", tagged=(20,), native=b_native))
     b.add_link(link("S:ge-0/0/1", "T:ge-0/0/1"))  # two-sided -> HIGH
     b.with_capability(IRCapability.WIRED_L2)
@@ -75,6 +85,30 @@ def test_changing_an_already_mismatched_pair_is_still_attributed():
     result = _run(_two_switch_ir(10, 30), _two_switch_ir(10, 40))
     assert result.status is Status.FAIL
     assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
+
+
+def test_enabling_a_disabled_mismatched_link_is_attributed():
+    # review regression (74b78c7): natives 10 vs 30 exist in the baseline but
+    # one end is admin-disabled — the leak is INERT. The delta enabling the
+    # port ACTIVATES it; that is the delta's doing, not pre-existing context.
+    result = _run(
+        _two_switch_ir(10, 30, a_disabled=True), _two_switch_ir(10, 30, a_disabled=False)
+    )
+    assert result.status is Status.FAIL
+    assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
+
+
+def test_activating_a_link_against_a_blind_peer_is_unverifiable():
+    # same activation principle on the blind-peer path: the native is unchanged
+    # but the link only comes alive with the delta -> the (unverifiable)
+    # mismatch becomes active -> WARNING, not silence
+    blind = _blind_port("T:ge-0/0/1")
+    result = _run(
+        _two_switch_ir(10, None, b_port=blind, a_disabled=True),
+        _two_switch_ir(10, None, b_port=blind, a_disabled=False),
+    )
+    assert result.status is Status.WARN
+    assert result.findings[0].code == "wired.l2.native_mismatch.unverified"
 
 
 def test_matching_natives_and_removed_native_are_silent():

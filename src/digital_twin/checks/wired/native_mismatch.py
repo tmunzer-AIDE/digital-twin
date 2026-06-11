@@ -9,7 +9,9 @@ path — but the LEAK itself is invisible to them. This check names it.
 Attribution and honesty:
 - mismatch introduced or ALTERED by the delta -> ERROR at the claim's
   confidence (min over both port facts and the link's existence);
-- the same mismatch already present in the baseline -> INFO context only;
+- the same mismatch already ACTIVE in the baseline (live link: both ends
+  present, enabled, external) -> INFO context only; a disabled/absent baseline
+  link means the delta ACTIVATES the leak -> attributed;
 - a native CHANGED against a vlan-blind peer (stat-ensured / unresolved usage:
   carriage unknown) -> the mismatch is unverifiable -> WARNING at MEDIUM,
   never silence;
@@ -72,6 +74,20 @@ class NativeVlanMismatchCheck:
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         vc_root = vc_root_map(prop_ir)
+        base_vc_root = vc_root_map(base_ir)
+
+        def baseline_active_pair(a_port: str, b_port: str) -> tuple[int | None, int | None] | None:
+            """The baseline native pair IF the link was a live external L2
+            boundary there — else None. 'Pre-existing' requires the hazard was
+            ACTIVE before the delta: a disabled, absent or chassis-internal
+            baseline link means the delta is what brings the leak to life."""
+            bpa, bpb = base_ir.ports.get(a_port), base_ir.ports.get(b_port)
+            if bpa is None or bpb is None or bpa.disabled or bpb.disabled:
+                return None
+            if node_for(base_vc_root, bpa.device_id) == node_for(base_vc_root, bpb.device_id):
+                return None
+            return (bpa.native_vlan, bpb.native_vlan)
+
         findings: list[Finding] = []
         for lnk in prop_ir.links:
             pa, pb = prop_ir.ports.get(lnk.a_port), prop_ir.ports.get(lnk.b_port)
@@ -85,8 +101,7 @@ class NativeVlanMismatchCheck:
                 continue  # AP uplink: vlan-transparent, the AP end has no native
             na, nb = pa.native_vlan, pb.native_vlan
             if na is not None and nb is not None and na != nb:
-                base_pair = (_native(base_ir, pa.id), _native(base_ir, pb.id))
-                preexisting = base_pair == (na, nb)
+                preexisting = baseline_active_pair(pa.id, pb.id) == (na, nb)
                 confidence = min_confidence(
                     pa.meta.confidence, pb.meta.confidence, lnk.meta.confidence
                 )
@@ -106,12 +121,17 @@ class NativeVlanMismatchCheck:
                     )
             elif _blind(pa) != _blind(pb):
                 cfg, blind = (pb, pa) if _blind(pa) else (pa, pb)
-                if cfg.native_vlan is None or _native(base_ir, cfg.id) == cfg.native_vlan:
-                    continue  # no untagged side, or the delta didn't touch the native
+                if cfg.native_vlan is None:
+                    continue  # nothing untagged on the configured side: no leak
+                if (
+                    baseline_active_pair(pa.id, pb.id) is not None
+                    and _native(base_ir, cfg.id) == cfg.native_vlan
+                ):
+                    continue  # native unchanged on an already-live link: nothing new
                 severity, code = Severity.WARNING, "unverified"
                 confidence = min_confidence(lnk.meta.confidence, _UNVERIFIED)
                 message = (
-                    f"port {cfg.id} native VLAN changes to {cfg.native_vlan} but peer "
+                    f"port {cfg.id} now delivers native VLAN {cfg.native_vlan} but peer "
                     f"{blind.id} has no vlan facts — a native mismatch cannot be ruled out"
                 )
                 pa, pb, na, nb = cfg, blind, cfg.native_vlan, None
