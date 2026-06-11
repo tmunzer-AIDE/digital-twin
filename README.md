@@ -236,3 +236,6 @@ wireless clients). Deliberately deferred behind existing seams: the declarative
 L1/L3 rule engine, snapshot-based state backend, multi-site/org-template
 simulation, the apply module, and additional vendor adapters (the `VendorAdapter`
 protocol and the compositional ingester registry are the extension points).
+
+The full prioritized backlog — precision gaps found in real use, new checks,
+scope expansion, and open debt — lives in [docs/ROADMAP.md](docs/ROADMAP.md).
