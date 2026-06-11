@@ -120,6 +120,24 @@ def test_unchanged_native_against_a_blind_peer_is_silent():
     assert result.findings == ()
 
 
+def test_vc_internal_links_never_fire():
+    # review regression (96b9a7c): a VC member-to-member link is chassis
+    # backplane, not an external L2 boundary — the graph folds members into
+    # their root and drops these links (l2_graph); so must this check
+    from digital_twin.ir import LinkKind
+
+    def ir(b_native):
+        b = IRBuilder().add_device(sw("S", vc_members=("S2",))).add_device(sw("S2"))
+        b.add_port(trunk_port("S", "vcp0", tagged=(20,), native=10))
+        b.add_port(trunk_port("S2", "vcp1", tagged=(20,), native=b_native))
+        b.add_link(link("S:vcp0", "S2:vcp1", LinkKind.VC))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    result = _run(ir(10), ir(30))
+    assert result.status is Status.PASS and result.findings == ()
+
+
 def test_ap_uplinks_are_vlan_transparent_and_never_fire():
     def ir(native):
         b = IRBuilder().add_device(sw("S")).add_device(ap("A"))

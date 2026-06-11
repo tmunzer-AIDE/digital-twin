@@ -31,6 +31,7 @@ from digital_twin.ir import (
     min_confidence,
 )
 from digital_twin.ir.entities import DeviceRole, Port
+from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.ir.model import IR
 from digital_twin.ir.provenance import Provenance
 
@@ -70,11 +71,14 @@ class NativeVlanMismatchCheck:
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
+        vc_root = vc_root_map(prop_ir)
         findings: list[Finding] = []
         for lnk in prop_ir.links:
             pa, pb = prop_ir.ports.get(lnk.a_port), prop_ir.ports.get(lnk.b_port)
             if pa is None or pb is None or pa.disabled or pb.disabled:
                 continue
+            if node_for(vc_root, pa.device_id) == node_for(vc_root, pb.device_id):
+                continue  # VC-internal / self: chassis backplane, not an L2 boundary
             a_ap = prop_ir.devices[pa.device_id].role is DeviceRole.AP
             b_ap = prop_ir.devices[pb.device_id].role is DeviceRole.AP
             if a_ap != b_ap:
