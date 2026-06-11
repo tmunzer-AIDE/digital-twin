@@ -65,8 +65,11 @@ class GatewayGapCheck:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         base_l3, prop_l3 = _l3_by_vlan(base_ir), _l3_by_vlan(prop_ir)
         # a gateway whose network namespace was not fetched has UNKNOWN L3
-        # interfaces — every "no modeled L3" conclusion is partial over it
-        notes = tuple(
+        # interfaces — it degrades NEGATIVE-existence conclusions only (every
+        # finding this check emits is one: "no modeled L3 in proposed").
+        # A routed vlan SERVED by a modeled interface is a positive fact the
+        # blind gateway cannot taint.
+        blind_notes = tuple(
             f"gateway {d.id}: network namespace unmodeled (org networks not "
             "fetched) — its L3 interfaces are invisible to this check"
             for d in sorted(prop_ir.devices.values(), key=lambda d: d.id)
@@ -125,6 +128,7 @@ class GatewayGapCheck:
             this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
             if this is Status.FAIL or worst is Status.PASS:
                 worst = this
+        notes = blind_notes if findings else ()
         return CheckResult(
             check_id=self.id,
             status=worst,

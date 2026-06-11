@@ -78,6 +78,21 @@ def test_newly_routed_network_without_modeled_l3_is_a_warning():
     assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
 
 
+def test_blind_gateway_does_not_taint_a_served_routed_network():
+    # review on c804fe5: a routed vlan SERVED by a modeled IRB is a positive
+    # conclusion — an unrelated unmodeled gateway must not floor it to
+    # PARTIAL/REVIEW; the blind spot only degrades negative-existence claims
+    from digital_twin.checks.base import CoverageState
+
+    result = _run(
+        _ir(routed=False, with_irb=True, blind_gateway=True),
+        _ir(routed=True, with_irb=True, blind_gateway=True),
+    )
+    assert result.status is Status.PASS and result.findings == ()
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.coverage.notes == ()
+
+
 def test_preexisting_gap_is_info_context():
     result = _run(_ir(with_irb=False), _ir(with_irb=False))
     assert result.status is Status.PASS
