@@ -151,6 +151,24 @@ def test_unfolding_a_vc_activates_the_mismatch_and_is_attributed():
     assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
 
 
+def test_ap_to_switch_role_change_activates_the_blind_peer_path():
+    # review regression (46a508d): in the baseline the link was AP-transparent
+    # (never a native-mismatch surface); the delta re-roles the AP as a switch,
+    # making it a real L2 boundary with a vlan-blind peer. The unchanged native
+    # must NOT be suppressed as already-live — the boundary itself is new.
+    def ir(role_ap):
+        b = IRBuilder().add_device(sw("S")).add_device(ap("A") if role_ap else sw("A"))
+        b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_port(_blind_port("A:eth0"))
+        b.add_link(link("S:ge-0/0/1", "A:eth0"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    result = _run(ir(True), ir(False))
+    assert result.status is Status.WARN
+    assert result.findings[0].code == "wired.l2.native_mismatch.unverified"
+
+
 def test_matching_natives_and_removed_native_are_silent():
     assert _run(_two_switch_ir(10, 10), _two_switch_ir(10, 10)).findings == ()
     # removing the native (None) means no untagged traffic -> nothing to leak

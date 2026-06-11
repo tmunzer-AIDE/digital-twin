@@ -83,11 +83,12 @@ class NativeVlanMismatchCheck:
         def baseline_active_pair(
             link_id: str, a_port: str, b_port: str
         ) -> tuple[int | None, int | None] | None:
-            """The baseline native pair IF the link was a live external L2
-            boundary there — else None. 'Pre-existing' requires the hazard was
-            ACTIVE before the delta: an absent baseline LINK, a missing or
-            disabled port, or a chassis-internal pairing all mean the delta is
-            what brings the leak to life."""
+            """The baseline native pair IF the link was a live boundary this
+            check would have evaluated there — else None. 'Pre-existing'
+            requires the hazard was ACTIVE before the delta, so this mirrors
+            EVERY skip rule of the proposed-side loop: link absent, port
+            missing/disabled, chassis-internal (VC) pairing, or AP-transparent
+            (exactly one AP end) all mean the delta brings the hazard to life."""
             if link_id not in base_link_ids:
                 return None
             bpa, bpb = base_ir.ports.get(a_port), base_ir.ports.get(b_port)
@@ -95,6 +96,10 @@ class NativeVlanMismatchCheck:
                 return None
             if node_for(base_vc_root, bpa.device_id) == node_for(base_vc_root, bpb.device_id):
                 return None
+            ba_ap = base_ir.devices[bpa.device_id].role is DeviceRole.AP
+            bb_ap = base_ir.devices[bpb.device_id].role is DeviceRole.AP
+            if ba_ap != bb_ap:
+                return None  # AP-transparent in the baseline: no boundary there
             return (bpa.native_vlan, bpb.native_vlan)
 
         findings: list[Finding] = []
