@@ -97,7 +97,8 @@ class Port:
     native_vlan: int | None = None
     tagged_vlans: tuple[int, ...] = ()
     speed: int | None = None
-    poe: bool | None = None
+    poe: bool | None = None  # CONFIG intent: PoE enabled (True) / `poe_disabled` (False) / unknown
+    poe_draw: bool = False  # OBSERVED: port currently delivering power (stats `poe_on`)
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     stp_enabled: bool | None = None

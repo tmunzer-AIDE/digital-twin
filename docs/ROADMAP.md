@@ -15,10 +15,11 @@ sharp UNSAFE during live testing on the Live-Demo site.
   WLANs are recorded `unresolved` → REVIEW. This is the last unmodeled piece of
   the WLAN→VLAN story; it makes the *original* reported bug (AP-uplink
   trunk→access) a precise UNSAFE naming the SSIDs. **← recommended next.**
-- 🔵 **PoE impact** — model `poe_disabled` on ports + a check: disabling PoE on a
-  port feeding a powered device (AP/phone/camera) is a `disconnect`. Hit
-  repeatedly in real use; also why `plan.json` currently returns UNKNOWN
-  (`poe_disabled` is out of scope, so any plan that touches it is unsimulable).
+- ✅ **PoE impact** — `poe_disabled` is now modeled (`Port.poe` config intent +
+  `Port.poe_draw` observed from stats `poe_on`); `wired.poe.disconnect` fires
+  UNSAFE when a port that powers an LLDP-confirmed AP or an observed-drawing
+  device loses PoE. Verified live: `plan.json` now → UNSAFE naming the exact
+  APs and their client counts (was UNKNOWN). [done 2026-06-10]
 - 🔵 **Richer L3 exit modeling** — many verdicts cap at MEDIUM because the only
   exit is a `boundary_uplink` over an assumed-carriage edge (no IRB on the
   switches; L3 lives on the SRX). Model the gateway/SRX side and the neighbor

@@ -133,9 +133,12 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   the rest of its L2 domain — e.g. disabling a switch's only uplink; needs no
   exit modeling, the severance itself is the evidence, at the severed links'
   LLDP confidence), `wired.l2.vlan_segmentation` (broadcast-domain shape
-  change), `wired.client.impact` (currently-connected wired + wireless clients
-  affected). Checks consume only the IR — never raw vendor payloads — so new
-  vendors plug in at the adapter seam.
+  change), `wired.poe.disconnect` (cutting `poe_disabled` to a port that powers
+  a device — an LLDP-confirmed AP or one observed drawing power — disconnects
+  it and everything behind it; UNSAFE), `wired.client.impact`
+  (currently-connected wired + wireless clients affected). Checks consume only
+  the IR — never raw vendor payloads — so new vendors plug in at the adapter
+  seam.
 - **WLAN-aware AP VLANs**: the twin reads the site's **derived** WLAN config
   (org-template WLANs included) and records, per AP, the VLANs its enabled
   WLANs need delivered on the wired uplink — so changing an AP's switch port

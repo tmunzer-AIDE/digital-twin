@@ -99,6 +99,7 @@ class SwitchIngester:
                 meta = self._meta_for(resolution, usage_name)
             native, tagged = usage_vlans(usage, networks)
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
+            row = stat_rows.get(member)
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -108,6 +109,9 @@ class SwitchIngester:
                     native_vlan=native,
                     tagged_vlans=tagged,
                     profile=usage_name,
+                    # config PoE intent: None when the usage is blind/unresolved
+                    poe=None if not usage else not bool(usage.get("poe_disabled")),
+                    poe_draw=bool(row.get("poe_on")) if row else False,
                     disabled=bool(usage.get("disabled")),
                     meta=meta,
                 )

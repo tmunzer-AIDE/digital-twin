@@ -13,8 +13,16 @@ from __future__ import annotations
 
 SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device")
 
-# What the IR consumes from a port usage (ingest.ports.usage_vlans).
-_MODELED_USAGE_ATTRS: tuple[str, ...] = ("mode", "port_network", "networks", "all_networks")
+# What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
+# + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
+# about cutting power to a powered device).
+_MODELED_USAGE_ATTRS: tuple[str, ...] = (
+    "mode",
+    "port_network",
+    "networks",
+    "all_networks",
+    "poe_disabled",
+)
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
 # atomically, so it is a single leaf) and `reset_default_when` (down-port

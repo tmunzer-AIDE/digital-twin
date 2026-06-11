@@ -354,6 +354,30 @@ def test_gs15_dynamic_rule_edit_is_in_scope_and_gets_a_real_verdict(tmp_path):
     assert any("blackhole" in f.code and "exit_lost" in f.code for f in v.findings)
 
 
+def test_gs16_cutting_poe_to_an_ap_is_unsafe(tmp_path):
+    # the repeatedly-hit real case: poe_disabled on the switch port feeding an
+    # AP (observed drawing power) kills the AP and its wireless clients. No
+    # VLAN change — pure power loss -> UNSAFE naming the AP.
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=True)
+    from .builders import _device, ap_uplink_on
+
+    ap_port = ap_uplink_on(doc, EDGE)[1]
+    doc["port_stats"] = list(doc["port_stats"]) + [
+        {"mac": EDGE, "port_id": ap_port, "up": True, "poe_on": True, "power_draw": 6.6}
+    ]
+    _device(doc, EDGE)  # ensure present
+    doc["setting"]["port_usages"]["gs_ap_nopoe"] = {
+        "mode": "trunk",
+        "networks": ["gs_net"],
+        "poe_disabled": True,
+    }
+    op = device_op(doc, EDGE, **{ap_port.replace("/", "__"): "gs_ap_nopoe"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.poe.disconnect.power_loss")
+    assert f.evidence["affected_wireless_clients"] == 1
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

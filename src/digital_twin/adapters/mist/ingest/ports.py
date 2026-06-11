@@ -23,7 +23,14 @@ from typing import Any
 _RANGE = re.compile(r"^(?P<prefix>.*?/)(?P<start>\d+)-(?P<end>\d+)$")
 
 # Inline attrs on port_config/local_port_config that override the named usage.
-_USAGE_OVERRIDE_ATTRS = ("mode", "port_network", "networks", "all_networks", "voip_network")
+_USAGE_OVERRIDE_ATTRS = (
+    "mode",
+    "port_network",
+    "networks",
+    "all_networks",
+    "voip_network",
+    "poe_disabled",
+)
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one (disabled/speed/poe are not VLAN state).
 _OVERWRITE_ATTRS = ("port_network",)

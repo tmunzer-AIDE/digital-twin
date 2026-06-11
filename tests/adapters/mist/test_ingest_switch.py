@@ -172,3 +172,52 @@ def test_dynamic_port_without_stats_row_is_vlan_blind():
     p = ir.ports["aa0000000001:ge-0/0/4"]
     assert p.native_vlan is None and p.tagged_vlans == ()
     assert p.meta.provenance.value == "inferred"
+
+
+# -- PoE: config intent (poe_disabled) + observed draw (poe_on) -----------------
+
+_POE_EFF = {
+    "networks": {"corp": {"vlan_id": 10}},
+    "port_usages": {
+        "ap": {"mode": "trunk", "all_networks": True, "poe_disabled": False},
+        "nopoe": {"mode": "access", "port_network": "corp", "poe_disabled": True},
+    },
+    "port_config": {
+        "ge-0/0/1": {"usage": "ap"},
+        "ge-0/0/2": {"usage": "nopoe"},
+        "ge-0/0/3": {"usage": "ap", "poe_disabled": True},  # inline override
+    },
+}
+
+
+def _poe_ir(port_stats=()):
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(
+            devices=({**SWITCH_A, "port_config": _POE_EFF["port_config"]},),
+            port_stats=tuple(port_stats),
+        ),
+        site_effective=_POE_EFF,
+        device_effective={"aa0000000001": _POE_EFF},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    return ctx.builder.build()
+
+
+def test_poe_disabled_usage_sets_port_poe_false():
+    ir = _poe_ir()
+    assert ir.ports["aa0000000001:ge-0/0/1"].poe is True   # enabled
+    assert ir.ports["aa0000000001:ge-0/0/2"].poe is False  # usage disabled
+    assert ir.ports["aa0000000001:ge-0/0/3"].poe is False  # inline override
+
+
+def test_observed_poe_on_sets_poe_draw():
+    ir = _poe_ir(
+        [{"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": True, "poe_on": True,
+          "power_draw": 6.6}]
+    )
+    assert ir.ports["aa0000000001:ge-0/0/1"].poe_draw is True
+    assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is False  # no stat row

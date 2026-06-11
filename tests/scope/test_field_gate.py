@@ -157,3 +157,9 @@ def test_dynamic_profile_leaves_are_in_scope():
         "port_config": {"ge-0/0/1": {"usage": "default", "dynamic_usage": "dyn"}},
     }
     assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
+
+
+def test_poe_disabled_is_in_scope():
+    cur = {"port_usages": {"ap": {"mode": "trunk", "poe_disabled": False}}}
+    new = {"port_usages": {"ap": {"mode": "trunk", "poe_disabled": True}}}
+    assert screen_op("device", {**SWITCH_CUR, **cur}, {**SWITCH_CUR, **new}) is None
