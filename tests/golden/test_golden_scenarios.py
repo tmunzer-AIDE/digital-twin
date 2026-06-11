@@ -531,13 +531,18 @@ def test_gs21_variant_invalid_bridge_priority_is_review(tmp_path):
     assert not any(f.code == "wired.stp.root_change.moved" for f in v.findings)
 
 
-def test_gs22_removing_the_irb_of_a_routed_network_is_unsafe(tmp_path):
-    # ROUTE-GW: a network that declares a subnet states routed intent. The
-    # delta deletes the only modeled L3 interface (EDGE's IRB) — no members
-    # needed, the config break itself is the harm -> UNSAFE.
+def _gs22_removed_doc_and_op(*, gateway_namespace_fetched):
+    # ROUTE-GW staging: a routed network whose only modeled L3 interface
+    # (EDGE's IRB) is deleted by the op. With the gateway namespace FETCHED
+    # (empty — the gs networks aren't gateway-attached) the SRX is modeled
+    # and the removal is a confident break; UNFETCHED, the SRX could hold an
+    # invisible replacement.
     from .builders import _device, _drop_nones
 
     doc = augmented_doc(parallel_carries_gs=True)
+    if gateway_namespace_fetched:
+        doc["org_networks"] = []
+        doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
     doc["setting"]["networks"]["gs_routed"] = {"vlan_id": 998, "subnet": "203.0.113.0/24"}
     _device(doc, EDGE).setdefault("other_ip_configs", {})["gs_routed"] = {
         "type": "static", "ip": "203.0.113.1", "netmask": "255.255.255.0"
@@ -553,10 +558,26 @@ def test_gs22_removing_the_irb_of_a_routed_network_is_unsafe(tmp_path):
         "object_id": str(dev["id"]),
         "payload": _drop_nones(dev),
     }
+    return doc, op
+
+
+def test_gs22_removing_the_irb_of_a_routed_network_is_unsafe(tmp_path):
+    # no members needed: the config break itself is the harm -> UNSAFE
+    doc, op = _gs22_removed_doc_and_op(gateway_namespace_fetched=True)
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.UNSAFE, v.decision_reasons
     f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.removed")
     assert f.evidence["vlan"] == 998
+
+
+def test_gs22_variant_removed_with_blind_gateway_is_review(tmp_path):
+    # the SRX's namespace was never fetched: the replacement L3 interface
+    # could live there invisibly -> the removal claim caps at REVIEW
+    doc, op = _gs22_removed_doc_and_op(gateway_namespace_fetched=False)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.removed")
+    assert f.severity.value == "warning"
 
 
 def test_gs22_variant_newly_routed_network_without_l3_is_review(tmp_path):

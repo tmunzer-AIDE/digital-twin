@@ -36,6 +36,10 @@ _UNMODELED = Confidence(
     level=ConfidenceLevel.MEDIUM,
     reasons=("the L3 interface may live on a device the model does not cover",),
 )
+_BLIND_GATEWAY = Confidence(
+    level=ConfidenceLevel.MEDIUM,
+    reasons=("an unmodeled gateway may hold the replacement L3 interface",),
+)
 
 
 def _l3_by_vlan(ir: IR) -> dict[int, list[L3Intf]]:
@@ -84,6 +88,10 @@ class GatewayGapCheck:
             if base_intfs:
                 severity, code = Severity.ERROR, "removed"
                 confidence = min_confidence(*(i.meta.confidence for i in base_intfs))
+                if blind_notes:
+                    # the invisible replacement may live on the blind gateway:
+                    # never a confident ERROR/HIGH -> caps to WARNING/MEDIUM
+                    confidence = min_confidence(confidence, _BLIND_GATEWAY)
                 message = (
                     f"routed network (vlan {vid}, subnet {vlan.subnet}) loses its only "
                     f"modeled L3 interface ({', '.join(i.id for i in base_intfs)}) — "
@@ -128,7 +136,9 @@ class GatewayGapCheck:
             this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
             if this is Status.FAIL or worst is Status.PASS:
                 worst = this
-        notes = blind_notes if findings else ()
+        # INFO .preexisting is context (excluded from verdict floors): only a
+        # real CONCLUSION lets the blind-gateway notes degrade coverage
+        notes = blind_notes if conclusions else ()
         return CheckResult(
             check_id=self.id,
             status=worst,

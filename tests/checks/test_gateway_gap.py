@@ -78,6 +78,35 @@ def test_newly_routed_network_without_modeled_l3_is_a_warning():
     assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
 
 
+def test_removed_with_a_blind_gateway_downgrades_to_warning():
+    # review on ffd7670 (P1): the invisible replacement may live on the
+    # unmodeled gateway — "removed the only modeled L3" cannot be a confident
+    # ERROR/HIGH -> UNSAFE there; the claim caps at MEDIUM -> WARNING/REVIEW
+    result = _run(
+        _ir(with_irb=True, blind_gateway=True), _ir(with_irb=False, blind_gateway=True)
+    )
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.l3.gateway_gap.removed"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_preexisting_context_alone_does_not_make_coverage_partial():
+    # review on ffd7670 (P2): INFO .preexisting is context, excluded from
+    # verdict floors by doctrine — it must not drag PARTIAL/REVIEW in via the
+    # coverage side door when no real conclusion was emitted
+    from digital_twin.checks.base import CoverageState
+
+    result = _run(
+        _ir(with_irb=False, blind_gateway=True), _ir(with_irb=False, blind_gateway=True)
+    )
+    assert result.status is Status.PASS
+    assert [f.code for f in result.findings] == ["wired.l3.gateway_gap.preexisting"]
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.coverage.notes == ()
+
+
 def test_blind_gateway_does_not_taint_a_served_routed_network():
     # review on c804fe5: a routed vlan SERVED by a modeled IRB is a positive
     # conclusion — an unrelated unmodeled gateway must not floor it to
