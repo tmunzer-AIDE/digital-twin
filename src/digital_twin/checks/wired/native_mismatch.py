@@ -69,9 +69,10 @@ class NativeVlanMismatchCheck:
         return frozenset({IRCapability.WIRED_L2})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        # links are facts too (LLDP-derived today, but the contract is two IRs):
-        # a link-only delta can activate a mismatch between unchanged ports
-        return any(diff.touches(k) for k in ("link", "port"))
+        # the contract is two IRs, not pipeline invariants: a link-only delta
+        # can activate a mismatch between unchanged ports, and a device-only
+        # delta can change VC folding / AP role — every fact run() consumes
+        return any(diff.touches(k) for k in ("link", "port", "device"))
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir

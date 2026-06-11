@@ -132,6 +132,25 @@ def test_adding_a_link_between_mismatched_ports_is_attributed():
     assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
 
 
+def test_unfolding_a_vc_activates_the_mismatch_and_is_attributed():
+    # the check consumes DEVICE facts too (vc_members folding, AP role): a
+    # device-only diff that turns a chassis-internal link into an external
+    # boundary must reach the check (applies_to) and read as introduced
+    def ir(vc):
+        b = IRBuilder().add_device(sw("S", vc_members=("S2",) if vc else ())).add_device(sw("S2"))
+        b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_port(trunk_port("S2", "ge-0/0/1", tagged=(20,), native=30))
+        b.add_link(link("S:ge-0/0/1", "S2:ge-0/0/1"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    base, prop = ir(True), ir(False)
+    assert NativeVlanMismatchCheck().applies_to(diff_ir(base, prop))
+    result = _run(base, prop)
+    assert result.status is Status.FAIL
+    assert result.findings[0].code == "wired.l2.native_mismatch.introduced"
+
+
 def test_matching_natives_and_removed_native_are_silent():
     assert _run(_two_switch_ir(10, 10), _two_switch_ir(10, 10)).findings == ()
     # removing the native (None) means no untagged traffic -> nothing to leak
