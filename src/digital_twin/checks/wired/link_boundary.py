@@ -30,11 +30,26 @@ def vlan_blind(port: Port) -> bool:
     )
 
 
-class BoundaryView:
-    """One IR's view of which links are evaluable external boundaries."""
+def config_stated(port: Port) -> bool:
+    """The port's facts are a CONFIG statement, so an ABSENT attribute means
+    'the platform default' — a real claim. On an observed/LLDP/inferred port
+    (e.g. an AP's eth end, a stat-ensured peer) an absent attribute means
+    UNKNOWN instead."""
+    return port.meta.provenance in (Provenance.CONFIG, Provenance.DESIGNATED)
 
-    def __init__(self, ir: IR) -> None:
+
+class BoundaryView:
+    """One IR's view of which links are evaluable external boundaries.
+
+    `ap_transparent=True` (the vlan checks) drops switch<->AP links: an AP
+    bridges whatever vlans arrive, so the link is not a VLAN boundary. Checks
+    for properties every Ethernet link HAS regardless of role (e.g. MTU) pass
+    `ap_transparent=False` — there the AP end is an unknown, not a non-entity.
+    """
+
+    def __init__(self, ir: IR, *, ap_transparent: bool = True) -> None:
         self._ir = ir
+        self._ap_transparent = ap_transparent
         self._vc_root = vc_root_map(ir)
         self._link_ids = {lk.id for lk in ir.links}
 
@@ -51,6 +66,6 @@ class BoundaryView:
             return None  # VC-internal / self: chassis backplane
         a_ap = self._ir.devices[pa.device_id].role is DeviceRole.AP
         b_ap = self._ir.devices[pb.device_id].role is DeviceRole.AP
-        if a_ap != b_ap:
-            return None  # AP-transparent: the AP end has no config facts
+        if self._ap_transparent and a_ap != b_ap:
+            return None  # AP-transparent: not a vlan boundary
         return pa, pb

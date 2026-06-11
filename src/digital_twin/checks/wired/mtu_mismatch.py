@@ -6,8 +6,11 @@ analysis can't see it — the link still carries every vlan. This check names it
 
 Port.mtu is the EXPLICIT config value; None on a CONFIG port means the
 platform default (a real statement whose numeric value is unmodeled), while
-None on a vlan-blind port (stat-ensured / unresolved usage) means UNKNOWN.
-Boundary selection and baseline parity live in link_boundary.BoundaryView.
+None on a non-config port (stat-ensured, unresolved usage, or an AP/LLDP end)
+means UNKNOWN — split by link_boundary.config_stated. Boundary selection and
+baseline parity live in link_boundary.BoundaryView, with ap_transparent=False:
+AP transparency is a VLAN property, but MTU exists on every Ethernet link, so
+AP uplinks ARE evaluated and their AP end is an unknown.
 
 Attribution and honesty:
 - both ends explicit and different, introduced or ALTERED by the delta ->
@@ -17,11 +20,10 @@ Attribution and honesty:
   certainly mismatched but the default's value is unmodeled: WARNING capped
   MEDIUM (.vs_default). Pre-existing identical state -> silent (too soft a
   claim to surface as context);
-- one end explicit vs a vlan-BLIND peer -> unverifiable -> WARNING/MEDIUM
-  (.unverified), suppressed only when the baseline had the SAME live link,
-  same end blind, same explicit mtu (uncertainty symmetry);
-- both default / both equal -> silent; AP and VC-internal links never fire
-  (BoundaryView).
+- one end explicit vs a NON-CONFIG peer (blind / AP end) -> unverifiable ->
+  WARNING/MEDIUM (.unverified), suppressed only when the baseline had the SAME
+  live link, same non-config end, same explicit mtu (uncertainty symmetry);
+- both default / both equal -> silent; VC-internal links never fire.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from digital_twin.ir import (
 )
 from digital_twin.ir.entities import Port
 
-from .link_boundary import BoundaryView, vlan_blind
+from .link_boundary import BoundaryView, config_stated
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _DEFAULT_ASSUMED = Confidence(
@@ -65,8 +67,11 @@ class MtuMismatchCheck:
         return any(diff.touches(k) for k in ("link", "port", "device"))
 
     def run(self, ctx: CheckContext) -> CheckResult:
-        prop_view = BoundaryView(ctx.proposed.ir)
-        base_view = BoundaryView(ctx.baseline.ir)
+        # ap_transparent=False: AP transparency is a VLAN property — the AP
+        # uplink is still an Ethernet link with an MTU on both ends; the AP
+        # end is an UNKNOWN (no config facts), not a non-entity
+        prop_view = BoundaryView(ctx.proposed.ir, ap_transparent=False)
+        base_view = BoundaryView(ctx.baseline.ir, ap_transparent=False)
         findings: list[Finding] = []
         for lnk in ctx.proposed.ir.links:
             pair = prop_view.pair(lnk)
@@ -101,10 +106,10 @@ class MtuMismatchCheck:
                 cfg, other = (pa, pb) if ma is not None else (pb, pa)
                 explicit = cfg.mtu
                 base_cfg, base_other = _ends(base_pair, cfg.id, other.id)
-                if vlan_blind(other):
+                if not config_stated(other):
                     if (
                         base_other is not None
-                        and vlan_blind(base_other)
+                        and not config_stated(base_other)
                         and base_cfg is not None
                         and base_cfg.mtu == explicit
                     ):
@@ -121,7 +126,7 @@ class MtuMismatchCheck:
                         and base_cfg.mtu == explicit
                         and base_other is not None
                         and base_other.mtu is None
-                        and not vlan_blind(base_other)
+                        and config_stated(base_other)
                     ):
                         continue  # same explicit-vs-default state already live in baseline
                     severity, code = Severity.WARNING, "vs_default"

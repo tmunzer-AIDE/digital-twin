@@ -449,6 +449,25 @@ def test_gs19_introduced_mtu_mismatch_is_unsafe(tmp_path):
     assert {f.evidence["a_mtu"], f.evidence["b_mtu"]} == {9200, 1500}
 
 
+def test_gs19_variant_ap_uplink_mtu_change_is_review(tmp_path):
+    # AP transparency is a VLAN property, not an MTU one: the AP end of the
+    # uplink has an MTU we don't model, so changing the switch side to jumbo
+    # is an unverifiable mismatch -> REVIEW, never a silent pass.
+    from .builders import GS_NET, _device, ap_uplink_on
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    ap_port = ap_uplink_on(doc, EDGE)[1]
+    doc["setting"]["port_usages"]["gs_ap_jumbo"] = {
+        "mode": "trunk", "networks": [GS_NET], "mtu": 9200
+    }
+    _device(doc, EDGE)  # ensure present
+    op = device_op(doc, EDGE, **{ap_port.replace("/", "__"): "gs_ap_jumbo"})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l2.mtu_mismatch.unverified")
+    assert f.evidence["a_mtu"] == 9200
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(

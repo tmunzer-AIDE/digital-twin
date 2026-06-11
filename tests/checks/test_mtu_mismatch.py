@@ -117,13 +117,35 @@ def test_peer_going_blind_after_a_verified_match_is_unverifiable():
     assert result.findings[0].code == "wired.l2.mtu_mismatch.unverified"
 
 
-def test_ap_uplinks_never_fire():
-    def ir(mtu):
-        b = IRBuilder().add_device(sw("S")).add_device(ap("A"))
-        b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=10, mtu=mtu))
-        b.add_port(Port(id="A:eth0", device_id="A", name="eth0", mode=PortMode.TRUNK))
-        b.add_link(link("S:ge-0/0/1", "A:eth0"))
-        b.with_capability(IRCapability.WIRED_L2)
-        return b.build()
+def _ap_uplink_ir(mtu):
+    # the AP end as real ingest builds it: LLDP provenance, no config facts
+    b = IRBuilder().add_device(sw("S")).add_device(ap("A"))
+    b.add_port(trunk_port("S", "ge-0/0/1", tagged=(20,), native=10, mtu=mtu))
+    b.add_port(
+        Port(
+            id="A:eth0",
+            device_id="A",
+            name="eth0",
+            mode=PortMode.TRUNK,
+            meta=fact_meta(Provenance.LLDP_TWO_SIDED),
+        )
+    )
+    b.add_link(link("S:ge-0/0/1", "A:eth0"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
 
-    assert _run(ir(None), ir(9200)).findings == ()
+
+def test_ap_uplink_mtu_change_is_unverifiable():
+    # review finding (f758cac): AP transparency is a VLAN property — MTU exists
+    # on every Ethernet link. The AP end's MTU is unmodeled (LLDP-ensured, no
+    # config facts), so changing the switch side cannot be silently safe.
+    result = _run(_ap_uplink_ir(None), _ap_uplink_ir(9200))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.l2.mtu_mismatch.unverified"
+    assert f.severity is Severity.WARNING and f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_ap_uplink_with_unchanged_mtu_is_silent():
+    # same uncertainty already live in the baseline -> not the delta's doing
+    assert _run(_ap_uplink_ir(9200), _ap_uplink_ir(9200)).findings == ()
