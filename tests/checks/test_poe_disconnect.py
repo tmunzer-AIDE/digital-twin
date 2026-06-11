@@ -18,12 +18,12 @@ from digital_twin.ir import (
 from tests.factories import ap, sw, wireless_client
 
 
-def _switch_port(pid, *, poe, poe_draw=False):
+def _switch_port(pid, *, poe, poe_draw=None):
     did, name = pid.split(":")
     return Port(id=pid, device_id=did, name=name, mode=PortMode.TRUNK, poe=poe, poe_draw=poe_draw)
 
 
-def _ap_uplink_ir(*, poe, poe_draw=False, with_client=True):
+def _ap_uplink_ir(*, poe, poe_draw=None, with_client=True):
     from tests.factories import link
 
     b = IRBuilder().add_device(sw("S")).add_device(ap("A"))
@@ -73,6 +73,18 @@ def test_cutting_poe_on_an_unpowered_port_is_harmless():
         return b.build()
 
     assert _run(ir(True), ir(False)).status is Status.PASS
+
+
+def test_ap_uplink_observed_not_drawing_is_silent():
+    # review regression (ca1b474): observed poe_on=False is DIRECT evidence the
+    # port powers nothing — the AP must be on aux power. The AP-link inference
+    # must not override the observation back into power_loss (let alone
+    # ERROR/HIGH on a two-sided link).
+    result = _run(
+        _ap_uplink_ir(poe=True, poe_draw=False), _ap_uplink_ir(poe=False, poe_draw=False)
+    )
+    assert result.status is Status.PASS
+    assert result.findings == ()
 
 
 def test_already_disabled_is_not_attributed_to_the_delta():

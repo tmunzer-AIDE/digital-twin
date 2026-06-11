@@ -90,17 +90,22 @@ class PoeDisconnectCheck:
             observed = base_port.poe_draw  # True/False observed; None = unknowable
             if observed is True:
                 confidence, kind = _HIGH, "power_loss"  # direct evidence
+            elif observed is False:
+                # DIRECT evidence the port powers nothing — an LLDP-confirmed
+                # AP then runs on aux power; the link must not override the
+                # observation (observation beats inference, both ways)
+                continue
             elif ap is not None:
                 link_conf = ap[1].meta.confidence
                 if base_port.poe is True:
                     confidence, kind = link_conf, "power_loss"
                 else:  # AP present but baseline intent blind -> cap at MEDIUM
                     confidence, kind = min_confidence(link_conf, _BLIND_INTENT), "power_loss"
-            elif observed is None and base_port.poe is True:
+            elif base_port.poe is True:
                 confidence, kind = _UNOBSERVED, "unverified"
             else:
-                # observed NOT drawing (and no AP), or blind-on-blind (intent
-                # AND telemetry unknown — the usage blindness is gated elsewhere)
+                # blind-on-blind: intent AND telemetry unknown, no AP — the
+                # usage blindness is gated elsewhere (dynamic gate)
                 continue
             high = confidence.level is ConfidenceLevel.HIGH
             ap_id = ap[0] if ap else None
