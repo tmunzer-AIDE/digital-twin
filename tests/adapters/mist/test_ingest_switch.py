@@ -900,3 +900,120 @@ def test_poe_draw_unknown_is_not_observed_off():
     assert ir.ports["aa0000000001:ge-0/0/1"].poe_draw is None
     assert ir.ports["aa0000000001:ge-0/0/2"].poe_draw is False
     assert ir.ports["aa0000000001:ge-0/0/3"].poe_draw is False
+
+
+def test_vlan_gateway_from_winning_row_with_org_overlay():
+    eff = {"networks": {
+        "corp": {"vlan_id": 10, "gateway": "10.0.0.1"},
+        "lab": {"vlan_id": 30},
+    }}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "labnet", "vlan_id": 30,
+                                    "gateway": "10.0.30.1"},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].gateway == "10.0.0.1"      # site row wins
+    assert ir.vlans[30].gateway == "10.0.30.1"     # org overlay fills absence
+    assert ir.vlans[10].gateway_unresolved is False
+
+
+def test_vlan_gateway_templated_winner_shadows_org():
+    # present-shadows contract: an unreadable declared value NEVER falls
+    # through to another namespace
+    eff = {"networks": {"corp": {"vlan_id": 10, "gateway": "{{gw}}"}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "10.0.0.1"},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway is None and v.gateway_unresolved is True
+
+
+def test_conflicting_nonwinning_device_row_makes_gateway_unresolved():
+    # singleton-Vlan limitation (spec r3): a device row for an already-seen
+    # vlan id that DISAGREES on the gateway = ambiguous intent, never a
+    # silent winner — and the Vlan CHANGES (diff fires) when a device op
+    # introduces the conflict, closing the false-SAFE shape
+    site = {"networks": {"corp": {"vlan_id": 10, "gateway": "10.0.0.1"}}}
+    dev = {"networks": {"corp_local": {"vlan_id": 10, "gateway": "10.0.0.9"}}}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway is None and v.gateway_unresolved is True
+
+
+def test_agreeing_rows_and_gatewayless_rows_do_not_conflict():
+    site = {"networks": {"corp": {"vlan_id": 10, "gateway": "10.0.0.1"}}}
+    dev = {"networks": {
+        "corp_local": {"vlan_id": 10, "gateway": "10.0.0.1/24"},  # same_ip True
+        "corp_plain": {"vlan_id": 10},                            # no gateway key
+    }}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway == "10.0.0.1" and v.gateway_unresolved is False
+
+
+def test_silent_winner_with_declaring_nonwinning_row_is_unresolved():
+    # review r1: the WINNING row has no gateway but a later device row
+    # declares one — never silently promote it, never fall through to org
+    site = {"networks": {"corp": {"vlan_id": 10}}}
+    dev = {"networks": {"corp_local": {"vlan_id": 10, "gateway": "10.0.0.9"}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "10.0.0.1"},)),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway is None and v.gateway_unresolved is True
+
+
+def test_explicit_null_gateway_is_no_intent():
+    # null==absent canon: an explicit "gateway": null neither conflicts nor
+    # blocks the org fallback
+    site = {"networks": {"corp": {"vlan_id": 10, "gateway": None}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "10.0.0.1"},)),
+        site_effective=site,
+        device_effective={"aa0000000001": site},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway == "10.0.0.1" and v.gateway_unresolved is False
+
+
+def test_org_only_templated_gateway_sets_unresolved():
+    eff = {"networks": {"corp": {"vlan_id": 10}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "{{gw}}"},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway is None and v.gateway_unresolved is True

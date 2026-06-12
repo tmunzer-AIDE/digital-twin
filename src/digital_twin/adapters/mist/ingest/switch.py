@@ -25,6 +25,7 @@ from digital_twin.ir import (
     Vlan,
     device_id,
     port_id,
+    same_ip,
 )
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
@@ -111,6 +112,40 @@ def _literal_ip(value: Any) -> str | None:
     if not value or "{{" in str(value):
         return None
     return str(value)
+
+
+def _vlan_gateway(
+    vid: int, rows_by_vid: Mapping[int, list[Any]], org_raw: Mapping[int, Any]
+) -> tuple[str | None, bool]:
+    """(gateway, unresolved) for a vlan id. Winning-row-shadows-org +
+    conflict-is-unresolvable (GS22-GW spec). rows are ALL same-vid network
+    rows' gateway values in mint order — [0] is the true Vlan winner;
+    None values = no intent (null==absent canon).
+
+    - winner declares, readable, every other declaring row agrees -> value
+    - winner declares but unreadable -> (None, True), shadows org
+    - winner declares, any declaring sibling disagrees -> (None, True)
+    - winner silent but a NON-WINNING row declares -> (None, True) — the
+      singleton Vlan cannot represent a per-device gateway (never silently
+      promote it, never fall to org over it)
+    - nobody declares -> org overlay (unreadable org value -> (None, True))
+    """
+    rows = rows_by_vid.get(vid, [])
+    declaring = [r for r in rows if r is not None]
+    if not declaring:
+        if vid not in org_raw:
+            return None, False  # no intent anywhere — not a blind spot
+        lit = _literal_ip(org_raw[vid])
+        return lit, lit is None
+    if rows[0] is None:
+        return None, True  # winner silent, a non-winning row declares
+    winner = _literal_ip(rows[0])
+    if winner is None:
+        return None, True  # declared-but-unreadable (still shadows org)
+    for other in declaring[1:]:
+        if same_ip(_literal_ip(other), winner) is not True:
+            return None, True  # conflict = unresolvable intent
+    return winner, False
 
 
 def _snooping(eff: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -324,6 +359,7 @@ class SwitchIngester:
         # device-local network must still yield a Vlan entity (per-VLAN graphs
         # enumerate ir.vlans; a missing entity would hide it from analysis).
         seen: set[int] = set()
+        sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         # ORG networks carry the routed intent (subnet) the gateway serves —
         # overlay it onto vlans the switch side knows only by id
         org_subnets: dict[int, str] = {}
@@ -332,22 +368,42 @@ class SwitchIngester:
             subnet = _literal_subnet(net.get("subnet"))
             if vid is not None and subnet:
                 org_subnets.setdefault(vid, subnet)
+        # org gateway overlay, RAW values (templated must be distinguishable
+        # from absent — _literal_ip only at decision time)
+        org_gw_raw: dict[int, Any] = {}
+        for net in ctx.raw.org_networks:
+            vid = _vlan_int(net.get("vlan_id"))
+            if vid is not None and net.get("gateway") is not None:
+                org_gw_raw.setdefault(vid, net.get("gateway"))
+        # EVERY row per vlan id across ALL effective sources, in source
+        # order — [0] is the exact row that wins the Vlan mint (gateway or
+        # not; tracking only gateway-bearing rows would silently promote a
+        # non-winning device row to winner). Declared = value is not None:
+        # explicit "gateway": null is ABSENT (null==absent canon).
+        rows_by_vid: dict[int, list[Any]] = {}
+        for eff in sources:
+            for net in (eff.get("networks") or {}).values():
+                vid = _vlan_int(net.get("vlan_id"))
+                if vid is not None:
+                    rows_by_vid.setdefault(vid, []).append(net.get("gateway"))
         org_vlan_by_name = _org_vlan_map(ctx)
         dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
         # same org map as _dhcp_sources — the two layers must not disagree
         self._mint_dhcp_scopes(ctx, org_vlan_by_name)
-        sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
                 vid = net.get("vlan_id")
                 if vid is not None and int(vid) not in seen:
                     seen.add(int(vid))
+                    gw, gw_unresolved = _vlan_gateway(int(vid), rows_by_vid, org_gw_raw)
                     ctx.builder.add_vlan(
                         Vlan(
                             vlan_id=int(vid),
                             name=name,
                             scope=ctx.raw.scope.site_id,
                             subnet=net.get("subnet") or org_subnets.get(int(vid)),
+                            gateway=gw,
+                            gateway_unresolved=gw_unresolved,
                             dhcp_sources=tuple(sorted(dhcp_sources.get(int(vid), ()))),
                         )
                     )
