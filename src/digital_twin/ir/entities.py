@@ -167,6 +167,38 @@ class Vlan:
 
 
 @dataclass(frozen=True)
+class DhcpScope:
+    """A SERVING dhcpd_config entry's range facts (GS25 lint surface).
+
+    provider: "site" (switch-hosted site dhcpd_config) or a gateway device id
+    (its OWN dhcpd_config). Identity is provider:network — exactly how
+    dhcpd_config is keyed. vlan/subnet are resolution RESULTS (org namespace
+    for gateway scopes, site networks for site scopes) and may be None when
+    the namespace is blind; range fields are LITERAL config, None when absent
+    or templated ({{var}}). Relay/none entries never become scopes (they are
+    dhcp_sources material only — _dhcp_serves_scope, NOT _dhcp_active).
+    """
+
+    provider: str
+    network: str
+    vlan: int | None = None
+    ip_start: str | None = None
+    ip_end: str | None = None
+    gateway: str | None = None
+    subnet: str | None = None
+    # True iff subnet INTENT exists but is unreadable (templated value) or
+    # unknowable (unfetched org namespace). False when the namespace is
+    # fetched and simply declares no subnet — no intent is NOT a blind spot
+    # (a blanket note would PARTIAL-floor ordinary subnet-less networks).
+    subnet_unresolved: bool = False
+    meta: FactMeta = CONFIG_META
+
+    @property
+    def id(self) -> str:
+        return f"{self.provider}:{self.network}"
+
+
+@dataclass(frozen=True)
 class L3Intf:
     device_id: str
     role: L3Role

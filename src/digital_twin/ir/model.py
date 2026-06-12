@@ -19,6 +19,7 @@ from .entities import (
     ClientKind,
     Device,
     DeviceRole,
+    DhcpScope,
     L3Intf,
     Link,
     LinkKind,
@@ -49,6 +50,7 @@ class IR:
     vlans: Mapping[int, Vlan]
     l3intfs: tuple[L3Intf, ...]
     clients: tuple[Client, ...]
+    dhcp_scopes: tuple[DhcpScope, ...] = ()
     # config-derived AP VLAN requirements (WlanIngester): ap device id -> the
     # VLANs its enabled WLANs need delivered on its uplink; and ap device id ->
     # reasons a WLAN's requirement could not be resolved (coverage gaps).
@@ -76,6 +78,7 @@ class IRBuilder:
         self._l3intf_ids: set[str] = set()
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
+        self._dhcp_scopes: dict[str, DhcpScope] = {}
         self._capabilities: set[Capability] = set()
         self._ap_wlan_vlans: dict[str, set[int]] = {}
         self._ap_wlan_unresolved: dict[str, list[str]] = {}
@@ -117,6 +120,12 @@ class IRBuilder:
             raise IRValidationError(f"duplicate client id {client.id}")
         self._client_ids.add(client.id)
         self._clients.append(client)
+        return self
+
+    def add_dhcp_scope(self, scope: DhcpScope) -> IRBuilder:
+        if scope.id in self._dhcp_scopes:
+            raise IRValidationError(f"duplicate dhcp scope id {scope.id}")
+        self._dhcp_scopes[scope.id] = scope
         return self
 
     def with_capability(self, cap: Capability) -> IRBuilder:
@@ -164,6 +173,7 @@ class IRBuilder:
         errors += self._validate_clients()
         errors += self._validate_vc()
         errors += self._validate_wlan_reqs()
+        errors += self._validate_dhcp_scopes()
         if errors:
             raise IRValidationError("invalid IR:\n  " + "\n  ".join(errors))
 
@@ -257,6 +267,15 @@ class IRBuilder:
                 errors.append(f"wlan requirement on {ap_id} which is not an AP")
         return errors
 
+    def _validate_dhcp_scopes(self) -> list[str]:
+        # a gateway-provided scope must reference a real device, else an
+        # ingester bug would silently misattribute the scope
+        errors: list[str] = []
+        for s in self._dhcp_scopes.values():
+            if s.provider != "site" and s.provider not in self._devices:
+                errors.append(f"dhcp scope {s.id} references unknown provider {s.provider}")
+        return errors
+
     def build(self) -> IR:
         self._validate()
         return IR(
@@ -268,6 +287,7 @@ class IRBuilder:
             vlans=MappingProxyType(dict(self._vlans)),
             l3intfs=tuple(self._l3intfs),
             clients=tuple(self._clients),
+            dhcp_scopes=tuple(sorted(self._dhcp_scopes.values(), key=lambda s: s.id)),
             ap_wlan_vlans=MappingProxyType(
                 {ap: frozenset(v) for ap, v in self._ap_wlan_vlans.items()}
             ),
