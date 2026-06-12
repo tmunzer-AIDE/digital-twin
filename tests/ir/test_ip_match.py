@@ -23,6 +23,7 @@ def test_mixed_families_are_not_equal():
 
 
 def test_unknown_inputs_return_none_never_a_guess():
+    assert same_ip(None, None) is None
     assert same_ip(None, "10.0.0.1") is None
     assert same_ip("10.0.0.1", None) is None
     assert same_ip("foo", "10.0.0.1") is None
