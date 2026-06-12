@@ -303,6 +303,10 @@ def test_org_only_templated_gateway_sets_unresolved():
             vid = _vlan_int(net.get("vlan_id"))
             if vid is not None and net.get("gateway") is not None:
                 org_gw_raw.setdefault(vid, net.get("gateway"))
+        # HOIST the existing `sources = [ctx.site_effective,
+        # *ctx.device_effective.values()]` assignment ABOVE this block (the
+        # current _vlans defines it just before the Vlan loop) — rows_by_vid
+        # must see the same list in the same order.
         # EVERY row per vlan id across ALL effective sources, in source
         # order — [0] is the exact row that wins the Vlan mint (gateway key
         # or not; tracking only gateway-bearing rows would silently promote
