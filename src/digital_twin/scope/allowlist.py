@@ -4,8 +4,8 @@ Default-deny everywhere, LEAF-TIGHTENED (spec wording): only the exact leaves th
 IR actually models are in scope — networks carry 7 OAS leaves but the IR models
 only vlan_id; port_usages carry 42 but the IR consumes only the four VLAN-
 semantics attributes. Allowing a whole subtree would let an unmodeled change
-(networks.*.isolation, port_usages.*.allow_dhcpd) simulate as falsely "in
-scope". Entry syntax is scope.paths.matches: '*' = one key segment, trailing
+(networks.*.isolation) simulate as falsely "in scope". Entry syntax is
+scope.paths.matches: '*' = one key segment, trailing
 '.*' = whole subtree, bare = exact leaf.
 """
 
@@ -23,6 +23,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "all_networks",
     "poe_disabled",
     "mtu",
+    "allow_dhcpd",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
@@ -49,13 +50,25 @@ _IRB_LEAVES: tuple[str, ...] = (
     "other_ip_configs.*.ip",
     "other_ip_configs.*.netmask",
 )
-# Site-level DHCP path facts (Vlan.dhcp_sources, the wired.dhcp.path check):
-# type decides serve/relay/none; servers decide whether a relay goes anywhere.
+# Site-level DHCP path facts (Vlan.dhcp_sources, the wired.dhcp.path check)
+# plus the scope range/gateway facts that feed IR.dhcp_scopes (the
+# wired.dhcp.scope_lint check): type decides serve/relay/none; servers decide
+# whether a relay goes anywhere; ip_start/ip_end/gateway bound the scope.
 # SITE_SETTING ONLY — device-level switch dhcpd_config is unmodeled (the
 # compiler does not carry it; allowlisting it would be a false-SAFE shape).
 _DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.type",
     "dhcpd_config.*.servers",
+    "dhcpd_config.*.ip_start",
+    "dhcpd_config.*.ip_end",
+    "dhcpd_config.*.gateway",
+)
+# Snooping intent (Device.dhcp_snooping, the wired.dhcp.snooping check):
+# the toggle, the all-networks switch, and the per-network list — atomically.
+_SNOOPING_LEAVES: tuple[str, ...] = (
+    "dhcp_snooping.enabled",
+    "dhcp_snooping.all_networks",
+    "dhcp_snooping.networks",
 )
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"
@@ -95,6 +108,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_USAGE_LEAVES,
         *_STP_CONFIG_LEAVES,
         *_DHCP_LEAVES,
+        *_SNOOPING_LEAVES,
         "vars.*",
     ),
     "device": (
@@ -103,6 +117,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_DEVICE_PORT_LEAVES,
         *_STP_CONFIG_LEAVES,
         *_IRB_LEAVES,
+        *_SNOOPING_LEAVES,
         "name",
         "notes",
     ),
@@ -143,5 +158,6 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_STP_CONFIG_LEAVES,
     *_IRB_LEAVES,
     *_DHCP_LEAVES,
+    *_SNOOPING_LEAVES,
     "vars.*",
 )

@@ -613,6 +613,18 @@ def test_device_stp_config_survives_compile():
     assert eff["stp_config"] == {"bridge_priority": "4096"}
 
 
+def test_compile_device_carries_dhcp_snooping():
+    # GS21 lesson: a device field the gate allows but the compiler drops is a
+    # false-SAFE shape (the simulation silently ignores the change)
+    from digital_twin.adapters.mist.compile.switch import compile_device
+
+    site = {"dhcp_snooping": {"enabled": True, "all_networks": True}}
+    dev = {"dhcp_snooping": {"enabled": True, "networks": ["corp"]}}
+    eff = compile_device(None, site, dev)
+    # device value REPLACES the site value wholesale (merge.py REPLACE policy)
+    assert eff["dhcp_snooping"] == {"enabled": True, "networks": ["corp"]}
+
+
 def test_bridge_priority_parser_validates_the_junos_range():
     # valid = {0, 4096 .. 61440 step 4096} (or the "4k" form); anything else —
     # malformed OR out-of-step — must NOT silently simulate as some priority

@@ -60,13 +60,15 @@ def test_unmodeled_leaf_inside_allowed_subtree_rejects():
 
 
 def test_unmodeled_usage_leaf_rejects():
+    # speed is one of the ~35 usage attrs the IR does NOT consume (GS25 moved
+    # allow_dhcpd into scope — the leaf-tightening principle still holds)
     payload = {
         **CURRENT,
-        "port_usages": {"office": {"mode": "access", "port_network": "corp", "allow_dhcpd": True}},
+        "port_usages": {"office": {"mode": "access", "port_network": "corp", "speed": "10g"}},
     }
     r = screen_op("site_setting", CURRENT, payload)
     assert isinstance(r, Rejection)
-    assert any("allow_dhcpd" in reason for reason in r.reasons)
+    assert any("speed" in reason for reason in r.reasons)
 
 
 def test_whole_subtree_removal_of_allowed_field_passes():
@@ -122,11 +124,12 @@ def test_device_status_fields_are_ignored():
 
 def test_deletion_rejections_are_named_as_deletions():
     # screen_op receives the EFFECTIVE proposed object (the engine resolves
-    # Mist update semantics first) — a path absent from it was DELETED
-    cur = {**SWITCH_CUR, "dhcp_snooping": {"enabled": True}}
-    r = screen_op("device", cur, dict(SWITCH_CUR))  # effective lacks dhcp_snooping
+    # Mist update semantics first) — a path absent from it was DELETED.
+    # device-level dhcpd_config stays out of scope (GS25 moved dhcp_snooping in)
+    cur = {**SWITCH_CUR, "dhcpd_config": {"corp": {"type": "local"}}}
+    r = screen_op("device", cur, dict(SWITCH_CUR))  # effective lacks dhcpd_config
     assert isinstance(r, Rejection)
-    reason = next(x for x in r.reasons if "dhcp_snooping" in x)
+    reason = next(x for x in r.reasons if "dhcpd_config" in x)
     assert "deleted" in reason
 
 
@@ -214,6 +217,41 @@ def test_stp_leaves_are_in_scope():
     # inline stp_edge on port_config is NOT a schema field -> stays out of scope
     inline = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "up", "stp_edge": True}}}
     assert isinstance(screen_op("device", SWITCH_CUR, inline), Rejection)
+
+
+def test_gs25_dhcp_lint_leaves_in_scope():
+    # site_setting: scope range fields + snooping toggles
+    cur = {"dhcpd_config": {"n1": {"type": "local"}}, "dhcp_snooping": {}}
+    eff = {
+        "dhcpd_config": {"n1": {"type": "local", "ip_start": "10.0.0.1",
+                                "ip_end": "10.0.0.9", "gateway": "10.0.0.254"}},
+        "dhcp_snooping": {"enabled": True, "all_networks": False, "networks": ["n1"]},
+    }
+    assert screen_op("site_setting", cur, eff) is None
+
+    # device: snooping override + inline allow_dhcpd
+    cur_d = dict(SWITCH_CUR)
+    eff_d = {
+        **SWITCH_CUR,
+        "dhcp_snooping": {"enabled": True, "networks": ["n1"]},
+        "local_port_config": {"ge-0/0/1": {"allow_dhcpd": False}},
+    }
+    assert screen_op("device", cur_d, eff_d) is None
+
+
+def test_usage_allow_dhcpd_in_scope_on_all_three_surfaces():
+    # allow_dhcpd must be allowed wherever mode/mtu already are: port_usages
+    # (site_setting + device) and the inline port_config/local_port_config
+    # maps (device only — site_setting carries no port maps in the allowlist)
+    cur = {"port_usages": {"u": {"mode": "trunk"}}}
+    eff = {"port_usages": {"u": {"mode": "trunk", "allow_dhcpd": False}}}
+    assert screen_op("site_setting", cur, eff) is None
+    dev_eff = {
+        **SWITCH_CUR,
+        "port_usages": {"u": {"mode": "trunk", "allow_dhcpd": False}},
+        "port_config": {"ge-0": {"usage": "u", "allow_dhcpd": True}},
+    }
+    assert screen_op("device", {**SWITCH_CUR, **cur}, dev_eff) is None
 
 
 def test_mtu_is_in_scope():
