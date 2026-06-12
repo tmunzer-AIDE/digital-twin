@@ -244,6 +244,39 @@ def test_agreeing_rows_and_gatewayless_rows_do_not_conflict():
     assert v.gateway == "10.0.0.1" and v.gateway_unresolved is False
 
 
+def test_silent_winner_with_declaring_nonwinning_row_is_unresolved():
+    # review r1: the WINNING row has no gateway but a later device row
+    # declares one — never silently promote it, never fall through to org
+    site = {"networks": {"corp": {"vlan_id": 10}}}
+    dev = {"networks": {"corp_local": {"vlan_id": 10, "gateway": "10.0.0.9"}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "10.0.0.1"},)),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway is None and v.gateway_unresolved is True
+
+
+def test_explicit_null_gateway_is_no_intent():
+    # null==absent canon: an explicit "gateway": null neither conflicts nor
+    # blocks the org fallback
+    site = {"networks": {"corp": {"vlan_id": 10, "gateway": None}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "gateway": "10.0.0.1"},)),
+        site_effective=site,
+        device_effective={"aa0000000001": site},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.gateway == "10.0.0.1" and v.gateway_unresolved is False
+
+
 def test_org_only_templated_gateway_sets_unresolved():
     eff = {"networks": {"corp": {"vlan_id": 10}}}
     ctx = IngestContext(
@@ -268,35 +301,51 @@ def test_org_only_templated_gateway_sets_unresolved():
         org_gw_raw: dict[int, Any] = {}
         for net in ctx.raw.org_networks:
             vid = _vlan_int(net.get("vlan_id"))
-            if vid is not None and "gateway" in net:
+            if vid is not None and net.get("gateway") is not None:
                 org_gw_raw.setdefault(vid, net.get("gateway"))
-        # every declared gateway per vlan id across ALL effective sources,
-        # in source order — [0] is the row that wins the Vlan mint
-        declared_gw: dict[int, list[Any]] = {}
+        # EVERY row per vlan id across ALL effective sources, in source
+        # order — [0] is the exact row that wins the Vlan mint (gateway key
+        # or not; tracking only gateway-bearing rows would silently promote
+        # a non-winning device row to winner, review r1). Declared = value
+        # is not None: explicit "gateway": null is ABSENT per the project's
+        # null==absent canon, same convention as subnet.
+        rows_by_vid: dict[int, list[Any]] = {}
         for eff in sources:
             for net in (eff.get("networks") or {}).values():
                 vid = _vlan_int(net.get("vlan_id"))
-                if vid is not None and "gateway" in net:
-                    declared_gw.setdefault(vid, []).append(net.get("gateway"))
+                if vid is not None:
+                    rows_by_vid.setdefault(vid, []).append(net.get("gateway"))
 
 
 def _vlan_gateway(  # module level, near _literal_ip
-    vid: int, declared: Mapping[int, list[Any]], org_raw: Mapping[int, Any]
+    vid: int, rows_by_vid: Mapping[int, list[Any]], org_raw: Mapping[int, Any]
 ) -> tuple[str | None, bool]:
     """(gateway, unresolved) for a vlan id. Winning-row-shadows-org +
-    conflict-is-unresolvable (GS22-GW spec): the first declared row wins;
-    an unreadable winner or ANY disagreeing sibling row -> (None, True);
-    org overlay fills only when NO row declares a gateway at all."""
-    rows = declared.get(vid)
-    if rows is None:
-        if vid not in org_raw:
+    conflict-is-unresolvable (GS22-GW spec). rows are ALL same-vid network
+    rows' gateway values in mint order — [0] is the true Vlan winner;
+    None values = no intent (null==absent canon).
+
+    - winner declares, readable, every other declaring row agrees -> value
+    - winner declares but unreadable -> (None, True), shadows org
+    - winner declares, any declaring sibling disagrees -> (None, True)
+    - winner silent but a NON-WINNING row declares -> (None, True) — the
+      singleton Vlan cannot represent a per-device gateway (review r1:
+      never silently promote it, never fall to org over it)
+    - nobody declares -> org overlay (unreadable org value -> (None, True))
+    """
+    rows = rows_by_vid.get(vid, [])
+    declaring = [r for r in rows if r is not None]
+    if not declaring:
+        if vid not in org_raw or org_raw[vid] is None:
             return None, False  # no intent anywhere — not a blind spot
         lit = _literal_ip(org_raw[vid])
         return lit, lit is None
+    if rows[0] is None:
+        return None, True  # winner silent, a non-winning row declares
     winner = _literal_ip(rows[0])
     if winner is None:
         return None, True  # declared-but-unreadable (still shadows org)
-    for other in rows[1:]:
+    for other in declaring[1:]:
         if same_ip(_literal_ip(other), winner) is not True:
             return None, True  # conflict = unresolvable intent
     return winner, False
@@ -305,7 +354,7 @@ def _vlan_gateway(  # module level, near _literal_ip
 Wire into the `Vlan(...)` construction:
 
 ```python
-                    gw, gw_unresolved = _vlan_gateway(int(vid), declared_gw, org_gw_raw)
+                    gw, gw_unresolved = _vlan_gateway(int(vid), rows_by_vid, org_gw_raw)
                     ctx.builder.add_vlan(
                         Vlan(
                             ...existing fields...,
@@ -385,9 +434,11 @@ Site loop — alongside the subnet fields:
 ```python
                     network_gateway=_literal_ip(net.get("gateway")),
                     # site namespace is always fetched: unresolved only when
-                    # a DECLARED gateway is unreadable (templated)
+                    # a DECLARED gateway is unreadable (templated); explicit
+                    # null = absent (null==absent canon, same as subnet)
                     network_gateway_unresolved=(
-                        "gateway" in net and _literal_ip(net.get("gateway")) is None
+                        net.get("gateway") is not None
+                        and _literal_ip(net.get("gateway")) is None
                     ),
 ```
 
@@ -404,12 +455,12 @@ Gateway loop — `net_entry` already distinguishes name-missing (GS25 fix); add:
                         network_gateway_unresolved=(
                             not org_fetched
                             or net_entry is None
-                            or ("gateway" in net_entry
+                            or (declared_gw is not None
                                 and _literal_ip(declared_gw) is None)
                         ),
 ```
 
-NOTE the asymmetry vs subnet (which uses `declared is not None`): use KEY-presence (`"gateway" in ...`) so an explicit `"gateway": null` row counts as no-intent, consistent with Task 3's `_vlan_gateway`. (If the existing subnet logic's `is not None` convention makes the site loop read inconsistently, keep each field's own convention and say so in the comment — do NOT change subnet behavior in this task.)
+Convention pinned (review r1): declared = `value is not None` everywhere — explicit `"gateway": null` is ABSENT (the null==absent canon), exactly the convention `subnet_unresolved` already uses. No key-presence checks anywhere in this feature.
 
 - [ ] **Step 4: Run + full gate.** Expected: PASS.
 
@@ -720,15 +771,23 @@ def test_unparseable_present_values_abstain_with_note():
                 and b.gateway == s.gateway
                 and b.network_gateway == s.network_gateway
             )
-            findings.append(self._finding(
-                "gateway_mismatch",
-                Severity.INFO if preexisting else Severity.WARNING,
-                f"DHCP scope {sid} hands out gateway {s.gateway} but its "
-                f"network declares {s.network_gateway}"
-                + (" (pre-existing, unchanged)" if preexisting else ""),
-                {"scope": sid, "handed": s.gateway, "declared": s.network_gateway},
-                (sid,),
+            findings.append(Finding(
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.gateway_mismatch",
+                severity=Severity.INFO if preexisting else Severity.WARNING,
+                confidence=_HIGH,
+                message=(
+                    f"DHCP scope {sid} hands out gateway {s.gateway} but its "
+                    f"network declares {s.network_gateway}"
+                    + (" (pre-existing, unchanged)" if preexisting else "")
+                ),
+                affected_entities=(sid,),
+                evidence={"scope": sid, "handed": s.gateway,
+                          "declared": s.network_gateway},
             ))
+            # NOTE: the shipped DhcpScopeLintCheck constructs Finding inline
+            # (no _finding helper) — match whatever the file actually does
 ```
 
 Note tuples (added to the `subnet_notes`-style block, same `changed_ids` relevance):
