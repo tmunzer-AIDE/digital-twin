@@ -823,6 +823,25 @@ def test_unfetched_org_namespace_still_mints_gateway_scope_ranges():
     assert s.subnet_unresolved is True  # intent UNKNOWABLE, not "no intent"
 
 
+def test_gateway_scope_with_unknown_network_name_is_subnet_unresolved():
+    # org namespace FETCHED but the dhcpd entry names a network that is not
+    # there: subnet intent is UNKNOWABLE (the network is missing entirely),
+    # which is not the same as "fetched and declares no subnet"
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {
+        "mystery_net": {"type": "local", "ip_start": "10.7.0.10", "ip_end": "10.7.0.99"}
+    }}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=_ORG_NETWORKS),
+        site_effective={}, device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    s = next(x for x in ir.dhcp_scopes if x.provider == "cc0000000001")
+    assert (s.ip_start, s.ip_end) == ("10.7.0.10", "10.7.0.99")  # ranges literal
+    assert s.subnet is None
+    assert s.subnet_unresolved is True  # name missing from a FETCHED namespace
+
+
 def test_templated_range_fields_mint_none_never_crash():
     eff = {
         "networks": {"corp": {"vlan_id": 10}},

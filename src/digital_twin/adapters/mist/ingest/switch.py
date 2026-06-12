@@ -380,7 +380,8 @@ class SwitchIngester:
                 if not _dhcp_serves_scope(entry):
                     continue
                 entry = entry or {}
-                declared = (org_nets.get(str(name)) or {}).get("subnet")
+                net_entry = org_nets.get(str(name)) if org_fetched else None
+                declared = (net_entry or {}).get("subnet")
                 ctx.builder.add_dhcp_scope(
                     DhcpScope(
                         provider=did,
@@ -393,9 +394,15 @@ class SwitchIngester:
                         ip_start=_literal_ip(entry.get("ip_start")),
                         ip_end=_literal_ip(entry.get("ip_end")),
                         gateway=_literal_ip(entry.get("gateway")),
-                        subnet=_literal_subnet(declared) if org_fetched else None,
-                        subnet_unresolved=(not org_fetched)
-                        or (declared is not None and _literal_subnet(declared) is None),
+                        subnet=_literal_subnet(declared),
+                        # blind namespace OR name missing from the fetched one:
+                        # intent UNKNOWABLE; present-but-templated: unreadable;
+                        # present with no subnet declared: no intent, not blind
+                        subnet_unresolved=(
+                            not org_fetched
+                            or net_entry is None
+                            or (declared is not None and _literal_subnet(declared) is None)
+                        ),
                     )
                 )
 
