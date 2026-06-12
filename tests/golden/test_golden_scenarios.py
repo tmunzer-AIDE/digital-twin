@@ -646,6 +646,158 @@ def test_gs24_variant_clientless_vlan_dhcp_removal_is_review(tmp_path):
     assert f.evidence["vlan"] == 997 and f.severity.value == "warning"
 
 
+def _gs25_doc(*, stage_overlap_in_baseline=False):
+    # org namespace staged fetched so the SRX's LD_VLAN2 dhcpd entry resolves
+    # (same rationale as _gs24_doc). ALL network names the SRX's LAN port
+    # references must resolve — one unresolvable name leaves the port
+    # VLAN-BLIND, every edge toward the SRX is then carriage-ASSUMED (MEDIUM)
+    # and the snooping check honestly abstains instead of reading trust.
+    # parallel_carries_gs=False: the parallel-999 doc carries a PRE-EXISTING
+    # cycle on carriage-assumed (MEDIUM) edges whose context caps the loop
+    # check's result confidence below HIGH — that floors EVERY verdict at
+    # REVIEW, making the SAFE expectations unreachable.
+    doc = augmented_doc(parallel_carries_gs=False)
+    doc["org_networks"] = [
+        {"name": "LD_VLAN2", "vlan_id": 2},
+        {"name": "LD_VLAN24", "vlan_id": 24},
+        {"name": "IoTLAN", "vlan_id": 1003},
+        {"name": "GuestLAN", "vlan_id": 1004},
+        {"name": "VLAN-170-Rogue-DHCP", "vlan_id": 170},
+        {"name": "default-vlan", "vlan_id": 1},
+    ]
+    doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
+    # the recorded site setting carries three pre-existing OAS violations
+    # ('' day_of_week enums, a numeric flag the schema types as string); L0
+    # validates the full EFFECTIVE object, so any site_setting op would floor
+    # at REVIEW for faults the delta never touched — cleared per null==absent
+    doc["setting"]["auto_upgrade"]["day_of_week"] = None
+    doc["setting"]["flags"]["numStagingVbles"] = None
+    doc["setting"]["gateway_mgmt"]["auto_signature_update"]["day_of_week"] = None
+    if stage_overlap_in_baseline:
+        doc["setting"].setdefault("networks", {})["gs25_pre"] = {"vlan_id": 995}
+        doc["setting"].setdefault("dhcpd_config", {})["gs25_pre"] = {
+            "type": "local", "ip_start": "198.51.100.10", "ip_end": "198.51.110.10",
+        }
+    return doc
+
+
+def test_gs25a_introducing_an_overlapping_scope_is_review(tmp_path):
+    # new site scope 198.51.100.10-110.10 overlaps the SRX's LD_VLAN2 range
+    # (198.51.99.233-198.51.196.88) -> WARNING -> REVIEW. The vlan-996 network
+    # is staged in BASELINE: site_setting updates REPLACE present roots, so a
+    # networks payload would delete every existing network (and trip the
+    # dynamic-port honesty gate) — the delta under test is the SCOPE only.
+    doc = _gs25_doc()
+    doc["setting"]["networks"]["gs25_net"] = {"vlan_id": 996}
+    op = {
+        "action": "update", "order": 0, "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {
+            "dhcpd_config": {"gs25_net": {
+                "type": "local", "ip_start": "198.51.100.10",
+                "ip_end": "198.51.110.10", "gateway": "198.51.100.1",
+            }},
+        },
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.dhcp.scope_lint.overlap")
+    assert f.severity.value == "warning"
+
+
+def test_gs25a_variant_preexisting_overlap_stays_safe_info(tmp_path):
+    # the overlap already exists in baseline; the delta adds a NON-overlapping
+    # scope -> the old collision is INFO context, never a verdict floor.
+    # dhcpd_config is a REPLACED root: the payload merges the baseline map so
+    # the pre-existing gs25_pre scope is not silently deleted by the op.
+    doc = _gs25_doc(stage_overlap_in_baseline=True)
+    doc["setting"]["networks"]["gs25_far"] = {"vlan_id": 994}
+    op = {
+        "action": "update", "order": 0, "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {
+            "dhcpd_config": {
+                **doc["setting"]["dhcpd_config"],
+                "gs25_far": {
+                    "type": "local",
+                    "ip_start": "198.51.200.10", "ip_end": "198.51.210.10",
+                },
+            },
+        },
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.dhcp.scope_lint.overlap")
+    assert f.severity.value == "info"
+
+
+def _gs25b_target(doc):
+    """(switch_device_dict, gw_facing_port) derived from the fixture itself —
+    robust to redaction re-captures. Also clears the switch's pre-existing
+    INVALID remote_syslog.time_format '' (it violates the OAS enum, and L0
+    validates the full EFFECTIVE object — any op on this switch would floor
+    at REVIEW for a fault the delta never touched)."""
+    gw_mac = next(d["mac"] for d in doc["devices"] if d.get("type") == "gateway")
+    row = next(r for r in doc["port_stats"] if r.get("neighbor_mac") == gw_mac)
+    sw = next(d for d in doc["devices"] if d.get("mac") == row["mac"])
+    if (sw.get("remote_syslog") or {}).get("time_format") == "":
+        sw["remote_syslog"]["time_format"] = None  # null == absent (canon)
+    return sw, str(row["port_id"])
+
+
+def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
+    # enable snooping for vlan2 on the gateway-facing switch AND explicitly
+    # distrust the gateway-facing port (allow_dhcpd=false beats trunk):
+    # the SRX is vlan 2's only modeled source -> offers drop -> REVIEW
+    doc = _gs25_doc()
+    sw, gw_port = _gs25b_target(doc)
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": sw["id"],
+        "payload": {
+            "dhcp_snooping": {"enabled": True, "networks": ["vlan2"]},
+            "local_port_config": {gw_port: {"allow_dhcpd": False}},
+        },
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.dhcp.snooping.untrusted_path")
+    assert f.evidence["vlan"] == 2
+
+
+def test_gs25b_variant_trusted_uplink_is_safe(tmp_path):
+    # same snooping enable WITHOUT distrusting the port: the gateway-facing
+    # trunk is trusted by default -> one trusted path is enough -> SAFE
+    doc = _gs25_doc()
+    sw, _ = _gs25b_target(doc)
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": sw["id"],
+        "payload": {"dhcp_snooping": {"enabled": True, "networks": ["vlan2"]}},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert not [f for f in v.findings if "snooping" in f.code]
+
+
+def test_gs25b_variant_unknown_trust_is_review_via_partial_no_finding(tmp_path):
+    # spec: blindness floors the verdict honestly (PARTIAL -> REVIEW) without
+    # inventing a dropped-offer conclusion. Stage the gw-facing port's usage
+    # to an UNDEFINED name in BASELINE (both sides equally blind -> peer-blind
+    # suppressions hold); the only delta is the snooping enable.
+    doc = _gs25_doc()
+    sw, gw_port = _gs25b_target(doc)
+    sw.setdefault("port_config", {})[gw_port] = {"usage": "gs25_undefined_usage"}
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": sw["id"],
+        "payload": {"dhcp_snooping": {"enabled": True, "networks": ["vlan2"]}},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not [f for f in v.findings if f.code.endswith("untrusted_path")]
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(
