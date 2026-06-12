@@ -44,6 +44,15 @@ def test_gateway_provider_must_be_a_known_device():
         b.build()
 
 
+def test_non_gateway_provider_rejected():
+    # valid non-"site" providers are gateway device ids ONLY; a scope
+    # attributed to a switch is an ingester bug that must fail build()
+    b = IRBuilder().add_device(sw("S"))
+    b.add_dhcp_scope(DhcpScope(provider="S", network="corp"))
+    with pytest.raises(IRValidationError):
+        b.build()
+
+
 def test_scopes_sorted_by_id_in_built_ir():
     ir = _build(
         DhcpScope(provider="site", network="zeta"),
@@ -64,3 +73,7 @@ def test_trust_and_snooping_are_diffable_facts():
 
     d = diff_ir(build(True, None), build(False, ("corp",)))
     assert d.touches("port") and d.touches("device")
+    port_mods = [m for m in d.modified if m.ref.kind == "port"]
+    assert len(port_mods) == 1 and "dhcp_trusted" in port_mods[0].changed_fields
+    dev_mods = [m for m in d.modified if m.ref.kind == "device"]
+    assert len(dev_mods) == 1 and "dhcp_snooping" in dev_mods[0].changed_fields

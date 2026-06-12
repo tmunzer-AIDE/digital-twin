@@ -268,12 +268,17 @@ class IRBuilder:
         return errors
 
     def _validate_dhcp_scopes(self) -> list[str]:
-        # a gateway-provided scope must reference a real device, else an
-        # ingester bug would silently misattribute the scope
+        # a gateway-provided scope must reference a real GATEWAY device, else
+        # an ingester bug would silently misattribute the scope
         errors: list[str] = []
         for s in self._dhcp_scopes.values():
-            if s.provider != "site" and s.provider not in self._devices:
+            if s.provider == "site":
+                continue
+            dev = self._devices.get(s.provider)
+            if dev is None:
                 errors.append(f"dhcp scope {s.id} references unknown provider {s.provider}")
+            elif dev.role is not DeviceRole.GATEWAY:
+                errors.append(f"dhcp scope {s.id} provider {s.provider} is not a gateway")
         return errors
 
     def build(self) -> IR:
