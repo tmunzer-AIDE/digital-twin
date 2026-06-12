@@ -30,7 +30,10 @@ taint every future plan. Pre-existing demotion requires checks.
   `ip_start: str | None`, `ip_end: str | None`, `gateway: str | None`,
   `subnet: str | None` — the OWNING network's subnet resolved in the
   provider's namespace (org networks for gateway scopes, site networks for
-  site scopes); None when unknown/blind.
+  site scopes); None when unknown/blind. `subnet_unresolved: bool` — True
+  iff subnet intent EXISTS but is unreadable (templated) or unknowable
+  (unfetched namespace); False when the namespace is fetched and simply
+  declares no subnet (no intent ≠ blind spot).
   - **Identity vs violation parity**: `DhcpScope.id` = `provider:network` —
     exactly how `dhcpd_config` is keyed, and stable when vlan resolution
     flips unknown→known (`vlan` is a DIFFED FIELD, never part of identity). Pre-existing demotion is
@@ -100,9 +103,14 @@ Pure config lint over `IR.dhcp_scopes`; no topology.
     the SAME offending field value and the SAME subnet. A bad value changed
     to a different bad value, or the subnet changed under it, is ALTERED →
     WARNING.
-  - `subnet` None (org namespace blind, templated, or network has no
-    subnet configured) → scope skipped + PARTIAL note. A network with no
-    subnet intent is NOT a violation.
+  - `subnet` unknown → scope skipped for this code. VISIBLY (PARTIAL note)
+    only when the unknown is a BLIND SPOT: `DhcpScope.subnet_unresolved`
+    (set at ingest, doctrine i) marks a subnet whose intent exists but
+    cannot be read — templated value, or an unfetched org namespace where
+    intent is unknowable. A FETCHED namespace whose network simply declares
+    no subnet is NO intent → nothing to verify → silently COMPLETE (a
+    blanket note would PARTIAL-floor every plan touching ordinary
+    subnet-less site networks).
 - **Blind-gateway scoping (user nuance)**: a blind gateway elsewhere does
   NOT taint a concrete finding built from fully parsed scopes. `l3_unmodeled`
   only degrades coverage for scopes whose owning namespace is the blind
