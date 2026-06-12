@@ -687,9 +687,13 @@ def test_unresolved_dhcp_range_finding_is_delta_gated():
 
     assert unresolved_dhcp_range_findings(tpl, tpl) == []          # pre-existing
     assert unresolved_dhcp_range_findings(clean, clean) == []      # nothing wrong
-    intro = unresolved_dhcp_range_findings(clean, tpl)             # introduced
+    intro = unresolved_dhcp_range_findings({}, tpl)                # introduced
     assert [f.code for f in intro] == ["scope.dhcp.range_unresolved"]
-    assert unresolved_dhcp_range_findings(tpl, other) != []        # changed
+    assert intro[0].evidence["before"] is None                     # None -> template
+    changed = unresolved_dhcp_range_findings(tpl, other)           # changed
+    assert [f.code for f in changed] == ["scope.dhcp.range_unresolved"]
+    assert changed[0].evidence["before"] == "{{a}}"                # template -> template
+    assert unresolved_dhcp_range_findings(clean, tpl) != []        # literal -> template
     assert unresolved_dhcp_range_findings(tpl, clean) == []        # resolved -> fine
 
 

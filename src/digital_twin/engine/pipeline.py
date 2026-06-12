@@ -191,10 +191,13 @@ def simulate(
                 state_meta=state_meta,
             )
 
-    # 7b — dynamic-port honesty: vlan-defining definitions changed on a device
-    # with dynamically-profiled ports whose RUNTIME usage could not be resolved
-    # from observed LLDP -> WARNING (-> REVIEW). Resolved dynamic ports need no
-    # gate: their impact is in the IR diff and the checks reason about it.
+    # 7b — adapter findings no check can derive from the IR: unresolved
+    # dynamic-port impact (vlan-defining changes on dynamically-profiled ports
+    # whose RUNTIME usage could not be resolved from observed LLDP),
+    # uninterpretable bridge_priority (either side), and delta-introduced
+    # templated dhcp ranges -> WARNING (-> REVIEW). Resolved dynamic ports
+    # need no gate: their impact is in the IR diff and the checks reason
+    # about it. (stage name kept for trace consumers)
     with trace.stage("dynamic_gate"):
         adapter_findings += unresolved_dynamic_findings(
             baseline.device_effective, proposed.device_effective, raw.port_stats

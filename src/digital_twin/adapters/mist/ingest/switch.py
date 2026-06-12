@@ -231,7 +231,12 @@ def unresolved_dhcp_range_findings(
                         "cannot be evaluated — range/subnet lint is blind to it"
                     ),
                     affected_entities=(str(name),),
-                    evidence={"network": str(name), "field": field, "value": str(value)},
+                    evidence={
+                        "network": str(name),
+                        "field": field,
+                        "value": str(value),
+                        "before": None if before is None else str(before),
+                    },
                 )
             )
     return findings
