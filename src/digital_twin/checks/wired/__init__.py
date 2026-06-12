@@ -12,6 +12,8 @@ from .l2_vlan_segmentation import L2VlanSegmentationCheck
 from .mtu_mismatch import MtuMismatchCheck
 from .native_mismatch import NativeVlanMismatchCheck
 from .poe_disconnect import PoeDisconnectCheck
+from .scope_lint import DhcpScopeLintCheck
+from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_root import StpRootChangeCheck
 
@@ -26,6 +28,8 @@ ALL_WIRED_CHECKS: list[Check] = [
     StpRootChangeCheck(),
     GatewayGapCheck(),
     DhcpPathCheck(),
+    DhcpScopeLintCheck(),
+    DhcpSnoopingCheck(),
     PoeDisconnectCheck(),
     ClientImpactCheck(),
 ]
@@ -34,6 +38,8 @@ __all__ = [
     "ALL_WIRED_CHECKS",
     "ClientImpactCheck",
     "DhcpPathCheck",
+    "DhcpScopeLintCheck",
+    "DhcpSnoopingCheck",
     "GatewayGapCheck",
     "L2BlackholeCheck",
     "L2IsolationCheck",
