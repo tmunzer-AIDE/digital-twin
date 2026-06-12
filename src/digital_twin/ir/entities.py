@@ -164,6 +164,14 @@ class Vlan:
     # ROUTED intent: the network declares a subnet — someone must provide its
     # L3 interface (the wired.l3.gateway_gap check consumes this)
     subnet: str | None = None
+    # Declared default-gateway IP (networks.*.gateway), minted from the SAME
+    # effective network row that wins this Vlan (org overlay only when no
+    # row declares one). None = no declared intent OR unresolved (flag).
+    gateway: str | None = None
+    # True iff gateway INTENT exists but is unreadable (templated) or
+    # AMBIGUOUS (a non-winning same-vlan row disagrees — conflict is
+    # unresolvable intent, never a silent winner). Absent intent stays False.
+    gateway_unresolved: bool = False
     # modeled DHCP providers for this vlan: "site" (switch-hosted server/relay
     # from the site dhcpd_config) and/or gateway device ids (their own
     # dhcpd_config). Empty = NO modeled path (which is normal — external
@@ -201,6 +209,13 @@ class DhcpScope:
     # fetched and simply declares no subnet — no intent is NOT a blind spot
     # (a blanket note would PARTIAL-floor ordinary subnet-less networks).
     subnet_unresolved: bool = False
+    # The OWNING network's declared gateway, resolved in the PROVIDER's
+    # namespace (org for gateway scopes, site for site scopes — exactly
+    # like subnet). Feeds wired.dhcp.scope_lint.gateway_mismatch.
+    network_gateway: str | None = None
+    # Mirrors subnet_unresolved: declared-but-unreadable, or unknowable
+    # (unfetched org namespace / name missing from a fetched one).
+    network_gateway_unresolved: bool = False
     meta: FactMeta = CONFIG_META
 
     @property

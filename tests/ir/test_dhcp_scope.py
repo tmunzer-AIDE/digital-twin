@@ -61,6 +61,25 @@ def test_scopes_sorted_by_id_in_built_ir():
     assert [s.id for s in ir.dhcp_scopes] == ["site:alpha", "site:zeta"]
 
 
+def test_gateway_fields_are_diffable_facts():
+    from digital_twin.ir import Vlan
+
+    def build(vlan_gw, scope_net_gw):
+        b = IRBuilder().add_device(sw("S"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", gateway=vlan_gw))
+        b.add_dhcp_scope(
+            DhcpScope(provider="site", network="corp", vlan=10,
+                      gateway="10.0.0.1", network_gateway=scope_net_gw)
+        )
+        return b.build()
+
+    d = diff_ir(build("10.0.0.1", "10.0.0.1"), build("10.0.0.9", "10.0.0.9"))
+    vlan_mods = [m for m in d.modified if m.ref.kind == "vlan"]
+    assert len(vlan_mods) == 1 and "gateway" in vlan_mods[0].changed_fields
+    scope_mods = [m for m in d.modified if m.ref.kind == "dhcp_scope"]
+    assert len(scope_mods) == 1 and "network_gateway" in scope_mods[0].changed_fields
+
+
 def test_trust_and_snooping_are_diffable_facts():
     from dataclasses import replace
 
