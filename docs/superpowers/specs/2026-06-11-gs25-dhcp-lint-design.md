@@ -170,10 +170,19 @@ clients + complete source/path certainty → ERROR.
 
 ## Ingest (`adapters/mist/ingest/switch.py`)
 
-- Extend the existing `_dhcp_sources` walk to also mint `DhcpScope` rows
-  (site dhcpd entries → provider `"site"` + site-network subnet; gateway
-  dhcpd entries → provider device-id + org-network subnet via the GS24
-  namespace contract, present-None shadows).
+- Extend the existing `_dhcp_sources` walk to also mint `DhcpScope` rows —
+  but ONLY for SERVING entries (the `_dhcp_active` classification GS24
+  already makes): site entries with `type` absent/`local`, gateway entries
+  whose type means the device itself serves the scope (the live fixture's
+  `local` shape). RELAY entries (valid GS24 paths via `servers`) and
+  `none` entries own no `ip_start..ip_end` and must NOT become scope rows —
+  a range-less relay row would abstain the range lints and drag PARTIAL
+  noise onto every normal relay config. Relay/none participate in
+  `dhcp_sources` only. A SERVING entry whose range fields are templated or
+  absent is still minted (fields None = intentionally unresolved → scoped
+  abstention), because the scope exists even when we cannot read its edges.
+  Namespace resolution: site scopes → site-network subnet; gateway scopes →
+  org-network subnet via the GS24 namespace contract, present-None shadows.
 - **Unfetched org namespace** (refined from GS24): the GS24 rule — no
   `dhcp_sources` CREDIT — stands untouched, because crediting a source is a
   guessed positive that suppresses removal findings. But gateway `DhcpScope`
