@@ -471,6 +471,14 @@ class SwitchIngester:
                     subnet_unresolved=(
                         declared is not None and _literal_subnet(declared) is None
                     ),
+                    network_gateway=_literal_ip(net.get("gateway")),
+                    # site namespace is always fetched: unresolved only when
+                    # a DECLARED gateway is unreadable (templated); explicit
+                    # null = absent (null==absent canon, same as subnet)
+                    network_gateway_unresolved=(
+                        net.get("gateway") is not None
+                        and _literal_ip(net.get("gateway")) is None
+                    ),
                 )
             )
         org_fetched = "org_networks" in ctx.raw.meta.fetched
@@ -485,6 +493,7 @@ class SwitchIngester:
                 entry = entry or {}
                 net_entry = org_nets.get(str(name)) if org_fetched else None
                 declared = (net_entry or {}).get("subnet")
+                declared_gw = (net_entry or {}).get("gateway")
                 ctx.builder.add_dhcp_scope(
                     DhcpScope(
                         provider=did,
@@ -505,6 +514,16 @@ class SwitchIngester:
                             not org_fetched
                             or net_entry is None
                             or (declared is not None and _literal_subnet(declared) is None)
+                        ),
+                        network_gateway=_literal_ip(declared_gw),
+                        # same three-way rule as subnet_unresolved: blind
+                        # namespace OR name missing -> unknowable; declared
+                        # but templated -> unreadable; absent/null -> no intent
+                        network_gateway_unresolved=(
+                            not org_fetched
+                            or net_entry is None
+                            or (declared_gw is not None
+                                and _literal_ip(declared_gw) is None)
                         ),
                     )
                 )

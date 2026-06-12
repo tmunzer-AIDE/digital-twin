@@ -1005,6 +1005,50 @@ def test_explicit_null_gateway_is_no_intent():
     assert v.gateway == "10.0.0.1" and v.gateway_unresolved is False
 
 
+def test_scope_network_gateway_site_namespace():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10, "gateway": "10.0.0.1"},
+                     "iot": {"vlan_id": 20, "gateway": "{{gw}}"}},
+        "dhcpd_config": {
+            "corp": {"type": "local", "gateway": "10.0.0.254"},
+            "iot": {"type": "local"},
+        },
+    }
+    scopes = {s.id: s for s in _ir_for(eff).dhcp_scopes}
+    s = scopes["site:corp"]
+    assert s.network_gateway == "10.0.0.1"
+    assert s.network_gateway_unresolved is False
+    t = scopes["site:iot"]
+    assert t.network_gateway is None and t.network_gateway_unresolved is True
+
+
+def test_gateway_scope_network_gateway_org_namespace():
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {
+        "corp": {"type": "local", "gateway": "198.51.100.254"}
+    }}
+    org = ({"name": "corp", "vlan_id": 10, "gateway": "198.51.100.1"},)
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=org),
+        site_effective={}, device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    s = next(x for x in ctx.builder.build().dhcp_scopes if x.provider == "cc0000000001")
+    assert s.network_gateway == "198.51.100.1"
+    assert s.network_gateway_unresolved is False
+
+
+def test_gateway_scope_network_gateway_blind_namespace_unresolved():
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {"corp": {"type": "local"}}}
+    fetched = tuple(f for f in ALL_FETCHED if f != "org_networks")
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), fetched=fetched),
+        site_effective={}, device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    s = next(x for x in ctx.builder.build().dhcp_scopes if x.provider == "cc0000000001")
+    assert s.network_gateway is None and s.network_gateway_unresolved is True
+
+
 def test_org_only_templated_gateway_sets_unresolved():
     eff = {"networks": {"corp": {"vlan_id": 10}}}
     ctx = IngestContext(
