@@ -796,6 +796,9 @@ def test_gs25b_variant_unknown_trust_is_review_via_partial_no_finding(tmp_path):
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.REVIEW, v.decision_reasons
     assert not [f for f in v.findings if f.code.endswith("untrusted_path")]
+    # pin the MECHANISM: the REVIEW must come from the snooping check's
+    # visible abstention, not some unrelated floor
+    assert any("wired.dhcp.snooping" in r and "partial" in r for r in v.decision_reasons)
 
 
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
