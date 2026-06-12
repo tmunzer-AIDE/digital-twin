@@ -78,6 +78,15 @@ def test_preexisting_blocked_snooping_is_info():
     assert [f.severity for f in r.findings] == [Severity.INFO]
 
 
+def test_preexisting_blocked_with_blind_gateway_stays_complete():
+    # GS22 rule, regressed once: PARTIAL keys off CONCLUSIONS — a blind
+    # gateway behind an INFO-demoted pre-existing blockage must not drag
+    # REVIEW via the coverage side door (decision floors PARTIAL to REVIEW)
+    r = _run(_ir(trust=False, gw_blind=True), _ir(trust=False, gw_blind=True))
+    assert [f.severity for f in r.findings] == [Severity.INFO]
+    assert r.coverage.state is CoverageState.COMPLETE
+
+
 def test_trusted_port_going_untrusted_under_existing_snooping_is_introduced():
     # ACTIVITY not pair (native-mismatch lesson): the snooping was on, but the
     # delta removed the last trusted path

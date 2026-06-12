@@ -179,10 +179,13 @@ class DhcpSnoopingCheck:
                         src_dev.l3_unmodeled or src_dev.dhcp_unresolved
                     )
                     confidence = _BLIND_SOURCE if blind else _HIGH
-                    if blind:
+                    if blind and not pre:
                         # GS24 rail: the cap lives on the finding, this note
                         # makes the blind spot visible — same condition, the
-                        # layers cannot disagree
+                        # layers cannot disagree. NOT on INFO-demoted
+                        # pre-existing context: PARTIAL keys off CONCLUSIONS
+                        # (GS22 rule) or the coverage side door floors an
+                        # unrelated change to REVIEW
                         notes.append(
                             f"gateway {source}: namespace unmodeled — its DHCP "
                             "service placement is (partly) invisible; the "
