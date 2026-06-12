@@ -48,8 +48,14 @@ taint every future plan. Pre-existing demotion requires checks.
     mode is trunk;
   - `False`: `allow_dhcpd is False` (even on a trunk), OR `allow_dhcpd`
     absent and resolved mode is access;
-  - `None`: effective usage unresolved / dynamic / vlan-blind — unknown
-    trust must NEVER collapse to untrusted (no false REVIEW from blindness).
+  - `None`: effective usage unknown — i.e. a DYNAMIC port whose runtime
+    usage did NOT resolve from observed LLDP (the existing
+    `unresolved_dynamic_findings` distinction), or a vlan-blind/unresolved
+    usage. A dynamic port that DID resolve to a concrete runtime usage uses
+    that usage's `allow_dhcpd`/mode like any other port. Unknown trust must
+    NEVER collapse to untrusted (no false REVIEW from blindness) — but
+    resolved dynamics must not collapse to unknown either (no false PARTIAL
+    from a resolved uplink).
 - `Device.dhcp_snooping: tuple[str, ...] | None` — `None` = disabled,
   `("*",)` = `all_networks`, else the enabled network names (site-network
   namespace).
@@ -83,14 +89,17 @@ Pure config lint over `IR.dhcp_scopes`; no topology.
 
 - `.overlap`: normalized IP ranges (`ipaddress.ip_address` ordering) of two
   scopes intersect.
-  - Pair INTRODUCED (the unordered key-pair did not overlap in baseline,
-    or either key is new) → WARNING / REVIEW.
-  - Pair already overlapping in baseline → INFO (visible context, no
-    verdict drag).
+  - PRE-EXISTING (→ INFO, no verdict drag) iff the same unordered id-pair
+    overlapped in baseline AND both scopes' ranges are byte-identical to
+    baseline. Anything else — new scope, or a range edit that still/newly
+    overlaps — is INTRODUCED/ALTERED → WARNING / REVIEW (the
+    native-mismatch precedent: touching the hazard forfeits demotion).
   - Either range unparseable/None → that pair abstains + PARTIAL note.
 - `.out_of_subnet`: scope `gateway` or a range edge outside `subnet`.
-  - Introduced (this scope key was not violating in baseline) → WARNING.
-  - Pre-existing → INFO.
+  - PRE-EXISTING (→ INFO) iff the same scope id violated in baseline with
+    the SAME offending field value and the SAME subnet. A bad value changed
+    to a different bad value, or the subnet changed under it, is ALTERED →
+    WARNING.
   - `subnet` None (org namespace blind, templated, or network has no
     subnet configured) → scope skipped + PARTIAL note. A network with no
     subnet intent is NOT a violation.
