@@ -168,6 +168,17 @@ def test_breaking_a_known_owner_is_error():
     assert f.severity is Severity.ERROR
 
 
+def test_owner_ip_moved_while_g_unchanged_is_error():
+    # the symmetric owner-broken event: G stays fixed, the interface that
+    # owned it changes its IP — same `owners` branch, distinct config event
+    base = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.1")
+    prop = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.2")
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH
+
+
 def test_never_owned_is_warning_medium():
     # interfaces exist but none ever owned G (baseline G already different
     # from the intf and CHANGED by the delta -> introduced, no known owner)
