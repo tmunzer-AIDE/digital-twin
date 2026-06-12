@@ -89,6 +89,27 @@ def test_blind_gateway_source_caps_confidence_medium():
     from digital_twin.ir import ConfidenceLevel
     r = _run(_ir(snooping=None, trust=False, gw_blind=True), _ir(trust=False, gw_blind=True))
     assert r.findings[0].confidence.level is ConfidenceLevel.MEDIUM
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("GW" in n and "unmodeled" in n.lower() for n in r.coverage.notes)
+
+
+def test_dhcp_unresolved_source_also_caps_medium():
+    from digital_twin.ir import ConfidenceLevel
+
+    def ir(snooping):
+        b = IRBuilder()
+        b.add_device(replace(sw("S"), dhcp_snooping=snooping))
+        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1",
+                            dhcp_unresolved=True))
+        b.add_port(replace(trunk_port("S", "ge-0/0/0", tagged=(10,)), dhcp_trusted=False))
+        b.add_port(trunk_port("GW", "ge-0/0/0", tagged=(10,)))
+        b.add_link(link("S:ge-0/0/0", "GW:ge-0/0/0"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("GW",)))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    r = _run(ir(None), ir(("corp",)))
+    assert r.findings[0].confidence.level is ConfidenceLevel.MEDIUM
 
 
 def test_source_not_reachable_in_graph_abstains():

@@ -175,12 +175,19 @@ class DhcpSnoopingCheck:
                         == "blocked"
                     )
                     src_dev = prop_ir.devices.get(source)
-                    confidence = (
-                        _BLIND_SOURCE
-                        if src_dev is not None
-                        and (src_dev.l3_unmodeled or src_dev.dhcp_unresolved)
-                        else _HIGH
+                    blind = src_dev is not None and (
+                        src_dev.l3_unmodeled or src_dev.dhcp_unresolved
                     )
+                    confidence = _BLIND_SOURCE if blind else _HIGH
+                    if blind:
+                        # GS24 rail: the cap lives on the finding, this note
+                        # makes the blind spot visible — same condition, the
+                        # layers cannot disagree
+                        notes.append(
+                            f"gateway {source}: namespace unmodeled — its DHCP "
+                            "service placement is (partly) invisible; the "
+                            "dropped-offer conclusion is capped at MEDIUM"
+                        )
                     findings.append(
                         Finding(
                             source=FindingSource.CHECK,
