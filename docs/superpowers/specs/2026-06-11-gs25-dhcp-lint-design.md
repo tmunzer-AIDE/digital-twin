@@ -177,11 +177,16 @@ clients + complete source/path certainty → ERROR.
   (correct for GS24 sources, wrong for scope ownership). Truth table:
   | entry | `_dhcp_active` (sources) | `_dhcp_serves_scope` (scopes) |
   |---|---|---|
-  | site, `type` absent/`local` | True | True |
-  | gateway self-serving (live `local` shape) | True | True |
+  | `type` absent / `local` / `server` | True | True |
   | `relay` with `servers` | True | **False** |
   | `relay` without `servers` | False | False |
   | `none` | False | False |
+  Serving means `type in {"local", "server"}` or absent: `local` is what
+  live Mist emits (fixture-verified), `server` is the OAS-canonical enum
+  value — both exist in the wild. This review also surfaced a SHIPPED GS24
+  bug (`_dhcp_active` ignored `server` → its removal could false-SAFE);
+  fixed with regression tests for both shapes, shared constant
+  `_DHCP_SERVING_TYPES` consumed by BOTH predicates so they cannot drift.
   RELAY and `none` entries own no `ip_start..ip_end` and must NOT become
   scope rows —
   a range-less relay row would abstain the range lints and drag PARTIAL

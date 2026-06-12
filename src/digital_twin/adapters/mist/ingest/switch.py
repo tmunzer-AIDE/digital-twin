@@ -79,13 +79,18 @@ def _gw_net_vlan(
     return _vlan_int((site_nets.get(str(name)) or {}).get("vlan_id"))
 
 
+# Serving dhcpd types: 'local' is what live Mist emits, 'server' is the
+# OAS-canonical enum value ({none, relay, server}) — both exist in the wild.
+_DHCP_SERVING_TYPES = frozenset({"local", "server"})
+
+
 def _dhcp_active(entry: Any) -> bool:
-    """A dhcpd_config entry IS a DHCP path when it serves (type local, the
-    default) or forwards somewhere (relay WITH servers); 'none' is an explicit
-    no-path statement."""
+    """A dhcpd_config entry IS a DHCP path when it serves (type local/server,
+    absent defaults to serving) or forwards somewhere (relay WITH servers);
+    'none' is an explicit no-path statement."""
     entry = entry or {}
     kind = str(entry.get("type") or "local")
-    if kind == "local":
+    if kind in _DHCP_SERVING_TYPES:
         return True
     return kind == "relay" and bool(entry.get("servers"))
 

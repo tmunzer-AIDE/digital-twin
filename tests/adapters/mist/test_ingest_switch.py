@@ -443,6 +443,31 @@ def test_vlan_dhcp_sources_from_site_and_gateway():
     assert ir.vlans[40].dhcp_sources == ()  # type none = explicitly no path
 
 
+def test_dhcp_type_server_is_a_serving_path_like_local():
+    # GS25 review (P2): the checked-in OAS enums dhcpd type as
+    # {none, relay, server} — 'local' is the LIVE-fixture shape, 'server' the
+    # OAS-canonical one. Both exist in the wild; a 'server' entry invisible
+    # as a DHCP source is a GS24 false-SAFE (its removal would never flag).
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {
+        "networks": {"corp_sw": {"vlan_id": 10}, "iot_sw": {"vlan_id": 20}},
+        "dhcpd_config": {"iot_sw": {"type": "server", "ip_start": "10.0.0.10"}},
+    }
+    gw = {**_GATEWAY, "dhcpd_config": {"corp": {"type": "server"}}, "ip_configs": {}}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=_ORG_NETWORKS),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.vlans[10].dhcp_sources == ("cc0000000001",)  # OAS 'server' shape
+    assert ir.vlans[20].dhcp_sources == ("site",)
+
+
 def test_unresolvable_gateway_dhcp_reference_marks_the_gateway_unresolved():
     # review on 80c4c48 (P1): org networks FETCHED but the gateway's dhcpd
     # entry references a name that is not there (or has a templated vlan_id).
