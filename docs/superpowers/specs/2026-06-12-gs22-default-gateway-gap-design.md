@@ -46,6 +46,23 @@ ignored, so two hazards pass SAFE today:
   when its value is unreadable — falling through to org over an unreadable
   declared value would be a cross-namespace guess. The org overlay fills
   ONLY when the winning row declares no gateway at all.
+  **Non-winning rows, pinned (the singleton-Vlan limitation):**
+  `networks.*.gateway` is allowlisted on device ops too, so a
+  device-effective row for an ALREADY-SEEN vlan id can declare a gateway
+  the singleton `Vlan` would otherwise silently drop — a false-SAFE shape
+  (the op passes the gate, the IR never changes). Rule: while minting,
+  scan ALL effective sources for the vlan id; if any non-winning row
+  declares a gateway that DISAGREES with the winner (`same_ip` is not
+  True — covers different literals and unreadable values), the declared
+  gateway intent is AMBIGUOUS → `Vlan.gateway = None` +
+  `gateway_unresolved = True` (conflict = unresolvable intent, never a
+  silent winner). Agreeing rows and rows without a gateway key have no
+  effect. A device op introducing such a conflict thus CHANGES the Vlan
+  (diff fires, ownership abstains with a note under the relevance rule →
+  REVIEW); resolving the conflict restores the literal. The same
+  limitation exists for `subnet` — that belongs to the §5
+  templated-subnet debt entry (same Vlan-singleton root cause), not this
+  round.
 - `Vlan.gateway_unresolved: bool` — declared-but-unreadable, mirroring
   `DhcpScope.subnet_unresolved`: absent gateway = no intent = NOT a blind
   spot; only unreadable intent sets the flag. Set when the PRECEDENCE

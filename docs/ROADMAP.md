@@ -189,6 +189,9 @@ modeling" below.
   the org overlay). Needs a `subnet_unresolved`-style flag on Vlan
   (declared-but-unreadable ≠ no intent) — surfaced during the GS22-GW
   design review 2026-06-12; deliberately NOT bundled into that round.
+  Same root cause: the singleton Vlan drops a NON-WINNING same-vlan-id
+  device network row's subnet entirely (GS22-GW pins the conflict→
+  unresolved rule for gateway; subnet needs the same treatment here).
 - 🟡 redaction network-name joins — `name` VALUES are hashed (NAME_KEYS) but
   references to networks inside lists (gateway `port_config.networks`,
   `ip_configs` keys) are not, so the gateway↔org-network join breaks in
