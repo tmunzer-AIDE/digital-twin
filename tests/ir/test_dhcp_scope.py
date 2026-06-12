@@ -50,3 +50,17 @@ def test_scopes_sorted_by_id_in_built_ir():
         DhcpScope(provider="site", network="alpha"),
     )
     assert [s.id for s in ir.dhcp_scopes] == ["site:alpha", "site:zeta"]
+
+
+def test_trust_and_snooping_are_diffable_facts():
+    from dataclasses import replace
+
+    from tests.factories import trunk_port
+
+    def build(trusted, snooping):
+        b = IRBuilder().add_device(replace(sw("S"), dhcp_snooping=snooping))
+        b.add_port(replace(trunk_port("S", "ge-0/0/1", tagged=(10,)), dhcp_trusted=trusted))
+        return b.build()
+
+    d = diff_ir(build(True, None), build(False, ("corp",)))
+    assert d.touches("port") and d.touches("device")

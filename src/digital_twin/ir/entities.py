@@ -101,6 +101,9 @@ class Device:
     # resolve to a vlan (namespace fetched, name missing/templated): it may
     # serve DHCP on a vlan we cannot identify — UNKNOWN, not absent
     dhcp_unresolved: bool = False
+    # SWITCH dhcp_snooping intent (GS25): None = disabled, ("*",) =
+    # all_networks, else the enabled network names (site-network namespace)
+    dhcp_snooping: tuple[str, ...] | None = None
     meta: FactMeta = CONFIG_META
 
 
@@ -127,6 +130,13 @@ class Port:
     # stops participating in loop protection entirely
     stp_edge: bool = False
     bpdu_filter: bool = False
+    # CONFIG intent, tri-state (GS25): DHCP-offer trust under snooping.
+    # True = allow_dhcpd=true OR (allow_dhcpd absent and trunk);
+    # False = allow_dhcpd=false (even on a trunk) OR (absent and access);
+    # None = effective usage unknown (unresolved usage / unresolved dynamic) —
+    # unknown trust must never collapse to untrusted (and a RESOLVED dynamic
+    # uses its runtime usage like any other port).
+    dhcp_trusted: bool | None = None
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None
