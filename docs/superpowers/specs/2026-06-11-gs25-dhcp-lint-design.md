@@ -171,11 +171,19 @@ clients + complete source/path certainty → ERROR.
 ## Ingest (`adapters/mist/ingest/switch.py`)
 
 - Extend the existing `_dhcp_sources` walk to also mint `DhcpScope` rows —
-  but ONLY for SERVING entries (the `_dhcp_active` classification GS24
-  already makes): site entries with `type` absent/`local`, gateway entries
-  whose type means the device itself serves the scope (the live fixture's
-  `local` shape). RELAY entries (valid GS24 paths via `servers`) and
-  `none` entries own no `ip_start..ip_end` and must NOT become scope rows —
+  but ONLY for SERVING entries, decided by a NEW predicate
+  `_dhcp_serves_scope(entry)`. Do NOT reuse `_dhcp_active`: it answers "is
+  this a DHCP PATH" and deliberately counts relay-with-servers as active
+  (correct for GS24 sources, wrong for scope ownership). Truth table:
+  | entry | `_dhcp_active` (sources) | `_dhcp_serves_scope` (scopes) |
+  |---|---|---|
+  | site, `type` absent/`local` | True | True |
+  | gateway self-serving (live `local` shape) | True | True |
+  | `relay` with `servers` | True | **False** |
+  | `relay` without `servers` | False | False |
+  | `none` | False | False |
+  RELAY and `none` entries own no `ip_start..ip_end` and must NOT become
+  scope rows —
   a range-less relay row would abstain the range lints and drag PARTIAL
   noise onto every normal relay config. Relay/none participate in
   `dhcp_sources` only. A SERVING entry whose range fields are templated or
