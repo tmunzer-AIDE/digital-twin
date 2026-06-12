@@ -739,6 +739,25 @@ def test_port_dhcp_trust_tristate():
     assert t["ge-0/0/5"] is True       # inline port_config override honored
 
 
+def test_device_dhcp_snooping_fact():
+    def ir_with(snoop):
+        eff = {"networks": {"corp": {"vlan_id": 10}}}
+        if snoop is not None:
+            eff["dhcp_snooping"] = snoop
+        return _ir_for(eff)
+
+    assert ir_with(None).devices["aa0000000001"].dhcp_snooping is None
+    assert ir_with({"enabled": False, "networks": ["corp"]}).devices[
+        "aa0000000001"
+    ].dhcp_snooping is None
+    assert ir_with({"enabled": True, "networks": ["corp"]}).devices[
+        "aa0000000001"
+    ].dhcp_snooping == ("corp",)
+    assert ir_with({"enabled": True, "all_networks": True}).devices[
+        "aa0000000001"
+    ].dhcp_snooping == ("*",)
+
+
 def test_poe_draw_unknown_is_not_observed_off():
     # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
     # UP -> powered state unknowable (None); absent + port DOWN -> a down port

@@ -95,6 +95,17 @@ def _dhcp_active(entry: Any) -> bool:
     return kind == "relay" and bool(entry.get("servers"))
 
 
+def _snooping(eff: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Device.dhcp_snooping: None = disabled; ("*",) = all_networks; else the
+    enabled network names (site-network namespace)."""
+    cfg = eff.get("dhcp_snooping") or {}
+    if not cfg.get("enabled"):
+        return None
+    if cfg.get("all_networks"):
+        return ("*",)
+    return tuple(sorted(str(n) for n in (cfg.get("networks") or ())))
+
+
 def _dhcp_trust(usage: Mapping[str, Any]) -> bool | None:
     """Tri-state DHCP-offer trust (GS25). The OAS marks allow_dhcpd itself
     tri-state: only the UNDEFINED value defers to the mode default. An empty
@@ -206,6 +217,7 @@ class SwitchIngester:
             did = device_id(str(dev["mac"]))
             stp_priority: int | None = None
             stp_invalid = False
+            dhcp_snooping: tuple[str, ...] | None = None
             if role is DeviceRole.SWITCH:
                 eff = ctx.device_effective.get(did) or ctx.site_effective
                 cfg = eff.get("stp_config")
@@ -214,6 +226,7 @@ class SwitchIngester:
                 stp_invalid = (
                     stp_priority is None and (cfg or {}).get("bridge_priority") is not None
                 )
+                dhcp_snooping = _snooping(eff)
             ctx.builder.add_device(
                 Device(
                     id=did,
@@ -222,6 +235,7 @@ class SwitchIngester:
                     model=dev.get("model"),
                     stp_priority=stp_priority,
                     stp_priority_invalid=stp_invalid,
+                    dhcp_snooping=dhcp_snooping,
                     # gateway namespace unfetched -> its L3 model is UNKNOWN
                     l3_unmodeled=(
                         role is DeviceRole.GATEWAY
