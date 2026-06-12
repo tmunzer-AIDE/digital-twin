@@ -31,8 +31,9 @@ taint every future plan. Pre-existing demotion requires checks.
   `subnet: str | None` — the OWNING network's subnet resolved in the
   provider's namespace (org networks for gateway scopes, site networks for
   site scopes); None when unknown/blind.
-  - **Identity vs violation parity**: `DhcpScope.id` = `provider:network`
-    (+vlan when known) names the scope for diffing. Pre-existing demotion is
+  - **Identity vs violation parity**: `DhcpScope.id` = `provider:network` —
+    exactly how `dhcpd_config` is keyed, and stable when vlan resolution
+    flips unknown→known (`vlan` is a DIFFED FIELD, never part of identity). Pre-existing demotion is
     VIOLATION-SPECIFIC, never the full field tuple: an overlap pair is
     pre-existing iff the same id-pair overlapped in baseline AND both ranges
     are unchanged (editing a still-overlapping range = altered = WARNING,
@@ -118,6 +119,12 @@ network mapping to V, or `all_networks`), where V has modeled
   snooped vlan whose only source is "site" → abstain + PARTIAL note
   ("site DHCP service placement is unmodeled"), never silent, never a
   dropped-offer finding.
+- **Mixed sources** (`("site", <gateway>)`): the gateway path is still
+  evaluated and an all-untrusted gateway path still emits `.untrusted_path`
+  — but the message must hedge to "offers from <gateway> are dropped; an
+  unmodeled site-hosted service may still serve this vlan", never claim a
+  full DHCP outage. The unlocatable site source ALWAYS adds the PARTIAL
+  note for that vlan, finding or not.
 - Any candidate egress port with `dhcp_trusted is None` on an otherwise
   all-untrusted set → UNKNOWN, abstain + PARTIAL note (never invent a
   dropped-offer conclusion from unknown trust).
@@ -144,7 +151,9 @@ clients + complete source/path certainty → ERROR.
   (extends the existing `{type,servers}`), `dhcp_snooping.{enabled,
   all_networks,networks}` on the switch section.
 - Allowlist (device): `dhcp_snooping.{enabled,all_networks,networks}`.
-- Allowlist: `port_usages.*.allow_dhcpd` (both objects carrying usages).
+- Allowlist: `allow_dhcpd` added to `_MODELED_USAGE_ATTRS` → honored on
+  `port_usages.*`, inline `port_config.*`, and `local_port_config.*`
+  (every surface the OAS exposes it on), with resolver carry-through.
 - `compile/switch.py`: add `dhcp_snooping` to the device merge surface
   (`merge.py` already knows its REPLACE policy); verify `allow_dhcpd`
   carries through usage compilation. EVERY newly allowlisted device field
@@ -154,11 +163,21 @@ clients + complete source/path certainty → ERROR.
 
 - Extend the existing `_dhcp_sources` walk to also mint `DhcpScope` rows
   (site dhcpd entries → provider `"site"` + site-network subnet; gateway
-  dhcpd entries → provider device-id + org-network subnet via the
-  GS24 namespace contract — unfetched org namespace mints NO gateway
-  scopes, present-None shadows).
-- Port trust from the effective usage at port-compile time (tri-state rule
-  above).
+  dhcpd entries → provider device-id + org-network subnet via the GS24
+  namespace contract, present-None shadows).
+- **Unfetched org namespace** (refined from GS24): the GS24 rule — no
+  `dhcp_sources` CREDIT — stands untouched, because crediting a source is a
+  guessed positive that suppresses removal findings. But gateway `DhcpScope`
+  rows ARE still minted with `vlan=None`/`subnet=None` when the range
+  fields parse: `ip_start/ip_end/gateway` are LITERAL device config fetched
+  with the device, no namespace needed. Otherwise a new site scope
+  overlapping an unmodeled gateway range would falsely PASS the overlap
+  lint. Out-of-subnet abstains for such rows (subnet None).
+- Port trust from the EFFECTIVE usage attrs (tri-state rule above).
+  `allow_dhcpd` joins `_MODELED_USAGE_ATTRS`, which makes it honored on
+  `port_usages.*`, inline `port_config.*`, AND `local_port_config.*` (the
+  OAS exposes it on all three) and carried by `resolve_effective_ports` —
+  a baseline inline `allow_dhcpd` override must not be invisible to trust.
 - `dhcp_snooping` from effective switch config (template→site→device merge
   already handled by `merge.py`).
 
@@ -181,7 +200,8 @@ clients + complete source/path certainty → ERROR.
 |---|---|
 | Templated range/gateway value | field None + abstain; adapter finding ONLY if the delta introduced/changed it |
 | Snooped vlan served only by "site" | abstain + PARTIAL (placement unmodeled) |
-| Org namespace unfetched | no gateway scopes minted (GS24 rule) |
+| Org namespace unfetched | no dhcp_sources CREDIT (GS24 rule); gateway scopes still minted with vlan/subnet None (ranges are literal config) |
+| Mixed site+gateway sources | gateway findings hedged; PARTIAL always (site placement unmodeled) |
 | Unknown port trust | `dhcp_trusted=None` → abstain, never untrusted |
 | Source unlocatable in graph | abstain + PARTIAL |
 | Blind gateway, conclusion source-dependent | MEDIUM cap + note |
