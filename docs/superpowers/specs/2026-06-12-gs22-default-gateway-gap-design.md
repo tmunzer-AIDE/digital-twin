@@ -35,18 +35,22 @@ ignored, so two hazards pass SAFE today:
 ## IR additions
 
 - `Vlan.gateway: str | None` — declared default-gateway IP, minted from
-  site networks with org-networks overlay fallback by vlan id,
-  `_literal_ip` parsing (templated `{{var}}` → None).
-  **Precedence, pinned (the GS24 present-shadows contract):** a site
-  network with the `gateway` KEY present shadows the org fallback even
+  the SAME effective network row that mints the `Vlan` itself (the
+  first-seen winner over `[site_effective, *device_effective.values()]` —
+  `networks.*.gateway` is allowlisted on BOTH site_setting and device, so
+  a device-local network's gateway must ride its own row, exactly like
+  `Vlan.subnet` does today), with org-networks overlay fallback by vlan
+  id, `_literal_ip` parsing (templated `{{var}}` → None).
+  **Precedence, pinned (the GS24 present-shadows contract):** the winning
+  network row with the `gateway` KEY present shadows the org fallback even
   when its value is unreadable — falling through to org over an unreadable
-  site value would be a cross-namespace guess. The org overlay fills ONLY
-  when the site network declares no gateway at all.
+  declared value would be a cross-namespace guess. The org overlay fills
+  ONLY when the winning row declares no gateway at all.
 - `Vlan.gateway_unresolved: bool` — declared-but-unreadable, mirroring
   `DhcpScope.subnet_unresolved`: absent gateway = no intent = NOT a blind
   spot; only unreadable intent sets the flag. Set when the PRECEDENCE
-  WINNER's value is templated (site templated → flag set and org shadowed;
-  site absent + org templated → flag set).
+  WINNER's value is templated (winning row templated → flag set and org
+  shadowed; winning row absent + org templated → flag set).
 - `DhcpScope.network_gateway: str | None` + `network_gateway_unresolved:
   bool` — the OWNING network's declared gateway resolved in the PROVIDER's
   namespace (org networks for gateway scopes, site networks for site
