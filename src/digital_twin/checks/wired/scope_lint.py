@@ -13,7 +13,8 @@ Touching the hazard forfeits the demotion.
 
 Dimension-specific abstention (gateway_gap lesson — INFO/irrelevance never
 drags PARTIAL):
-- a scope with an unparseable/absent range blinds the OVERLAP dimension; the
+- a scope with an unparseable/absent/mixed-family/inverted range blinds the
+  OVERLAP dimension (anomalous = unevaluable, never normalized); the
   note attaches only when the check concluded something (non-INFO finding) or
   the delta touches dhcp_scope rows;
 - subnet_unresolved=True blinds the OUT-OF-SUBNET dimension for THAT scope
@@ -42,20 +43,19 @@ from digital_twin.ir import (
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 
 
-def _ip(value: str | None) -> int | None:
-    if value is None:
+def _range(scope: DhcpScope) -> tuple[int, int, int] | None:
+    """(ip_version, lo, hi) — None when absent, unparseable, mixed-family or
+    inverted (anomalous = unevaluable, never normalized)."""
+    if scope.ip_start is None or scope.ip_end is None:
         return None
     try:
-        return int(ipaddress.ip_address(value))
+        start = ipaddress.ip_address(scope.ip_start)
+        end = ipaddress.ip_address(scope.ip_end)
     except ValueError:
         return None
-
-
-def _range(scope: DhcpScope) -> tuple[int, int] | None:
-    lo, hi = _ip(scope.ip_start), _ip(scope.ip_end)
-    if lo is None or hi is None:
+    if start.version != end.version or int(end) < int(start):
         return None
-    return (lo, hi) if lo <= hi else (hi, lo)
+    return (start.version, int(start), int(end))
 
 
 def _net(subnet: str | None) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
@@ -67,8 +67,9 @@ def _net(subnet: str | None) -> ipaddress.IPv4Network | ipaddress.IPv6Network | 
         return None
 
 
-def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
-    return a[0] <= b[1] and b[0] <= a[1]
+def _overlaps(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
+    """(version, lo, hi) ranges overlap — never across IP families."""
+    return a[0] == b[0] and a[1] <= b[2] and b[1] <= a[2]
 
 
 def _subnet_violations(scope: DhcpScope) -> tuple[str, ...]:
@@ -86,7 +87,9 @@ def _subnet_violations(scope: DhcpScope) -> tuple[str, ...]:
             addr = ipaddress.ip_address(value)
         except ValueError:
             continue
-        if addr not in net:
+        # cross-family containment is version-dependent in ipaddress; by this
+        # check's definition a different-family value lies outside the subnet
+        if addr.version != net.version or addr not in net:
             out.append(f"{field}={value}")
     return tuple(out)
 
@@ -110,12 +113,15 @@ class DhcpScopeLintCheck:
         findings: list[Finding] = []
 
         # .overlap — pairwise over scopes with parseable ranges
-        parseable = [s for s in prop_sorted if _range(s) is not None]
-        for a, b in itertools.combinations(parseable, 2):
-            ra, rb = _range(a), _range(b)
-            assert ra is not None and rb is not None  # filtered above
+        ranged: dict[str, tuple[int, int, int]] = {}
+        for s in prop_sorted:
+            r = _range(s)
+            if r is not None:
+                ranged[s.id] = r
+        for (a_id, ra), (b_id, rb) in itertools.combinations(ranged.items(), 2):
             if not _overlaps(ra, rb):
                 continue
+            a, b = prop[a_id], prop[b_id]
             severity = Severity.WARNING
             ba, bb = base.get(a.id), base.get(b.id)
             if ba is not None and bb is not None:
@@ -178,10 +184,12 @@ class DhcpScopeLintCheck:
                 for s in prop_sorted
                 if _range(s) is None
             )
-        # subnet blindness: per-scope — only when THAT scope is in the delta
+        # subnet blindness: per-scope — only when THAT scope is in the delta.
+        # removed refs are dead weight: a removed scope is absent from proposed,
+        # so its per-scope note can never fire.
         changed_ids = {
             r.id
-            for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
+            for r in (*ctx.diff.added, *(m.ref for m in ctx.diff.modified))
             if r.kind == "dhcp_scope"
         }
         notes.extend(

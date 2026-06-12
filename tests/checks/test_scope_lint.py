@@ -122,6 +122,39 @@ def test_no_subnet_intent_stays_complete():
     assert r.coverage.state is CoverageState.COMPLETE
 
 
+def test_v4_and_v6_scopes_never_overlap():
+    # int(IPv4Address("0.0.0.255")) == int(IPv6Address("::ff")) — bare-int
+    # comparison across families must not produce a spurious overlap
+    v6 = DhcpScope(provider="site", network="b", ip_start="::aa", ip_end="::ff")
+    v4 = DhcpScope(provider="site", network="a", ip_start="0.0.0.170", ip_end="0.0.0.255")
+    r = _run(_ir(), _ir(v4, v6))
+    assert not [f for f in r.findings if f.code.endswith("overlap")]
+
+
+def test_mixed_family_range_is_unevaluable_not_compared():
+    weird = DhcpScope(provider="site", network="w", ip_start="10.0.0.1", ip_end="::ff")
+    r = _run(_ir(), _ir(weird, A))
+    assert not [f for f in r.findings if f.code.endswith("overlap")]
+    assert r.coverage.state is CoverageState.PARTIAL  # unevaluable + scope delta
+
+
+def test_v6_gateway_on_v4_subnet_is_a_violation():
+    # decision: a value whose family differs from the subnet's lies outside it
+    s = DhcpScope(provider="site", network="a", subnet="10.0.0.0/24", gateway="::1")
+    r = _run(_ir(), _ir(s))
+    f = next(x for x in r.findings if x.code.endswith("out_of_subnet"))
+    assert "gateway" in " ".join(f.evidence["violations"])
+
+
+def test_inverted_range_is_unevaluable_not_normalized():
+    # sibling idiom: anomalous = unevaluable, never silently swapped
+    inv = DhcpScope(provider="site", network="i", ip_start="10.0.0.99", ip_end="10.0.0.10")
+    r = _run(_ir(), _ir(inv, A))
+    assert not [f for f in r.findings if f.code.endswith("overlap")]
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("site:i" in n for n in r.coverage.notes)
+
+
 def test_unchanged_blind_scope_does_not_taint_unrelated_scope_edit():
     # review P2 r2: subnet blindness is per-scope — an UNCHANGED unresolved
     # gateway scope elsewhere must not PARTIAL-floor an unrelated, fully
