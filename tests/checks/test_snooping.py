@@ -1,0 +1,147 @@
+"""wired.dhcp.snooping (GS25): snooping enabled on a switch whose every known
+egress path toward the vlan's modeled DHCP source is UNTRUSTED -> offers are
+dropped at lease renewal (WARNING/REVIEW). One trusted path silences; unknown
+trust or unknowable placement abstains (PARTIAL) — never a dropped-offer
+conclusion from blindness. "site" sources are unlocatable by design."""
+
+from dataclasses import replace
+
+from digital_twin.analysis.context import AnalysisContext
+from digital_twin.checks.base import CheckContext, CoverageState, Status
+from digital_twin.checks.wired.snooping import DhcpSnoopingCheck
+from digital_twin.contracts import Severity
+from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir.entities import Device, DeviceRole
+from tests.factories import link, sw, trunk_port
+
+
+def _ir(*, snooping=("corp",), trust=True, sources=("GW",), gw_blind=False,
+        linked=True):
+    b = IRBuilder()
+    b.add_device(replace(sw("S"), dhcp_snooping=snooping))
+    b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1",
+                        l3_unmodeled=gw_blind))
+    b.add_port(replace(trunk_port("S", "ge-0/0/0", tagged=(10,)), dhcp_trusted=trust))
+    b.add_port(trunk_port("GW", "ge-0/0/0", tagged=(10,)))
+    if linked:
+        b.add_link(link("S:ge-0/0/0", "GW:ge-0/0/0"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=sources))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def _run(base, prop):
+    return DhcpSnoopingCheck().run(
+        CheckContext(
+            baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)
+        )
+    )
+
+
+def test_snooping_with_only_untrusted_path_to_source_is_warning():
+    r = _run(_ir(snooping=None, trust=False), _ir(trust=False))
+    assert r.status is Status.WARN
+    f = r.findings[0]
+    assert f.code == "wired.dhcp.snooping.untrusted_path"
+    assert f.severity is Severity.WARNING
+
+
+def test_one_trusted_path_is_enough():
+    r = _run(_ir(snooping=None), _ir(trust=True))
+    assert r.status is Status.PASS and not r.findings
+
+
+def test_unknown_trust_abstains_partial_never_warns():
+    r = _run(_ir(snooping=None, trust=None), _ir(trust=None))
+    assert not r.findings
+    assert r.coverage.state is CoverageState.PARTIAL
+
+
+def test_site_source_placement_is_unlocatable_partial():
+    r = _run(_ir(snooping=None, sources=("site",)), _ir(sources=("site",)))
+    assert not r.findings
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("site" in n for n in r.coverage.notes)
+
+
+def test_mixed_sources_hedged_finding_plus_partial():
+    base = _ir(snooping=None, trust=False, sources=("GW", "site"))
+    prop = _ir(trust=False, sources=("GW", "site"))
+    r = _run(base, prop)
+    f = r.findings[0]
+    assert "may still serve" in f.message
+    assert r.coverage.state is CoverageState.PARTIAL
+
+
+def test_preexisting_blocked_snooping_is_info():
+    r = _run(_ir(trust=False), _ir(trust=False))  # snooped+blocked in BOTH
+    assert [f.severity for f in r.findings] == [Severity.INFO]
+
+
+def test_trusted_port_going_untrusted_under_existing_snooping_is_introduced():
+    # ACTIVITY not pair (native-mismatch lesson): the snooping was on, but the
+    # delta removed the last trusted path
+    r = _run(_ir(trust=True), _ir(trust=False))
+    assert r.findings[0].severity is Severity.WARNING
+
+
+def test_blind_gateway_source_caps_confidence_medium():
+    from digital_twin.ir import ConfidenceLevel
+    r = _run(_ir(snooping=None, trust=False, gw_blind=True), _ir(trust=False, gw_blind=True))
+    assert r.findings[0].confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_source_not_reachable_in_graph_abstains():
+    r = _run(_ir(snooping=None, trust=False, linked=False),
+             _ir(trust=False, linked=False))
+    assert not [f for f in r.findings if f.code.endswith("untrusted_path")]
+    assert r.coverage.state is CoverageState.PARTIAL
+
+
+def test_all_networks_star_snoops_every_sourced_vlan():
+    base = _ir(snooping=None, trust=False)
+    prop = _ir(snooping=("*",), trust=False)
+    assert _run(base, prop).findings
+
+
+def test_baseline_parity_folds_with_the_baseline_vc_map():
+    # r3 regression: the snooping switch S is a VC MEMBER (folded under R) in
+    # baseline and standalone in proposed; the blocked path exists on BOTH
+    # sides. Parity must fold baseline node ids with the BASELINE map — if it
+    # reuses proposed-folded ids, "S" is not a baseline graph node, the
+    # baseline probe reads "unreachable" instead of "blocked", and the
+    # pre-existing blockage is wrongly re-reported as introduced (WARNING).
+    def ir_vc(folded):
+        b = IRBuilder()
+        b.add_device(sw("R", vc_members=("S",) if folded else ()))
+        b.add_device(replace(sw("S"), dhcp_snooping=("corp",)))
+        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1"))
+        b.add_port(replace(trunk_port("S", "ge-0/0/0", tagged=(10,)), dhcp_trusted=False))
+        b.add_port(trunk_port("GW", "ge-0/0/0", tagged=(10,)))
+        b.add_link(link("S:ge-0/0/0", "GW:ge-0/0/0"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("GW",)))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    r = _run(ir_vc(folded=True), ir_vc(folded=False))
+    assert [f.severity for f in r.findings] == [Severity.INFO]
+
+
+def test_edge_not_carrying_the_vlan_is_unreachable_not_ok():
+    # review P1 r2: the LOCAL port carries vlan 10 but the peer end does not
+    # -> the EDGE does not carry it -> the source is unreachable on the vlan
+    # graph: abstain (PARTIAL), never a trusted "ok" through a dead path
+    def ir_asym(snooping):
+        b = IRBuilder()
+        b.add_device(replace(sw("S"), dhcp_snooping=snooping))
+        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1"))
+        b.add_port(replace(trunk_port("S", "ge-0/0/0", tagged=(10,)), dhcp_trusted=True))
+        b.add_port(trunk_port("GW", "ge-0/0/0", tagged=(99,)))  # peer drops 10
+        b.add_link(link("S:ge-0/0/0", "GW:ge-0/0/0"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("GW",)))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    r = _run(ir_asym(None), ir_asym(("corp",)))
+    assert not [f for f in r.findings if f.code.endswith("untrusted_path")]
+    assert r.coverage.state is CoverageState.PARTIAL
