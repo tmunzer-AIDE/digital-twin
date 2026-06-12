@@ -1,15 +1,18 @@
 """wired.dhcp.scope_lint — DHCP scope hygiene over the minted DhcpScope rows (GS25).
 
 WARNING/REVIEW tier (MVP): two scopes whose lease ranges overlap hand out
-duplicate addresses, and a range/gateway outside the owning network's subnet
-mints unroutable leases — both misconfigurations, neither a proven outage,
-so the ceiling is WARNING.
+duplicate addresses, a range/gateway outside the owning network's subnet
+mints unroutable leases, and a handed-out gateway incoherent with the owning
+network's declared gateway (GS22-GW) points clients at the wrong next hop —
+all misconfigurations (config coherence, not proven outage), so the ceiling
+is WARNING.
 
 Violation-specific parity (native-mismatch precedent): a violation demotes to
 INFO only when the SAME violation existed in baseline with the SAME values —
 overlap requires both ranges string-identical AND already overlapping;
-out-of-subnet requires the identical violation tuple AND identical subnet.
-Touching the hazard forfeits the demotion.
+out-of-subnet requires the identical violation tuple AND identical subnet;
+gateway_mismatch requires BOTH the handed and declared values byte-identical
+in baseline. Touching the hazard forfeits the demotion.
 
 Dimension-specific abstention (gateway_gap lesson — INFO/irrelevance never
 drags PARTIAL):
@@ -20,7 +23,11 @@ drags PARTIAL):
 - subnet_unresolved=True blinds the OUT-OF-SUBNET dimension for THAT scope
   only; the note attaches only when that very scope is in the delta (the
   blind subnet can only hide a violation of itself). Plain subnet=None is no
-  intent — nothing to verify, no note.
+  intent — nothing to verify, no note;
+- network_gateway_unresolved=True (or an unparseable handed/declared pair)
+  blinds the GATEWAY-COHERENCE dimension for THAT scope only — same per-scope
+  delta relevance as the subnet notes. Either side plainly absent is no
+  intent — silent.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from digital_twin.ir import (
     IRCapability,
     IRDiff,
     min_confidence,
+    same_ip,
 )
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -174,6 +182,39 @@ class DhcpScopeLintCheck:
                 )
             )
 
+        # --- .gateway_mismatch (DHCP hands out a gateway incoherent with
+        # its owning network — config coherence, not proven outage)
+        for s in prop_sorted:
+            verdict = same_ip(s.gateway, s.network_gateway)
+            if verdict is not False:
+                continue  # equal, or either side absent/unreadable
+            bs = base.get(s.id)
+            preexisting = (
+                bs is not None
+                and bs.gateway == s.gateway
+                and bs.network_gateway == s.network_gateway
+            )
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.gateway_mismatch",
+                    severity=Severity.INFO if preexisting else Severity.WARNING,
+                    confidence=_HIGH,
+                    message=(
+                        f"DHCP scope {s.id} hands out gateway {s.gateway} but its "
+                        f"network declares {s.network_gateway}"
+                        + (" (pre-existing, unchanged)" if preexisting else "")
+                    ),
+                    affected_entities=(s.id,),
+                    evidence={
+                        "scope": s.id,
+                        "handed": s.gateway,
+                        "declared": s.network_gateway,
+                    },
+                )
+            )
+
         non_info = [f for f in findings if f.severity is not Severity.INFO]
         notes: list[str] = []
         # range blindness: relevant when something was concluded or scopes changed
@@ -197,6 +238,22 @@ class DhcpScopeLintCheck:
             "out-of-subnet lint skipped for it"
             for s in prop_sorted
             if s.subnet_unresolved and s.id in changed_ids
+        )
+        # gateway-coherence blindness: per-scope, same delta relevance
+        notes.extend(
+            f"scope {s.id}: owning network gateway is unreadable or unknowable "
+            "— gateway coherence is unevaluated for it"
+            for s in prop_sorted
+            if s.network_gateway_unresolved and s.id in changed_ids
+        )
+        notes.extend(
+            f"scope {s.id}: handed/declared gateway is unparseable — gateway "
+            "coherence cannot be evaluated"
+            for s in prop_sorted
+            if s.gateway is not None
+            and s.network_gateway is not None
+            and same_ip(s.gateway, s.network_gateway) is None
+            and s.id in changed_ids
         )
 
         return CheckResult(

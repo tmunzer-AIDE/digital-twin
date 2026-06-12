@@ -31,6 +31,10 @@ B_CLEAR = DhcpScope(provider="site", network="b", vlan=20, ip_start="10.0.1.10",
 B_OVERLAP = DhcpScope(
     provider="site", network="b", vlan=20, ip_start="10.0.0.50", ip_end="10.0.1.10"
 )
+M_BAD = DhcpScope(provider="site", network="m", vlan=40, gateway="10.4.0.254",
+                  network_gateway="10.4.0.1")
+M_OK = DhcpScope(provider="site", network="m", vlan=40, gateway="10.4.0.1/24",
+                 network_gateway="10.4.0.1")
 
 
 def test_introduced_overlap_is_warning():
@@ -174,3 +178,50 @@ def test_unchanged_blind_scope_does_not_taint_unrelated_scope_edit():
 
     r = _run(ir_with(), ir_with(B_CLEAR))
     assert r.coverage.state is CoverageState.COMPLETE
+
+
+def test_introduced_gateway_mismatch_is_warning():
+    r = _run(_ir(), _ir(M_BAD))
+    f = next(x for x in r.findings if x.code.endswith("gateway_mismatch"))
+    assert f.severity is Severity.WARNING
+    assert f.evidence["handed"] == "10.4.0.254"
+    assert f.evidence["declared"] == "10.4.0.1"
+
+
+def test_prefix_equal_gateways_do_not_mismatch():
+    r = _run(_ir(), _ir(M_OK))
+    assert not [f for f in r.findings if f.code.endswith("gateway_mismatch")]
+
+
+def test_preexisting_mismatch_is_info_and_any_value_change_forfeits():
+    r = _run(_ir(M_BAD), _ir(M_BAD))
+    f = next(x for x in r.findings if x.code.endswith("gateway_mismatch"))
+    assert f.severity is Severity.INFO
+    moved = DhcpScope(provider="site", network="m", vlan=40,
+                      gateway="10.4.0.253", network_gateway="10.4.0.1")
+    r2 = _run(_ir(M_BAD), _ir(moved))
+    f2 = next(x for x in r2.findings if x.code.endswith("gateway_mismatch"))
+    assert f2.severity is Severity.WARNING
+
+
+def test_missing_either_side_is_silent():
+    a = DhcpScope(provider="site", network="m", gateway="10.4.0.254")
+    b = DhcpScope(provider="site", network="n", network_gateway="10.4.0.1")
+    r = _run(_ir(), _ir(a, b))
+    assert not [f for f in r.findings if f.code.endswith("gateway_mismatch")]
+
+
+def test_network_gateway_unresolved_touched_scope_notes_partial():
+    s = DhcpScope(provider="site", network="m", gateway="10.4.0.254",
+                  network_gateway=None, network_gateway_unresolved=True)
+    r = _run(_ir(), _ir(s))
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("site:m" in n and "gateway" in n.lower() for n in r.coverage.notes)
+
+
+def test_unparseable_present_values_abstain_with_note():
+    s = DhcpScope(provider="site", network="m", gateway="bogus",
+                  network_gateway="10.4.0.1")
+    r = _run(_ir(), _ir(s))
+    assert not [f for f in r.findings if f.code.endswith("gateway_mismatch")]
+    assert r.coverage.state is CoverageState.PARTIAL
