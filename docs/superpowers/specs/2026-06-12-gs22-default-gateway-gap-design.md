@@ -34,13 +34,19 @@ ignored, so two hazards pass SAFE today:
 
 ## IR additions
 
-- `Vlan.gateway: str | None` — declared default-gateway IP, minted exactly
-  like `Vlan.subnet`: site-networks value with org-networks overlay
-  fallback by vlan id, `_literal_ip` parsing (templated `{{var}}` → None).
-- `Vlan.gateway_unresolved: bool` — declared-but-unreadable (templated),
-  mirroring `DhcpScope.subnet_unresolved`: absent gateway = no intent =
-  NOT a blind spot; only unreadable intent sets the flag. (The org overlay
-  contributes: org value templated while site declares none → flag set.)
+- `Vlan.gateway: str | None` — declared default-gateway IP, minted from
+  site networks with org-networks overlay fallback by vlan id,
+  `_literal_ip` parsing (templated `{{var}}` → None).
+  **Precedence, pinned (the GS24 present-shadows contract):** a site
+  network with the `gateway` KEY present shadows the org fallback even
+  when its value is unreadable — falling through to org over an unreadable
+  site value would be a cross-namespace guess. The org overlay fills ONLY
+  when the site network declares no gateway at all.
+- `Vlan.gateway_unresolved: bool` — declared-but-unreadable, mirroring
+  `DhcpScope.subnet_unresolved`: absent gateway = no intent = NOT a blind
+  spot; only unreadable intent sets the flag. Set when the PRECEDENCE
+  WINNER's value is templated (site templated → flag set and org shadowed;
+  site absent + org templated → flag set).
 - `DhcpScope.network_gateway: str | None` + `network_gateway_unresolved:
   bool` — the OWNING network's declared gateway resolved in the PROVIDER's
   namespace (org networks for gateway scopes, site networks for site
@@ -96,6 +102,13 @@ Abstention rails (GS25 relevance discipline — no global taint):
 - An L3Intf on the vlan with `ip=None`/unparseable while no other intf
   owns G → ownership UNKNOWN (the nameless intf may own it) → abstain +
   note, NEVER `.gateway_unowned` (unknown never collapses to violation).
+- A declared G that is PRESENT but unparseable as an IP (e.g. `"foo"` —
+  not templated, so `_literal_ip` passes it through and `same_ip` returns
+  None against every interface) → ownership UNKNOWN for that vlan →
+  abstain + note under the same relevance rule, never `.gateway_unowned`.
+  (Same rail as unparseable interface IPs: `same_ip(...) is True` is the
+  ONLY owned verdict, `is False` for every comparable interface is the
+  only unowned verdict, any None among them with no True → abstain.)
 - `requires()`/`applies_to()` unchanged ({WIRED_L2, L3_EXITS};
   vlan/l3intf — `Vlan.gateway` is a vlan field, already watched).
 

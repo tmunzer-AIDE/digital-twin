@@ -123,9 +123,16 @@ modeling" below.
   `server`). 14 wired checks; GS25a/GS25b goldens + 3 variants; live plan 02
   graduated UNKNOWN→SAFE (dhcp_snooping now modeled; file renamed).
   Spec/plan: docs/superpowers/{specs,plans}/2026-06-11-gs25-dhcp-lint*.md.
-- 🔵 **Default gateway gap** (part of GS22, MVP: ROUTE-GW) — a routed network
-  (subnet/gateway configured) with NO L3 interface on any gateway device
-  after the change → ERROR. The explicit-check form of "richer L3 exits".
+- 🔵 **Default gateway gap** (part of GS22, MVP: ROUTE-GW) — IN PROGRESS
+  (spec approved: docs/superpowers/specs/2026-06-12-gs22-default-gateway-gap-design.md).
+  The NO-L3-interface form already shipped with GS22 (`wired.l3.gateway_gap`
+  `.removed`/`.unserved`); what remains is OWNERSHIP of the declared gateway
+  IP: `gateway_gap.gateway_unowned` (interfaces exist but none owns
+  `networks.*.gateway` — known-owner-broken → ERROR, never-owned →
+  WARNING/MEDIUM) + `scope_lint.gateway_mismatch` (DHCP hands out a gateway
+  incoherent with its owning network). New IR: `Vlan.gateway(+_unresolved)`,
+  `DhcpScope.network_gateway(+_unresolved)`; shared family-aware `same_ip`
+  helper.
 - 🔵 **OSPF exit withdrawal** (GS26) — `ospf_areas` / interface ospf config:
   withdrawing the area or interface that is a segment's L3 exit → UNSAFE.
 - 🔵 **OSPF transit changes** (GS27, MVP: ROUTE-OSPF) — passive/metric changes
@@ -175,6 +182,13 @@ modeling" below.
   (all 12 values → `REDACTED-EXPIRED-HISTORY` across 102 commits; SHAs
   changed; pre-rewrite mirror kept at `../digital-twin-pre-rewrite-backup.git`
   — delete it after a sanity period, it still holds the expired values).
+- 🟡 templated-subnet false-SAFE in gateway_gap — `Vlan.subnet` is minted
+  without `_literal_subnet` discipline in the site path and a TEMPLATED
+  subnet reads as None = "not routed", silencing every gateway_gap code for
+  that vlan (and the `or`-fallback (ingest/switch.py ~350) lets a falsy site value fall to
+  the org overlay). Needs a `subnet_unresolved`-style flag on Vlan
+  (declared-but-unreadable ≠ no intent) — surfaced during the GS22-GW
+  design review 2026-06-12; deliberately NOT bundled into that round.
 - 🟡 redaction network-name joins — `name` VALUES are hashed (NAME_KEYS) but
   references to networks inside lists (gateway `port_config.networks`,
   `ip_configs` keys) are not, so the gateway↔org-network join breaks in
