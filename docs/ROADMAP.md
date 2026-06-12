@@ -109,9 +109,20 @@ modeling" below.
   it would be a GS21-class false-SAFE shape — model it together with the
   compile carry-through if needed). GS24 + clientless variant (first goldens
   exercising a site_setting op).
-- 🔵 **DHCP lint** (GS25, MVP: CFG-DHCP-RNG / CFG-DHCP-CFG + snooping) —
-  `dhcp_snooping` enable with an untrusted uplink → REVIEW; pairwise scope
-  overlap; scope gateway/range inside the network's subnet.
+- ✅ **DHCP lint** (GS25, MVP: CFG-DHCP-RNG / CFG-DHCP-CFG + snooping) —
+  DONE 2026-06-12: `wired.dhcp.scope_lint` (`.overlap` pairwise ranges,
+  `.out_of_subnet` — WARNING introduced/altered, INFO pre-existing-unchanged,
+  violation-specific parity) + `wired.dhcp.snooping` (`.untrusted_path` —
+  any-trusted-path-is-enough over the vlan graph; trust = allow_dhcpd or
+  trunk-default, tri-state with unknown-never-untrusted; "site" sources
+  unlocatable → PARTIAL by design). New IR: `DhcpScope` (provider:network
+  identity, subnet_unresolved blind flag), `Port.dhcp_trusted`,
+  `Device.dhcp_snooping`. Delta-gated adapter finding
+  `scope.dhcp.range_unresolved` for templated ranges. En route: fixed a
+  shipped GS24 false-SAFE (`_dhcp_active` ignored OAS-canonical type
+  `server`). 14 wired checks; GS25a/GS25b goldens + 3 variants; live plan 02
+  graduated UNKNOWN→SAFE (dhcp_snooping now modeled; file renamed).
+  Spec/plan: docs/superpowers/{specs,plans}/2026-06-11-gs25-dhcp-lint*.md.
 - 🔵 **Default gateway gap** (part of GS22, MVP: ROUTE-GW) — a routed network
   (subnet/gateway configured) with NO L3 interface on any gateway device
   after the change → ERROR. The explicit-check form of "richer L3 exits".
