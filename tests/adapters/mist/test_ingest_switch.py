@@ -663,6 +663,24 @@ def test_invalid_bridge_priority_raises_an_adapter_finding():
     assert invalid_bridge_priority_findings({"d1": bad}, {"d1": good}) != []
 
 
+def test_unresolved_dhcp_range_finding_is_delta_gated():
+    # spec r1: a PRE-EXISTING unchanged template must not floor unrelated
+    # plans to REVIEW (adapter findings are baseline-blind); only a delta
+    # that INTRODUCES or CHANGES the unresolved value fires.
+    from digital_twin.adapters.mist.ingest.switch import unresolved_dhcp_range_findings
+
+    tpl = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "{{a}}"}}}
+    clean = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "10.0.0.1"}}}
+    other = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "{{b}}"}}}
+
+    assert unresolved_dhcp_range_findings(tpl, tpl) == []          # pre-existing
+    assert unresolved_dhcp_range_findings(clean, clean) == []      # nothing wrong
+    intro = unresolved_dhcp_range_findings(clean, tpl)             # introduced
+    assert [f.code for f in intro] == ["scope.dhcp.range_unresolved"]
+    assert unresolved_dhcp_range_findings(tpl, other) != []        # changed
+    assert unresolved_dhcp_range_findings(tpl, clean) == []        # resolved -> fine
+
+
 def test_stp_config_flags_and_bridge_priority():
     eff = {
         "networks": {"corp": {"vlan_id": 10}},

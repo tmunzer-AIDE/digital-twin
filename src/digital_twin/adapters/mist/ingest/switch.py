@@ -195,6 +195,48 @@ def invalid_bridge_priority_findings(
     return findings
 
 
+_DHCP_RANGE_FIELDS = ("ip_start", "ip_end", "gateway")
+
+
+def unresolved_dhcp_range_findings(
+    baseline_site_eff: _Json, proposed_site_eff: _Json
+) -> list[Finding]:
+    """A dhcpd range/gateway value the model cannot read ({{var}}) that the
+    DELTA introduces or changes -> WARNING. Unlike bridge_priority (a GLOBAL
+    election poisoned by either side), a templated range only poisons
+    conclusions about that one scope — pre-existing unchanged templates stay
+    silent here and degrade scope_lint coverage instead (GS25 spec)."""
+    findings: list[Finding] = []
+    base_cfg: _Json = baseline_site_eff.get("dhcpd_config") or {}
+    prop_cfg: _Json = proposed_site_eff.get("dhcpd_config") or {}
+    for name, entry in sorted(prop_cfg.items()):
+        if not _dhcp_serves_scope(entry):
+            continue
+        for field in _DHCP_RANGE_FIELDS:
+            value = (entry or {}).get(field)
+            if value is None or "{{" not in str(value):
+                continue
+            before = (base_cfg.get(name) or {}).get(field)
+            if str(before) == str(value):
+                continue  # pre-existing and unchanged
+            findings.append(
+                Finding(
+                    source=FindingSource.ADAPTER,
+                    category=FindingCategory.OPERATIONAL,
+                    code="scope.dhcp.range_unresolved",
+                    severity=Severity.WARNING,
+                    confidence=Confidence(level=ConfidenceLevel.HIGH),
+                    message=(
+                        f"dhcpd scope {name!r}: {field} {value!r} is templated and "
+                        "cannot be evaluated — range/subnet lint is blind to it"
+                    ),
+                    affected_entities=(str(name),),
+                    evidence={"network": str(name), "field": field, "value": str(value)},
+                )
+            )
+    return findings
+
+
 def _poe_draw(row: _Json | None) -> bool | None:
     """Observed power delivery — honest about missing telemetry (real rows lack
     `poe_on` on some ports): no stat row -> UNKNOWN; `poe_on` present -> the

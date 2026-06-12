@@ -33,7 +33,10 @@ from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.apply import get_object
 from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
 from digital_twin.adapters.mist.ingest.dynamic_usage import unresolved_dynamic_findings
-from digital_twin.adapters.mist.ingest.switch import invalid_bridge_priority_findings
+from digital_twin.adapters.mist.ingest.switch import (
+    invalid_bridge_priority_findings,
+    unresolved_dhcp_range_findings,
+)
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
@@ -203,6 +206,12 @@ def simulate(
             invalid_bridge_priority_findings(
                 baseline.device_effective, proposed.device_effective
             )
+        )
+        # delta-gated: a templated dhcpd range value the delta introduces or
+        # changes blinds scope lint for that scope -> WARNING; pre-existing
+        # unchanged templates stay silent (GS25 spec r1)
+        adapter_findings += tuple(
+            unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
 
     # 8 — derived-impact gate (site + every device effective)
