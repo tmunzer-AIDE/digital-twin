@@ -31,25 +31,50 @@ taint every future plan. Pre-existing demotion requires checks.
   `subnet: str | None` — the OWNING network's subnet resolved in the
   provider's namespace (org networks for gateway scopes, site networks for
   site scopes); None when unknown/blind.
-  - **Canonical identity** for deterministic pre-existing demotion:
-    `DhcpScope.key` = `(provider, network, vlan, ip_start, ip_end, gateway)`.
-    Baseline parity compares keys (and for overlap, key PAIRS), never object
-    identity or list position.
-  - Stored as `IR.dhcp_scopes: tuple[DhcpScope, ...]`, sorted by key.
-- `Port.dhcp_trusted: bool | None` — **tri-state**:
-  - `True`: usage has `allow_dhcpd=true` OR resolved mode is trunk;
-  - `False`: resolved mode is access AND `allow_dhcpd` is not true;
+  - **Identity vs violation parity**: `DhcpScope.id` = `provider:network`
+    (+vlan when known) names the scope for diffing. Pre-existing demotion is
+    VIOLATION-SPECIFIC, never the full field tuple: an overlap pair is
+    pre-existing iff the same id-pair overlapped in baseline AND both ranges
+    are unchanged (editing a still-overlapping range = altered = WARNING,
+    the native-mismatch precedent); a gateway-only edit can never flip an
+    old overlap to "introduced". An out-of-subnet violation is pre-existing
+    iff the same id violated in baseline with the same offending field value
+    and same subnet.
+  - Stored as `IR.dhcp_scopes: tuple[DhcpScope, ...]`, sorted by id.
+- `Port.dhcp_trusted: bool | None` — **tri-state** (per OAS: `allow_dhcpd`
+  is itself tri-state; only the UNDEFINED value defers to the mode default):
+  - `True`: `allow_dhcpd is True`, OR `allow_dhcpd` absent and resolved
+    mode is trunk;
+  - `False`: `allow_dhcpd is False` (even on a trunk), OR `allow_dhcpd`
+    absent and resolved mode is access;
   - `None`: effective usage unresolved / dynamic / vlan-blind — unknown
     trust must NEVER collapse to untrusted (no false REVIEW from blindness).
 - `Device.dhcp_snooping: tuple[str, ...] | None` — `None` = disabled,
   `("*",)` = `all_networks`, else the enabled network names (site-network
   namespace).
 
+**Diff/applicability plumbing** (the registry consults `applies_to()`
+against `diff_ir`, which walks a fixed entity-kind list):
+- `diff.py`: append `("dhcp_scope", lambda ir: ir.dhcp_scopes)`; `DhcpScope`
+  exposes the stable `.id` above.
+- `IRBuilder` / validation / export carry `dhcp_scopes` like every other
+  collection.
+- `scope_lint.applies_to`: `("dhcp_scope", "vlan")` (subnet intent lives on
+  vlans/networks). `snooping.applies_to`: `("device", "port", "dhcp_scope",
+  "vlan", "link")` — snooping toggles are device facts, trust is a port
+  fact, and a topology change can remove the last trusted path (doctrine c:
+  list every kind run() reads).
+
 Templated values (`{{var}}`) in `ip_start`/`ip_end`/`gateway`: the scope is
-still minted with the field as `None` plus an adapter semantic finding
-(doctrine f: uninterpretable in-scope values are surfaced, never parsed or
-guessed). Checks treat a None field as unevaluable → abstain for that
-comparison + PARTIAL coverage note.
+still minted with the field as `None`. The adapter semantic finding is
+emitted ONLY when the DELTA introduces or changes the unresolved value — a
+pre-existing unchanged template must not floor unrelated plans to REVIEW
+(adapter findings are baseline-blind and fire every run; the
+bridge_priority precedent fires on baseline deliberately because a
+malformed priority poisons a GLOBAL election, but a templated range only
+poisons conclusions about that one scope). Checks treat a None field as
+unevaluable → abstain for that comparison + PARTIAL coverage note, scoped
+to runs where that scope is actually relevant.
 
 ## Check 1 — `wired.dhcp.scope_lint` (requires WIRED_L2 only)
 
@@ -84,8 +109,15 @@ network mapping to V, or `all_networks`), where V has modeled
   carrying V. Multiple paths, one trusted → silent. ALL known egress ports
   toward the source untrusted (`dhcp_trusted is False`) → `.untrusted_path`
   WARNING / REVIEW.
-- Source is `"site"` (switch-hosted) or hosted on S itself → local, no path
-  needed, silent.
+- Source is hosted on S itself (gateway scope on S) → local, silent.
+- Source is `"site"`: PLACEMENT IS UNKNOWABLE in the current model — site
+  scopes are activated per-device by device-level `dhcpd_config.enabled`
+  (visible in the live fixture), and device-level dhcpd_config is
+  deliberately unmodeled. GS24 could treat "site" as an abstract provider
+  because it only tested path EXISTENCE; snooping needs placement. So a
+  snooped vlan whose only source is "site" → abstain + PARTIAL note
+  ("site DHCP service placement is unmodeled"), never silent, never a
+  dropped-offer finding.
 - Any candidate egress port with `dhcp_trusted is None` on an otherwise
   all-untrusted set → UNKNOWN, abstain + PARTIAL note (never invent a
   dropped-offer conclusion from unknown trust).
@@ -147,7 +179,8 @@ clients + complete source/path certainty → ERROR.
 
 | Blind spot | Behavior |
 |---|---|
-| Templated range/gateway value | adapter finding + field None + abstain that comparison |
+| Templated range/gateway value | field None + abstain; adapter finding ONLY if the delta introduced/changed it |
+| Snooped vlan served only by "site" | abstain + PARTIAL (placement unmodeled) |
 | Org namespace unfetched | no gateway scopes minted (GS24 rule) |
 | Unknown port trust | `dhcp_trusted=None` → abstain, never untrusted |
 | Source unlocatable in graph | abstain + PARTIAL |
