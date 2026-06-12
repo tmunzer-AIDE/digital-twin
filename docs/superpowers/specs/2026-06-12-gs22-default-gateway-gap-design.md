@@ -76,8 +76,12 @@ ignored, so two hazards pass SAFE today:
 
 ## Shared IP-equality helper
 
-One small utility in a new module `checks/wired/ip_match.py` (NOT a new
-check; `link_boundary.py` stays L2-boundary-only):
+One small utility in a new module `ir/ip_match.py` — IR-layer-neutral
+because the non-winning-row conflict rule needs it at INGEST time and the
+layering is `adapters → {ir, contracts}` with checks downstream; an
+adapter must never import `checks/*` (and `link_boundary.py` stays
+L2-boundary-only). Exported from `digital_twin.ir`; both the ingester and
+both checks import it from there:
 `same_ip(a: str | None, b: str | None) -> bool | None`.
 - Tolerates `/prefix` suffixes on either side (`10.0.0.1` == `10.0.0.1/24`).
 - FAMILY-AWARE (the GS25 lesson: never compare bare ints across v4/v6 —
