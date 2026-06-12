@@ -16,6 +16,7 @@ from digital_twin.ir import (
     ConfidenceLevel,
     Device,
     DeviceRole,
+    DhcpScope,
     IRCapability,
     L3Intf,
     L3Role,
@@ -93,6 +94,23 @@ def _dhcp_active(entry: Any) -> bool:
     if kind in _DHCP_SERVING_TYPES:
         return True
     return kind == "relay" and bool(entry.get("servers"))
+
+
+def _dhcp_serves_scope(entry: Any) -> bool:
+    """Does this dhcpd entry OWN a scope (GS25)? Distinct from _dhcp_active
+    ("is this a PATH"): relay-with-servers is an active path but owns no
+    ip_start..ip_end — minting a range-less row would drag PARTIAL noise
+    onto every normal relay config."""
+    kind = str((entry or {}).get("type") or "local")
+    return kind in _DHCP_SERVING_TYPES
+
+
+def _literal_ip(value: Any) -> str | None:
+    """Range/gateway fields are literal config; a templated {{var}} (or empty)
+    is None — unknown, never parsed or guessed (doctrine f)."""
+    if not value or "{{" in str(value):
+        return None
+    return str(value)
 
 
 def _snooping(eff: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -267,7 +285,10 @@ class SwitchIngester:
             subnet = _literal_subnet(net.get("subnet"))
             if vid is not None and subnet:
                 org_subnets.setdefault(vid, subnet)
-        dhcp_sources = self._dhcp_sources(ctx, _org_vlan_map(ctx))
+        org_vlan_by_name = _org_vlan_map(ctx)
+        dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
+        # same org map as _dhcp_sources — the two layers must not disagree
+        self._mint_dhcp_scopes(ctx, org_vlan_by_name)
         sources: list[dict[str, Any]] = [ctx.site_effective, *ctx.device_effective.values()]
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
@@ -316,6 +337,67 @@ class SwitchIngester:
                 # unresolvable ACTIVE entries are NOT dropped silently: the
                 # device carries dhcp_unresolved (set in _devices) for them
         return out
+
+    @staticmethod
+    def _mint_dhcp_scopes(
+        ctx: IngestContext, org_vlan_by_name: Mapping[str, int | None]
+    ) -> None:
+        """DhcpScope rows for SERVING dhcpd entries (_dhcp_serves_scope, not
+        _dhcp_active — relay/none never own a scope). Site entries resolve in
+        the SITE namespace (always fetched: unresolved only when a DECLARED
+        subnet is unreadable); gateway entries resolve in the ORG namespace —
+        when it is unfetched the vlan/subnet stay None (no cross-namespace
+        guess) but the RANGES still mint: they are literal device config, and
+        dropping them would let a new overlapping site scope falsely PASS."""
+        site_nets: dict[str, Any] = ctx.site_effective.get("networks") or {}
+        for name, entry in (ctx.site_effective.get("dhcpd_config") or {}).items():
+            if not _dhcp_serves_scope(entry):
+                continue
+            entry = entry or {}
+            net = site_nets.get(str(name)) or {}
+            declared = net.get("subnet")
+            ctx.builder.add_dhcp_scope(
+                DhcpScope(
+                    provider="site",
+                    network=str(name),
+                    vlan=_vlan_int(net.get("vlan_id")),
+                    ip_start=_literal_ip(entry.get("ip_start")),
+                    ip_end=_literal_ip(entry.get("ip_end")),
+                    gateway=_literal_ip(entry.get("gateway")),
+                    subnet=_literal_subnet(declared),
+                    subnet_unresolved=(
+                        declared is not None and _literal_subnet(declared) is None
+                    ),
+                )
+            )
+        org_fetched = "org_networks" in ctx.raw.meta.fetched
+        org_nets = {str(n.get("name")): n for n in ctx.raw.org_networks if n.get("name")}
+        for dev in ctx.raw.devices:
+            if dev.get("type") != "gateway" or not dev.get("mac"):
+                continue
+            did = device_id(str(dev["mac"]))
+            for name, entry in (dev.get("dhcpd_config") or {}).items():
+                if not _dhcp_serves_scope(entry):
+                    continue
+                entry = entry or {}
+                declared = (org_nets.get(str(name)) or {}).get("subnet")
+                ctx.builder.add_dhcp_scope(
+                    DhcpScope(
+                        provider=did,
+                        network=str(name),
+                        vlan=(
+                            _gw_net_vlan(name, org_vlan_by_name, site_nets)
+                            if org_fetched
+                            else None
+                        ),
+                        ip_start=_literal_ip(entry.get("ip_start")),
+                        ip_end=_literal_ip(entry.get("ip_end")),
+                        gateway=_literal_ip(entry.get("gateway")),
+                        subnet=_literal_subnet(declared) if org_fetched else None,
+                        subnet_unresolved=(not org_fetched)
+                        or (declared is not None and _literal_subnet(declared) is None),
+                    )
+                )
 
     def _gateway_ports_and_l3(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:
         """GS22: the gateway's OWN config — its LAN trunk carriage (so the

@@ -758,6 +758,81 @@ def test_device_dhcp_snooping_fact():
     ].dhcp_snooping == ("*",)
 
 
+def test_dhcp_scopes_minted_for_serving_entries_only():
+    # _dhcp_serves_scope truth table (spec): serving (local/server/absent) ->
+    # scope row; relay (a valid GS24 PATH) and none -> sources-only, NEVER a
+    # scope (a range-less relay row would drag PARTIAL noise onto every
+    # normal relay config).
+    eff = {
+        "networks": {
+            "corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"},
+            "lab": {"vlan_id": 30},
+            "old": {"vlan_id": 40},
+        },
+        "dhcpd_config": {
+            "corp": {"type": "local", "ip_start": "10.0.0.10", "ip_end": "10.0.0.99",
+                     "gateway": "10.0.0.1"},
+            "lab": {"type": "relay", "servers": ["10.9.9.9"]},
+            "old": {"type": "none"},
+        },
+    }
+    ir = _ir_for(eff)
+    assert [s.id for s in ir.dhcp_scopes] == ["site:corp"]
+    s = ir.dhcp_scopes[0]
+    assert (s.vlan, s.ip_start, s.ip_end, s.gateway, s.subnet) == (
+        10, "10.0.0.10", "10.0.0.99", "10.0.0.1", "10.0.0.0/24"
+    )
+
+
+def test_gateway_scope_resolves_via_org_namespace():
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {
+        "corp": {"type": "server", "ip_start": "198.51.100.10", "ip_end": "198.51.100.99"}
+    }}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=_ORG_NETWORKS),
+        site_effective={},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    s = next(x for x in ir.dhcp_scopes if x.provider == "cc0000000001")
+    # org net corp: vlan 10, subnet 198.51.100.0/24 (_ORG_NETWORKS fixture)
+    assert (s.vlan, s.subnet) == (10, "198.51.100.0/24")
+
+
+def test_unfetched_org_namespace_still_mints_gateway_scope_ranges():
+    # GS24 rule untouched: NO dhcp_sources credit from a blind namespace.
+    # But ranges are LITERAL device config — without the scope row a new
+    # site scope overlapping the gateway range would falsely PASS (review r2).
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {
+        "corp": {"type": "local", "ip_start": "198.51.100.10", "ip_end": "198.51.100.99"}
+    }}
+    fetched = tuple(f for f in ALL_FETCHED if f != "org_networks")
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), fetched=fetched),
+        site_effective={},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    s = next(x for x in ir.dhcp_scopes if x.provider == "cc0000000001")
+    assert (s.vlan, s.subnet) == (None, None)
+    assert (s.ip_start, s.ip_end) == ("198.51.100.10", "198.51.100.99")
+    assert s.subnet_unresolved is True  # intent UNKNOWABLE, not "no intent"
+
+
+def test_templated_range_fields_mint_none_never_crash():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "dhcpd_config": {"corp": {"type": "local", "ip_start": "{{dhcp_start}}",
+                                  "ip_end": "10.0.0.99"}},
+    }
+    s = _ir_for(eff).dhcp_scopes[0]
+    assert s.ip_start is None and s.ip_end == "10.0.0.99"
+
+
 def test_poe_draw_unknown_is_not_observed_off():
     # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
     # UP -> powered state unknowable (None); absent + port DOWN -> a down port
