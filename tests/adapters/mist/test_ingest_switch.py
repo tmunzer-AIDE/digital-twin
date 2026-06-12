@@ -697,6 +697,48 @@ def test_stp_config_flags_and_bridge_priority():
     assert ir.devices["aa0000000001"].stp_priority == 4096
 
 
+def _ir_for(eff):
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    return ctx.builder.build()
+
+
+def test_port_dhcp_trust_tristate():
+    # OAS: allow_dhcpd is tri-state — only the UNDEFINED value defers to the
+    # mode default (trunk trusted / access untrusted); explicit false wins
+    # even on a trunk. Unresolved usage = trust UNKNOWN, never untrusted.
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "up": {"mode": "trunk", "networks": ["corp"]},
+            "up_untrusted": {"mode": "trunk", "networks": ["corp"], "allow_dhcpd": False},
+            "edge": {"mode": "access", "port_network": "corp"},
+            "edge_trusted": {"mode": "access", "port_network": "corp", "allow_dhcpd": True},
+        },
+        "port_config": {
+            "ge-0/0/0": {"usage": "up"},
+            "ge-0/0/1": {"usage": "up_untrusted"},
+            "ge-0/0/2": {"usage": "edge"},
+            "ge-0/0/3": {"usage": "edge_trusted"},
+            "ge-0/0/4": {"usage": "missing_usage"},
+            "ge-0/0/5": {"usage": "edge", "allow_dhcpd": True},  # inline override
+        },
+    }
+    ir = _ir_for(eff)
+    t = {p.name: p.dhcp_trusted for p in ir.ports.values()}
+    assert t["ge-0/0/0"] is True       # trunk, absent -> trusted
+    assert t["ge-0/0/1"] is False      # explicit false beats trunk
+    assert t["ge-0/0/2"] is False      # access, absent -> untrusted
+    assert t["ge-0/0/3"] is True       # explicit true beats access
+    assert t["ge-0/0/4"] is None       # unresolved usage -> UNKNOWN
+    assert t["ge-0/0/5"] is True       # inline port_config override honored
+
+
 def test_poe_draw_unknown_is_not_observed_off():
     # real rows (live fixture): `poe_on` is absent on some ports. Absent + port
     # UP -> powered state unknowable (None); absent + port DOWN -> a down port

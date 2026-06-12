@@ -95,6 +95,18 @@ def _dhcp_active(entry: Any) -> bool:
     return kind == "relay" and bool(entry.get("servers"))
 
 
+def _dhcp_trust(usage: Mapping[str, Any]) -> bool | None:
+    """Tri-state DHCP-offer trust (GS25). The OAS marks allow_dhcpd itself
+    tri-state: only the UNDEFINED value defers to the mode default. An empty
+    usage (unresolved name / unresolved dynamic) is UNKNOWN — never untrusted."""
+    if not usage:
+        return None
+    explicit = usage.get("allow_dhcpd")
+    if explicit is not None:
+        return bool(explicit)
+    return usage.get("mode") == "trunk"
+
+
 # Junos bridge priorities: 0..61440 in 4096 steps ("Range [0, 4k, 8k.. 60k]")
 _VALID_PRIORITIES = frozenset(range(0, 61441, 4096))
 
@@ -439,6 +451,7 @@ class SwitchIngester:
                     disabled=bool(usage.get("disabled")),
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),
+                    dhcp_trusted=_dhcp_trust(usage),
                     meta=meta,
                 )
             )
