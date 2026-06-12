@@ -14,6 +14,13 @@ config-cmd-driven interfaces are invisible):
 - routed intent NEWLY declared with no modeled interface anywhere -> it may
   live on an unmodeled box: WARNING capped MEDIUM (.unserved -> REVIEW);
 - the same gap already in the baseline -> INFO context only.
+
+.gateway_unowned (GS22-GW): when L3 interfaces EXIST on a vlan, the declared
+default gateway must be OWNED by one of them — breaking a KNOWN baseline owner
+is strong evidence (ERROR); an absence with no known owner is honest REVIEW
+(WARNING/MEDIUM, the owner may live on an unmodeled box); unknown ownership
+(unresolved intent, unparseable IPs) abstains with a coverage note, never a
+violation.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from digital_twin.ir import (
     IRCapability,
     IRDiff,
     min_confidence,
+    same_ip,
 )
 from digital_twin.ir.entities import L3Intf
 from digital_twin.ir.model import IR
@@ -130,6 +138,104 @@ class GatewayGapCheck:
                     },
                 )
             )
+        # --- .gateway_unowned: interfaces EXIST but none owns the declared
+        # gateway (strict precedence: the no-interface cases belong to the
+        # existence codes above; never double-fire)
+        changed_vlan_ids = {
+            r.id for r in (*ctx.diff.added, *ctx.diff.removed,
+                           *(m.ref for m in ctx.diff.modified))
+            if r.kind == "vlan"
+        }
+        l3_touched_vlans = {
+            r.id.rsplit(":", 1)[-1]
+            for r in (*ctx.diff.added, *ctx.diff.removed,
+                      *(m.ref for m in ctx.diff.modified))
+            if r.kind == "l3intf"
+        }
+        abstain_notes: list[str] = []
+        for vid, vlan in sorted(prop_ir.vlans.items()):
+            intfs = prop_l3.get(vid)
+            if not intfs:
+                continue  # existence codes own this case
+            relevant = str(vid) in changed_vlan_ids or str(vid) in l3_touched_vlans
+            if vlan.gateway_unresolved:
+                if relevant:
+                    abstain_notes.append(
+                        f"vlan {vid}: declared default gateway is unreadable or "
+                        "ambiguous — ownership cannot be verified"
+                    )
+                continue
+            g = vlan.gateway
+            if g is None:
+                continue  # no declared intent
+            verdicts = [same_ip(i.ip, g) for i in intfs]
+            if any(v is True for v in verdicts):
+                continue  # owned — a positive fact nothing can taint
+            if any(v is None for v in verdicts):
+                if relevant:
+                    abstain_notes.append(
+                        f"vlan {vid}: an L3 interface has an unknown/unparseable "
+                        f"address — it may own the declared gateway {g}"
+                    )
+                continue
+            # definitively unowned: parity + severity per the doctrine
+            base_vlan = base_ir.vlans.get(vid)
+            base_g = base_vlan.gateway if base_vlan is not None else None
+            base_intfs = base_l3.get(vid, [])
+            owners = [
+                i for i in base_intfs
+                if base_g is not None and same_ip(i.ip, base_g) is True
+            ]
+            if owners:
+                # known owner broken (G moved, or the owner changed/left)
+                severity, code = Severity.ERROR, "gateway_unowned"
+                confidence = min_confidence(*(i.meta.confidence for i in owners))
+                if blind_notes:
+                    confidence = min_confidence(confidence, _BLIND_GATEWAY)
+                message = (
+                    f"vlan {vid}: declared default gateway {g} is owned by NO "
+                    f"modeled L3 interface — the baseline owner "
+                    f"({', '.join(i.id for i in owners)}) no longer matches"
+                )
+            elif (
+                base_vlan is not None
+                and not base_vlan.gateway_unresolved
+                and base_g == g
+                and base_intfs
+                and all(same_ip(i.ip, base_g) is False for i in base_intfs)
+            ):
+                severity, code = Severity.INFO, "gateway_unowned"
+                confidence = _UNMODELED
+                message = (
+                    f"vlan {vid}: pre-existing unowned declared gateway {g}, "
+                    "unchanged by the delta (context)"
+                )
+            else:
+                # never owned / newly declared / G changed between unowned
+                # values: there was no KNOWN owner -> honest REVIEW, never
+                # ERROR (the owner may live on an unmodeled box)
+                severity, code = Severity.WARNING, "gateway_unowned"
+                confidence = _UNMODELED
+                message = (
+                    f"vlan {vid}: declared default gateway {g} is owned by no "
+                    "modeled L3 interface"
+                )
+            high = confidence.level is ConfidenceLevel.HIGH
+            if severity is Severity.ERROR and not high:
+                severity = Severity.WARNING
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.{code}",
+                    severity=severity,
+                    confidence=confidence,
+                    message=message,
+                    affected_entities=(str(vid),),
+                    evidence={"vlan": vid, "gateway": g,
+                              "l3_interfaces": [i.id for i in intfs]},
+                )
+            )
         worst = Status.PASS
         conclusions = [f for f in findings if f.severity is not Severity.INFO]
         for f in conclusions:
@@ -137,8 +243,9 @@ class GatewayGapCheck:
             if this is Status.FAIL or worst is Status.PASS:
                 worst = this
         # INFO .preexisting is context (excluded from verdict floors): only a
-        # real CONCLUSION lets the blind-gateway notes degrade coverage
-        notes = blind_notes if conclusions else ()
+        # real CONCLUSION lets the blind-gateway notes degrade coverage;
+        # abstain notes attach whenever generated (already delta-scoped)
+        notes = (blind_notes if conclusions else ()) + tuple(abstain_notes)
         return CheckResult(
             check_id=self.id,
             status=worst,

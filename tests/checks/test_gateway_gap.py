@@ -5,7 +5,7 @@ routed intent with no modeled interface -> WARNING/MEDIUM (could live on an
 unmodeled box); the same gap already in the baseline -> INFO context."""
 
 from digital_twin.analysis.context import AnalysisContext
-from digital_twin.checks.base import CheckContext, Status
+from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.gateway_gap import GatewayGapCheck
 from digital_twin.contracts import Severity
 from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
@@ -135,3 +135,103 @@ def test_served_routed_network_is_silent():
 
 def test_unrouted_vlan_never_fires():
     assert _run(_ir(routed=False, with_irb=False), _ir(routed=False, with_irb=False)).findings == ()
+
+# --- .gateway_unowned: when L3 interfaces EXIST on a vlan, the declared
+# gateway IP must be OWNED by one of them (GS22-GW)
+
+
+def _routed_ir(*, gateway="10.0.0.1", gw_unresolved=False, intf_ip="10.0.0.1",
+               with_intf=True):
+    from digital_twin.ir.entities import L3Intf, L3Role
+
+    b = IRBuilder().add_device(sw("S"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", subnet="10.0.0.0/24",
+                    gateway=gateway, gateway_unresolved=gw_unresolved))
+    if with_intf:
+        b.add_l3intf(L3Intf(device_id="S", role=L3Role.IRB, vlan_id=10,
+                            ip=intf_ip))
+    b.with_capability(IRCapability.WIRED_L2)
+    b.with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def test_owned_gateway_is_silent():
+    r = _run(_routed_ir(), _routed_ir())
+    assert not [f for f in r.findings if f.code.endswith("gateway_unowned")]
+
+
+def test_breaking_a_known_owner_is_error():
+    # baseline owned (intf ip == declared G); delta moves G away -> the
+    # known owner is gone: ERROR at the owning fact's confidence
+    r = _run(_routed_ir(gateway="10.0.0.1"), _routed_ir(gateway="10.0.0.9"))
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+
+
+def test_never_owned_is_warning_medium():
+    # interfaces exist but none ever owned G (baseline G already different
+    # from the intf and CHANGED by the delta -> introduced, no known owner)
+    base = _routed_ir(gateway="10.0.0.8", intf_ip="10.0.0.250")
+    prop = _routed_ir(gateway="10.0.0.9", intf_ip="10.0.0.250")
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_preexisting_unowned_is_info():
+    same = _routed_ir(gateway="10.0.0.9", intf_ip="10.0.0.250")
+    r = _run(same, same)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.INFO
+
+
+def test_no_declared_gateway_is_silent():
+    r = _run(_routed_ir(gateway=None), _routed_ir(gateway=None))
+    assert not [f for f in r.findings if f.code.endswith("gateway_unowned")]
+
+
+def test_unresolved_gateway_abstains_with_note_when_vlan_touched():
+    base = _routed_ir(gateway="10.0.0.1")
+    prop = _routed_ir(gateway=None, gw_unresolved=True)  # delta touches vlan
+    r = _run(base, prop)
+    assert not [f for f in r.findings if f.code.endswith("gateway_unowned")]
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("10" in n and "gateway" in n.lower() for n in r.coverage.notes)
+
+
+def test_unresolved_gateway_untouched_stays_complete():
+    same = _routed_ir(gateway=None, gw_unresolved=True)
+    r = _run(same, same)
+    assert r.coverage.state is CoverageState.COMPLETE
+
+
+def test_unknown_intf_ip_abstains_never_unowned():
+    # an interface with ip=None may BE the owner: unknown never collapses
+    # to a violation
+    base = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.1")
+    prop = _routed_ir(gateway="10.0.0.1", intf_ip=None)
+    r = _run(base, prop)
+    assert not [f for f in r.findings if f.code.endswith("gateway_unowned")]
+    assert r.coverage.state is CoverageState.PARTIAL
+
+
+def test_unparseable_declared_gateway_abstains():
+    # "foo" passes _literal_ip (not templated) — same_ip returns None
+    # against every interface -> ownership UNKNOWN, never .gateway_unowned
+    base = _routed_ir(gateway="10.0.0.1")
+    prop = _routed_ir(gateway="foo")
+    r = _run(base, prop)
+    assert not [f for f in r.findings if f.code.endswith("gateway_unowned")]
+    assert r.coverage.state is CoverageState.PARTIAL
+
+
+def test_no_interfaces_stays_with_existence_codes():
+    # strict precedence: the no-intf case is .removed/.unserved territory;
+    # .gateway_unowned never fires there (no double-fire)
+    base = _routed_ir(gateway="10.0.0.1", with_intf=True)
+    prop = _routed_ir(gateway="10.0.0.1", with_intf=False)
+    r = _run(base, prop)
+    codes = [f.code for f in r.findings]
+    assert any(c.endswith(".removed") for c in codes)
+    assert not any(c.endswith("gateway_unowned") for c in codes)
