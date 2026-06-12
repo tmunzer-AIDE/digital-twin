@@ -1049,6 +1049,31 @@ def test_gateway_scope_network_gateway_blind_namespace_unresolved():
     assert s.network_gateway is None and s.network_gateway_unresolved is True
 
 
+def test_templated_vlan_id_row_is_skipped_never_a_crash():
+    # _vlan_int contract: unparseable = UNKNOWN, never a crash — the mint
+    # loop must guard exactly like the rows_by_vid collection does
+    eff = {"networks": {
+        "corp": {"vlan_id": 10, "gateway": "10.0.0.1"},
+        "tpl": {"vlan_id": "{{vlan}}", "gateway": "10.0.99.1"},
+    }}
+    ir = _ir_for(eff)
+    assert 10 in ir.vlans
+    assert ir.vlans[10].gateway == "10.0.0.1"
+    assert len(ir.vlans) >= 1  # the templated row minted nothing and crashed nothing
+
+
+def test_gateway_scope_org_templated_gateway_is_unresolved():
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {"corp": {"type": "local"}}}
+    org = ({"name": "corp", "vlan_id": 10, "gateway": "{{gw}}"},)
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=org),
+        site_effective={}, device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    s = next(x for x in ctx.builder.build().dhcp_scopes if x.provider == "cc0000000001")
+    assert s.network_gateway is None and s.network_gateway_unresolved is True
+
+
 def test_org_only_templated_gateway_sets_unresolved():
     eff = {"networks": {"corp": {"vlan_id": 10}}}
     ctx = IngestContext(

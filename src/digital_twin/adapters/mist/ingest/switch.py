@@ -392,19 +392,19 @@ class SwitchIngester:
         self._mint_dhcp_scopes(ctx, org_vlan_by_name)
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
-                vid = net.get("vlan_id")
-                if vid is not None and int(vid) not in seen:
-                    seen.add(int(vid))
-                    gw, gw_unresolved = _vlan_gateway(int(vid), rows_by_vid, org_gw_raw)
+                vid = _vlan_int(net.get("vlan_id"))
+                if vid is not None and vid not in seen:
+                    seen.add(vid)
+                    gw, gw_unresolved = _vlan_gateway(vid, rows_by_vid, org_gw_raw)
                     ctx.builder.add_vlan(
                         Vlan(
-                            vlan_id=int(vid),
+                            vlan_id=vid,
                             name=name,
                             scope=ctx.raw.scope.site_id,
-                            subnet=net.get("subnet") or org_subnets.get(int(vid)),
+                            subnet=net.get("subnet") or org_subnets.get(vid),
                             gateway=gw,
                             gateway_unresolved=gw_unresolved,
-                            dhcp_sources=tuple(sorted(dhcp_sources.get(int(vid), ()))),
+                            dhcp_sources=tuple(sorted(dhcp_sources.get(vid, ()))),
                         )
                     )
 
