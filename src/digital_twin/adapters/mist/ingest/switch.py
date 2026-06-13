@@ -7,7 +7,7 @@ device list for identity (mac/model/role). APs become leaf Device entities here
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
@@ -114,38 +114,52 @@ def _literal_ip(value: Any) -> str | None:
     return str(value)
 
 
-def _vlan_gateway(
-    vid: int, rows_by_vid: Mapping[int, list[Any]], org_raw: Mapping[int, Any]
+def _winning_literal(
+    vid: int,
+    rows_by_vid: Mapping[int, list[Any]],
+    org_raw: Mapping[int, Any],
+    *,
+    parse: Callable[[Any], str | None],
+    same: Callable[[str | None, str | None], bool | None],
 ) -> tuple[str | None, bool]:
-    """(gateway, unresolved) for a vlan id. Winning-row-shadows-org +
-    conflict-is-unresolvable (GS22-GW spec). rows are ALL same-vid network
-    rows' gateway values in mint order — [0] is the true Vlan winner;
-    None values = no intent (null==absent canon).
+    """(value, unresolved) for a vlan id under the five-leg precedence shared
+    by the gateway and subnet fields. `rows` are ALL same-vid network rows'
+    raw field values in mint order — [0] is the true Vlan winner; None = no
+    intent (null==absent canon, normalized by the caller).
 
-    - winner declares, readable, every other declaring row agrees -> value
+    - nobody declares -> org overlay (unreadable org value -> (None, True))
+    - winner silent but a NON-WINNING row declares -> (None, True): the
+      singleton Vlan cannot represent a per-device value, never silently
+      promote it nor fall to org over it
     - winner declares but unreadable -> (None, True), shadows org
     - winner declares, any declaring sibling disagrees -> (None, True)
-    - winner silent but a NON-WINNING row declares -> (None, True) — the
-      singleton Vlan cannot represent a per-device gateway (never silently
-      promote it, never fall to org over it)
-    - nobody declares -> org overlay (unreadable org value -> (None, True))
+    - winner declares, readable, every other declaring row agrees -> value
     """
     rows = rows_by_vid.get(vid, [])
     declaring = [r for r in rows if r is not None]
     if not declaring:
         if vid not in org_raw:
             return None, False  # no intent anywhere — not a blind spot
-        lit = _literal_ip(org_raw[vid])
+        lit = parse(org_raw[vid])
         return lit, lit is None
     if rows[0] is None:
         return None, True  # winner silent, a non-winning row declares
-    winner = _literal_ip(rows[0])
+    winner = parse(rows[0])
     if winner is None:
         return None, True  # declared-but-unreadable (still shadows org)
     for other in declaring[1:]:
-        if same_ip(_literal_ip(other), winner) is not True:
+        if same(parse(other), winner) is not True:
             return None, True  # conflict = unresolvable intent
     return winner, False
+
+
+def _vlan_gateway(
+    vid: int, rows_by_vid: Mapping[int, list[Any]], org_raw: Mapping[int, Any]
+) -> tuple[str | None, bool]:
+    """(gateway, unresolved) for a vlan id — the gateway specialization of
+    `_winning_literal` (GS22-GW). rows are same-vid `networks.*.gateway`
+    values in mint order; None = no intent (null==absent canon)."""
+    return _winning_literal(vid, rows_by_vid, org_raw, parse=_literal_ip, same=same_ip)
 
 
 def _snooping(eff: Mapping[str, Any]) -> tuple[str, ...] | None:
