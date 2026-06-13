@@ -113,7 +113,7 @@ class GatewayGapCheck:
                         f"vlan {vid}: declared subnet is unreadable or ambiguous "
                         "— routed intent cannot be verified"
                     )
-                continue  # not routed, or unresolved -> abstained above
+                continue  # not routed (no intent), or unresolved-intent (may have noted above)
             base_vlan = base_ir.vlans.get(vid)
             base_intfs = base_l3.get(vid, [])
             if base_intfs:

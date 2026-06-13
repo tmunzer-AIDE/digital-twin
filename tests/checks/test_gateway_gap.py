@@ -251,7 +251,7 @@ def test_no_interfaces_stays_with_existence_codes():
 # --- unresolved subnet abstain (GS22-SUB Task 5) ---
 
 
-def _unresolved_subnet_ir(vid: int, subnet_unresolved: bool) -> object:
+def _unresolved_subnet_ir(vid: int, subnet_unresolved: bool):
     """IR with one vlan whose subnet is None (unresolved=subnet_unresolved), no l3intfs."""
     b = IRBuilder().add_device(sw("S"))
     b.add_vlan(Vlan(vlan_id=vid, name="corp", subnet=None,
@@ -262,7 +262,7 @@ def _unresolved_subnet_ir(vid: int, subnet_unresolved: bool) -> object:
 
 
 def _run_unresolved_subnet(vid: int, subnet_unresolved: bool,
-                           changed_vlan_ids: set) -> object:
+                           changed_vlan_ids: set):
     """Build base==prop IR (no diff findings) and a diff that marks the given vlan ids changed."""
     from digital_twin.analysis.context import AnalysisContext
     from digital_twin.ir import EntityRef, IRDiff
