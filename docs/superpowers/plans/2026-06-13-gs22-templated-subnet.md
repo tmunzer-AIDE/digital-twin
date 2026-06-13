@@ -121,9 +121,25 @@ def test_vlan_subnet_unresolved_defaults_false():
     assert Vlan(vlan_id=10, subnet=None, subnet_unresolved=True).subnet_unresolved is True
 ```
 
+Also add a DIFF test (in `tests/ir/test_diff.py`) — `subnet_unresolved` is the load-bearing signal for the silent-winner-shadowed shape (subnet stays `None`, only the flag flips), so the diff MUST mark such a vlan modified or the check's relevance gate never fires and the false-SAFE reopens:
+
+```python
+def test_subnet_unresolved_flip_alone_marks_vlan_modified():
+    from digital_twin.ir.entities import Vlan
+    from digital_twin.ir.diff import diff_ir
+    from digital_twin.ir.model import IRBuilder
+    base = IRBuilder(); base.add_vlan(Vlan(vlan_id=10, subnet=None, subnet_unresolved=False))
+    prop = IRBuilder(); prop.add_vlan(Vlan(vlan_id=10, subnet=None, subnet_unresolved=True))
+    d = diff_ir(base.build(), prop.build())
+    assert any(m.ref.kind == "vlan" and m.ref.id == "10"
+               and "subnet_unresolved" in m.changed_fields for m in d.modified)
+```
+
+NOTE TO IMPLEMENTER: confirm the exact `Modified` attribute name for the changed-field tuple (`_changed_fields` returns it; the dataclass field may be `changed` or `changed_fields`) by reading `src/digital_twin/ir/diff.py` and the existing `test_diff.py` assertions, and match it. Confirm `IRBuilder.add_vlan`/`build` and `EntityRef.kind`/`.id` names the same way (mirror an existing `test_diff.py` modified-case test).
+
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/ir/test_entities.py::test_vlan_subnet_unresolved_defaults_false -q`
+Run: `uv run pytest tests/ir/test_entities.py::test_vlan_subnet_unresolved_defaults_false tests/ir/test_diff.py::test_subnet_unresolved_flip_alone_marks_vlan_modified -q`
 Expected: FAIL — `TypeError: ... unexpected keyword argument 'subnet_unresolved'`
 
 - [ ] **Step 3: Add the field**
@@ -142,13 +158,13 @@ Place it BEFORE the `gateway:` field so the routed-intent fields (`subnet`, `sub
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `uv run pytest tests/ir/test_entities.py -q && uv run mypy src`
+Run: `uv run pytest tests/ir/test_entities.py tests/ir/test_diff.py -q && uv run mypy src`
 Expected: PASS, mypy clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/digital_twin/ir/entities.py tests/ir/test_entities.py
+git add src/digital_twin/ir/entities.py tests/ir/test_entities.py tests/ir/test_diff.py
 git commit -m "GS22-SUB: Vlan.subnet_unresolved — declared-but-unreadable routed intent"
 ```
 
@@ -636,9 +652,10 @@ Run all eight live plans and confirm verdicts are unchanged from the pre-round b
 
 ```bash
 set -a; source .env; set +a
-for p in plans/*.json; do printf '%s ' "$p"; uv run digital-twin --plan "$p" 2>/dev/null | head -1; done
+for p in plan.json test-plans/*.json; do printf '%s ' "$p"; uv run digital-twin --plan "$p" 2>/dev/null | head -1; done
 ```
 
+The eight plans are `plan.json` (UNSAFE) + the seven `test-plans/*.json` (01 SAFE, 02 SAFE, 03 REVIEW, 04 REVIEW, 05 UNSAFE, 06 SAFE, 07 REVIEW).
 Expected: every plan holds its prior verdict (the live org's routed vlans carry literal subnets; none templated — so the new abstain path is not exercised live). If any verdict moved, STOP and reconcile before the roadmap commit.
 
 - [ ] **Step 5: Roadmap + memory + commit**
