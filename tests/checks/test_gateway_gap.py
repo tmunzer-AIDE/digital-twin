@@ -246,3 +246,63 @@ def test_no_interfaces_stays_with_existence_codes():
     codes = [f.code for f in r.findings]
     assert any(c.endswith(".removed") for c in codes)
     assert not any(c.endswith("gateway_unowned") for c in codes)
+
+
+# --- unresolved subnet abstain (GS22-SUB Task 5) ---
+
+
+def _unresolved_subnet_ir(vid: int, subnet_unresolved: bool) -> object:
+    """IR with one vlan whose subnet is None (unresolved=subnet_unresolved), no l3intfs."""
+    b = IRBuilder().add_device(sw("S"))
+    b.add_vlan(Vlan(vlan_id=vid, name="corp", subnet=None,
+                    subnet_unresolved=subnet_unresolved))
+    b.with_capability(IRCapability.WIRED_L2)
+    b.with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def _run_unresolved_subnet(vid: int, subnet_unresolved: bool,
+                           changed_vlan_ids: set) -> object:
+    """Build base==prop IR (no diff findings) and a diff that marks the given vlan ids changed."""
+    from digital_twin.analysis.context import AnalysisContext
+    from digital_twin.ir import EntityRef, IRDiff
+
+    ir = _unresolved_subnet_ir(vid, subnet_unresolved)
+    # Construct a diff that reflects the desired changed_vlan_ids without altering
+    # the IR shape (base and prop are identical so no existence finding fires).
+    if changed_vlan_ids:
+        added = tuple(EntityRef(kind="vlan", id=str(v)) for v in changed_vlan_ids)
+    else:
+        added = ()
+    ctx = CheckContext(
+        baseline=AnalysisContext(ir),
+        proposed=AnalysisContext(ir),
+        diff=IRDiff(added=added, removed=(), modified=()),
+    )
+    return GatewayGapCheck().run(ctx)
+
+
+def test_unresolved_subnet_in_delta_abstains_partial_not_safe():
+    # a vlan whose subnet is unresolved (templated), CHANGED by the delta,
+    # with no modeled L3 interface -> must NOT be SAFE: abstain note -> PARTIAL
+    result = _run_unresolved_subnet(vid=10, subnet_unresolved=True,
+                                    changed_vlan_ids={"10"})
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("unreadable or ambiguous" in n for n in result.coverage.notes)
+    assert not any(f.severity is Severity.ERROR for f in result.findings)
+
+
+def test_unresolved_subnet_not_in_delta_no_note_stays_complete():
+    # relevance discipline: an unchanged unresolved vlan elsewhere never taints
+    result = _run_unresolved_subnet(vid=10, subnet_unresolved=True,
+                                    changed_vlan_ids=set())
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.coverage.notes == ()
+
+
+def test_absent_subnet_not_routed_is_silent():
+    # subnet None + NOT unresolved = not routed: no finding, no note (unchanged)
+    result = _run_unresolved_subnet(vid=10, subnet_unresolved=False,
+                                    changed_vlan_ids={"10"})
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.findings == ()

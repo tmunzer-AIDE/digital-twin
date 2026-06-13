@@ -88,9 +88,32 @@ class GatewayGapCheck:
             if d.l3_unmodeled
         )
         findings: list[Finding] = []
+        subnet_abstain_notes: list[str] = []
+        # hoist relevance sets so both the existence loop and .gateway_unowned
+        # loop can use them
+        changed_vlan_ids = {
+            r.id for r in (*ctx.diff.added, *ctx.diff.removed,
+                           *(m.ref for m in ctx.diff.modified))
+            if r.kind == "vlan"
+        }
+        l3_touched_vlans = {
+            r.id.rsplit(":", 1)[-1]
+            for r in (*ctx.diff.added, *ctx.diff.removed,
+                      *(m.ref for m in ctx.diff.modified))
+            if r.kind == "l3intf"
+        }
         for vid, vlan in sorted(prop_ir.vlans.items()):
-            if vlan.subnet is None or prop_l3.get(vid):
-                continue  # not routed, or served
+            if prop_l3.get(vid):
+                continue  # served — a positive fact nothing can taint
+            if vlan.subnet is None:
+                if vlan.subnet_unresolved and (
+                    str(vid) in changed_vlan_ids or str(vid) in l3_touched_vlans
+                ):
+                    subnet_abstain_notes.append(
+                        f"vlan {vid}: declared subnet is unreadable or ambiguous "
+                        "— routed intent cannot be verified"
+                    )
+                continue  # not routed, or unresolved -> abstained above
             base_vlan = base_ir.vlans.get(vid)
             base_intfs = base_l3.get(vid, [])
             if base_intfs:
@@ -141,17 +164,7 @@ class GatewayGapCheck:
         # --- .gateway_unowned: interfaces EXIST but none owns the declared
         # gateway (strict precedence: the no-interface cases belong to the
         # existence codes above; never double-fire)
-        changed_vlan_ids = {
-            r.id for r in (*ctx.diff.added, *ctx.diff.removed,
-                           *(m.ref for m in ctx.diff.modified))
-            if r.kind == "vlan"
-        }
-        l3_touched_vlans = {
-            r.id.rsplit(":", 1)[-1]
-            for r in (*ctx.diff.added, *ctx.diff.removed,
-                      *(m.ref for m in ctx.diff.modified))
-            if r.kind == "l3intf"
-        }
+        # changed_vlan_ids and l3_touched_vlans are already computed above
         abstain_notes: list[str] = []
         for vid, vlan in sorted(prop_ir.vlans.items()):
             intfs = prop_l3.get(vid)
@@ -245,7 +258,11 @@ class GatewayGapCheck:
         # INFO .preexisting is context (excluded from verdict floors): only a
         # real CONCLUSION lets the blind-gateway notes degrade coverage;
         # abstain notes attach whenever generated (already delta-scoped)
-        notes = (blind_notes if conclusions else ()) + tuple(abstain_notes)
+        notes = (
+            (blind_notes if conclusions else ())
+            + tuple(abstain_notes)
+            + tuple(subnet_abstain_notes)
+        )
         return CheckResult(
             check_id=self.id,
             status=worst,
