@@ -118,9 +118,11 @@ scope costs no live coverage.
 
 A new `_ospf` pass in `adapters/mist/ingest/switch.py`, run for **switch
 devices only** (in the switch L3 branch). Reuses the existing `net_of`/`vlan_of`
-network-name namespace resolution and the `l3_unmodeled` blind flag already set
-when the org namespace is unfetched. No new capability — `SwitchIngester.ingest`
-already returns `{WIRED_L2, L3_EXITS}` whenever device data is fetched.
+network-name namespace resolution; a name that does not resolve to a vlan mints
+an `unresolved=True` row (the only switch-side blindness here — `l3_unmodeled` is
+set on **gateways** only, so it never applies to a switch-scoped `OspfIntf`). No
+new capability — `SwitchIngester.ingest` already returns `{WIRED_L2, L3_EXITS}`
+whenever device data is fetched.
 
 ```
 ospf_cfg = eff.get("ospf_config") or {}
@@ -181,14 +183,20 @@ Added to `RAW_ALLOWLIST["device"]`, `RAW_ALLOWLIST["site_setting"]`, and
 
 Consequence (pinned, accepted): withdrawing an OSPF network that **also** carries
 any denied leaf (e.g. `metric`) surfaces that denied leaf as a removed path →
-the whole plan resolves **UNKNOWN**, not REVIEW. Goldens therefore withdraw
-entries whose **only** modeled leaf is `passive` (carried explicitly, including
-`passive: false` on an active/transit interface). Note a *bare* `{}` entry
-removal surfaces **zero** changed leaves (`changed_leaf_paths` finds no differing
-leaf) — so a withdrawal whose sole change is a bare-`{}` entry may not register
-as a plan change at all; carrying an explicit `passive` leaf makes the withdrawal
-both pass the field gate and register as a real change while the IR diff drops
-the `OspfIntf`.
+the whole plan resolves **UNKNOWN**, not REVIEW. So goldens withdraw entries with
+**no denied leaves** — either a passive stub (`{"passive": true}`) or a **bare
+`{}` active/transit** entry (the default-active shape, since `passive` defaults
+false).
+
+**Bare-`{}` active withdrawal is fully in-scope — not a gap.** Such a removal
+surfaces **zero** raw changed leaves (`changed_leaf_paths` finds none), so the
+field gate raises no offense and *passes* — but the engine still applies the op
+(`effective_update`/`apply` drop the network from the proposed object), proposed
+ingest drops the `OspfIntf`, and the IR diff registers the removal, so the check
+fires. **Detection rides the IR diff, never the raw-leaf count** (`pipeline.py`
+has no empty-diff short-circuit). Because `passive` defaults false, real active
+transit entries *are* bare `{}`, so a REQUIRED test pins this end-to-end:
+default-active participation must never false-SAFE.
 
 ## Check — `wired.l3.ospf_withdrawal` (domain `wired.l3`)
 
@@ -254,38 +262,42 @@ signal `gateway_gap` uses).
 | Network added to OSPF | **no finding** — additions are not breakage |
 | Pure network-name rename (tuple unchanged) | **silent** — owned by name-aware checks |
 | Retained participation, `active_status`/area changed, no withdrawal | **`.transit_mutation` → REVIEW** — never SAFE for a GS27-owned mutation |
-| Device `l3_unmodeled` (org namespace unfetched) | cap finding to MEDIUM + **PARTIAL** coverage note; never silent, never a guessed UNSAFE |
-| OSPF network name `unresolved` and relevant to the delta | **PARTIAL** abstain note |
+| OSPF network name `unresolved` and relevant to the delta (the only switch-side blindness) | cap finding to MEDIUM + **PARTIAL** abstain note; never silent, never a guessed UNSAFE |
 | Clients unfetched (no `CLIENTS_ACTIVE` in both IRs) | `.egress_lost` stays **REVIEW** + PARTIAL note "client census unavailable — egress impact unconfirmed"; never a confident UNSAFE over missing facts (the `dhcp.path` gate) |
 | Unchanged OSPF elsewhere | never taints — diff-gated on `ospf_intf` / the enable flip |
 | Denied OSPF leaf changed (metric/type/auth/timers) | **UNKNOWN** — honest out-of-scope (field gate), never reaches the check |
 
 Confidence is config-sourced (HIGH) for the UNSAFE `.egress_lost`-with-clients
-case; the REVIEW codes carry MEDIUM. Blind/clients-unfetched caps are applied as
-PARTIAL coverage, mirroring `gateway_gap` and `dhcp.path`.
+case; the REVIEW codes carry MEDIUM. Unresolved-name and clients-unfetched caps
+are applied as PARTIAL coverage, mirroring `gateway_gap` and `dhcp.path`. (A
+gateway `l3_unmodeled` cap does not arise here — GS26 is switch-only; it returns
+with gateway OSPF, see out of scope.)
 
 ## Goldens (filed under GS26) + ingest tests
 
 - **GS26-a** — passive stub removed from its area; device keeps another active
   adjacency → `.advertised_removed` **REVIEW**.
-- **GS26-b** — transit interface (carrying an explicit `passive: false` leaf so
-  the withdrawal registers) removed = device's last adjacency; an islanded stub
-  at the device has observed clients → `.egress_lost` **UNSAFE**.
+- **GS26-b** — a **bare `{}` active** transit interface (default-active, no
+  leaves) removed = device's last adjacency; an islanded stub at the device has
+  observed clients → `.egress_lost` **UNSAFE**. This is the in-scope bare-`{}`
+  active-withdrawal case (zero raw leaves, detected via the IR diff).
 - **GS26-c** — `ospf_config.enabled` true→false with observed clients on a routed
   segment → `.egress_lost` **UNSAFE**.
 - **GS26-d** (control) — a network *added* to OSPF + an untouched never-in-OSPF
   segment → **SAFE** (additions/unrelated never fire).
 - **GS26-e** (mutation/blind) — (i) `active→passive` flip that does **not**
   collapse the last adjacency → `.transit_mutation` **REVIEW**; (ii) a withdrawal
-  whose OSPF network name is `unresolved` / device `l3_unmodeled` → **REVIEW +
-  PARTIAL**, never silent/UNSAFE.
+  whose OSPF network name is `unresolved` (does not resolve to a vlan) → **REVIEW
+  + PARTIAL**, never silent/UNSAFE.
 - **Ingest units** — `enabled` gates participation (false ⇒ none); `passive`
   parsed; unresolvable name ⇒ `unresolved=True`; an `active→passive` flip
   collapsing the last adjacency is detected via proposed-IR active-status (not
   only removals); device-level OSPF survives compile (the carry-through fix).
-- **Field-gate units** — `metric`-only change ⇒ denied/UNKNOWN; withdrawing a
-  `passive`-only entry ⇒ passes the gate; withdrawing a `metric`-bearing entry ⇒
-  UNKNOWN.
+- **Field-gate / engine units** — `metric`-only change ⇒ denied/UNKNOWN;
+  withdrawing a `metric`-bearing entry ⇒ UNKNOWN; withdrawing a `passive: true`
+  stub ⇒ passes the gate; **a bare-`{}` active withdrawal ⇒ zero raw changed
+  leaves, the field gate passes, and end-to-end the `OspfIntf` is dropped and the
+  check fires (default-active must not false-SAFE).**
 - **Diff unit** — an `active→passive` flip alone marks the `ospf_intf` modified;
   a rename changes `id` but not the `(device, vlan)` membership.
 - **Live verification** — all eight plans hold their verdicts (live `ospf_areas`
