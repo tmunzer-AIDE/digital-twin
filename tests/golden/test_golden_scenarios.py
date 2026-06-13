@@ -801,6 +801,129 @@ def test_gs25b_variant_unknown_trust_is_review_via_partial_no_finding(tmp_path):
     assert any("wired.dhcp.snooping" in r and "partial" in r for r in v.decision_reasons)
 
 
+def _resolve_fixture_dynamic_ports(doc):
+    """The recording leaves dynamically-profiled ports runtime-UNRESOLVED for
+    two reasons orthogonal to GS22-GW: one dynamic rule keys on
+    lldp_system_description (never observed -> every UP dynamic port is
+    inconclusive) and some rule-assigned members have no port_stats row at
+    all. Any networks-root op then trips scope.dynamic_ports.unverifiable
+    and floors SAFE expectations at REVIEW. Stage observability: drop the
+    unobservable-src rule (the remaining name rules then miss CONCLUSIVELY
+    -> the static usage stands, same as before) and record the stat-less
+    members as down (nothing connected -> static usage stands)."""
+    from digital_twin.adapters.mist.compile.switch import compile_device
+    from digital_twin.adapters.mist.ingest.ports import resolve_port_bases
+
+    dyn = doc["networktemplate"]["port_usages"]["dynamic"]
+    dyn["rules"] = [r for r in dyn["rules"] if r.get("src") == "lldp_system_name"]
+    nt = doc.get("networktemplate")
+    for dev in doc["devices"]:
+        if dev.get("type") != "switch":
+            continue
+        mac = str(dev["mac"])
+        have = {str(r["port_id"]) for r in doc["port_stats"] if str(r.get("mac")) == mac}
+        eff = compile_device(dict(nt) if nt else None, dict(doc["setting"]), dict(dev))
+        for member, attrs in resolve_port_bases(eff).items():
+            if attrs.get("dynamic_usage") and member not in have:
+                doc["port_stats"].append({"mac": mac, "port_id": member, "up": False})
+
+
+def _gs22gw_doc(*, vlan2_gateway="198.51.194.227", stage_mismatch=False):
+    # org staging additionally resolves the SRX's ip_configs entry 'test'
+    # to vlan 2 (CONFIG/HIGH L3Intf — the known owner of the declared
+    # gateway); vlan2's declared gateway rides the site networks row
+    doc = _gs25_doc()
+    _resolve_fixture_dynamic_ports(doc)
+    doc["org_networks"].append({"name": "test", "vlan_id": 2})
+    nets = doc["setting"].setdefault("networks", {})
+    nets["vlan2"] = {**nets.get("vlan2", {"vlan_id": "2"}), "gateway": vlan2_gateway}
+    if stage_mismatch:
+        nets["gs22_m"] = {"vlan_id": 992, "gateway": "10.9.0.1"}
+        doc["setting"].setdefault("dhcpd_config", {})["gs22_m"] = {
+            "type": "local", "ip_start": "10.9.0.10", "ip_end": "10.9.0.99",
+            "gateway": "10.9.0.99",
+        }
+    return doc
+
+
+def _site_networks_op(doc, mutate):
+    """Full-map networks update (root-replace semantics — the GS25 lesson:
+    a partial networks payload would DELETE every other baseline row)."""
+    nets = {k: dict(v) for k, v in (doc["setting"].get("networks") or {}).items()}
+    mutate(nets)
+    return {
+        "action": "update", "order": 0, "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {"networks": nets},
+    }
+
+
+def test_gs22gw_a_breaking_the_gateway_owner_is_unsafe(tmp_path):
+    # baseline: vlan2's declared gateway IS the SRX ip_configs address
+    # (owned, CONFIG/HIGH). The op moves the declared gateway to an address
+    # no modeled interface owns -> known owner broken -> UNSAFE
+    doc = _gs22gw_doc()
+    op = _site_networks_op(
+        doc, lambda nets: nets["vlan2"].__setitem__("gateway", "198.51.194.250")
+    )
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.gateway_unowned")
+    assert f.severity.value == "error" and f.evidence["vlan"] == 2
+
+
+def test_gs22gw_b_preexisting_unowned_gateway_is_safe_info(tmp_path):
+    # the unowned declared gateway already exists in baseline; the delta
+    # adds an unrelated plain vlan -> INFO context, never a floor
+    doc = _gs22gw_doc(vlan2_gateway="198.51.194.250")
+    op = _site_networks_op(
+        doc, lambda nets: nets.__setitem__("gs22_plain", {"vlan_id": 993})
+    )
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    f = next(f for f in v.findings if f.code == "wired.l3.gateway_gap.gateway_unowned")
+    assert f.severity.value == "info"
+
+
+def test_gs22gw_c_dhcp_gateway_mismatch_is_review(tmp_path):
+    # op introduces a site scope handing out a gateway that contradicts the
+    # network's declared one -> WARNING -> REVIEW
+    doc = _gs22gw_doc()
+    op = _site_networks_op(
+        doc, lambda nets: nets.__setitem__("gs22_m", {"vlan_id": 992,
+                                                      "gateway": "10.9.0.1"})
+    )
+    op["payload"]["dhcpd_config"] = {
+        **(doc["setting"].get("dhcpd_config") or {}),
+        "gs22_m": {"type": "local", "ip_start": "10.9.0.10",
+                   "ip_end": "10.9.0.99", "gateway": "10.9.0.99"},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    f = next(f for f in v.findings
+             if f.code == "wired.dhcp.scope_lint.gateway_mismatch")
+    assert f.severity.value == "warning"
+
+
+def test_gs22gw_d_preexisting_mismatch_is_safe_info(tmp_path):
+    # mismatch pre-staged in baseline; op adds an unrelated coherent scope
+    doc = _gs22gw_doc(stage_mismatch=True)
+    op = _site_networks_op(
+        doc, lambda nets: nets.__setitem__("gs22_far", {"vlan_id": 991,
+                                                        "gateway": "10.50.0.1"})
+    )
+    op["payload"]["dhcpd_config"] = {
+        **(doc["setting"].get("dhcpd_config") or {}),
+        "gs22_far": {"type": "local", "ip_start": "10.50.0.10",
+                     "ip_end": "10.50.0.99", "gateway": "10.50.0.1"},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    f = next(f for f in v.findings
+             if f.code == "wired.dhcp.scope_lint.gateway_mismatch")
+    assert f.severity.value == "info"
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(
