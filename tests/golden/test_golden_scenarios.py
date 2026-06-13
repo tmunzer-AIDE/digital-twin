@@ -924,6 +924,110 @@ def test_gs22gw_d_preexisting_mismatch_is_safe_info(tmp_path):
     assert f.severity.value == "info"
 
 
+# --- GS22-SUB: templated-subnet false-SAFE (Vlan.subnet_unresolved) ---
+
+
+def _gs22sub_templated_removed_doc_and_op():
+    # GS22-SUB twin of the GS22 .removed scenario: the routed network's subnet
+    # is TEMPLATED ({{var}}), so it reads as unresolved-routed, NOT "not
+    # routed". Removing its only modeled L3 interface must NOT fire .removed
+    # (routed-ness is unproven) — the check ABSTAINS -> PARTIAL -> REVIEW,
+    # where the LITERAL-subnet twin (test_gs22_removing_the_irb...) is UNSAFE.
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    # org networks carries the routed intent with a TEMPLATED subnet — the
+    # realistic path: org networks are not var-resolved by compile, so the
+    # {{}} survives to ingest where it reads as unresolved-routed (a {{}} in
+    # the switch effective config would hard-fail resolve_vars at compile).
+    doc["org_networks"] = [
+        {"name": "gs_routed", "vlan_id": 998, "subnet": "{{gs_routed_subnet}}"}
+    ]
+    doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
+    doc["setting"]["networks"]["gs_routed"] = {"vlan_id": 998}  # known by id, no subnet
+    _device(doc, EDGE).setdefault("other_ip_configs", {})["gs_routed"] = {
+        "type": "static", "ip": "203.0.113.1", "netmask": "255.255.255.0"
+    }
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev["other_ip_configs"] = {
+        k: v for k, v in dev["other_ip_configs"].items() if k != "gs_routed"
+    }
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": str(dev["id"]), "payload": _drop_nones(dev),
+    }
+    return doc, op
+
+
+def test_gs22sub_a_templated_subnet_removed_l3_is_review_not_unsafe(tmp_path):
+    # the false-SAFE closed: a templated subnet read as None="not routed" and
+    # silenced .removed -> SAFE. Now it is unresolved-routed -> abstain -> REVIEW
+    doc, op = _gs22sub_templated_removed_doc_and_op()
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not any(f.code == "wired.l3.gateway_gap.removed" for f in v.findings)
+    gg = next(r for r in v.check_results if r.check_id == "wired.l3.gateway_gap")
+    assert gg.coverage.state is CoverageState.PARTIAL
+    assert any("unreadable or ambiguous" in n for n in gg.coverage.notes), gg.coverage.notes
+
+
+def test_gs22sub_b_nonwinning_device_row_subnet_conflict_is_review(tmp_path):
+    # a device-local network row declares a subnet DISAGREEING with the winning
+    # (site) row -> Vlan.subnet flips literal->unresolved -> the vlan is
+    # MODIFIED -> abstain -> REVIEW. Without the conflict rule the device row is
+    # silently dropped (subnet stays literal, unchanged -> SAFE): the false-SAFE.
+    from .builders import _device, _drop_nones
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["org_networks"] = []
+    doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
+    doc["setting"]["networks"]["gs_conf"] = {"vlan_id": 993, "subnet": "203.0.113.0/24"}
+    _device(doc, EDGE).setdefault("networks", {})["gs_conf"] = {
+        "vlan_id": 993, "subnet": "203.0.113.0/24"  # agreeing in baseline
+    }
+    dev = copy.deepcopy(_device(doc, EDGE))
+    dev["networks"]["gs_conf"]["subnet"] = "198.51.0.0/24"  # conflict
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": str(dev["id"]), "payload": _drop_nones(dev),
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not any(
+        f.code.startswith("wired.l3.gateway_gap.") and f.evidence.get("vlan") == 993
+        for f in v.findings
+    )
+    gg = next(r for r in v.check_results if r.check_id == "wired.l3.gateway_gap")
+    assert any("unreadable or ambiguous" in n for n in gg.coverage.notes), gg.coverage.notes
+
+
+def test_gs22sub_c_unrelated_delta_leaves_templated_vlan_safe(tmp_path):
+    # relevance discipline: a templated-subnet routed-unserved vlan the delta
+    # does NOT touch contributes no abstain note -> SAFE (no global taint). The
+    # delta is a cosmetic notes change (touches no networks) so the unresolved
+    # vlan 995 stays out of the diff entirely.
+    from .builders import _device
+
+    doc = augmented_doc(parallel_carries_gs=True)
+    doc["org_networks"] = [{"name": "gs_templated", "vlan_id": 995, "subnet": "{{x}}"}]
+    doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["org_networks"]
+    doc["setting"]["networks"]["gs_templated"] = {"vlan_id": 995}  # known by id
+    op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": str(_device(doc, EDGE)["id"]),
+        "payload": {"type": "switch",
+                    "notes": "gs22-sub control: cosmetic, no network impact"},
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    # the unresolved vlan 995 is present in the IR but never floors the verdict:
+    # the cosmetic delta touches no vlan/l3intf, so gateway_gap does not even run
+    # (NOT_APPLICABLE) — no abstain note, no PARTIAL, SAFE holds
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    gg = next(r for r in v.check_results if r.check_id == "wired.l3.gateway_gap")
+    assert gg.coverage.state is not CoverageState.PARTIAL
+    assert not any("unreadable or ambiguous" in n for n in gg.coverage.notes)
+
+
 def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     doc = fixture_doc()
     plan = plan_for(
