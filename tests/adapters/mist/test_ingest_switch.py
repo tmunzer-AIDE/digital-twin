@@ -1086,3 +1086,114 @@ def test_org_only_templated_gateway_sets_unresolved():
     SwitchIngester().ingest(ctx)
     v = ctx.builder.build().vlans[10]
     assert v.gateway is None and v.gateway_unresolved is True
+
+
+def test_vlan_templated_subnet_is_unresolved_not_routed():
+    # the false-SAFE: a templated subnet must NOT read as a literal nor as
+    # "not routed" — it is declared-but-unreadable
+    eff = {"networks": {"corp": {"vlan_id": 10, "subnet": "{{vlan10_subnet}}"}}}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is True
+
+
+def test_vlan_empty_subnet_is_absent_not_blind():
+    # present-but-empty "" = no routed intent, NOT a blind spot (no flag)
+    eff = {"networks": {"corp": {"vlan_id": 10, "subnet": ""}}}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is False
+
+
+def test_vlan_subnet_org_overlay_literal_still_routed():
+    # regression: switch knows the vlan by id, org networks carry the subnet
+    eff = {"networks": {"corp": {"vlan_id": 10}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "subnet": "10.0.10.0/24"},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet == "10.0.10.0/24" and v.subnet_unresolved is False
+
+
+def test_vlan_org_only_templated_subnet_sets_unresolved():
+    # no effective row declares subnet; org overlay value is templated
+    eff = {"networks": {"corp": {"vlan_id": 10}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "subnet": "{{sub}}"},)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is True
+
+
+def test_conflicting_nonwinning_device_row_makes_subnet_unresolved():
+    # literal-disagreement leg: a device row for an already-seen vlan id
+    # declares a DIFFERENT subnet than the winner -> ambiguous, never silent
+    site = {"networks": {"corp": {"vlan_id": 10, "subnet": "10.0.10.0/24"}}}
+    dev = {"networks": {"corp_local": {"vlan_id": 10, "subnet": "10.0.99.0/24"}}}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is True
+
+
+def test_silent_winner_with_declaring_nonwinning_subnet_row_is_unresolved():
+    # review P2: the WINNING row has no subnet but a later device row declares
+    # one -> never silently promote it, never fall through to org (the
+    # distinct false-SAFE leg, twin of the gateway suite)
+    site = {"networks": {"corp": {"vlan_id": 10}}}
+    dev = {"networks": {"corp_local": {"vlan_id": 10, "subnet": "10.0.99.0/24"}}}
+    ctx = IngestContext(
+        raw=raw_site(org_networks=({"name": "corpnet", "vlan_id": 10,
+                                    "subnet": "10.0.10.0/24"},)),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is True
+
+
+def test_agreeing_subnet_rows_do_not_conflict():
+    # host-bits-set sibling that normalizes equal -> still the winner literal
+    site = {"networks": {"corp": {"vlan_id": 10, "subnet": "10.0.10.0/24"}}}
+    dev = {"networks": {
+        "corp_local": {"vlan_id": 10, "subnet": "10.0.10.5/24"},  # same_subnet True
+        "corp_plain": {"vlan_id": 10},                            # no subnet key
+    }}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=site,
+        device_effective={"aa0000000001": dev},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet == "10.0.10.0/24" and v.subnet_unresolved is False
