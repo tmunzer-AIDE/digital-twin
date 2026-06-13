@@ -189,16 +189,20 @@ modeling" below.
   (all 12 values → `REDACTED-EXPIRED-HISTORY` across 102 commits; SHAs
   changed; pre-rewrite mirror kept at `../digital-twin-pre-rewrite-backup.git`
   — delete it after a sanity period, it still holds the expired values).
-- 🟡 templated-subnet false-SAFE in gateway_gap — `Vlan.subnet` is minted
-  without `_literal_subnet` discipline in the site path and a TEMPLATED
-  subnet reads as None = "not routed", silencing every gateway_gap code for
-  that vlan (and the `or`-fallback (ingest/switch.py ~350) lets a falsy site value fall to
-  the org overlay). Needs a `subnet_unresolved`-style flag on Vlan
-  (declared-but-unreadable ≠ no intent) — surfaced during the GS22-GW
-  design review 2026-06-12; deliberately NOT bundled into that round.
-  Same root cause: the singleton Vlan drops a NON-WINNING same-vlan-id
-  device network row's subnet entirely (GS22-GW pins the conflict→
-  unresolved rule for gateway; subnet needs the same treatment here).
+- ✅ templated-subnet false-SAFE in gateway_gap — resolved 2026-06-13
+  (GS22-SUB). Added `Vlan.subnet_unresolved` (the twin of `gateway_unresolved`):
+  a templated subnet now reads as unresolved-routed, not "not routed", and
+  gateway_gap ABSTAINS (PARTIAL coverage note → REVIEW) instead of silencing.
+  The five-leg precedence was GENERALIZED into one `_winning_literal(parse,
+  same)` core (`_vlan_gateway` is now a thin wrapper, its tests the
+  regression net); subnet mints through it with `_literal_subnet`/the new
+  family-aware `same_subnet` comparator. The NON-WINNING same-vlan-id device
+  row drop is closed too (the conflict→unresolved rule now covers subnet:
+  a disagreeing sibling row, OR a silent winner shadowed by a declaring
+  sibling, → unresolved). empty-string subnet `""` stays absent (no intent,
+  no flag — never PARTIAL-floors ordinary subnet-less vlans). Goldens
+  GS22-SUB a/b/c (templated removed-L3 REVIEW vs literal UNSAFE; nonwinning
+  conflict REVIEW; unrelated-delta SAFE); all eight live plans unchanged.
 - 🟡 redaction network-name joins — `name` VALUES are hashed (NAME_KEYS) but
   references to networks inside lists (gateway `port_config.networks`,
   `ip_configs` keys) are not, so the gateway↔org-network join breaks in
