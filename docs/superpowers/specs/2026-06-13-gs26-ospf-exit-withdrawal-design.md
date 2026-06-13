@@ -83,21 +83,44 @@ class OspfIntf:
 
 `active` is a derived predicate: `not passive`. `unresolved=True` is the OSPF
 analog of vlan-blind port carriage — the participation exists but cannot be tied
-to a segment. Added to `IRBuilder` (`add_ospf_intf`, `ospf_intfs` tuple, minimal
-validation: non-empty `device_id`/`area`/`network_name`) and registered as IR
-diff entity kind `"ospf_intf"`.
+to a segment. Added to `IRBuilder` (`add_ospf_intf`, `ospf_intfs` tuple) and
+registered as IR diff entity kind `"ospf_intf"`.
+
+**Validation** (`_validate_ospf_intfs`, mirroring the role-aware precedents
+`_validate_dhcp_scopes`/`_validate_wlan_reqs`, not merely `_validate_l3intfs`'s
+device-existence — the check trusts these fields for collapse, clients, and
+affected-segment computation):
+- `device_id` must reference a real device whose role is **SWITCH** (GS26 is
+  switch-scoped — see device scope below);
+- a non-`None` `vlan_id` must reference a **minted `Vlan`** (a resolvable OSPF
+  network name is always minted as a `Vlan` by the same `networks` ingest; a
+  miss here is an ingest bug worth surfacing);
+- the `unresolved ⇔ vlan_id is None` invariant (unresolved rows carry no vlan;
+  resolved rows carry one).
 
 `OspfIntf.id` carries `area`+`network_name` for stable identity and messaging,
 **but the check never compares by `id`** — see the participation tuple below.
 
+## Device scope — switches only (M1 boundary)
+
+The post-fetch field gate (`scope/field_gate.py:screen_op`) rejects any `device`
+op whose fetched `type != "switch"` ("AP/gateway devices are out of scope" in
+M1). So a **device-level gateway** OSPF change cannot reach a check — it is
+rejected at the gate as UNKNOWN regardless of any allowlist. GS26 therefore
+models OSPF on **switch devices only**: ingest mints `OspfIntf` in the switch L3
+pass, validation requires the SWITCH role, and the goldens use switch `device`
+ops (and/or `site_setting` ops, which are not role-gated). Gateways run OSPF too,
+but modeling gateway OSPF would imply a device-op path the M1 boundary forbids;
+it is deferred (see out of scope). The live org has empty `ospf_areas`, so this
+scope costs no live coverage.
+
 ## Ingest — mint from effective config
 
-A new `_ospf` pass in `adapters/mist/ingest/switch.py`, run for **switch and
-gateway** devices (both can run OSPF). Reuses the existing
-`net_of`/`vlan_of` network-name namespace resolution and the `l3_unmodeled`
-blind flag already set when the org namespace is unfetched. No new capability —
-`SwitchIngester.ingest` already returns `{WIRED_L2, L3_EXITS}` whenever device
-data is fetched.
+A new `_ospf` pass in `adapters/mist/ingest/switch.py`, run for **switch
+devices only** (in the switch L3 branch). Reuses the existing `net_of`/`vlan_of`
+network-name namespace resolution and the `l3_unmodeled` blind flag already set
+when the org namespace is unfetched. No new capability — `SwitchIngester.ingest`
+already returns `{WIRED_L2, L3_EXITS}` whenever device data is fetched.
 
 ```
 ospf_cfg = eff.get("ospf_config") or {}
@@ -273,6 +296,10 @@ PARTIAL coverage, mirroring `gateway_gap` and `dhcp.path`.
 - GS27 OSPF transit precision: `metric`/area-`type`/timer modeling, transit-
   interface identification, live adjacency telemetry — `.transit_mutation` holds
   these at REVIEW until then. `metric` stays denied so GS27 adopts it cleanly.
+- **Gateway OSPF** — gateways run OSPF, but device-level gateway ops are
+  rejected by the M1 field-gate role check (`screen_op`); modeling gateway OSPF
+  would imply a device-op path that does not exist. Deferred until the M1
+  device-role boundary is revisited (or via `site_setting`-only withdrawals).
 - GS28 BGP (`bgp_config` is absent from the committed `device_switch` OAS
   snapshot — refresh when GS28 lands).
 - Redaction network-name joins (ROADMAP §5, still 🟡 — deferred this round).
