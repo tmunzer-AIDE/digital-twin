@@ -72,9 +72,10 @@ The declared-predicate stays uniform (`r is not None`); subnet's
 empty-string-is-absent rule is applied **at collection**, not in the core:
 - `subnet_rows_by_vid[vid].append(net.get("subnet") or None)` — `""` → None
   (absent), a templated `"{{var}}"` stays (truthy) → declared-unreadable.
-- `org_subnet_raw[vid] = net.get("subnet")` only when that value is truthy
-  (raw, so templated stays distinguishable from absent — exactly how
-  `org_gw_raw` is built today).
+- `org_subnet_raw.setdefault(vid, net.get("subnet"))` only when that value
+  is truthy (raw, so templated stays distinguishable from absent — FIRST-wins
+  via `setdefault`, byte-identical to how `org_gw_raw` and `org_subnets` are
+  built today; a duplicate org row for the same vlan id never overwrites).
 
 Line 404's `subnet=net.get("subnet") or org_subnets.get(vid)` is replaced by
 the helper call; `org_subnets` (the `_literal_subnet`-filtered map) is
@@ -130,9 +131,19 @@ if vlan.subnet is None:
   now **REVIEW**: subnet unresolved → no `.removed` ERROR (routed-ness
   unproven) → abstain note PARTIAL-floors.
 - **GS22-SUB-b** — device op introduces a subnet on an already-seen vlan id
-  that DISAGREES with the winner (`same_subnet is not True`) → `Vlan.subnet`
-  flips to `None` + unresolved → diff fires → abstain → **REVIEW**. Resolving
-  the conflict restores the literal.
+  that DISAGREES with the winner's literal (`same_subnet is not True`) →
+  `Vlan.subnet` flips to `None` + unresolved → diff fires → abstain →
+  **REVIEW**. Resolving the conflict restores the literal.
+
+Two five-leg legs collapse a non-winning row into unresolved; both get a
+pinned INGEST unit test (mirroring GS22-GW's `_vlan_gateway` suite):
+- **literal-disagreement** — winner declares subnet X, a later row declares
+  Y, `same_subnet(Y, X) is not True` → unresolved (the GS22-SUB-b shape).
+- **silent-winner-shadowed** — the WINNER row declares NO subnet (`rows[0] is
+  None`) while a later device row DOES declare one (`rows[0] is None` leg) →
+  unresolved, never a silent adoption of the non-winner's value. This is the
+  twin of `test_silent_winner_with_declaring_nonwinning_row_is_unresolved`
+  and pins the distinct false-SAFE the prose at the helper's leg-2 describes.
 - **GS22-SUB-c** (control) — templated subnet pre-existing in baseline,
   delta touches an UNRELATED vlan → the templated vlan is not in the delta →
   no note → **SAFE** (relevance discipline holds; no global taint).
