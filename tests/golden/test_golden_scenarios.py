@@ -998,6 +998,7 @@ def test_gs22sub_b_nonwinning_device_row_subnet_conflict_is_review(tmp_path):
         for f in v.findings
     )
     gg = next(r for r in v.check_results if r.check_id == "wired.l3.gateway_gap")
+    assert gg.coverage.state is CoverageState.PARTIAL
     assert any("unreadable or ambiguous" in n for n in gg.coverage.notes), gg.coverage.notes
 
 
