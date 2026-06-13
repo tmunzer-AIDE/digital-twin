@@ -123,16 +123,23 @@ modeling" below.
   `server`). 14 wired checks; GS25a/GS25b goldens + 3 variants; live plan 02
   graduated UNKNOWN→SAFE (dhcp_snooping now modeled; file renamed).
   Spec/plan: docs/superpowers/{specs,plans}/2026-06-11-gs25-dhcp-lint*.md.
-- 🔵 **Default gateway gap** (part of GS22, MVP: ROUTE-GW) — IN PROGRESS
-  (spec approved: docs/superpowers/specs/2026-06-12-gs22-default-gateway-gap-design.md).
-  The NO-L3-interface form already shipped with GS22 (`wired.l3.gateway_gap`
-  `.removed`/`.unserved`); what remains is OWNERSHIP of the declared gateway
-  IP: `gateway_gap.gateway_unowned` (interfaces exist but none owns
-  `networks.*.gateway` — known-owner-broken → ERROR, never-owned →
-  WARNING/MEDIUM) + `scope_lint.gateway_mismatch` (DHCP hands out a gateway
-  incoherent with its owning network). New IR: `Vlan.gateway(+_unresolved)`,
-  `DhcpScope.network_gateway(+_unresolved)`; shared family-aware `same_ip`
-  helper.
+- ✅ **Default gateway gap** (part of GS22, MVP: ROUTE-GW) — DONE 2026-06-12:
+  `gateway_gap.gateway_unowned` (interfaces exist but none owns the declared
+  `networks.*.gateway` — known-owner-broken → ERROR/UNSAFE at the owner's
+  confidence; never-owned → WARNING/MEDIUM; pre-existing → INFO; strict
+  precedence vs the existence codes) + `scope_lint.gateway_mismatch`
+  (DHCP-handed gateway incoherent with its owning network — WARNING/INFO
+  with both-values-byte-identical parity). New IR: `Vlan.gateway(+_unresolved)`
+  minted from the WINNING effective network row (non-winning-row conflict =
+  unresolved intent, never a silent winner; null==absent canon),
+  `DhcpScope.network_gateway(+_unresolved)` in the provider's namespace;
+  `ir/ip_match.py same_ip` (family-aware, /prefix-tolerant, None=unknown —
+  IR-layer so ingest can use it). Goldens GS22-GW a-d (owner-broken UNSAFE,
+  preexisting INFO/SAFE, mismatch REVIEW, preexisting-mismatch SAFE; the
+  b/d staging resolves two fixture recording artifacts in the dynamic-port
+  profile). En route: mint loop hardened against templated vlan_id (the
+  _vlan_int contract). Spec/plan: docs/superpowers/{specs,plans}/
+  2026-06-12-gs22-default-gateway-gap*.md.
 - 🔵 **OSPF exit withdrawal** (GS26) — `ospf_areas` / interface ospf config:
   withdrawing the area or interface that is a segment's L3 exit → UNSAFE.
 - 🔵 **OSPF transit changes** (GS27, MVP: ROUTE-OSPF) — passive/metric changes
