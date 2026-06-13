@@ -33,7 +33,7 @@ from .indexes import (
     ports_by_device,
     vc_root_map,
 )
-from .ip_match import same_ip
+from .ip_match import same_ip, same_subnet
 from .model import IR, IR_VERSION, IRBuilder, IRValidationError
 from .provenance import CONFIG_META, OBSERVED_META, FactMeta, Provenance, fact_meta
 
@@ -75,6 +75,7 @@ __all__ = [
     "IRDiff",
     "diff_ir",
     "same_ip",
+    "same_subnet",
     "vc_root_map",
     "node_for",
     "ports_by_device",

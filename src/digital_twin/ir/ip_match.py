@@ -29,3 +29,22 @@ def same_ip(a: str | None, b: str | None) -> bool | None:
     if pa.version != pb.version:
         return False
     return pa == pb
+
+
+def same_subnet(a: str | None, b: str | None) -> bool | None:
+    """True/False = a definitive verdict over two parseable CIDR subnets;
+    None = comparison UNKNOWN (either side absent or unparseable) — never a
+    guessed (in)equality. Normalizes with strict=False so host bits set
+    (10.0.10.5/24) compare equal to the network (10.0.10.0/24); a bare host
+    becomes /32 (or /128). FAMILY-AWARE: mismatched versions are NOT equal
+    (the GS25 lesson — never int-compare across families)."""
+    if a is None or b is None:
+        return None
+    try:
+        na = ipaddress.ip_network(str(a), strict=False)
+        nb = ipaddress.ip_network(str(b), strict=False)
+    except ValueError:
+        return None
+    if na.version != nb.version:
+        return False
+    return na == nb
