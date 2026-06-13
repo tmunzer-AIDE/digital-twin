@@ -380,6 +380,8 @@ class SwitchIngester:
         org_subnet_raw: dict[int, Any] = {}
         for net in ctx.raw.org_networks:
             vid = _vlan_int(net.get("vlan_id"))
+            # truthy guard (not `is not None`): "" subnet = absent here too,
+            # mirroring the per-row `or None` normalization below
             if vid is not None and net.get("subnet"):
                 org_subnet_raw.setdefault(vid, net.get("subnet"))
         # org gateway overlay, RAW values (templated must be distinguishable

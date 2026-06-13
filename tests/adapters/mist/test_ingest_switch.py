@@ -1117,6 +1117,21 @@ def test_vlan_empty_subnet_is_absent_not_blind():
     assert v.subnet is None and v.subnet_unresolved is False
 
 
+def test_vlan_no_subnet_anywhere_is_absent_not_unresolved():
+    # leg 1: a vlan known only by id, no subnet in any effective row and no
+    # matching org network -> not routed, NOT a blind spot (flag stays False)
+    eff = {"networks": {"corp": {"vlan_id": 10}}}
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    v = ctx.builder.build().vlans[10]
+    assert v.subnet is None and v.subnet_unresolved is False
+
+
 def test_vlan_subnet_org_overlay_literal_still_routed():
     # regression: switch knows the vlan by id, org networks carry the subnet
     eff = {"networks": {"corp": {"vlan_id": 10}}}
