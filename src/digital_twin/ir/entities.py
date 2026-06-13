@@ -164,6 +164,11 @@ class Vlan:
     # ROUTED intent: the network declares a subnet — someone must provide its
     # L3 interface (the wired.l3.gateway_gap check consumes this)
     subnet: str | None = None
+    # True iff subnet INTENT exists but is unreadable (templated) or AMBIGUOUS
+    # (a non-winning same-vlan row disagrees — conflict is unresolvable intent,
+    # never a silent winner). Absent/empty subnet = no intent = stays False
+    # (a blanket flag would PARTIAL-floor every ordinary subnet-less vlan).
+    subnet_unresolved: bool = False
     # Declared default-gateway IP (networks.*.gateway), minted from the SAME
     # effective network row that wins this Vlan (org overlay only when no
     # row declares one). None = no declared intent OR unresolved (flag).

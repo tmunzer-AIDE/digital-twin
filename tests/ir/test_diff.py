@@ -56,6 +56,20 @@ def test_touches_reports_kinds():
     assert d.touches("port") is False
 
 
+def test_subnet_unresolved_flip_alone_marks_vlan_modified():
+    from digital_twin.ir.entities import Vlan
+
+    base = IRBuilder()
+    base.add_vlan(Vlan(vlan_id=10, subnet=None, subnet_unresolved=False))
+    prop = IRBuilder()
+    prop.add_vlan(Vlan(vlan_id=10, subnet=None, subnet_unresolved=True))
+    d = diff_ir(base.build(), prop.build())
+    assert any(
+        m.ref.kind == "vlan" and m.ref.id == "10" and "subnet_unresolved" in m.changed_fields
+        for m in d.modified
+    )
+
+
 def test_diff_output_order_is_deterministic():
     # set-based diffing must not leak nondeterministic ordering into verdicts/fixtures
     base = IRBuilder().add_device(sw("d1")).build()

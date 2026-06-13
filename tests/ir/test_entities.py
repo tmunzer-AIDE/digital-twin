@@ -100,3 +100,9 @@ def test_entities_are_frozen():
     dev = Device(id="d1", role=DeviceRole.SWITCH, site="s1")
     with pytest.raises(FrozenInstanceError):
         dev.site = "s2"  # type: ignore[misc]
+
+
+def test_vlan_subnet_unresolved_defaults_false():
+    from digital_twin.ir.entities import Vlan
+    assert Vlan(vlan_id=10).subnet_unresolved is False
+    assert Vlan(vlan_id=10, subnet=None, subnet_unresolved=True).subnet_unresolved is True
