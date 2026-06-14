@@ -43,7 +43,14 @@ _DEVICE_DICT_MERGE_FIELDS = (
     "port_config_overwrite",
 )
 # Device whole-field overrides (not keyed port maps): device value wins wholesale.
-_DEVICE_OWN_FIELDS = ("ip_config", "other_ip_configs", "stp_config", "dhcp_snooping")
+_DEVICE_OWN_FIELDS = (
+    "ip_config",
+    "other_ip_configs",
+    "stp_config",
+    "dhcp_snooping",
+    "ospf_config",
+    "ospf_areas",
+)
 
 
 def merge_only(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:

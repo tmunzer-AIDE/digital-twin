@@ -4,6 +4,7 @@ from digital_twin.scope.allowlist import (
     RAW_ALLOWLIST,
     SUPPORTED_OBJECT_TYPES,
 )
+from digital_twin.scope.paths import allowed
 
 
 def test_supported_object_types_are_the_m1_pair():
@@ -39,3 +40,15 @@ def test_effective_allowlist_is_leaf_level():
 def test_server_metadata_is_ignored_in_raw_diffs():
     for f in ("id", "org_id", "site_id", "created_time", "modified_time"):
         assert f in IGNORED_RAW_FIELDS
+
+
+def test_ospf_allowlist_is_leaf_tightened():
+    for al in (RAW_ALLOWLIST["device"], RAW_ALLOWLIST["site_setting"], EFFECTIVE_ALLOWLIST):
+        # modeled + acted-on leaves are in scope
+        assert allowed("ospf_config.enabled", al)
+        assert allowed("ospf_areas.0.networks.corp.passive", al)
+        # unmodeled leaves stay DENIED (GS27 owns them; deny prevents false-SAFE)
+        assert not allowed("ospf_areas.0.networks.corp.metric", al)
+        assert not allowed("ospf_areas.0.type", al)
+        assert not allowed("ospf_areas.0.networks.corp.auth_password", al)
+        assert not allowed("ospf_areas.0.networks.corp.interface_type", al)

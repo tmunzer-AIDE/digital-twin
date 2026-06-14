@@ -70,6 +70,15 @@ _SNOOPING_LEAVES: tuple[str, ...] = (
     "dhcp_snooping.all_networks",
     "dhcp_snooping.networks",
 )
+# OSPF participation the IR models AND acts on (GS26 wired.l3.ospf_withdrawal):
+# the master enable (disable = full collapse) + the per-network passive flag
+# (active vs adjacency-bearing). EVERYTHING else (metric, area type, auth,
+# timers, interface_type) stays DENIED -> UNKNOWN: GS27 owns those mutations,
+# and allowlisting a leaf no check reasons about would be a false-SAFE.
+_OSPF_LEAVES: tuple[str, ...] = (
+    "ospf_config.enabled",
+    "ospf_areas.*.networks.*.passive",
+)
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"
     for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS, *_STP_USAGE_ATTRS)
@@ -109,6 +118,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_STP_CONFIG_LEAVES,
         *_DHCP_LEAVES,
         *_SNOOPING_LEAVES,
+        *_OSPF_LEAVES,
         "vars.*",
     ),
     "device": (
@@ -118,6 +128,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_STP_CONFIG_LEAVES,
         *_IRB_LEAVES,
         *_SNOOPING_LEAVES,
+        *_OSPF_LEAVES,
         "name",
         "notes",
     ),
@@ -159,5 +170,6 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_IRB_LEAVES,
     *_DHCP_LEAVES,
     *_SNOOPING_LEAVES,
+    *_OSPF_LEAVES,
     "vars.*",
 )

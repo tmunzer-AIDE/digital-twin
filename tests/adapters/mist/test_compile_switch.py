@@ -111,3 +111,14 @@ def test_compile_device_carries_local_and_overwrite_maps():
     eff = compile_device(None, {}, device)
     assert eff["local_port_config"]["ge-0/0/0"]["usage"] == "uplink"
     assert eff["port_config_overwrite"]["ge-0/0/0"]["port_network"] == "voice"
+
+
+def test_compile_device_carries_device_level_ospf():
+    site = {"networks": {"corp": {"vlan_id": 10}}}
+    device = {
+        "ospf_config": {"enabled": True},
+        "ospf_areas": {"0": {"networks": {"corp": {}}}},
+    }
+    out = compile_device(None, site, device)
+    assert out["ospf_config"] == {"enabled": True}
+    assert out["ospf_areas"] == {"0": {"networks": {"corp": {}}}}
