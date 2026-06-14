@@ -180,7 +180,7 @@ def test_plan4_public_api():
     from digital_twin.verdict.decision import Decision, DecisionInputs, decide
     from digital_twin.verdict.verdict import Verdict, assemble
 
-    assert len(ALL_WIRED_CHECKS) == 14
+    assert len(ALL_WIRED_CHECKS) == 15
     assert all(callable(f) for f in (find_cycles, resolve_exit, decide, assemble))
     assert all(
         x is not None
@@ -237,3 +237,9 @@ def test_plan5_public_api():
     assert all(
         x is not None for x in (RunContext, Trace, ReplayStore, FixtureProvider, StateMetaView)
     )
+
+
+def test_ospf_withdrawal_is_registered():
+    from digital_twin.checks.wired import ALL_WIRED_CHECKS
+
+    assert any(c.id == "wired.l3.ospf_withdrawal" for c in ALL_WIRED_CHECKS)
