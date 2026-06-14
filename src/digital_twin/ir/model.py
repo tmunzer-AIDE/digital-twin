@@ -23,6 +23,7 @@ from .entities import (
     L3Intf,
     Link,
     LinkKind,
+    OspfIntf,
     Port,
     Vlan,
     client_id,
@@ -56,6 +57,7 @@ class IR:
     # reasons a WLAN's requirement could not be resolved (coverage gaps).
     ap_wlan_vlans: Mapping[str, frozenset[int]] = _EMPTY_MAP  # type: ignore[assignment]
     ap_wlan_unresolved: Mapping[str, tuple[str, ...]] = _EMPTY_MAP  # type: ignore[assignment]
+    ospf_intfs: tuple[OspfIntf, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -76,6 +78,8 @@ class IRBuilder:
         self._vlans: dict[int, Vlan] = {}
         self._l3intfs: list[L3Intf] = []
         self._l3intf_ids: set[str] = set()
+        self._ospf_intfs: list[OspfIntf] = []
+        self._ospf_intf_ids: set[str] = set()
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
@@ -113,6 +117,13 @@ class IRBuilder:
             raise IRValidationError(f"duplicate l3intf id {intf.id}")
         self._l3intf_ids.add(intf.id)
         self._l3intfs.append(intf)
+        return self
+
+    def add_ospf_intf(self, intf: OspfIntf) -> IRBuilder:
+        if intf.id in self._ospf_intf_ids:
+            raise IRValidationError(f"duplicate ospf intf id {intf.id}")
+        self._ospf_intf_ids.add(intf.id)
+        self._ospf_intfs.append(intf)
         return self
 
     def add_client(self, client: Client) -> IRBuilder:
@@ -170,6 +181,7 @@ class IRBuilder:
         errors += self._validate_ports()
         errors += self._validate_links()
         errors += self._validate_l3intfs()
+        errors += self._validate_ospf_intfs()
         errors += self._validate_clients()
         errors += self._validate_vc()
         errors += self._validate_wlan_reqs()
@@ -210,6 +222,26 @@ class IRBuilder:
         for intf in self._l3intfs:
             if intf.device_id not in self._devices:
                 errors.append(f"l3intf {intf.id} references unknown device {intf.device_id}")
+        return errors
+
+    def _validate_ospf_intfs(self) -> list[str]:
+        # the ospf_withdrawal check trusts these fields for collapse/clients/
+        # affected-segment computation — mirror the role-aware dhcp_scope rule
+        errors: list[str] = []
+        for o in self._ospf_intfs:
+            dev = self._devices.get(o.device_id)
+            if dev is None:
+                errors.append(f"ospf intf {o.id} references unknown device {o.device_id}")
+            elif dev.role is not DeviceRole.SWITCH:
+                errors.append(f"ospf intf {o.id} device {o.device_id} is not a switch")
+            if o.unresolved and o.vlan_id is not None:
+                errors.append(f"ospf intf {o.id} is unresolved but carries vlan_id {o.vlan_id}")
+            if not o.unresolved and o.vlan_id is None:
+                errors.append(f"ospf intf {o.id} is resolved but has no vlan_id")
+            if not o.network_name:
+                errors.append(f"ospf intf {o.id} has empty network_name")
+            if o.vlan_id is not None and o.vlan_id not in self._vlans:
+                errors.append(f"ospf intf {o.id} references unknown vlan {o.vlan_id}")
         return errors
 
     def _validate_clients(self) -> list[str]:
@@ -291,6 +323,7 @@ class IRBuilder:
             links=tuple(self._links),
             vlans=MappingProxyType(dict(self._vlans)),
             l3intfs=tuple(self._l3intfs),
+            ospf_intfs=tuple(self._ospf_intfs),
             clients=tuple(self._clients),
             dhcp_scopes=tuple(sorted(self._dhcp_scopes.values(), key=lambda s: s.id)),
             ap_wlan_vlans=MappingProxyType(

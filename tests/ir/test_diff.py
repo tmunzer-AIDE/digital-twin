@@ -70,6 +70,31 @@ def test_subnet_unresolved_flip_alone_marks_vlan_modified():
     )
 
 
+def test_ospf_intf_removal_and_passive_flip_are_diffed():
+    from digital_twin.ir import IRBuilder, diff_ir
+    from digital_twin.ir.entities import Device, DeviceRole, OspfIntf, Vlan
+
+    def _ir(passive, present=True):
+        b = IRBuilder().add_device(Device(id="S", role=DeviceRole.SWITCH, site="s1"))
+        b.add_vlan(Vlan(vlan_id=10))
+        if present:
+            b.add_ospf_intf(
+                OspfIntf(device_id="S", vlan_id=10, area="0", network_name="corp", passive=passive)
+            )
+        return b.build()
+
+    # removal: present -> absent surfaces a removed ospf_intf ref
+    d = diff_ir(_ir(False, present=True), _ir(False, present=False))
+    assert d.touches("ospf_intf")
+    assert any(r.kind == "ospf_intf" and r.id == "S:ospf:0:corp" for r in d.removed)
+
+    # passive flip (retained id): a MODIFIED ospf_intf with changed_fields=("passive",)
+    d2 = diff_ir(_ir(False), _ir(True))
+    assert d2.touches("ospf_intf")
+    mod = next(m for m in d2.modified if m.ref.id == "S:ospf:0:corp")
+    assert mod.changed_fields == ("passive",)
+
+
 def test_diff_output_order_is_deterministic():
     # set-based diffing must not leak nondeterministic ordering into verdicts/fixtures
     base = IRBuilder().add_device(sw("d1")).build()

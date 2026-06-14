@@ -246,6 +246,36 @@ class L3Intf:
 
 
 @dataclass(frozen=True)
+class OspfIntf:
+    """A switch network's OSPF-area participation (GS26 withdrawal surface).
+
+    Minted only when ospf_config.enabled is truthy. `passive=False` (the Mist
+    default) means the interface forms adjacencies = adjacency-bearing
+    (transit/uplink); `passive=True` is advertise-only (stub). `unresolved=True`
+    is the OSPF analog of vlan-blind carriage — the network name did not resolve
+    to a vlan (then vlan_id is None). Identity carries area+network_name for
+    stability and for withdrawal-report messaging; the semantic match key is
+    (device, vlan[, area]) rather than id, so a rename or area-move is not a
+    false withdrawal.
+    """
+
+    device_id: str
+    vlan_id: int | None = None
+    area: str = "0"
+    network_name: str = ""
+    passive: bool = False
+    unresolved: bool = False
+    meta: FactMeta = CONFIG_META
+    id: str = ""  # auto-derived in __post_init__ if empty
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            object.__setattr__(
+                self, "id", f"{self.device_id}:ospf:{self.area}:{self.network_name}"
+            )
+
+
+@dataclass(frozen=True)
 class Client:
     mac: str
     kind: ClientKind
