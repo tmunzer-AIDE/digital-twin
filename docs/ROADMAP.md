@@ -140,8 +140,31 @@ modeling" below.
   profile). En route: mint loop hardened against templated vlan_id (the
   _vlan_int contract). Spec/plan: docs/superpowers/{specs,plans}/
   2026-06-12-gs22-default-gateway-gap*.md.
-- 🔵 **OSPF exit withdrawal** (GS26) — `ospf_areas` / interface ospf config:
-  withdrawing the area or interface that is a segment's L3 exit → UNSAFE.
+- ✅ **OSPF exit withdrawal** (GS26) — done 2026-06-13. Structural withdrawal of
+  a SWITCH's OSPF participation for a routed segment (no RIB → we detect modeled
+  participation leaving OSPF, never real reachability). New IR entity `OspfIntf`
+  (switch-only; role-validated; minted by a `_ospf` ingest pass gated on
+  `ospf_config.enabled`, joined by network name, `unresolved` row when the name
+  has no vlan). Check `wired.l3.ospf_withdrawal` (15th wired check), three codes:
+  `.egress_lost` (a device's last ACTIVE adjacency collapses — removal, disable,
+  or a collapsing active→passive flip — ERROR/UNSAFE iff an affected segment has
+  observed clients, else REVIEW), `.advertised_removed` (a routed segment fully
+  withdrawn while the device keeps adjacency → REVIEW), `.transit_mutation` (the
+  deferred-mutation REVIEW floor for a retained `(device,vlan)` whose
+  active-status/area changed — GS27 supersedes it; a pure rename stays silent).
+  Comparison is by the semantic `(device,vlan[,area,active])` tuple, never
+  `OspfIntf.id`; egress-collapse suppresses the weaker codes per-`(device,vlan)`,
+  so an independent mutation on a second device sharing the vlan still surfaces.
+  Leaf-tightened allowlist: ONLY `ospf_config.enabled` +
+  `ospf_areas.*.networks.*.passive` (metric/area-type/auth/timers denied →
+  UNKNOWN, so GS27 adopts `metric` without a false-SAFE hole). Compile
+  carry-through fix (`ospf_*` → `_DEVICE_OWN_FIELDS`, the GS21 gotcha). Bare-`{}`
+  active withdrawal is in-scope (detection rides the IR diff, not raw leaves).
+  Goldens GS26 a–e (advertised_removed REVIEW; bare-{} collapse + client UNSAFE;
+  disable + client UNSAFE; addition SAFE; non-collapsing flip transit_mutation
+  REVIEW). Gateway OSPF deferred (device-level gateway ops are out of M1 scope at
+  the field gate). All eight live plans unchanged (live `ospf_areas` empty).
+  Spec/plan: docs/superpowers/{specs,plans}/2026-06-13-gs26-ospf-exit-withdrawal*.md.
 - 🔵 **OSPF transit changes** (GS27, MVP: ROUTE-OSPF) — passive/metric changes
   on a transit interface → REVIEW; with live telemetry: peer IPs no longer
   reachable within predicted interface subnets → adjacency break.
