@@ -329,3 +329,69 @@ def device_op(doc: dict[str, Any], mac: str, order: int = 0, **port_usages: str)
         "object_id": str(dev["id"]),
         "payload": _drop_nones(dev),
     }
+
+
+OSPF_NETS = {  # name -> (vlan_id, subnet)
+    "ospf_transit": (970, "198.51.70.0/24"),
+    "ospf_corp": (971, "198.51.71.0/24"),
+}
+
+
+def ospf_doc(
+    entries: dict[str, dict[str, Any]], *, client_vlan: int | None = None
+) -> dict[str, Any]:
+    """HUB switch running OSPF. `entries` maps a name from OSPF_NETS to its
+    ospf_areas network entry ({} = active, {"passive": True} = stub). Each named
+    net gets a Vlan (with subnet) + an IRB on HUB (a routed segment). Optionally
+    place one observed wired client on `client_vlan`."""
+    doc = fixture_doc()
+    hub = _device(doc, HUB)
+    # the redacted fixture left the HUB's remote_syslog full of blanked tokens
+    # (time_format=""), an enum violation L0 would surface on the rendered HUB —
+    # noise unrelated to OSPF that has no bearing on the withdrawal verdict.
+    hub.pop("remote_syslog", None)
+    hub["ospf_config"] = {"enabled": True}
+    networks_block: dict[str, Any] = {}
+    for name, entry in entries.items():
+        vid, subnet = OSPF_NETS[name]
+        doc["setting"]["networks"][name] = {"vlan_id": vid, "subnet": subnet}
+        hub.setdefault("other_ip_configs", {})[name] = {
+            "type": "static", "ip": subnet.replace(".0/24", ".1"), "netmask": "255.255.255.0",
+        }
+        networks_block[name] = entry
+    hub["ospf_areas"] = {"0": {"networks": networks_block}}
+    if client_vlan is not None:
+        hub_port = "ge-0/0/40"
+        port_net = next(n for n, (v, _) in OSPF_NETS.items() if v == client_vlan)
+        doc["setting"]["port_usages"]["ospf_access"] = {
+            "mode": "access", "port_network": port_net
+        }
+        hub.setdefault("port_config", {})[hub_port] = {"usage": "ospf_access"}
+        doc["wired_clients"] = list(doc["wired_clients"]) + [
+            {"mac": WIRED_CLIENT_MAC, "device_mac": HUB, "port_id": hub_port, "vlan": client_vlan}
+        ]
+    return doc
+
+
+def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
+            disable: bool = False, order: int = 0) -> dict[str, Any]:
+    """A HUB device op whose payload sets ospf to the given state. `entries=None`
+    + disable=True flips ospf_config.enabled false; otherwise the payload's
+    ospf_areas.0.networks is REPLACED with `entries` (omit a name = withdrawn).
+
+    The payload is MINIMAL (root-level Mist PUT: present roots replace wholesale,
+    omitted roots persist) — it carries ONLY the ospf roots so the delta touches
+    nothing but OSPF. A full-object HUB payload would reshape unrelated L2 state
+    (a fixture artifact) and floor every verdict at REVIEW; this keeps the OSPF
+    withdrawal the sole signal under test."""
+    hub = _device(doc, HUB)
+    payload: dict[str, Any] = {"type": hub.get("type", "switch")}
+    if disable:
+        payload["ospf_config"] = {"enabled": False}
+    else:
+        payload["ospf_config"] = {"enabled": True}
+        payload["ospf_areas"] = {"0": {"networks": entries or {}}}
+    return {
+        "action": "update", "order": order, "object_type": "device",
+        "object_id": str(hub["id"]), "payload": _drop_nones(payload),
+    }

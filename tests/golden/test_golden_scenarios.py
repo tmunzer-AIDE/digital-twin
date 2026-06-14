@@ -19,6 +19,7 @@ from .builders import (
     EDGE_ACCESS_PORT,
     EDGE_PAR_PORT,
     EDGE_UPLINK_PORT,
+    OSPF_NETS,
     WIRED_CLIENT_MAC,
     WIRELESS_CLIENT_MAC,
     ap_devlan_doc,
@@ -28,6 +29,8 @@ from .builders import (
     device_op,
     dynamic_ap_wlan_doc,
     fixture_doc,
+    ospf_doc,
+    ospf_op,
     plan_for,
     write_doc,
 )
@@ -1046,3 +1049,54 @@ def test_gs8_unsupported_object_type_is_unknown(tmp_path):
     v = _simulate(doc, plan, tmp_path)
     assert v.decision is Decision.UNKNOWN
     assert any("UNSUPPORTED" in r for r in v.decision_reasons)
+
+
+# --- GS26: OSPF exit withdrawal -------------------------------------------
+
+def test_gs26a_passive_stub_withdrawal_is_review(tmp_path):
+    # device keeps its active transit; a passive stub leaves OSPF -> REVIEW
+    doc = ospf_doc({"ospf_transit": {}, "ospf_corp": {"passive": True}})
+    op = ospf_op(doc, {"ospf_transit": {}})  # ospf_corp withdrawn
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.advertised_removed" in {f.code for f in v.findings}
+
+
+def test_gs26b_bare_active_withdrawal_collapse_with_clients_is_unsafe(tmp_path):
+    # bare {} active transit (default-active) removed = last adjacency collapses;
+    # an islanded routed segment (ospf_corp, vlan 971) has an observed client
+    doc = ospf_doc({"ospf_transit": {}, "ospf_corp": {"passive": True}}, client_vlan=971)
+    op = ospf_op(doc, {"ospf_corp": {"passive": True}})  # active transit withdrawn
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.egress_lost" in {f.code for f in v.findings}
+
+
+def test_gs26c_disable_ospf_with_clients_is_unsafe(tmp_path):
+    # ospf_config.enabled -> False removes ALL adjacencies at once; an observed
+    # client on vlan 970 (the transit net) loses its modeled egress -> UNSAFE
+    doc = ospf_doc({"ospf_transit": {}}, client_vlan=970)
+    op = ospf_op(doc, None, disable=True)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.egress_lost" in {f.code for f in v.findings}
+
+
+def test_gs26d_addition_to_ospf_is_safe(tmp_path):
+    # baseline: only transit in OSPF; op ADDS ospf_corp -> not a withdrawal
+    doc = ospf_doc({"ospf_transit": {}})
+    _corp_vid, _corp_subnet = OSPF_NETS["ospf_corp"]
+    doc["setting"]["networks"]["ospf_corp"] = {"vlan_id": _corp_vid, "subnet": _corp_subnet}
+    op = ospf_op(doc, {"ospf_transit": {}, "ospf_corp": {"passive": True}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+
+
+def test_gs26e_noncollapsing_passive_flip_is_review(tmp_path):
+    # two active interfaces; flip ONE to passive -> device keeps an adjacency
+    # -> .transit_mutation REVIEW (not SAFE, not UNSAFE)
+    doc = ospf_doc({"ospf_transit": {}, "ospf_corp": {}})
+    op = ospf_op(doc, {"ospf_transit": {}, "ospf_corp": {"passive": True}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.transit_mutation" in {f.code for f in v.findings}
