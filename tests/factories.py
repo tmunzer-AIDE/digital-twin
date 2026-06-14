@@ -12,6 +12,7 @@ from digital_twin.ir.entities import (
     L3Role,
     Link,
     LinkKind,
+    OspfIntf,
     Port,
     PortMode,
     link_id,
@@ -69,6 +70,15 @@ def link(
 
 def irb(did: str, vlan: int, subnet: str | None = None) -> L3Intf:
     return L3Intf(device_id=did, role=L3Role.IRB, vlan_id=vlan, subnet=subnet)
+
+
+def ospf(did: str, vlan: int | None, area: str = "0", *, passive: bool = False,
+         name: str | None = None, unresolved: bool = False) -> OspfIntf:
+    return OspfIntf(
+        device_id=did, vlan_id=vlan, area=area,
+        network_name=name if name is not None else (f"net{vlan}" if vlan is not None else "ghost"),
+        passive=passive, unresolved=unresolved,
+    )
 
 
 def wired_client(mac: str, port_id: str, vlan: int | None = None) -> Client:

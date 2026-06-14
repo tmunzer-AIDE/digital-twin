@@ -1,0 +1,251 @@
+"""wired.l3.ospf_withdrawal — structural withdrawal of a switch's OSPF
+participation for a routed segment (GS26).
+
+The twin has no RIB, so this detects MODELED participation leaving OSPF, never
+real reachability, and floors accordingly. Three codes:
+- .egress_lost: a device's last ACTIVE (adjacency-bearing) interface goes away
+  (removed, ospf disabled, or active->passive flip that collapses it) -> the
+  device loses modeled dynamic egress. ERROR/UNSAFE iff an affected routed
+  segment has observed clients; else WARNING/REVIEW.
+- .advertised_removed: a routed segment fully withdrawn from OSPF while its
+  device keeps adjacency -> WARNING/REVIEW (prefix no longer distributed).
+- .transit_mutation: a retained (device, vlan) whose active-status or area set
+  changed but no withdrawal owns it -> WARNING/REVIEW (the deferred-mutation
+  floor; GS27 replaces it with precise transit modeling). A pure rename leaves
+  the semantic tuple unchanged -> silent.
+
+Comparison is by the semantic (device, vlan[, area, active]) tuple, NEVER by
+OspfIntf.id, so rename/area-move is not a false withdrawal. l3_unmodeled is
+gateway-only; the sole switch-side blindness is an unresolved network name.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.ir import (
+    Capability,
+    Confidence,
+    ConfidenceLevel,
+    IRCapability,
+    IRDiff,
+    min_confidence,
+)
+from digital_twin.ir.model import IR
+
+_HIGH = Confidence(level=ConfidenceLevel.HIGH)
+_UNVERIFIED = Confidence(
+    level=ConfidenceLevel.MEDIUM,
+    reasons=(
+        "OSPF reachability is not computed — a static default or redistribution "
+        "the twin does not model may still cover this segment",
+    ),
+)
+
+
+@dataclass
+class _Seg:
+    active: bool = False
+    areas: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _Part:
+    by_dev_vlan: dict[tuple[str, int], _Seg]
+    active_by_dev: dict[str, set[int]]
+
+
+def _participation(ir: IR) -> _Part:
+    by_dev_vlan: dict[tuple[str, int], _Seg] = {}
+    active_by_dev: dict[str, set[int]] = {}
+    for o in ir.ospf_intfs:
+        if o.vlan_id is None:
+            continue  # unresolved rows handled separately
+        seg = by_dev_vlan.setdefault((o.device_id, o.vlan_id), _Seg())
+        seg.areas.add(o.area)
+        if not o.passive:
+            seg.active = True
+            active_by_dev.setdefault(o.device_id, set()).add(o.vlan_id)
+    return _Part(by_dev_vlan, active_by_dev)
+
+
+def _l3_vids(ir: IR) -> set[int]:
+    return {i.vlan_id for i in ir.l3intfs if i.vlan_id is not None}
+
+
+def _routed(ir: IR, vid: int, l3_vids: set[int]) -> bool:
+    vlan = ir.vlans.get(vid)
+    return vlan is not None and (vlan.subnet is not None or vid in l3_vids)
+
+
+class OspfWithdrawalCheck:
+    id = "wired.l3.ospf_withdrawal"
+    title = "routed segment withdrawn from OSPF"
+    domain = "wired.l3"
+    default_severity = Severity.ERROR
+
+    def requires(self) -> frozenset[Capability]:
+        return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
+
+    def applies_to(self, diff: IRDiff) -> bool:
+        return diff.touches("ospf_intf")
+
+    def run(self, ctx: CheckContext) -> CheckResult:
+        base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
+        base, prop = _participation(base_ir), _participation(prop_ir)
+        base_l3, prop_l3 = _l3_vids(base_ir), _l3_vids(prop_ir)
+        clients_known = (
+            IRCapability.CLIENTS_ACTIVE in base_ir.capabilities
+            and IRCapability.CLIENTS_ACTIVE in prop_ir.capabilities
+        )
+        findings: list[Finding] = []
+        notes: list[str] = []
+        # egress_lost suppresses the weaker codes, but at two granularities:
+        # .advertised_removed is per-VLAN (its whole-segment withdrawal narrative
+        # is subsumed), while .transit_mutation is per-(device, vlan) — only the
+        # COLLAPSED device's own mutation is the same event; an independent
+        # mutation on a SECOND device sharing the vlan is a distinct finding.
+        egress_owned_vlans: set[int] = set()
+        egress_owned_pairs: set[tuple[str, int]] = set()
+
+        # 1. device adjacency collapse -> .egress_lost
+        collapsed = sorted(
+            did
+            for did, act in base.active_by_dev.items()
+            if act and not prop.active_by_dev.get(did)
+        )
+        for did in collapsed:
+            affected = sorted(
+                {
+                    vid
+                    for (d, vid) in base.by_dev_vlan
+                    if d == did and _routed(base_ir, vid, base_l3)
+                }
+            )
+            if not affected:
+                continue
+            affected_set = set(affected)
+            egress_owned_vlans.update(affected_set)
+            egress_owned_pairs.update((did, v) for v in affected)
+            n_clients = (
+                sum(1 for c in base_ir.clients if c.vlan in affected_set)
+                if clients_known
+                else 0
+            )
+            severity = (
+                Severity.ERROR if (clients_known and n_clients) else Severity.WARNING
+            )
+            if not clients_known:
+                notes.append(
+                    f"device {did}: client data unavailable — the egress-loss blast "
+                    "radius is unknown"
+                )
+            who = (
+                f"{n_clients} observed client(s)"
+                if clients_known
+                else "an unknown number of clients"
+            )
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.egress_lost",
+                    severity=severity,
+                    confidence=_HIGH,
+                    message=(
+                        f"switch {did} loses its last active OSPF adjacency — routed "
+                        f"segments {affected} lose their modeled dynamic egress; {who} "
+                        "on them are affected"
+                    ),
+                    affected_entities=tuple(str(v) for v in affected),
+                    evidence={
+                        "device": did,
+                        "affected_vlans": affected,
+                        "observed_clients": n_clients if clients_known else None,
+                    },
+                )
+            )
+
+        # 2. per-segment full withdrawal -> .advertised_removed
+        base_vlans = {vid for (_d, vid) in base.by_dev_vlan}
+        prop_vlans = {vid for (_d, vid) in prop.by_dev_vlan}
+        for vid in sorted(base_vlans - prop_vlans):
+            if vid in egress_owned_vlans or not _routed(base_ir, vid, base_l3):
+                continue
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.advertised_removed",
+                    severity=Severity.WARNING,
+                    confidence=_UNVERIFIED,
+                    message=(
+                        f"routed segment (vlan {vid}) is withdrawn from OSPF — its "
+                        "prefix is no longer advertised; external reachability depends "
+                        "on redistribution the twin does not model"
+                    ),
+                    affected_entities=(str(vid),),
+                    evidence={"vlan": vid},
+                )
+            )
+
+        # 3. retained participation mutated (active-status or area) -> .transit_mutation
+        for key in sorted(set(base.by_dev_vlan) & set(prop.by_dev_vlan)):
+            did, vid = key
+            if (did, vid) in egress_owned_pairs or not _routed(prop_ir, vid, prop_l3):
+                continue
+            b, p = base.by_dev_vlan[key], prop.by_dev_vlan[key]
+            if (b.active, b.areas) == (p.active, p.areas):
+                continue  # tuple unchanged (a pure rename lands here -> silent)
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.transit_mutation",
+                    severity=Severity.WARNING,
+                    confidence=_UNVERIFIED,
+                    message=(
+                        f"OSPF participation for vlan {vid} on {did} changed "
+                        "(passive/area) — transit & area-semantics impact is deferred "
+                        "to GS27"
+                    ),
+                    affected_entities=(str(vid),),
+                    evidence={"device": did, "vlan": vid},
+                )
+            )
+
+        # 4. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
+        touched_ids = {
+            r.id
+            for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
+            if r.kind == "ospf_intf"
+        }
+        seen: set[str] = set()
+        for o in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs):
+            if o.unresolved and o.id in touched_ids and o.id not in seen:
+                seen.add(o.id)
+                notes.append(
+                    f"ospf interface {o.id}: network name {o.network_name!r} does not "
+                    "resolve to a vlan — withdrawal impact cannot be verified"
+                )
+
+        worst = Status.PASS
+        for f in findings:
+            this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
+            if this is Status.FAIL or worst is Status.PASS:
+                worst = this
+        return CheckResult(
+            check_id=self.id,
+            status=worst,
+            findings=tuple(findings),
+            coverage=Coverage(
+                state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
+                notes=tuple(notes),
+            ),
+            confidence=(
+                min_confidence(*(f.confidence for f in findings)) if findings else _HIGH
+            ),
+            reasoning="compared per-(device,vlan) OSPF participation, baseline vs proposed",
+        )
