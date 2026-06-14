@@ -20,6 +20,7 @@ from digital_twin.ir import (
     IRCapability,
     L3Intf,
     L3Role,
+    OspfIntf,
     Port,
     PortMode,
     Vlan,
@@ -318,6 +319,7 @@ class SwitchIngester:
         for dev in ctx.raw.devices:
             if dev.get("type") == "switch":
                 self._switch_ports_and_l3(ctx, dev)
+                self._ospf(ctx, dev)
             elif dev.get("type") == "gateway":
                 self._gateway_ports_and_l3(ctx, dev)
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
@@ -716,6 +718,31 @@ class SwitchIngester:
                         vlan_id=int(vid),
                         ip=ipc.get("ip"),
                         subnet=None,
+                    )
+                )
+
+    def _ospf(self, ctx: IngestContext, dev: Mapping[str, Any]) -> None:
+        """GS26: switch OSPF participation. Gated by ospf_config.enabled; each
+        ospf_areas.<area>.networks.<name> joins to the effective networks map.
+        A name that does not resolve to a vlan_id mints an unresolved row (the
+        only switch-side blindness — l3_unmodeled is gateway-only)."""
+        did = device_id(str(dev["mac"]))
+        eff = ctx.device_effective.get(did) or ctx.site_effective
+        if not (eff.get("ospf_config") or {}).get("enabled"):
+            return
+        networks: dict[str, Any] = eff.get("networks") or {}
+        for area, area_cfg in (eff.get("ospf_areas") or {}).items():
+            for name, ncfg in ((area_cfg or {}).get("networks") or {}).items():
+                ncfg = ncfg or {}
+                vid = _vlan_int((networks.get(str(name)) or {}).get("vlan_id"))
+                ctx.builder.add_ospf_intf(
+                    OspfIntf(
+                        device_id=did,
+                        vlan_id=vid,
+                        area=str(area),
+                        network_name=str(name),
+                        passive=bool(ncfg.get("passive", False)),
+                        unresolved=(vid is None),
                     )
                 )
 

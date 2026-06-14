@@ -1227,3 +1227,67 @@ def test_agreeing_subnet_rows_do_not_conflict():
     SwitchIngester().ingest(ctx)
     v = ctx.builder.build().vlans[10]
     assert v.subnet == "10.0.10.0/24" and v.subnet_unresolved is False
+
+
+# -- GS26: OSPF participation ingest -------------------------------------------
+
+_OSPF_EFF_BASE: dict = {
+    "networks": {"corp": {"vlan_id": 10}, "guest": {"vlan_id": 20}},
+    "port_usages": {"office": {"mode": "access", "port_network": "corp"}},
+    "port_config": {},
+    "ospf_config": {"enabled": True},
+    "ospf_areas": {"0": {"networks": {"corp": {}, "guest": {"passive": True}}}},
+}
+
+_OSPF_SWITCH: dict = {
+    "mac": "aa0000000001",
+    "id": "dev-a",
+    "type": "switch",
+    "model": "EX4100-48P",
+    "name": "sw-ospf",
+}
+
+
+def _ospf_ir(eff: dict):
+    ctx = IngestContext(
+        raw=raw_site(devices=(_OSPF_SWITCH,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    return ctx.builder.build()
+
+
+def test_ospf_ingest_mints_participation_for_enabled_switch():
+    ir = _ospf_ir(_OSPF_EFF_BASE)
+    by_name = {o.network_name: o for o in ir.ospf_intfs}
+    assert by_name["corp"].vlan_id == 10 and by_name["corp"].passive is False
+    assert by_name["corp"].area == "0"  # the area key round-trips as a string
+    assert by_name["guest"].vlan_id == 20 and by_name["guest"].passive is True
+    assert all(o.unresolved is False for o in ir.ospf_intfs)
+
+
+def test_ospf_ingest_silent_when_disabled():
+    eff = {**_OSPF_EFF_BASE, "ospf_config": {"enabled": False}}
+    ir = _ospf_ir(eff)
+    assert ir.ospf_intfs == ()
+
+
+def test_ospf_ingest_silent_when_config_absent():
+    # the gate uses truthiness, so an absent ospf_config mints nothing (guards
+    # against a future refactor to `== True` that would crash on the missing key)
+    eff = {k: v for k, v in _OSPF_EFF_BASE.items() if k != "ospf_config"}
+    ir = _ospf_ir(eff)
+    assert ir.ospf_intfs == ()
+
+
+def test_ospf_ingest_unresolved_name():
+    eff = {
+        **_OSPF_EFF_BASE,
+        "networks": {"corp": {"vlan_id": 10}},
+        "ospf_areas": {"0": {"networks": {"ghost": {}}}},
+    }
+    ir = _ospf_ir(eff)
+    o = next(o for o in ir.ospf_intfs if o.network_name == "ghost")
+    assert o.vlan_id is None and o.unresolved is True
