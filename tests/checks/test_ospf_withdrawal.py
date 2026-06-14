@@ -7,7 +7,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.ospf_withdrawal import OspfWithdrawalCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
 from digital_twin.ir.entities import AttachKind, Client, ClientKind
 from tests.factories import access_port, irb, ospf, sw
 
@@ -57,6 +57,7 @@ def test_egress_lost_with_clients_is_fail():
     r = _run(base, prop)
     f = next(f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.egress_lost")
     assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH  # observed-client UNSAFE -> HIGH
     assert r.status is Status.FAIL
 
 
@@ -66,6 +67,8 @@ def test_egress_lost_without_clients_is_warn():
     r = _run(base, prop)
     f = next(f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.egress_lost")
     assert f.severity is Severity.WARNING
+    # REVIEW case carries MEDIUM, not HIGH — the impact is unconfirmed
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
     assert r.status is Status.WARN
 
 
@@ -169,3 +172,30 @@ def test_collapse_on_one_device_does_not_suppress_mutation_on_another():
     assert "wired.l3.ospf_withdrawal.egress_lost" in codes  # S1 collapsed on vlan 20
     tm = [f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.transit_mutation"]
     assert len(tm) == 1 and tm[0].evidence["device"] == "S2"  # S2's mutation not suppressed
+
+
+def test_advertised_removed_is_per_device_not_global_vlan():
+    # S1 withdraws its OWN vlan-20 advertisement while keeping vlan 30 active (no
+    # collapse); S2 still advertises vlan 20. Per-(device,vlan): S1's withdrawal
+    # is a real REVIEW finding, NOT silently masked by S2 still carrying the vlan
+    # (the global base_vlans - prop_vlans form returned PASS — the P1 bug).
+    def build(*, s1_has_20):
+        b = IRBuilder().add_device(sw("S1")).add_device(sw("S2"))
+        for vid in (20, 30):
+            b.add_vlan(Vlan(vlan_id=vid, subnet=f"198.51.{vid}.0/24"))
+        b.add_l3intf(irb("S1", 20, subnet="198.51.20.0/24"))
+        b.add_l3intf(irb("S1", 30, subnet="198.51.30.0/24"))
+        b.add_l3intf(irb("S2", 20, subnet="198.51.20.0/24"))
+        if s1_has_20:
+            b.add_ospf_intf(ospf("S1", 20, name="s1corp"))
+        b.add_ospf_intf(ospf("S1", 30, name="s1transit"))  # S1 keeps an adjacency
+        b.add_ospf_intf(ospf("S2", 20, name="s2corp"))  # S2 still advertises vlan 20
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        b.with_capability(IRCapability.CLIENTS_ACTIVE)
+        return b.build()
+
+    r = _run(build(s1_has_20=True), build(s1_has_20=False))
+    ar = [f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.advertised_removed"]
+    assert len(ar) == 1
+    assert ar[0].evidence["device"] == "S1" and ar[0].evidence["vlan"] == 20
+    assert r.status is Status.WARN  # REVIEW, never a silent PASS

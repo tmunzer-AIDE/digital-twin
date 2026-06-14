@@ -43,6 +43,16 @@ _UNVERIFIED = Confidence(
         "the twin does not model may still cover this segment",
     ),
 )
+# egress_lost with NO (or unknown) observed clients: the adjacency loss is
+# config-certain, but its impact is unconfirmed — REVIEW, not the HIGH the
+# observed-client UNSAFE case carries.
+_EGRESS_UNCONFIRMED = Confidence(
+    level=ConfidenceLevel.MEDIUM,
+    reasons=(
+        "the OSPF adjacency loss is config-certain, but no observed client "
+        "confirms impact on the affected segments",
+    ),
+)
 
 
 @dataclass
@@ -102,12 +112,10 @@ class OspfWithdrawalCheck:
         )
         findings: list[Finding] = []
         notes: list[str] = []
-        # egress_lost suppresses the weaker codes, but at two granularities:
-        # .advertised_removed is per-VLAN (its whole-segment withdrawal narrative
-        # is subsumed), while .transit_mutation is per-(device, vlan) — only the
-        # COLLAPSED device's own mutation is the same event; an independent
-        # mutation on a SECOND device sharing the vlan is a distinct finding.
-        egress_owned_vlans: set[int] = set()
+        # egress_lost subsumes the weaker codes per (device, vlan): only the
+        # COLLAPSED device's own withdrawal/mutation of a segment is the same
+        # event — an independent withdrawal or mutation of that vlan on ANOTHER
+        # device is a distinct finding.
         egress_owned_pairs: set[tuple[str, int]] = set()
 
         # 1. device adjacency collapse -> .egress_lost
@@ -127,7 +135,6 @@ class OspfWithdrawalCheck:
             if not affected:
                 continue
             affected_set = set(affected)
-            egress_owned_vlans.update(affected_set)
             egress_owned_pairs.update((did, v) for v in affected)
             n_clients = (
                 sum(1 for c in base_ir.clients if c.vlan in affected_set)
@@ -153,7 +160,7 @@ class OspfWithdrawalCheck:
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.egress_lost",
                     severity=severity,
-                    confidence=_HIGH,
+                    confidence=(_HIGH if severity is Severity.ERROR else _EGRESS_UNCONFIRMED),
                     message=(
                         f"switch {did} loses its last active OSPF adjacency — routed "
                         f"segments {affected} lose their modeled dynamic egress; {who} "
@@ -168,11 +175,12 @@ class OspfWithdrawalCheck:
                 )
             )
 
-        # 2. per-segment full withdrawal -> .advertised_removed
-        base_vlans = {vid for (_d, vid) in base.by_dev_vlan}
-        prop_vlans = {vid for (_d, vid) in prop.by_dev_vlan}
-        for vid in sorted(base_vlans - prop_vlans):
-            if vid in egress_owned_vlans or not _routed(base_ir, vid, base_l3):
+        # 2. per-(device, vlan) full withdrawal -> .advertised_removed: a device
+        # drops its OWN OSPF advertisement of a routed segment while keeping its
+        # adjacency. Another device may still advertise the vlan, but that is
+        # still a real, surfaceable change — never silently SAFE.
+        for did, vid in sorted(set(base.by_dev_vlan) - set(prop.by_dev_vlan)):
+            if (did, vid) in egress_owned_pairs or not _routed(base_ir, vid, base_l3):
                 continue
             findings.append(
                 Finding(
@@ -182,12 +190,12 @@ class OspfWithdrawalCheck:
                     severity=Severity.WARNING,
                     confidence=_UNVERIFIED,
                     message=(
-                        f"routed segment (vlan {vid}) is withdrawn from OSPF — its "
-                        "prefix is no longer advertised; external reachability depends "
-                        "on redistribution the twin does not model"
+                        f"switch {did} withdraws routed segment (vlan {vid}) from OSPF "
+                        "— its prefix is no longer advertised there; external "
+                        "reachability depends on redistribution the twin does not model"
                     ),
                     affected_entities=(str(vid),),
-                    evidence={"vlan": vid},
+                    evidence={"device": did, "vlan": vid},
                 )
             )
 
