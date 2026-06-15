@@ -412,8 +412,9 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       UNKNOWN. Same shared leaves, same switch/site + gateway coverage, same
       derived-gate placement as below.
 
-      **Exhaustive transition matrix (the row's whole state space — this rule is
-      complete, not leaf-by-leaf).** Each side collapses to one of three
+      **Exhaustive participation matrix (the participation axis's whole state space
+      — every (S/R/I)×(S/R/I) transition classified; the two inert-leaf screens
+      compose on top).** Each side collapses to one of three
       participation states: **S** = serving (`local`/`server`/absent → mints
       `DhcpScope`, `active`, no relay target), **R** = active relay (`relay` +
       non-empty `servers` → `active`, no scope, **unmodeled** target), **I** =
