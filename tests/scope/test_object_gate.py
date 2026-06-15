@@ -46,6 +46,24 @@ def test_non_update_action_rejects():
     assert any("create" in reason for reason in r.reasons)
 
 
+def test_delete_action_rejects():
+    # object-level deletion (e.g. removing a template/device/site) fans out
+    # beyond a modeled update and is NOT simulated — it must be rejected
+    # pre-fetch (UNKNOWN), never silently passed. Distinct from Mist's
+    # attribute-delete ({"-attr": ""}) inside an update, handled downstream.
+    r = check_objects(_plan([_op(action="delete")]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete" in reason for reason in r.reasons)
+
+
+def test_delete_action_rejects_even_for_supported_object_type():
+    # a delete on a device (a SUPPORTED object_type) is still rejected — the
+    # action gate runs before the object_type check
+    r = check_objects(_plan([_op(object_type="device", object_id="d1", action="delete")]))
+    assert isinstance(r, Rejection)
+    assert any("delete" in reason for reason in r.reasons)
+
+
 def test_all_offending_ops_reported():
     plan = _plan(
         [
