@@ -13,6 +13,11 @@ from __future__ import annotations
 
 SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device")
 
+# Org-level object types simulated by fan-out (NOT single-site). networktemplate
+# carries the SAME modeled config layer as a site_setting, so its raw field gate
+# reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
+ORG_OBJECT_TYPES: tuple[str, ...] = ("networktemplate",)
+
 # What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
 # + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
 # about cutting power to a powered device).
@@ -133,6 +138,8 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "notes",
     ),
 }
+
+RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
 
 # Server-managed fields excluded from the raw diff: a PUT payload never carries
 # them, and their absence is not a user change. Two groups: identity/audit
