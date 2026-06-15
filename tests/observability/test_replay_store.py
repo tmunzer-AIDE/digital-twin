@@ -103,6 +103,69 @@ def test_fetch_sites_applies_the_same_strict_scope_guard(tmp_path):
     assert isinstance(out[fixture_scope.site_id], RawSiteState)
 
 
+def _site_doc(store, run_id, raw):
+    # round-trip a raw_site through the store's redacted-doc writer to get a
+    # valid single-site fixture doc (the exact shape load_fixture_doc consumes)
+    return json.loads(store.save_raw(run_id, raw).read_text())
+
+
+def test_multisite_resolve_filters_assigned_sites_and_returns_template(tmp_path):
+    from digital_twin.providers.base import OrgScope, OrgTemplateContext
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site())
+    b = _site_doc(store, "b", raw_site())
+    a["site"]["networktemplate_id"] = "nt1"
+    a["scope"]["site_id"] = "siteA"
+    b["site"]["networktemplate_id"] = "nt1"
+    b["scope"]["site_id"] = "siteB"
+    doc = {
+        "template": {"id": "nt1", "name": "shared", "networks": {"corp": {"vlan_id": 10}}},
+        "sites": {"siteA": a, "siteB": b},
+    }
+    path = tmp_path / "ms.json"
+    path.write_text(json.dumps(doc))
+    provider = FixtureProvider(path)
+
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    assert isinstance(resolved, OrgTemplateContext)
+    assert set(resolved.assigned_site_ids) == {"siteA", "siteB"}
+    assert resolved.template["networks"]["corp"]["vlan_id"] == 10
+
+    fetched = provider.fetch_sites(OrgScope("o1"), ["siteA", "siteB"])
+    assert all(isinstance(v, RawSiteState) for v in fetched.values())
+    assert len(fetched) == 2
+
+
+def test_multisite_resolve_excludes_other_templates_and_marks_fetch_failures(tmp_path):
+    from digital_twin.providers.base import FetchError, OrgScope, OrgTemplateContext
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site())
+    b = _site_doc(store, "b", raw_site())
+    a["site"]["networktemplate_id"] = "nt1"
+    a["scope"]["site_id"] = "siteA"
+    b["site"]["networktemplate_id"] = "nt2"  # different template -> not assigned to nt1
+    b["scope"]["site_id"] = "siteB"
+    doc = {
+        "template": {"id": "nt1", "networks": {}},
+        "sites": {"siteA": a, "siteB": b},
+        "fetch_failures": ["siteA"],
+    }
+    path = tmp_path / "ms.json"
+    path.write_text(json.dumps(doc))
+    provider = FixtureProvider(path)
+
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    assert isinstance(resolved, OrgTemplateContext)
+    assert resolved.assigned_site_ids == ("siteA",)  # nt2 site excluded
+
+    # siteA is a declared fetch failure -> FetchError; siteB still served
+    out = provider.fetch_sites(OrgScope("o1"), ["siteA", "siteB"])
+    assert isinstance(out["siteA"], FetchError)
+    assert isinstance(out["siteB"], RawSiteState)
+
+
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):
     from digital_twin.observability.trace import Trace
 

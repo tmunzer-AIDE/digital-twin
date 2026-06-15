@@ -373,6 +373,189 @@ def ospf_doc(
     return doc
 
 
+# --- MS: org networktemplate (multi-site) goldens -------------------------
+#
+# Two sites share ONE networktemplate `nt1`. The template defines a `corp`
+# network (vlan 950) and the port usages that carry it; the per-site pipeline
+# OVERRIDES each site's networktemplate with the (baseline | proposed) snapshot,
+# so the only delta is the template edit.
+#
+# Site A: a switch (EDGE) with a member access port + observed wired client on
+# corp, whose ONLY exit is the IRB on HUB, reached over the EDGE->HUB uplink
+# trunk (`ms_trunk`, carries corp). Removing corp from `ms_trunk` strands the
+# member from the IRB -> blackhole.exit_lost (UNSAFE). Site B uses none of it.
+
+MS_TEMPLATE_ID = "nt1"
+MS_NET = "ms_corp"
+MS_VLAN = 950
+MS_SUBNET = "198.51.95.0/24"
+MS_SITE_A = "siteA"
+MS_SITE_B = "siteB"
+
+
+def _strip_dynamic_ports(doc: dict[str, Any]) -> None:
+    """Remove every switch port whose runtime usage comes from a dynamic profile.
+    The shared `nt1` drops the (unobservable-rule) `dynamic` usage + switch_matching
+    to keep the scenario about the corp edit; a lingering dynamic_usage reference
+    would resolve to 'no definition' -> the dynamic-ports honesty gate (REVIEW),
+    noise unrelated to the template change under test."""
+    for dev in doc["devices"]:
+        if dev.get("type") != "switch":
+            continue
+        pc = dev.get("port_config")
+        if isinstance(pc, dict):
+            dev["port_config"] = {
+                k: v
+                for k, v in pc.items()
+                if not (isinstance(v, dict) and v.get("dynamic_usage"))
+            }
+
+
+def _ms_template(base_nt: dict[str, Any]) -> dict[str, Any]:
+    """The shared `nt1`: the fixture's real template (so every real device port
+    reference still resolves after the override) PLUS the corp network and the
+    usages that carry it — minus the unobservable-rule dynamic machinery (see
+    _strip_dynamic_ports). Built once and shared by both sites."""
+    nt = copy.deepcopy(base_nt)
+    nt["id"] = MS_TEMPLATE_ID
+    nt.pop("switch_matching", None)
+    (nt.get("port_usages") or {}).pop("dynamic", None)
+    nt.setdefault("networks", {})[MS_NET] = {"vlan_id": MS_VLAN, "subnet": MS_SUBNET}
+    pu = nt.setdefault("port_usages", {})
+    pu["ms_trunk"] = {"mode": "trunk", "networks": [MS_NET]}
+    pu["ms_access"] = {"mode": "access", "port_network": MS_NET}
+    return nt
+
+
+def _ms_site_a() -> dict[str, Any]:
+    """Site A doc: corp lives in the TEMPLATE (not setting), the EDGE->HUB uplink
+    rides `ms_trunk`, the IRB on HUB exits corp, and a wired client sits on a
+    corp access port on EDGE."""
+    doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=False)
+    # corp + its usages belong to the template here, NOT to the site setting:
+    # strip the augmented setting-level copies so the template is the sole owner
+    doc["setting"]["networks"].pop(GS_NET, None)
+    for u in ("gs_trunk", "gs_empty_trunk", "gs_access"):
+        doc["setting"]["port_usages"].pop(u, None)
+    # repoint the EDGE/HUB ports + access port onto the template-owned usages,
+    # and the HUB IRB + wired client onto corp's vlan
+    edge, hub = _device(doc, EDGE), _device(doc, HUB)
+    edge["port_config"][EDGE_UPLINK_PORT] = {"usage": "ms_trunk"}
+    edge["port_config"][EDGE_ACCESS_PORT] = {"usage": "ms_access"}
+    hub["port_config"][HUB_UPLINK_PORT] = {"usage": "ms_trunk"}
+    hub["other_ip_configs"] = {
+        MS_NET: {"type": "static", "ip": "198.51.95.1", "netmask": "255.255.255.0"}
+    }
+    doc["wired_clients"] = [
+        {"mac": WIRED_CLIENT_MAC, "device_mac": EDGE, "port_id": EDGE_ACCESS_PORT, "vlan": MS_VLAN}
+    ]
+    doc["wireless_clients"] = []
+    doc["site"]["networktemplate_id"] = MS_TEMPLATE_ID
+    doc["scope"]["site_id"] = MS_SITE_A
+    return doc
+
+
+def _ms_site_b(*, networktemplate_id: str = MS_TEMPLATE_ID) -> dict[str, Any]:
+    """Site B doc: the untouched real fixture, assigned to `networktemplate_id`.
+    It carries NO corp member and NO corp IRB, so a corp edit cannot break it."""
+    doc = fixture_doc()
+    doc["site"]["networktemplate_id"] = networktemplate_id
+    doc["scope"]["site_id"] = MS_SITE_B
+    return doc
+
+
+def _to_site_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """A golden `doc` (already the saved-fixture shape) IS a single-site fixture
+    doc — the multi-site FixtureProvider consumes it directly. The per-site
+    networktemplate is kept (load_fixture_doc reads it) but is overridden at
+    runtime by override_template, which pins each site to the shared snapshot."""
+    return doc
+
+
+def multisite_doc(
+    *,
+    site_a_template_id: str = MS_TEMPLATE_ID,
+    site_b_template_id: str = MS_TEMPLATE_ID,
+    fetch_failures: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The 2-site multi-site fixture sharing `nt1`. `*_template_id` let a scenario
+    detach a site from the edited template (MS-d); `fetch_failures` marks a site
+    as a provider FetchError (MS-b)."""
+    site_a = _ms_site_a()
+    site_a["site"]["networktemplate_id"] = site_a_template_id
+    template = _ms_template(site_a["networktemplate"])
+    site_b = _ms_site_b(networktemplate_id=site_b_template_id)
+    _strip_dynamic_ports(site_a)
+    _strip_dynamic_ports(site_b)
+    return {
+        "template": template,
+        "sites": {MS_SITE_A: _to_site_doc(site_a), MS_SITE_B: _to_site_doc(site_b)},
+        "fetch_failures": list(fetch_failures),
+    }
+
+
+def _ms_plan(template: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    org_id = template.get("org_id") or "o1"
+    return {
+        "source": "mist",
+        "scope": {"org_id": org_id},  # NO site_id -> org mode
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "networktemplate",
+            "object_id": MS_TEMPLATE_ID, "payload": payload,
+        }],
+    }
+
+
+def _ms_port_usages_payload(template: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    """A full `port_usages` root-replace payload (Mist replaces present roots
+    wholesale — a partial map would delete every other usage and trip the field
+    gate). Carries each modeled usage's networks/port_network so the diff is
+    EXACTLY the overridden usage(s)."""
+    pu = {k: dict(v) for k, v in (template.get("port_usages") or {}).items()
+          if isinstance(v, dict)}
+    for name, networks in overrides.items():
+        pu[name] = {**pu.get(name, {}), "networks": list(networks)}
+    return {"port_usages": pu}
+
+
+def multisite_remove_corp() -> tuple[dict[str, Any], dict[str, Any]]:
+    """MS-a: the template drops corp from `ms_trunk` -> site A's EDGE uplink stops
+    carrying corp -> the corp member strands from the HUB IRB (exit_lost, UNSAFE);
+    site B never used corp (SAFE)."""
+    doc = multisite_doc()
+    payload = _ms_port_usages_payload(doc["template"], ms_trunk=[])  # corp removed
+    return doc, _ms_plan(doc["template"], payload)
+
+
+def multisite_with_failed_site() -> tuple[dict[str, Any], dict[str, Any]]:
+    """MS-b: same corp removal, but site B's fetch fails at the provider -> the
+    org rollup is UNKNOWN with siteB in site_failures."""
+    doc = multisite_doc(fetch_failures=(MS_SITE_B,))
+    payload = _ms_port_usages_payload(doc["template"], ms_trunk=[])
+    return doc, _ms_plan(doc["template"], payload)
+
+
+def multisite_add_unused_vlan() -> tuple[dict[str, Any], dict[str, Any]]:
+    """MS-c: a cosmetic template edit — add a brand-new vlan to the corp-less
+    `ms_access` usage's... no: add a new network nothing uses. Neither site has a
+    member/IRB on it -> SAFE. The edit adds the network via a networks payload."""
+    doc = multisite_doc()
+    nets = {k: dict(v) for k, v in (doc["template"].get("networks") or {}).items()
+            if isinstance(v, dict)}
+    nets["ms_unused"] = {"vlan_id": 951}  # modeled leaf only (vlan_id), nothing uses it
+    payload = {"networks": nets}
+    return doc, _ms_plan(doc["template"], payload)
+
+
+def multisite_template_with_no_assigned_sites() -> tuple[dict[str, Any], dict[str, Any]]:
+    """MS-d: the fixture's two sites are assigned to a DIFFERENT template, so
+    resolve_org_template returns 0 assigned sites for nt1 -> SAFE (valid template,
+    no impact simulated)."""
+    doc = multisite_doc(site_a_template_id="nt_other", site_b_template_id="nt_other")
+    payload = _ms_port_usages_payload(doc["template"], ms_trunk=[])
+    return doc, _ms_plan(doc["template"], payload)
+
+
 def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
             disable: bool = False, order: int = 0) -> dict[str, Any]:
     """A HUB device op whose payload sets ospf to the given state. `entries=None`
