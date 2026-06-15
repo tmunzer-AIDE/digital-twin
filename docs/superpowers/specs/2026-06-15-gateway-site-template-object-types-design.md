@@ -87,10 +87,25 @@ Reimplementations on top of the primitive:
   absent; **fixes the latent baseline gap** when it is present.
 - gateway site-effective → `fold_layers([gatewaytemplate, sitetemplate,
   site_setting], GATEWAY_POLICY)`, then the per-device PUT-root overlay
-  (`effective_update`) → an **effective gateway device** the existing GS22
-  gateway ingest (`_gateway_ports_and_l3`, gateway dhcp) consumes unchanged
-  (guardrail #5 — no second gateway analysis path). `GATEWAY_POLICY` starts
+  (`effective_update`) → an **effective gateway device**. `GATEWAY_POLICY` starts
   equal to `SWITCH_POLICY` for the shared keys and is hardened by the live gate.
+
+**Gateway effective → ingest handoff (the explicit contract — was a P1 gap).**
+Today the gateway ingest (`_gateway_ports_and_l3`, gateway dhcp) reads its facts
+straight off `ctx.raw.devices` (the raw device dict — `dev["port_config"]`,
+`dev["ip_configs"]`, `dev["dhcpd_config"]`), exactly like the switch ingest at
+`ingest/switch.py:319-324`. There is **no** effective-device source today, so a
+gatewaytemplate edit would compile correctly yet never reach the IR unless the
+handoff is explicit. The contract: the **compile stage materializes the folded
+effective gateway config back into the gateway-type entries of
+`RawSiteState.devices`** (replacing only the modeled gateway leaves —
+`port_config`, `ip_configs`, `dhcpd_config`, and any modeled `networks` — on
+`type == "gateway"` devices; switch/AP devices untouched) for **both** the
+baseline and proposed snapshots, *before* ingest runs. The existing GS22 ingest
+then consumes them **unchanged** (guardrail #5 — no second gateway analysis
+path). Rejected alternative: teaching the ingest to read a separate
+`ctx.gateway_device_effective` source — that forks the device read path for one
+family and is exactly the parallel path #5 forbids.
 
 ### 2. Provider surface
 
@@ -102,10 +117,19 @@ Reimplementations on top of the primitive:
   `gatewaytemplate: JsonObj | None` alongside today's `networktemplate`. The
   per-site fetch pulls the site's assigned ones (by `sitetemplate_id` /
   `gatewaytemplate_id`).
-- **Fetch-miss rule (guardrail #4):** a site assigned a sitetemplate or
-  gatewaytemplate that fails to fetch must **not** compile without it. It is a
-  recorded per-site fetch failure → that site is UNKNOWN (the existing
-  `site_failures` → org rollup UNKNOWN path), never a silent SAFE.
+- **The edited layer is not re-fetched per site (was a P2 over-requirement).**
+  The edited layer's baseline snapshot already comes from `resolve_org_template`
+  (one org-level fetch) and is **pinned** into every assigned site (§3). The
+  per-site fetch therefore requires only the **non-edited assigned layers** that
+  the affected compile actually consumes (e.g. a `gatewaytemplate` edit fetches
+  per site `site_setting` + `sitetemplate` + devices, **not** the gatewaytemplate
+  again). This avoids a duplicate per-site template fetch that could manufacture
+  a false UNKNOWN even though the exact edited snapshot is already in hand.
+- **Fetch-miss rule (guardrail #4):** for a **non-edited assigned layer the
+  simulation consumes**, a site assigned that layer which fails to fetch must
+  **not** compile without it — it is a recorded per-site fetch failure → that
+  site is UNKNOWN (the existing `site_failures` → org rollup UNKNOWN path), never
+  a silent SAFE.
 
 ### 3. Org fan-out — pin exactly one edited layer (guardrail #2)
 
@@ -167,11 +191,22 @@ reality. The MVP rule is deterministic and **relevance-scoped**:
 > **not** affected by the edit do **not** taint the site or org verdict.
 
 This avoids a noisy "any device-profile → UNKNOWN" (the current fixtures carry
-many AP `deviceprofile_id`s). Mechanism: an analysis-context flag set when an
-in-scope modeled device has a profile id, consulted only for leaves the edit
-actually changes; a plan-level detail, but the relevance-scoping and the
-"cannot return SAFE for that site" outcome are locked. The full fix (model the
-layer) is the roadmap item added 2026-06-15.
+many AP `deviceprofile_id`s).
+
+**"Could override" is a concrete, conservative leaf set (was a P3 gap).** Define
+`DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` — the modeled leaves a device-profile
+can override, keyed by device role (`switch` / `gateway`). The relevance test is
+exactly: *the edit changes a leaf in that role's set, for an in-scope modeled
+device of that role carrying a `deviceprofile_id`.* Start it conservatively from
+the modeled leaves each role actually consumes (e.g. gateway:
+`port_config` / `ip_configs` / `dhcpd_config` / `networks`; switch: the modeled
+switch/site leaves) and verify against the device-profile OAS shape, so the set
+neither over-taints every template edit nor under-taints a genuinely
+profile-overridable leaf (which would reintroduce a false SAFE). Mechanism: an
+analysis-context flag set when an in-scope modeled device has a profile id,
+consulted only against this leaf set for the leaves the edit actually changes.
+The relevance-scoping and the "cannot return SAFE for that site" outcome are
+locked. The full fix (model the layer) is the roadmap item added 2026-06-15.
 
 ### 6. Checks & verdict
 
@@ -191,12 +226,15 @@ is already object_type-agnostic (defensive — malformed → SITE path → UNKNO
 4. Org-level L0 (`gatewaytemplate.schema.json`) + field gate once: modeled
    gateway leaves allowed; any unmodeled field → UNKNOWN.
 5. Apply the edit to one gatewaytemplate snapshot.
-6. Per assigned site: fetch `site_setting`, `sitetemplate`, `gatewaytemplate`,
-   devices (fetch-miss on sitetemplate/gatewaytemplate → site UNKNOWN). Pin the
-   gatewaytemplate layer (baseline = snapshot, proposed = edited); hold
-   sitetemplate + site_setting. Build gateway effective baseline & proposed;
-   overlay each gateway device; run GS22 gateway ingest → gateway IR → gateway
-   checks. Device-profile rule applied per the relevance-scoped test.
+6. Per assigned site: fetch only the **non-edited** consumed layers —
+   `site_setting`, `sitetemplate`, devices (fetch-miss on `sitetemplate` → site
+   UNKNOWN). The gatewaytemplate is **not** re-fetched: its baseline/proposed
+   snapshots are pinned from step 3/5. Build gateway site-effective baseline &
+   proposed (`fold_layers`), overlay each gateway device (`effective_update`),
+   and **materialize the result back into the gateway-type entries of
+   `RawSiteState.devices`** for both snapshots. Run the unchanged GS22 gateway
+   ingest → gateway IR → gateway checks. Device-profile rule applied per the
+   relevance-scoped leaf-set test.
 7. `decide_org` rollup → `OrgVerdict`.
 
 ## Error / honesty rails
@@ -216,10 +254,14 @@ Unit:
 - `fold_layers` — layer order, per-field policy, provenance, `None`-layer skip.
 - typed `resolve_org_template` — assignment by each id field.
 - sitetemplate compile layer (switch + gateway), baseline-gap fix.
-- gateway device compile → GS22 IR equivalence.
-- device-profile rule — relevant modeled device → UNKNOWN; unrelated AP profile
-  / unaffected device → no taint.
-- sitetemplate / gatewaytemplate fetch-miss → UNKNOWN.
+- gateway compile → **materialize into `RawSiteState.devices`** → GS22 IR
+  equivalence (a gatewaytemplate edit actually moves the gateway IR; switch/AP
+  device entries untouched).
+- device-profile rule — leaf in `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` for a
+  relevant modeled device → site UNKNOWN; edit hitting a non-overridable leaf, an
+  unrelated AP profile, or an unaffected device → no taint.
+- **edited layer not re-fetched per site**; a **non-edited** assigned layer
+  (e.g. sitetemplate) fetch-miss → UNKNOWN.
 
 Goldens:
 - sitetemplate edit breaks a switch leaf at one site → org UNSAFE naming it.
