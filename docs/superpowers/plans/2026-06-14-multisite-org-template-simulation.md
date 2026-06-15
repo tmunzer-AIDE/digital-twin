@@ -236,13 +236,16 @@ def _org_plan(ops, org_id="o1", site_id=None):
 
 
 def test_org_mode_template_plan_passes():
+    # ORG mode triggers ONLY when ALL ops are networktemplate AND site_id absent
     assert check_objects(_org_plan([_nt_op()])) is None
 
 
-def test_org_mode_rejects_site_id_present():
+def test_networktemplate_with_site_id_is_out_of_scope_single_site():
+    # site_id present -> NOT org mode -> falls into SITE logic -> the EXISTING
+    # "unsupported object_type" rejection (preserves test_template_object_type_*)
     r = check_objects(_org_plan([_nt_op()], site_id="s1"))
     assert isinstance(r, Rejection)
-    assert any("site_id" in reason for reason in r.reasons)
+    assert any("networktemplate" in reason for reason in r.reasons)
 
 
 def test_org_mode_rejects_multiple_template_ids():
@@ -254,9 +257,11 @@ def test_org_mode_rejects_multiple_template_ids():
 
 
 def test_mixing_site_and_org_object_types_rejects():
+    # not all-networktemplate -> SITE logic -> the networktemplate op is reported
+    # as unsupported (and site_id is required) -> rejected
     r = check_objects(_org_plan([_nt_op(), _op(object_type="device", object_id="d1")], site_id=None))
     assert isinstance(r, Rejection)
-    assert any("mix" in reason.lower() for reason in r.reasons)
+    assert any("networktemplate" in reason for reason in r.reasons)
 ```
 
 - [ ] **Step 4: Run → fail; implement object_gate**
@@ -264,35 +269,34 @@ def test_mixing_site_and_org_object_types_rejects():
 Rewrite `src/digital_twin/scope/object_gate.py:check_objects` to classify mode. Replace the function body with:
 
 ```python
-from digital_twin.scope.allowlist import ORG_OBJECT_TYPES, SUPPORTED_OBJECT_TYPES
+from digital_twin.scope.allowlist import SUPPORTED_OBJECT_TYPES
 
 
 def check_objects(plan: ChangePlan) -> Rejection | None:
     reasons: list[str] = []
     if plan.source != _M1_SOURCE:
         reasons.append(f"unsupported source {plan.source!r} (M1 supports only 'mist')")
-    types = {op.object_type for op in plan.ops}
-    is_org = bool(types) and types <= set(ORG_OBJECT_TYPES)
-    is_site = bool(types) and types <= set(SUPPORTED_OBJECT_TYPES)
-    if types and not (is_org or is_site):
-        reasons.append(
-            "plan mixes org-level (template) and site-level object_types, "
-            "or targets an unsupported object_type"
-        )
-    for op in plan.ops:
+    ops = plan.ops
+    # ORG mode ONLY when EVERY op is networktemplate AND there is no site_id.
+    # Anything else (incl. networktemplate WITH a site_id, or a mix) falls into
+    # the SITE branch, which preserves the existing per-op diagnostics verbatim.
+    is_org = (
+        bool(ops)
+        and all(op.object_type == "networktemplate" for op in ops)
+        and not plan.scope.site_id
+    )
+    for op in ops:
         if op.action != _M1_ACTION:
             reasons.append(
                 f"ops[order={op.order}]: unsupported action {op.action!r} (M1 supports only 'update')"
             )
-    if is_org and not is_site:  # ORG mode
-        if plan.scope.site_id:
-            reasons.append("ORG mode (template change) must not carry scope.site_id")
-        if len({op.object_id for op in plan.ops}) > 1:
+    if is_org:
+        if len({op.object_id for op in ops}) > 1:
             reasons.append("one template per plan in M1 (multiple networktemplate ids)")
-    elif is_site:  # SITE mode (today's rules)
+    else:  # SITE mode + everything else — UNCHANGED from today
         if not plan.scope.site_id:
             reasons.append("scope.site_id is required (M1 simulates exactly one site)")
-        for op in plan.ops:
+        for op in ops:
             if op.object_type not in SUPPORTED_OBJECT_TYPES:
                 reasons.append(
                     f"ops[order={op.order}]: unsupported object_type {op.object_type!r} "
@@ -310,7 +314,46 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
     return Rejection(stage=_STAGE, reasons=tuple(reasons)) if reasons else None
 ```
 
-Run the new + existing object_gate tests: `uv run pytest tests/scope/test_object_gate.py -q` → PASS (existing single-site tests still pass; the template-rejection tests from earlier now land in the "mixing/unsupported" or ORG branches — verify `test_template_object_type_rejects_as_fanout` and `test_template_modification_rejects_switch_and_gateway` still produce a Rejection; `gatewaytemplate`/`sitetemplate` are neither ORG nor SITE → the mixing/unsupported reason fires).
+Run the new + existing object_gate tests: `uv run pytest tests/scope/test_object_gate.py -q` → PASS. This design keeps EVERY existing test green: a `networktemplate`/`gatewaytemplate`/`sitetemplate` op with the default `site_id="s1"` is NOT org mode → falls into the SITE branch → the existing per-op "unsupported object_type `<name>`" reason (so `test_template_object_type_rejects_as_fanout`, `test_template_modification_rejects_switch_and_gateway`, and `test_all_offending_ops_reported` are unchanged). `ORG_OBJECT_TYPES` from Task 2 Step 2 is still used by the CLI/engine to detect mode; the gate keys on the literal `"networktemplate"`.
+
+- [ ] **Step 4b: Guard `simulate()` against an ORG plan (failing test → fix)**
+
+An ORG plan now PASSES `check_objects` (no rejection), so a caller passing it to the single-site `simulate()` would hit the bare `assert plan.scope.site_id is not None` (pipeline.py:109) → crash. Replace that assert with an explicit UNKNOWN.
+
+Append to `tests/engine/test_pipeline.py`:
+
+```python
+def test_simulate_rejects_org_plan_with_unknown_not_crash():
+    from digital_twin.engine.pipeline import simulate
+    from digital_twin.verdict.decision import Decision
+    plan = {"source": "mist", "scope": {"org_id": "o1"},  # no site_id
+            "ops": [{"action": "update", "order": 0, "object_type": "networktemplate",
+                     "object_id": "nt1", "payload": {}}]}
+    v = simulate(plan, provider=_AnyProvider())  # never fetches — guarded before fetch
+    assert v.decision is Decision.UNKNOWN
+    assert any("simulate_org_template" in r for r in v.decision_reasons)
+```
+
+(`_AnyProvider` can be any object — the guard returns before `fetch_site`.) In `pipeline.py:simulate`, replace the fetch-stage assert:
+
+```python
+        assert plan.scope.site_id is not None  # object gate guaranteed it
+```
+
+with:
+
+```python
+        if plan.scope.site_id is None:  # an ORG (template) plan reached single-site simulate
+            return _unknown(
+                Rejection(
+                    stage="scope.pre",
+                    reasons=("org/template plan has no site_id — call simulate_org_template, not simulate",),
+                ),
+                adapter_findings=adapter_findings, run=run,
+            )
+```
+
+Run: `uv run pytest tests/engine/test_pipeline.py -k org_plan -q` → PASS.
 
 - [ ] **Step 5: screen_op template branch + L0 schema (failing tests)**
 
@@ -669,6 +712,12 @@ def test_zero_sites_is_safe():
     decision, reasons, driving = decide_org({}, template_findings=(), org_rejections=())
     assert decision is Decision.SAFE
     assert any("no sites" in r for r in reasons)
+
+
+def test_zero_sites_with_template_finding_is_review():
+    # a non-fatal template L0 floors REVIEW even with zero assigned sites
+    decision, _r, _d = decide_org({}, template_findings=(_op_finding(),), org_rejections=())
+    assert decision is Decision.REVIEW
 ```
 
 - [ ] **Step 2: Run → fail; implement**
@@ -717,14 +766,19 @@ def decide_org(
     if org_rejections:  # short-circuit cause -> UNKNOWN (engine usually handles pre-fan-out)
         reasons = tuple(f"[{r.stage}] {reason}" for r in org_rejections for reason in r.reasons)
         return Decision.UNKNOWN, reasons, ()
-    if not per_site:
-        return Decision.SAFE, ("template valid; assigned to no sites; no impact simulated",), ()
-    # template-level operational ERROR/CRITICAL floors REVIEW
+    # template-level operational ERROR/CRITICAL floors REVIEW (computed FIRST, so
+    # it still applies when there are zero assigned sites)
     template_floor = Decision.REVIEW if any(
         f.category is FindingCategory.OPERATIONAL
         and f.severity in (Severity.ERROR, Severity.CRITICAL)
         for f in template_findings
     ) else Decision.SAFE
+    if not per_site:
+        if template_floor is Decision.REVIEW:
+            return Decision.REVIEW, (
+                "template-level L0 finding floors REVIEW; template assigned to no sites",
+            ), ()
+        return Decision.SAFE, ("template valid; assigned to no sites; no impact simulated",), ()
     worst = max(
         (v.decision for v in per_site.values()),
         key=lambda d: _PRECEDENCE[d],
@@ -902,14 +956,14 @@ def simulate_org_template(
     if isinstance(proposed_template, Rejection):
         return org_unknown((proposed_template,))
 
-    # org-level L0 (fatal -> org_rejection; non-fatal -> template_findings)
+    # org-level L0 — a FATAL violation short-circuits to org_rejections ONLY
+    # (template_findings holds NON-fatal L0 only, per the spec's fatal-L0 rule)
     l0 = adapter.validate(replace(op, payload=proposed_template))
-    template_findings = tuple(l0.findings)
     if l0.fatal:
         return org_unknown(
-            (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),),
-            template_findings=template_findings,
+            (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
         )
+    template_findings = tuple(l0.findings)
     # org-level field gate (no role check — networktemplate branch)
     fg = screen_op("networktemplate", snapshot, proposed_template)
     if fg:
@@ -1005,9 +1059,20 @@ In `src/digital_twin/drivers/render.py`, add `org_verdict_to_dict(ov: OrgVerdict
 
 Run the render test → PASS.
 
-- [ ] **Step 3: CLI dispatch by mode**
+- [ ] **Step 3: CLI dispatch by mode (+ `_RecordingProvider` forwarding)**
 
-In `src/digital_twin/drivers/cli.py`, after parsing the plan JSON, detect ORG mode (any op `object_type == "networktemplate"` / absent `site_id`) and call `simulate_org_template` → `render_org_human` / `org_verdict_to_dict` (respect the existing `--json` flag), with exit codes from the ORG decision (reuse the existing `Decision -> exit code` map: SAFE=0/REVIEW=10/UNSAFE=20/UNKNOWN=30). SITE mode path unchanged. Add a CLI test mirroring the existing one with an org-template plan JSON + a fake/fixture provider asserting the exit code + rendered output.
+First, `_RecordingProvider` (cli.py:25) currently forwards only `fetch_site`/`fetch_sites`; the org path calls `resolve_org_template`, so add a passthrough (no recording — see the replay note):
+
+```python
+    def resolve_org_template(self, scope, template_id):
+        return self._inner.resolve_org_template(scope, template_id)
+```
+
+In `cli.py`, after parsing the plan JSON, detect ORG mode — `all(op["object_type"] == "networktemplate" for op in plan["ops"]) and not plan["scope"].get("site_id")` — and call `simulate_org_template(plan, provider=recording, ...)` → `render_org_human` / `org_verdict_to_dict` (respect the existing `--json` flag), with exit codes from the ORG decision (reuse the existing `Decision -> exit code` map: SAFE=0/REVIEW=10/UNSAFE=20/UNKNOWN=30). SITE mode path unchanged.
+
+**`--replay-store` for org runs (MVP):** the org path does NOT record. `_RecordingProvider.recorded` stays `None` for org runs (resolve/fetch_sites don't set it), so the existing `if args.replay_store and recording.recorded is not None:` guard naturally skips capture — no crash, just no single-site fixture written. Document this in the `--replay-store` help text ("single-site runs only"); multi-site replay capture is out of scope (the spec's deferred fixture-optimization territory).
+
+Add a CLI test mirroring the existing one with an org-template plan JSON + the multi-site `FixtureProvider` (from Task 8) OR a fake provider, asserting the exit code + that the rendered output shows the org decision + a per-site line.
 
 - [ ] **Step 4: MCP tool**
 
