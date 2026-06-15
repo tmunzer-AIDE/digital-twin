@@ -111,10 +111,13 @@ each site's effective config recomputes with the edit. **No compile changes.**
 
 - **Org-level (run ONCE on the proposed template, before fan-out):**
   - **L0** validate `proposed_template` against `networktemplate.schema.json`
-    (add it to the L0 schema map). FATAL → whole-plan UNKNOWN. NON-fatal schema
-    violations → operational findings that live on `OrgVerdict.template_findings`
-    (guardrail #5) and floor the rollup to REVIEW (the existing
-    operational-ERROR→REVIEW rule), NOT duplicated per site.
+    (add it to the L0 schema map). FATAL → whole-plan UNKNOWN, recorded as a
+    `Rejection(stage="l0")` in `org_rejections` — NOT as a `Finding` (single-site
+    fatal L0 is a control-path condition: `DecisionInputs.l0_fatal`, never a
+    normal adapter finding; the org path mirrors that by treating it as a
+    short-circuit rejection). NON-fatal schema violations → operational `Finding`s
+    on `OrgVerdict.template_findings` (guardrail #5) that floor the rollup to
+    REVIEW (the existing operational-ERROR→REVIEW rule), NOT duplicated per site.
   - **Field gate** — the template edit's changed leaves vs a NEW
     `RAW_ALLOWLIST["networktemplate"]`. A `screen_op` template branch with NO
     device-role check (there is no device). Out-of-scope leaf → whole-plan
@@ -180,25 +183,27 @@ class OrgVerdict:
     driving_sites: tuple[str, ...]           # sites whose Verdict == the rollup decision
     site_failures: Mapping[str, str]         # site_id -> fetch error (surfaced subset)
     template_findings: tuple[Finding, ...]   # org-level (template-edit) L0 Findings only
-    org_rejections: tuple[Rejection, ...]    # gate/conflict/lookup Rejections (structured)
+    org_rejections: tuple[Rejection, ...]    # field-gate/conflict/lookup/fatal-L0 Rejections
 ```
 (Per-site freshness lives on each `per_site[*].state_meta`; no separate org
 state_meta in MVP. `site_failures` surfaces the fetch errors.)
 
 The two structured failure channels are kept distinct by TYPE, mirroring the
-single-site split: `template_findings` holds `Finding`s (non-fatal template L0
-schema violations — operational, REVIEW-driving); `org_rejections` holds
-`Rejection`s (the org field-gate rejection, the `update_conflicts`
-set-AND-delete, the assignment-lookup `FetchError` rendered as a Rejection).
-`decision_reasons` is the human-readable flattening of both (as in the
-single-site `unknown(rejection)` path).
+single-site split: `template_findings` holds `Finding`s — **non-fatal template L0
+schema violations ONLY** (operational, REVIEW-driving); `org_rejections` holds
+`Rejection`s — every short-circuit cause: the org field-gate rejection, the
+`update_conflicts` set-AND-delete, the assignment-lookup `FetchError` rendered as
+a Rejection, AND a **fatal template L0** as `Rejection(stage="l0")` (consumers
+distinguish causes by `Rejection.stage`). `decision_reasons` is the
+human-readable flattening of both (as in the single-site `unknown(rejection)`
+path).
 
 **Short-circuit before fan-out (whole-plan UNKNOWN, no per-site work):** an
-assignment-lookup failure (guardrail #2), a FATAL template L0, the
-set-AND-delete conflict, or an org field-gate rejection each return an
-`OrgVerdict` with `decision=UNKNOWN`, empty `per_site`, the structured cause on
-`org_rejections` (or `template_findings` for a fatal L0), and the human string on
-`decision_reasons`.
+assignment-lookup failure (guardrail #2), a fatal template L0, the set-AND-delete
+conflict, or an org field-gate rejection each return an `OrgVerdict` with
+`decision=UNKNOWN`, empty `per_site`, the structured cause on `org_rejections`,
+and the human string on `decision_reasons`. (`template_findings` never carries a
+short-circuit cause — only non-fatal L0.)
 
 Otherwise fan out, then roll up. Rollup `decision` = the WORST under
 `UNKNOWN > UNSAFE > REVIEW > SAFE` over BOTH:
