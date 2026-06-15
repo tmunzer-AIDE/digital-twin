@@ -67,6 +67,9 @@ def test_introduced_mismatch_is_unsafe():
     assert f.code == "wired.l2.native_mismatch.introduced"
     assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
     assert f.evidence["a_native"] == 10 and f.evidence["b_native"] == 30
+    # the finding names its object: the link (id matches the evidence link id)
+    assert f.subject is not None
+    assert f.subject.kind == "link" and f.subject.id == f.evidence["link"]
 
 
 def test_preexisting_mismatch_is_info_context_only():

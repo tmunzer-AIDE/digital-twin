@@ -75,6 +75,63 @@ def test_capability_present_runs_the_check():
     assert result.status is Status.PASS and check.ran
 
 
+def test_registry_resolves_finding_subject_names():
+    # the registry fills each finding's subject NAME from the IR (a check sets
+    # only kind+id locally)
+    from digital_twin.analysis.context import AnalysisContext
+    from digital_twin.contracts import (
+        Finding,
+        FindingCategory,
+        FindingSource,
+        ObjectRef,
+    )
+    from digital_twin.contracts import (
+        Severity as Sev,
+    )
+    from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder, diff_ir
+    from digital_twin.ir.entities import Vlan
+
+    b1, b2 = IRBuilder(), IRBuilder()
+    b1.add_device(sw("A")).add_vlan(Vlan(vlan_id=10, name="corp"))
+    b2.add_device(sw("A")).add_device(sw("B")).add_vlan(Vlan(vlan_id=10, name="corp"))
+    ir1, ir2 = b1.build(), b2.build()
+    ctx = CheckContext(
+        baseline=AnalysisContext(ir1), proposed=AnalysisContext(ir2), diff=diff_ir(ir1, ir2)
+    )
+
+    class SubjectCheck:
+        id, title, domain, default_severity = "test.subj", "s", "test", Sev.WARNING
+
+        def requires(self):
+            return frozenset()
+
+        def applies_to(self, diff):
+            return True
+
+        def run(self, ctx):
+            return CheckResult(
+                check_id=self.id,
+                status=Status.WARN,
+                findings=(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code="test.subj.x",
+                        severity=Sev.WARNING,
+                        confidence=Confidence(level=ConfidenceLevel.HIGH),
+                        message="m",
+                        subject=ObjectRef("vlan", "10"),  # no name set by the check
+                    ),
+                ),
+                coverage=Coverage(state=CoverageState.COMPLETE),
+                confidence=None,
+                reasoning="ok",
+            )
+
+    (result,) = CheckRegistry([SubjectCheck()]).run_all(ctx)
+    assert result.findings[0].subject.name == "corp"  # filled by the registry
+
+
 def test_crash_is_isolated_to_check_error_with_operational_finding():
     boom, ok = FakeCheck(id="test.boom", boom=True), FakeCheck(id="test.ok")
     results = CheckRegistry([boom, ok]).run_all(_ctx())

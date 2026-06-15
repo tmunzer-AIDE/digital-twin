@@ -26,7 +26,7 @@ violation.
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -154,6 +154,7 @@ class GatewayGapCheck:
                     confidence=confidence,
                     message=message,
                     affected_entities=(str(vid),),
+                    subject=ObjectRef("vlan", str(vid)),
                     evidence={
                         "vlan": vid,
                         "subnet": vlan.subnet,
@@ -245,6 +246,7 @@ class GatewayGapCheck:
                     confidence=confidence,
                     message=message,
                     affected_entities=(str(vid),),
+                    subject=ObjectRef("vlan", str(vid)),
                     evidence={"vlan": vid, "gateway": g,
                               "l3_interfaces": [i.id for i in intfs]},
                 )

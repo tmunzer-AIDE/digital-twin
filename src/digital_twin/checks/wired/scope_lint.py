@@ -36,7 +36,7 @@ import ipaddress
 import itertools
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -145,6 +145,7 @@ class DhcpScopeLintCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.overlap",
+                    subject=ObjectRef("dhcp_scope", a.id),
                     severity=severity,
                     confidence=_HIGH,
                     message=(
@@ -171,6 +172,7 @@ class DhcpScopeLintCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.out_of_subnet",
+                    subject=ObjectRef("dhcp_scope", s.id),
                     severity=severity,
                     confidence=_HIGH,
                     message=(
@@ -199,6 +201,7 @@ class DhcpScopeLintCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.gateway_mismatch",
+                    subject=ObjectRef("dhcp_scope", s.id),
                     severity=Severity.INFO if preexisting else Severity.WARNING,
                     confidence=_HIGH,
                     message=(

@@ -671,6 +671,7 @@ def test_invalid_bridge_priority_raises_an_adapter_finding():
     assert f.code == "scope.stp.bridge_priority_invalid"
     assert f.severity.value == "warning"
     assert f.evidence == {"device": "d1", "baseline": "4096", "proposed": "banana"}
+    assert f.subject is not None and f.subject.kind == "device" and f.subject.id == "d1"
     # a malformed BASELINE poisons the prediction too — both sides checked
     assert invalid_bridge_priority_findings({"d1": bad}, {"d1": good}) != []
 
@@ -690,6 +691,8 @@ def test_unresolved_dhcp_range_finding_is_delta_gated():
     intro = unresolved_dhcp_range_findings({}, tpl)                # introduced
     assert [f.code for f in intro] == ["scope.dhcp.range_unresolved"]
     assert intro[0].evidence["before"] is None                     # None -> template
+    assert intro[0].subject is not None
+    assert intro[0].subject.kind == "dhcp_scope" and intro[0].subject.id == "corp"
     changed = unresolved_dhcp_range_findings(tpl, other)           # changed
     assert [f.code for f in changed] == ["scope.dhcp.range_unresolved"]
     assert changed[0].evidence["before"] == "{{a}}"                # template -> template

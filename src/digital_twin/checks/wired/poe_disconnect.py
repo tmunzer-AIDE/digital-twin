@@ -26,7 +26,7 @@ Honesty rails (review round, 2026-06-10):
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -128,6 +128,7 @@ class PoeDisconnectCheck:
                         "disconnects"
                     ),
                     affected_entities=(ap_id,) if ap_id else (pid,),
+                    subject=ObjectRef("device", ap_id) if ap_id else ObjectRef("port", pid),
                     evidence={
                         "port": pid,
                         "powered_ap": ap_id,

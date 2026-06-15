@@ -22,7 +22,7 @@ Honesty rails (the review-series lessons, applied from birth):
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -108,6 +108,7 @@ class DhcpPathCheck:
                         "addressing at lease renewal"
                     ),
                     affected_entities=(str(vid),),
+                    subject=ObjectRef("vlan", str(vid)),
                     evidence={
                         "vlan": vid,
                         "removed_sources": list(base_vlan.dhcp_sources),

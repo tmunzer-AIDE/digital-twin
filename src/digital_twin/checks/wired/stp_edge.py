@@ -18,7 +18,7 @@ Attribution (link_boundary parity rules):
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -96,6 +96,7 @@ class StpEdgeOnUplinkCheck:
                         confidence=confidence,
                         message=message,
                         affected_entities=(end.id, peer.id),
+                        subject=ObjectRef("port", end.id),
                         evidence={
                             "port": end.id,
                             "peer": peer.id,

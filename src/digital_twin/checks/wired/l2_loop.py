@@ -19,7 +19,7 @@ from __future__ import annotations
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.cycles import Cycle
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -164,6 +164,7 @@ class L2LoopCheck:
             confidence=confidence,
             message=message,
             affected_entities=cycle.member_ports,
+            subject=ObjectRef("vlan", str(vid)),
             evidence={
                 "vlan": vid,
                 "cycle_nodes": list(cycle.nodes),

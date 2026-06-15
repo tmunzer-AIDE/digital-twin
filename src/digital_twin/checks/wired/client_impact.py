@@ -43,6 +43,9 @@ class ClientImpactCheck:
                 impacts.append(impact)
         findings: tuple[Finding, ...] = ()
         if impacts:
+            # no single `subject`: this finding aggregates clients across many
+            # attachments (ports/APs/vlans) — the macs are in affected_entities
+            # and each impact carries its own attachment in evidence
             findings = (
                 Finding(
                     source=FindingSource.CHECK,

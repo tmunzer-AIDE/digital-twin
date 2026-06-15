@@ -6,8 +6,21 @@ import dataclasses
 from enum import Enum
 from typing import Any
 
+from digital_twin.contracts import Finding
 from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
+
+
+def _finding_line(f: Finding, label: str = "finding") -> str:
+    """One human line: severity, code, WHICH object (subject), WHICH attribute
+    (evidence path when present), then the message."""
+    where = ""
+    if f.subject is not None:
+        who = f'"{f.subject.name}"' if f.subject.name else f.subject.id
+        where = f" on {f.subject.kind} {who}"
+    path = f.evidence.get("path")
+    at = f" at {path}" if path else ""
+    return f"  {label} [{f.severity.value}] {f.code}{where}{at}: {f.message}"
 
 
 def _plain(obj: Any) -> Any:
@@ -38,7 +51,7 @@ def render_human(verdict: Verdict) -> str:
             f"  check {res.check_id}: {res.status.value} (coverage={res.coverage.state.value})"
         )
     for f in verdict.findings[:20]:
-        lines.append(f"  finding [{f.severity.value}] {f.code}: {f.message}")
+        lines.append(_finding_line(f))
     if verdict.state_meta:
         lines.append(
             f"  state: {verdict.state_meta.host} @ {verdict.state_meta.state_acquired_at}"
@@ -72,7 +85,7 @@ def render_org_human(ov: OrgVerdict) -> str:
     ]
     lines += [f"  reason: {r}" for r in ov.decision_reasons[:10]]
     for f in ov.template_findings:
-        lines.append(f"  template-finding [{f.severity.value}] {f.code}: {f.message}")
+        lines.append(_finding_line(f, "template-finding"))
     if ov.per_site:
         lines.append("  per-site:")
         for sid, v in sorted(ov.per_site.items()):
