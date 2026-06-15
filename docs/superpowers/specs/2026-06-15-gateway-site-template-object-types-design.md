@@ -230,6 +230,21 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       tightening (SAFE→UNKNOWN only for the unmodeled target-change case), not a
       gateway-only divergence. Modeling relay target IPs in the IR (to resolve such
       edits to SAFE/REVIEW precisely) is recorded as future work.
+    - **`dhcpd_config.*.{ip_start,ip_end,gateway}` need the same serving-row screen
+      (was a P1 false-allow, same class).** `DhcpScope` is minted **only for
+      serving rows** (`_dhcp_serves_scope`: `type ∈ {local, server}`, absent →
+      `local`); **relay/none rows are skipped** and never become a scope. So a
+      relay/none row changing only `ip_start`/`ip_end`/`gateway` passes the gate,
+      mints no `DhcpScope`, leaves `dhcp_sources` unchanged → no finding → false
+      SAFE. Screen: a change to one of these range/gateway leaves is allowed only
+      when **at least one side (baseline or proposed) is a serving row** — the
+      serving↔non-serving transition is modeled as a `DhcpScope` add/remove (real
+      signal), and a both-serving edit changes real scope facts the checks read.
+      When **both sides are non-serving** (relay/none) → `Rejection(stage=
+      "dhcp_scope_field")` → **UNKNOWN**. Like the `servers` screen, this attaches
+      to the shared leaves wherever in scope — gateway **and** the switch/site path
+      (identical serving-only minting) — as a uniform, test-pinned safety
+      tightening.
     **`port_config.*.usage` is deliberately EXCLUDED (was a P1 false-allow):** the
     gateway ingest copies it only into `Port.profile`, an **inert** IR field no
     check/representation/analysis reads — so a usage-only edit would pass the gate,
@@ -377,6 +392,9 @@ both CLI and MCP.
 - `dhcpd_config.*.servers` both-non-empty relay-target change →
   `Rejection(stage="dhcp_relay_target")` → UNKNOWN (only the active/inactive
   boolean is modeled, not the target IPs).
+- `dhcpd_config.*.{ip_start,ip_end,gateway}` change on a row that is non-serving
+  (relay/none) on **both** sides → `Rejection(stage="dhcp_scope_field")` →
+  UNKNOWN (no `DhcpScope` is minted, so the change is invisible to the checks).
 - relevant device-profile detected → `Rejection(stage="device_profile_gate")` →
   that site UNKNOWN (relevance-scoped; a gate rejection, not a REVIEW finding).
 - 0 assigned sites → SAFE (existing contract).
