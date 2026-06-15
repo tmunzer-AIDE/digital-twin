@@ -118,6 +118,18 @@ family and is exactly the parallel path #5 forbids.
   `gatewaytemplate: JsonObj | None` alongside today's `networktemplate`. The
   per-site fetch pulls the site's assigned ones (by `sitetemplate_id` /
   `gatewaytemplate_id`).
+- **Replay-fixture shape must carry typed templates (was a P2 gap).** Today the
+  multi-site fixture (`observability/replay/store.py`) holds a single top-level
+  `"template"` and `resolve_org_template` filters only on `networktemplate_id`.
+  Generalize the doc to **typed templates keyed by `(object_type, id)`** —
+  e.g. `"templates": {"networktemplate": {<id>: {...}}, "gatewaytemplate":
+  {<id>: {...}}, "sitetemplate": {<id>: {...}}}` — and have each site doc carry
+  its `networktemplate_id` / `gatewaytemplate_id` / `sitetemplate_id` plus the
+  corresponding raw template bodies, so the typed `resolve_org_template` filters
+  by `site.<object_type>_id` and the per-site cross-stack fetches resolve. Keep
+  back-compat: the legacy single `"template"` key is read as a `networktemplate`
+  so the existing MS-a..d goldens stay valid. The `FixtureProvider`
+  multi-site/wrong-org/missing-template strictness rules carry over per type.
 - **Fetch the full IR's layers; pin only the edited one (corrects an earlier
   over-narrowing).** `_simulate_site_state` builds the **whole** IR + check suite
   every run, and the checks are cross-cutting — gateway exits/DHCP depend on
@@ -251,8 +263,20 @@ No new analysis path. Switch checks consume the now-sitetemplate-aware switch
 effective; the existing gateway checks (`wired.l3.gateway_gap.same_ip` /
 `.gateway_unowned`, `wired.dhcp.scope_lint.gateway_mismatch`) consume the gateway
 IR built from the new gateway effective device. `OrgVerdict` /
-`org_verdict_to_dict` / `render_org_human` are reused; CLI/MCP dispatch by mode
-is already object_type-agnostic (defensive — malformed → SITE path → UNKNOWN).
+`org_verdict_to_dict` / `render_org_human` are reused.
+
+**Driver mode-detection must become typed (was a P1 inaccuracy).** The CLI's
+`_is_org_plan` (`drivers/cli.py`) currently hard-codes
+`object_type == "networktemplate"`, and the MCP server reuses that same helper
+(`drivers/mcp_server.py`). Both must dispatch on **`ORG_OBJECT_TYPES`** (all-ops
+of any org type + no `site_id`) so `gatewaytemplate` / `sitetemplate` plans route
+to `simulate_org_template`; otherwise they fall to the SITE path and return
+UNKNOWN. The defensiveness is kept (malformed → SITE path → UNKNOWN, never a
+crash). The `_RecordingProvider.resolve_org_template` delegate (and the
+`StateProvider` protocol / `FixtureProvider` / `mist_api` impls) must adopt the
+new `(scope, template_id, object_type)` signature. Tests: a `gatewaytemplate`
+plan and a `sitetemplate` plan each route to the org path (not SITE/UNKNOWN) via
+both CLI and MCP.
 
 ## Data flow — a gatewaytemplate edit
 
@@ -308,6 +332,13 @@ Unit:
   for the full IR is fetched** — incl. the cross-stack one (a `gatewaytemplate`
   edit fetches the assigned `networktemplate`; a `networktemplate` edit fetches
   the assigned `gatewaytemplate`) — and any consumed-layer fetch-miss → UNKNOWN.
+- **driver mode-detection** — a `gatewaytemplate` plan and a `sitetemplate` plan
+  each route to the org path (not SITE/UNKNOWN) via **both** CLI and MCP;
+  malformed → SITE path → UNKNOWN (no crash).
+- **typed replay shape** — `resolve_org_template` filters the fixture's sites by
+  `site.<object_type>_id` per type; the legacy single-`"template"` doc still
+  loads as a `networktemplate` (back-compat); wrong-org / missing-template
+  strictness holds per type.
 
 Goldens:
 - sitetemplate edit breaks a switch leaf at one site → org UNSAFE naming it.
