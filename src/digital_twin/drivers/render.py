@@ -6,6 +6,7 @@ import dataclasses
 from enum import Enum
 from typing import Any
 
+from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
 
 
@@ -45,4 +46,42 @@ def render_human(verdict: Verdict) -> str:
         )
     if verdict.trace_ref:
         lines.append(f"  trace: {verdict.trace_ref}")
+    return "\n".join(lines)
+
+
+def org_verdict_to_dict(ov: OrgVerdict) -> dict[str, Any]:
+    """Serialize an OrgVerdict to a JSON-able dict."""
+    return {
+        "decision": ov.decision.value,
+        "decision_reasons": list(ov.decision_reasons),
+        "template_id": ov.template_id,
+        "driving_sites": list(ov.driving_sites),
+        "site_failures": dict(ov.site_failures),
+        "template_findings": [_plain(f) for f in ov.template_findings],
+        "org_rejections": [
+            {"stage": r.stage, "reasons": list(r.reasons)} for r in ov.org_rejections
+        ],
+        "per_site": {sid: verdict_to_dict(v) for sid, v in ov.per_site.items()},
+    }
+
+
+def render_org_human(ov: OrgVerdict) -> str:
+    """Render an OrgVerdict as readable plain text."""
+    lines = [
+        f"org decision: {ov.decision.name}  template: {ov.template_id}",
+    ]
+    lines += [f"  reason: {r}" for r in ov.decision_reasons[:10]]
+    for f in ov.template_findings:
+        lines.append(f"  template-finding [{f.severity.value}] {f.code}: {f.message}")
+    if ov.per_site:
+        lines.append("  per-site:")
+        for sid, v in sorted(ov.per_site.items()):
+            top_reason = v.decision_reasons[0] if v.decision_reasons else "ok"
+            freshness = ""
+            if v.state_meta:
+                freshness = f"  age={v.state_meta.age_seconds}s"
+            lines.append(f"    {sid}  {v.decision.name}  {top_reason}{freshness}")
+    if ov.site_failures:
+        failure_parts = ", ".join(f"{sid}({err})" for sid, err in ov.site_failures.items())
+        lines.append(f"  site failures: {failure_parts}")
     return "\n".join(lines)
