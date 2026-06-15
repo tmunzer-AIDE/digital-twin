@@ -223,9 +223,9 @@ reality. The MVP rule is deterministic and **relevance-scoped**:
 
 > If a **modeled switch/gateway** device has a `deviceprofile_id` **and** the
 > edited layer changes a modeled leaf that the unknown profile could override,
-> that **site** cannot return SAFE — the MVP returns **UNKNOWN** with a
-> device-profile coverage rejection/note. Unrelated **AP** profiles and devices
-> **not** affected by the edit do **not** taint the site or org verdict.
+> that **site** cannot return SAFE — the MVP returns **UNKNOWN** via a device-
+> profile **gate rejection**. Unrelated **AP** profiles and devices **not**
+> affected by the edit do **not** taint the site or org verdict.
 
 This avoids a noisy "any device-profile → UNKNOWN" (the current fixtures carry
 many AP `deviceprofile_id`s).
@@ -251,9 +251,20 @@ The taint test has **two** conjuncts — both required:
 
 This keeps the device-profile rule consistent with the cosmetic-edit → SAFE
 golden: a no-op/unused edit affects no device's path, so it neither produces a
-finding nor a profile taint. Mechanism: an analysis-context flag set only when an
-in-scope modeled device with a `deviceprofile_id` is **affected** (both conjuncts)
-by the edit. The relevance-scoping and the "cannot return SAFE for that site"
+finding nor a profile taint.
+
+**Mechanism — a gate Rejection, NOT a finding (was a P2 verdict-path gap).** In
+the current engine, `UNKNOWN` is produced **only** by `rejections` / `l0_fatal` /
+`baseline_unavailable` (`verdict/decision.py`); any *finding* — including an
+operational ERROR/CRITICAL — floors at **REVIEW**, never UNKNOWN. So the
+device-profile taint must **not** be expressed as a check/adapter finding or a
+mere coverage note (that would yield REVIEW and contradict the honesty rail). It
+is a per-site **`Rejection(stage="device_profile_gate", reasons=(…,))`** raised
+when an in-scope modeled switch/gateway device with a `deviceprofile_id` is
+**affected** (both conjuncts) by the edit. That rejection flows into the site's
+`DecisionInputs.rejections` (exactly like the field/scope gates) →
+`decide(...) → UNKNOWN` for that site → the existing `decide_org` rollup surfaces
+it as a driving UNKNOWN site. The relevance-scoping and the per-site-UNKNOWN
 outcome are locked. The full fix (model the layer) is the roadmap item added
 2026-06-15.
 
@@ -305,7 +316,8 @@ both CLI and MCP.
 
 - assignment / template / sitetemplate / gatewaytemplate fetch failure → UNKNOWN.
 - unmodeled gateway field → field gate → UNKNOWN.
-- relevant device-profile detected → that site UNKNOWN (relevance-scoped).
+- relevant device-profile detected → `Rejection(stage="device_profile_gate")` →
+  that site UNKNOWN (relevance-scoped; a gate rejection, not a REVIEW finding).
 - 0 assigned sites → SAFE (existing contract).
 - wrong plan-mode (site-scoped plan to org path or vice versa) → UNKNOWN
   (existing symmetric guards).
@@ -323,9 +335,11 @@ Unit:
   device entries untouched).
 - device-profile rule — **both** conjuncts (leaf in
   `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` **and** affected for that device's
-  path) → site UNKNOWN; a non-overridable leaf, an unrelated AP profile, an
-  unaffected device, or an unused/cosmetic overridable-typed edit → no taint
-  (the last pins consistency with the cosmetic-SAFE golden).
+  path) → `Rejection(stage="device_profile_gate")` → site **UNKNOWN** (assert
+  UNKNOWN, **not** REVIEW — the verdict-path that the engine actually produces);
+  a non-overridable leaf, an unrelated AP profile, an unaffected device, or an
+  unused/cosmetic overridable-typed edit → no taint (the last pins consistency
+  with the cosmetic-SAFE golden).
 - `gatewaytemplate.networks.*` edit → field gate → UNKNOWN (not allowlisted;
   gateway namespace is `org_networks`, not consumed from the device in MVP).
 - **edited layer not re-fetched per site**; **every other assigned layer needed
