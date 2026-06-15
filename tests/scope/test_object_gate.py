@@ -30,6 +30,20 @@ def test_template_object_type_rejects_as_fanout():
     assert any("networktemplate" in reason for reason in r.reasons)
 
 
+def test_template_modification_rejects_switch_and_gateway():
+    # MODIFYING an org template assigned to sites is an org->site fan-out (the
+    # inherited layer changes across every assigned site) and is NOT simulated:
+    # the update-action passes, but the template object_type is rejected ->
+    # UNKNOWN, never silently passed. Covers switch (networktemplate) AND gateway
+    # (gatewaytemplate) templates, plus sitetemplate.
+    for object_type in ("networktemplate", "gatewaytemplate", "sitetemplate"):
+        r = check_objects(
+            _plan([_op(object_type=object_type, object_id="t1", action="update")])
+        )
+        assert isinstance(r, Rejection) and r.stage == "object_gate"
+        assert any(object_type in reason for reason in r.reasons)
+
+
 def test_missing_site_id_rejects_single_site_rule():
     r = check_objects(_plan([_op()], site_id=None))
     assert isinstance(r, Rejection)

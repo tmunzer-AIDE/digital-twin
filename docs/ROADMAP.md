@@ -192,21 +192,26 @@ modeling" below.
   template inheritance exist; the pipeline is single-site).
 - 🔵 networktemplate / sitetemplate as first-class `object_type`s (today only
   `site_setting` + `device`).
-- 🔵 **object deletion + template-deletion ripple** (the `delete` action). Today
-  every non-`update` action (incl. `delete`) AND every template/org `object_type`
-  is rejected pre-fetch → UNKNOWN (`object_gate`; fails safe, never false-SAFE —
-  the `delete`-action rejection is test-pinned). The real hazard: deleting a
-  template ALREADY assigned to sites is an org-level, multi-site change — every
-  assigned site silently loses its INHERITED layer (networks / port_usages / vars
-  / `ospf_areas` / `dhcpd_config` / STP / …), a mass-removal the existing checks
-  (`l2.blackhole.exit_lost`, `gateway_gap.removed`, `dhcp.path`,
-  `ospf_withdrawal.egress_lost`) could catch PER SITE if the front-end modeled it.
-  Needs: the `delete` action as a first-class change type (recompute each site's
-  effective state WITHOUT the object), template/org `object_type`s (above), and
-  the multi-site fan-out. **Gateway templates are a wider gap — gateways aren't a
-  compile target, so there is no template-merge path on that side.** Distinct
-  from Mist's attribute-delete (`{"-attr": ""}`) inside an `update`, which IS
-  modeled (`effective_update`/`update_conflicts`, field gate "deleted vs changed").
+- 🔵 **template / org-object changes — modify + delete — and their multi-site
+  ripple.** Today every template/org `object_type` (`networktemplate` = switch
+  template, `gatewaytemplate`, `sitetemplate`, …) AND every non-`update` action
+  (incl. `delete`) is rejected pre-fetch → UNKNOWN (`object_gate`; fails safe,
+  never false-SAFE — both the template-`object_type` update rejection and the
+  `delete`-action rejection are test-pinned). The real hazard is the org→site
+  fan-out: a template assigned to sites that is **modified** (the common case) or
+  **deleted** changes/strips the INHERITED layer of EVERY assigned site at once
+  (networks / port_usages / vars / `ospf_areas` / `dhcpd_config` / STP / …) —
+  re-VLANed ports, moved subnets/gateways, altered OSPF areas, a mass-removal on
+  delete — which the existing per-site checks (`l2.blackhole.exit_lost`,
+  `gateway_gap.*`, `dhcp.path`, `ospf_withdrawal.*`) could catch IF the front-end
+  recomputed each assigned site's proposed effective state with the edited/absent
+  template. Needs: template/org `object_type`s + the `delete` action as
+  first-class change types, plus the multi-site fan-out (the `fetch_sites`
+  org-batch path already exists; the pipeline is single-site). **Gateway
+  templates are a wider gap — gateways aren't a compile target, so there is no
+  template-merge path on that side at all.** Distinct from Mist's attribute-delete
+  (`{"-attr": ""}`) inside an `update`, which IS modeled (`effective_update` /
+  `update_conflicts`, field gate "deleted vs changed").
 
 ## 4. Product / infrastructure (spec-deferred behind seams)
 
