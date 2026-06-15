@@ -90,9 +90,17 @@ Reimplementations on top of the primitive:
   calls `merge_only` with two args) — reimplement their *bodies* on `fold_layers`,
   don't change their arities.
 - gateway site-effective → `fold_layers([gatewaytemplate, sitetemplate,
-  site_setting], GATEWAY_POLICY)`, then the per-device PUT-root overlay
-  (`effective_update`), then **`_resolve` `{{vars}}` LAST** → an **effective
-  gateway device**. **Order matters — `_resolve` runs AFTER the device overlay,
+  site_setting], GATEWAY_POLICY)`, then the **per-device overlay as one more fold
+  layer under the same policy** — `fold_layers([site_effective, device],
+  GATEWAY_POLICY)` (keyed maps `port_config`/`ip_configs`/`dhcpd_config` merge per
+  key so the device adds a port without wiping template ports; device-own roots
+  REPLACE) — **NOT `effective_update`, which is a root-level merge that would
+  replace the inherited `port_config` wholesale** (the switch path mirrors this via
+  `_DEVICE_DICT_MERGE_FIELDS`, not root-replace). The proposed edit's
+  `{"-attr":""}` delete-markers are applied via `apply_template` *before* this
+  fold, so the device overlay needs no marker handling. Then **`_resolve` `{{vars}}`
+  LAST** → an **effective gateway device**. **Order matters — `_resolve` runs AFTER
+  the device overlay,
   matching `compile_device` (`compile/switch.py:95` resolves last, after the
   per-device merge) (was a P2 order divergence).** Resolving before the overlay
   would leave any device-supplied `{{var}}` unsubstituted; resolving last matches

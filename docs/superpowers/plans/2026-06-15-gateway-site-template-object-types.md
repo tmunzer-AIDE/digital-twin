@@ -286,6 +286,8 @@ def test_org_object_types_includes_all_three():
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
     gw = set(RAW_ALLOWLIST["gatewaytemplate"])
     assert "port_config.*.disabled" in gw and "ip_configs.*.ip" in gw
+    assert "vars.*" in gw                        # a vars edit must pass the RAW field
+    # gate so the derived gate can evaluate the ripple (mirrors site_setting)
     assert "port_config.*.usage" not in gw      # inert -> excluded
     assert "networks.*.vlan_id" not in gw       # org-namespace -> excluded
 
@@ -339,7 +341,9 @@ _GATEWAY_LEAVES: tuple[str, ...] = (
 
 After the `RAW_ALLOWLIST["networktemplate"] = ...` line add:
 ```python
-RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES,)
+# vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate
+# vars edit passes the RAW field gate and the derived gate evaluates its ripple.
+RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES, "vars.*")
 # sitetemplate sits in BOTH stacks -> union of switch/site leaves + gateway leaves.
 # Verified against the committed sitetemplate OAS in Phase 5 (narrow only if the
 # schema proves a leaf cannot appear).
@@ -455,13 +459,17 @@ def test_rawsitestate_has_new_template_fields():
 Run: `uv run pytest tests/providers/test_base.py -q`
 Expected: FAIL — fields absent.
 
-- [ ] **Step 3: Write minimal implementation** — in `base.py`, add two fields to `RawSiteState` next to `networktemplate` (both `JsonObj | None`, default `None` so existing constructors keep working), and change the `StateProvider.resolve_org_template` protocol signature to `(self, scope: OrgScope, template_id: str, object_type: str) -> OrgTemplateContext | FetchError`.
+- [ ] **Step 3: Write minimal implementation** — in `base.py`, add two defaulted fields to `RawSiteState`. **They MUST go at the TRAILING/defaulted section, AFTER `org_networks: tuple[...] = ()`** — the fields after `networktemplate` (`devices`, `device_stats`, …) are *required* (no default), so placing a defaulted field there raises `TypeError: non-default argument follows default argument`. Also change the `StateProvider.resolve_org_template` protocol signature to `(self, scope: OrgScope, template_id: str, object_type: str) -> OrgTemplateContext | FetchError`.
 
 ```python
-# in RawSiteState
+# in RawSiteState, AFTER the existing `org_networks: tuple[JsonObj, ...] = ()`:
+# assigned sitetemplate / gatewaytemplate bodies (None = not assigned/not fetched).
+# Trailing + defaulted so every existing constructor/fixture stays valid.
 sitetemplate: JsonObj | None = None
 gatewaytemplate: JsonObj | None = None
 ```
+
+(`observability/replay/store.py:load_fixture_doc` constructs `RawSiteState` — Task 18 adds these two fields there with `.get(...)` back-compat.)
 
 - [ ] **Step 4: Run test + suite to catch the protocol change**
 
@@ -586,6 +594,14 @@ def test_sitetemplate_one_port_does_not_wipe_template_ports():
     eff = compile_gateway_device(gt, st, {}, {})
     assert set(eff["port_config"]) == {"a", "b"}      # DICT_MERGE, b survives
     assert eff["port_config"]["a"]["networks"] == ["z"]  # sitetemplate wins for a
+
+
+def test_gateway_with_no_port_config_does_not_crash():
+    # a gateway with no inherited/device port_config must compile cleanly (the
+    # materialization helper reads eff.get("port_config", {}))
+    eff = compile_gateway_device({"ip_configs": {"corp": {"ip": "10.0.0.1"}}}, None, {}, {})
+    assert "port_config" not in eff or eff["port_config"] == {}
+    assert eff["ip_configs"]["corp"]["ip"] == "10.0.0.1"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -598,17 +614,21 @@ Expected: FAIL — module missing.
 ```python
 # src/digital_twin/adapters/mist/compile/gateway.py
 """Gateway device effective config: fold the gateway stack, overlay the device
-(PUT-root), then resolve {{vars}} LAST (matching compile_device).
+PER-KEY (NOT root-replace), then resolve {{vars}} LAST (matching compile_device).
 
 GATEWAY_POLICY DICT_MERGEs the keyed maps port_config/ip_configs/dhcpd_config so a
-higher layer that sets one port/scope does not wipe the rest. Exact Mist layering
+higher layer (and the device overlay) that sets one port/scope does not wipe the
+rest. The device overlay is just another fold layer with the SAME policy — so the
+keyed maps merge per key and device-own roots REPLACE. (Do NOT use
+`effective_update`: it is a root-level merge — `device["port_config"]` would
+replace the inherited `port_config` wholesale, wiping template ports. That is the
+exact behaviour the test forbids; the switch path mirrors this with
+`_DEVICE_DICT_MERGE_FIELDS`, not root-replace.) Exact Mist layering for these maps
 is Tier-2 live-verified (starting from DICT_MERGE)."""
 
 from __future__ import annotations
 
 from typing import Any
-
-from digital_twin.adapters.mist.update import effective_update  # PUT-root overlay
 
 from .fold import MergePolicy, PolicyTable, fold_layers
 from .switch import _resolve  # vars substitution, resolve-last
@@ -633,11 +653,13 @@ def compile_gateway_device(
     site_effective = fold_layers(
         [gatewaytemplate, sitetemplate, site_setting], GATEWAY_POLICY
     )
-    overlaid = effective_update(site_effective, device)
+    # device overlay = one more fold layer under the same policy: keyed maps merge
+    # per key (device port adds, template ports survive), device-own roots replace.
+    overlaid = fold_layers([site_effective, device], GATEWAY_POLICY)
     return _resolve(overlaid)
 ```
 
-Note: verify `effective_update`'s real import path/signature (`grep -rn "def effective_update" src`) and that it returns the merged dict (not a Rejection) for a plain device overlay; if it can return a conflict, use the merge helper it wraps, or merge per-key for the gateway keyed maps then apply device-own roots. Adapt the import to the actual module (it may be `apply/objects.py`).
+Note: the proposed gatewaytemplate edit (with any `{"-attr":""}` delete-markers) is already applied via `apply_template` BEFORE this fold, so the device overlay needs no delete-marker handling — a fetched device dict carries no markers. The fold-based overlay carries the device's identity roots (`mac`/`id`) through REPLACE.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -678,7 +700,7 @@ Expected: FAIL — `gateway_effective` absent.
 - [ ] **Step 3: Write minimal implementation** — in `adapter.py`:
   - Add `gateway_effective: dict[str, _Json]` to `IngestOutcome` (default `{}`).
   - In `ingest`, build, for each `type == "gateway"` device **with a mac**, `eff = compile_gateway_device(raw.gatewaytemplate, raw.sitetemplate, raw.setting, dict(dev))`, key it `device_id(str(dev["mac"]))`. A gateway lacking `mac` is dropped (consistent with ingest's existing skip).
-  - Materialize: build the `devices` tuple passed to ingest with each gateway device's modeled leaves replaced by the effective ones — `dc_replace`-style, do NOT mutate (RawSiteState is frozen). Concretely: construct `materialized_devices = tuple(_with_gateway_effective(d, gateway_effective) for d in raw.devices)` where the helper, for a gateway device, returns `{**d, "port_config": eff["port_config"], "ip_configs": eff.get("ip_configs", {}), "dhcpd_config": eff.get("dhcpd_config", {})}` (modeled leaves only; not `networks`), else returns `d` unchanged. Run the gateway ingest over `materialized_devices`.
+  - Materialize: build the `devices` tuple passed to ingest with each gateway device's modeled leaves replaced by the effective ones — `dc_replace`-style, do NOT mutate (RawSiteState is frozen). Concretely: construct `materialized_devices = tuple(_with_gateway_effective(d, gateway_effective) for d in raw.devices)` where the helper, for a `type == "gateway"` device **with a mac**, returns `{**d, **{k: eff.get(k, {}) for k in ("port_config", "ip_configs", "dhcpd_config")}}` (use `eff.get(..., {})` for **every** modeled map — a gateway may have no inherited/device `port_config`, so `eff["port_config"]` would `KeyError`; modeled leaves only, not `networks`), else returns `d` unchanged (mac-less gateway dropped from both the map and materialization — uniform blind spot). Run the gateway ingest over `materialized_devices`.
   - Expose both `device_effective` (switch, unchanged) and the new `gateway_effective` on `IngestOutcome`.
 
 - [ ] **Step 4: Run test + suite**
@@ -995,7 +1017,11 @@ DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     "switch": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_DHCP_LEAVES),
 }
 ```
-Then `device_profile_gate.py`: the gate takes the in-scope devices, the changed effective leaves (by path), and the set of device ids the edit actually affects (participation — computed by the caller from `device_effective`/`gateway_effective` + the changed leaves). It rejects (returns a `Rejection(stage="device_profile_gate", reasons=(...))`) iff some device of role ∈ {switch, gateway} has a `deviceprofile_id`, is in `affected_device_ids`, AND a changed leaf is in that role's overridable set. AP and unaffected devices never taint.
+Then `device_profile_gate.py`: the gate takes the in-scope devices, the changed effective leaves (by dot-path), and the set of device ids the edit actually affects. It rejects (`Rejection(stage="device_profile_gate", reasons=(...))`) iff some device of role ∈ {switch, gateway} has a `deviceprofile_id`, is in `affected_device_ids`, AND a changed leaf matches that role's overridable set. **Two precision requirements (review P2):**
+  - **Normalize device ids the SAME way the effective maps are keyed** — `device_effective`/`gateway_effective` are keyed by `device_id(str(dev["mac"]))` (`ir/entities.py:device_id`), so the gate must compute `device_id(str(dev["mac"]))` for each raw device before comparing against `affected_device_ids` (never compare raw colon/dash MAC strings directly — they won't match). Import `from digital_twin.ir.entities import device_id`.
+  - **Match changed leaves with WILDCARD patterns, not exact tuple membership** — a changed leaf is a concrete path like `port_config.ge-0/0/0.disabled`; the overridable set holds patterns like `port_config.*.disabled`. Use `from digital_twin.scope.paths import allowed` → `allowed(changed_leaf, DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE[role])` (NOT `changed_leaf in <tuple>`).
+
+  AP and unaffected devices never taint. The caller (Task 14) computes `affected_device_ids` already as `device_id`-keyed (from the effective maps), so both sides use the same key space.
 
 - [ ] **Step 4: Run test to verify it passes**
 
