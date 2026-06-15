@@ -70,6 +70,15 @@ class RawSiteState:
 
 
 @dataclass(frozen=True)
+class OrgTemplateContext:
+    """Resolution of a networktemplate change: the current template JSON (the
+    baseline SNAPSHOT) + the ids of every site assigned to it."""
+
+    template: JsonObj
+    assigned_site_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FetchError:
     """Total fetch failure — no usable baseline (site/setting could not be read).
 
@@ -77,7 +86,7 @@ class FetchError:
     and Plan 3's pipeline maps this to decision UNKNOWN.
     """
 
-    scope: SiteScope
+    scope: SiteScope | OrgScope
     failures: tuple[FetchFailure, ...]
     acquired_at: datetime
     host: str
@@ -99,4 +108,13 @@ class StateProvider(Protocol):
         Returns a per-site result map; one site's failure never sinks the others.
         Implementations SHOULD batch org-level endpoints where the payload is
         identical to the per-site call (see MistApiProvider)."""
+        ...
+
+    def resolve_org_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgTemplateContext | FetchError:
+        """List the org's sites, filter to those whose networktemplate_id ==
+        template_id, and fetch the template. A lookup failure (sites or template)
+        is a FetchError (whole-plan UNKNOWN). 0 assigned sites is a SUCCESS with
+        an empty assigned_site_ids tuple."""
         ...

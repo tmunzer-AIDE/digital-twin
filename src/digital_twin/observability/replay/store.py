@@ -19,6 +19,7 @@ from digital_twin.providers.base import (
     FetchError,
     FetchFailure,
     OrgScope,
+    OrgTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -161,3 +162,19 @@ class FixtureProvider:
         return {
             sid: self.fetch_site(SiteScope(org_id=scope.org_id, site_id=sid)) for sid in targets
         }
+
+    def resolve_org_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgTemplateContext | FetchError:
+        """Not supported for single-site fixtures — returns FetchError (UNKNOWN)."""
+        return FetchError(
+            scope=scope,
+            failures=(
+                FetchFailure(
+                    object="org_template",
+                    error="resolve_org_template not supported for single-site fixtures",
+                ),
+            ),
+            acquired_at=datetime.now(UTC),
+            host=self._raw.meta.host,
+        )

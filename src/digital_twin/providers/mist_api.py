@@ -31,6 +31,7 @@ from .base import (
     FetchError,
     FetchFailure,
     OrgScope,
+    OrgTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -118,6 +119,36 @@ class MistApiProvider(StateProvider):
                 include_derived=include_derived,
             )
         return out
+
+    def resolve_org_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgTemplateContext | FetchError:
+        try:
+            sites = self._org_sites(scope)
+            template = self._networktemplate(SiteScope(scope.org_id, ""), template_id)
+        except Exception as exc:  # noqa: BLE001 — total lookup failure is a VALUE
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_template", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        # defensive: the live `_networktemplate` raises (-> the except above) on a
+        # missing id, but a subclass/SDK change could return None instead of raising
+        if template is None:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(object="networktemplate", error=f"{template_id} not found"),
+                ),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        assigned = tuple(
+            str(s["id"]) for s in sites
+            if s.get("id") and str(s.get("networktemplate_id") or "") == template_id
+        )
+        return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
 
     # -- shared per-site assembly ---------------------------------------------
     def _fetch_one(

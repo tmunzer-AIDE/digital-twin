@@ -84,6 +84,7 @@ def test_plan2_public_api():
         FetchError,
         MistApiProvider,
         OrgScope,
+        OrgTemplateContext,
         RawSiteState,
         SiteScope,
         StateProvider,
@@ -102,6 +103,7 @@ def test_plan2_public_api():
             RawSiteState,
             SiteScope,
             OrgScope,
+            OrgTemplateContext,
             StateProvider,
         )
     )

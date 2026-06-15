@@ -16,7 +16,14 @@ from digital_twin.drivers.render import render_human, verdict_to_dict
 from digital_twin.engine.pipeline import simulate
 from digital_twin.engine.run_context import RunContext
 from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
-from digital_twin.providers.base import FetchError, OrgScope, RawSiteState, SiteScope, StateProvider
+from digital_twin.providers.base import (
+    FetchError,
+    OrgScope,
+    OrgTemplateContext,
+    RawSiteState,
+    SiteScope,
+    StateProvider,
+)
 from digital_twin.verdict.decision import Decision
 
 EXIT_CODES = {Decision.SAFE: 0, Decision.REVIEW: 10, Decision.UNSAFE: 20, Decision.UNKNOWN: 30}
@@ -46,6 +53,11 @@ class _RecordingProvider:
         include_derived: bool = False,
     ) -> dict[str, RawSiteState | FetchError]:
         return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)  # type: ignore[arg-type]
+
+    def resolve_org_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgTemplateContext | FetchError:
+        return self._inner.resolve_org_template(scope, template_id)
 
 
 def main(argv: list[str] | None = None) -> int:

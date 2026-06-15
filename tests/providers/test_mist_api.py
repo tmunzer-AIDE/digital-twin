@@ -169,3 +169,21 @@ def test_include_derived_only_when_requested():
     with_d = p.fetch_sites(OrgScope("o1"), ["s1"], include_derived=True)["s1"]
     assert isinstance(without, RawSiteState) and without.derived_setting is None
     assert isinstance(with_d, RawSiteState) and with_d.derived_setting == {"_derived": "s1"}
+
+
+def test_resolve_org_template_filters_assigned_sites():
+    from digital_twin.providers.base import OrgScope, OrgTemplateContext
+    p = FakeProvider(
+        sites=[
+            {"id": "s1", "networktemplate_id": "ntX"},
+            {"id": "s2", "networktemplate_id": "ntY"},
+            {"id": "s3", "networktemplate_id": "ntX"},
+        ],
+        ports=[],
+        wired=[],
+        templates={"ntX": {"id": "ntX", "networks": {}}},
+    )
+    ctx = p.resolve_org_template(OrgScope(org_id="o1"), "ntX")
+    assert isinstance(ctx, OrgTemplateContext)
+    assert set(ctx.assigned_site_ids) == {"s1", "s3"}
+    assert ctx.template["id"] == "ntX"
