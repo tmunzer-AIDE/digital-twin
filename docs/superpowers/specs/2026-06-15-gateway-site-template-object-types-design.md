@@ -334,6 +334,27 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       preempted to
       UNKNOWN. Same shared leaves, same switch/site + gateway coverage, same
       derived-gate placement as below.
+
+      **Exhaustive transition matrix (the row's whole state space — this rule is
+      complete, not leaf-by-leaf).** Each side collapses to one of three
+      participation states: **S** = serving (`local`/`server`/absent → mints
+      `DhcpScope`, `active`, no relay target), **R** = active relay (`relay` +
+      non-empty `servers` → `active`, no scope, **unmodeled** target), **I** =
+      inactive (`none`, or `relay` with empty/absent `servers` → not `active`, no
+      scope, no provider). The screen depends only on the (baseline → proposed) pair
+      — **the relay-target screen fires exactly in the four both-`active` cells where
+      the target identity differs (S→R, R→S, and R→R with differing `servers`); every
+      cell with ≥1 `I` side defers to the modeled `dhcp_path`/`scope_lint` signal:**
+
+      | base ↓ \ prop → | **S** (serving) | **R** (active relay) | **I** (inactive) |
+      |---|---|---|---|
+      | **S** | allowed → `scope_lint` reads the scope-fact delta | **UNKNOWN** `dhcp_mode_transition` (scope lost silently; `active` stays true → no `dhcp_path` loss) | allowed → `dhcp_path` provider-loss (REVIEW) |
+      | **R** | **UNKNOWN** `dhcp_mode_transition` (relay target silently gone; `active` stays true) | same `servers`: allowed (no-op SAFE) · differing: **UNKNOWN** `dhcp_relay_target` | allowed → `dhcp_path` provider-loss (REVIEW) |
+      | **I** | allowed → provider gain + `scope_lint` on the new scope | allowed → provider gain (additive; no modeled service replaced) | allowed (no participation change; an inert range/gateway leaf edit on these both-non-serving rows is caught by the orthogonal scope-field screen → UNKNOWN) |
+
+      The four UNKNOWN cells are exactly the both-`active` differing-target cases; the
+      five `I`-touching cells are SAFE/REVIEW via the existing checks. This is the
+      whole 3×3 — no transition is unscreened.
     - **The row-level helper evaluates the COMPILED EFFECTIVE diff, in the derived
       gate — not just the raw field gate (was a P1 placement gap).** The derived
       gate (`scope/derived_gate.py`) diffs the full effective baseline/proposed at
@@ -600,6 +621,11 @@ Unit:
   side) — stays a modeled `dhcp_path` provider-loss verdict (REVIEW), proving the
   exemption is row-local, not check-output-dependent; serving→`none` → allowed
   (provider loss via `dhcp_path`); `local→server` → no-op SAFE.
+- **full 3×3 participation matrix** — parametrize all nine (S/R/I)×(S/R/I)
+  baseline→proposed transitions (incl. R→R same/differing `servers`) and assert
+  each matches the matrix verdict (4 UNKNOWN cells: S→R, R→S, R→R-differing; the
+  rest SAFE/REVIEW via `dhcp_path`/`scope_lint`). Pins completeness — no
+  unscreened transition.
 - **DHCP screens run on the effective (derived) diff, not only the raw gate** —
   a `vars.*` edit that compiles into an effective relay-target change
   (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN; a `vars.*` edit that compiles into a
