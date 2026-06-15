@@ -212,10 +212,32 @@ modeling" below.
   real template assigned to 2 sites ran the full real-provider fan-out → SAFE,
   rollup consistent. 770 tests. Spec/plan:
   docs/superpowers/{specs,plans}/2026-06-14-multisite-org-template-simulation*.md.
-- 🔵 **gatewaytemplate / sitetemplate** as first-class `object_type`s (the
-  networktemplate slice above is done; gateways aren't a compile target so a
-  gateway-template needs the gateway-compile work first; sitetemplate inheritance
-  differs).
+- 🟡 **gatewaytemplate / sitetemplate** as first-class `object_type`s
+  (spec'd 2026-06-15, in progress). Generalizes the networktemplate fan-out to a
+  **typed** set `{networktemplate, gatewaytemplate, sitetemplate}` over a unified
+  layered effective-config compiler (`fold_layers(layers, policy)`). The vendor
+  derivation is one uniform stack for every device family:
+  `<type>template → sitetemplate → site_setting → device-profile → device`. Adds
+  the **sitetemplate** layer (fixes the latent baseline gap for sites already
+  assigned one) and a **gateway compile** (gatewaytemplate folded under the device
+  via the PUT-root overlay → existing GS22 gateway IR/checks reused, no parallel
+  path; unmodeled gateway fields — routing/BGP/tunnels/security — stay field-gated
+  → UNKNOWN). Org fan-out pins exactly one edited layer per plan. Device-profile is
+  the named out-of-scope layer below (relevance-scoped UNKNOWN, not silent).
+  Spec: docs/superpowers/specs/2026-06-15-gateway-site-template-object-types-design.md.
+- 🔵 **device-profile as a modeled compile layer.** The derivation stack is
+  `<type>template → sitetemplate → site_setting → device-profile → device`, and
+  the twin does not model the **device-profile** layer (a pre-existing gap, true
+  since M1). Because the profile *wins* over the template/site/sitetemplate
+  layers, ignoring it can make an upper-layer template edit look more or less
+  impactful than reality. Interim honesty (shipped with the
+  gatewaytemplate/sitetemplate slice): a modeled switch/gateway device carrying a
+  `deviceprofile_id` whose unknown content could override a leaf the edit changes
+  forces that **site** → UNKNOWN (relevance-scoped — unrelated AP profiles /
+  unaffected devices do not taint the org verdict). This item is to model the
+  device-profile layer for real (fetch + fold it into `fold_layers` as the
+  highest-precedence non-device layer) so those edits can resolve
+  SAFE/REVIEW/UNSAFE instead of UNKNOWN.
 - 🔵 **template / org-object changes — DELETE + the wider ripple.** A template
   `delete` (object deletion) and a non-`update` action are still rejected
   pre-fetch → UNKNOWN (`object_gate`; fails safe, test-pinned). Modify-ripple is
