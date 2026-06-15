@@ -1140,7 +1140,7 @@ def test_removed_reference_in_baseline_only_taints_device():
     assert affected_device_ids(("networks.corp.vlan_id",), base, prop) == {"d"}
 ```
 
-  (b) `tests/engine/test_pipeline_device_profile.py` — end-to-end: (i) a per-site **template/site** edit where a modeled gateway/switch carries `deviceprofile_id` and the edit changes an overridable, **referenced** leaf → site verdict UNKNOWN via `device_profile_gate`; (ii) an AP-profile-only site, or an **unused** `port_usages` edit, → not tainted; (iii) **a single-site `device` plan on a profiled device → NOT tainted** (review P2 — `device` is above the profile in precedence; `simulate` passes `apply_device_profile_gate=False` for an all-`device` plan). Verdict per the real checks for the non-tainted cases.
+  (b) `tests/engine/test_pipeline_device_profile.py` — end-to-end: (i) a per-site **template/site** edit where a modeled gateway/switch carries `deviceprofile_id` and the edit changes an overridable, **referenced** leaf → site verdict UNKNOWN via `device_profile_gate`; (ii) an AP-profile-only site, or an **unused** `port_usages` edit, → not tainted; (iii) **a single-site `device` plan on a profiled device → NOT tainted** (review P2 — `device` is above the profile in precedence; an all-`device` plan's below-profile effective equals baseline → `changed_leaves` empty → no taint); (iv) **a mixed `device` + `site_setting` plan** where the `device` op changes the profiled device's own `port_config` and the `site_setting` op does NOT affect that device → the device is NOT tainted (only below-profile changes feed the gate). Verdict per the real checks for the non-tainted cases.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
