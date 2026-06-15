@@ -90,15 +90,31 @@ Reimplementations on top of the primitive:
   calls `merge_only` with two args) — reimplement their *bodies* on `fold_layers`,
   don't change their arities.
 - gateway site-effective → `fold_layers([gatewaytemplate, sitetemplate,
-  site_setting], GATEWAY_POLICY)`, then **resolve `{{vars}}` via the same
-  `_resolve` step (`compile/switch.py:61`)**, then the per-device PUT-root overlay
-  (`effective_update`) → an **effective gateway device**. **The `_resolve` step is
-  mandatory (was a P2 gap):** `compile_site` is `_resolve(merge_only(...))` — a
-  fold/overlay *without* `_resolve` leaves `{{var}}` refs unsubstituted, so a
-  `vars` edit never reaches the effective gateway `dhcpd_config`/`ip_configs` and
-  the vars-ripple DHCP screens (§4) silently no-op on gateways. `GATEWAY_POLICY`
-  starts equal to `SWITCH_POLICY` for the shared keys and is hardened by the live
-  gate.
+  site_setting], GATEWAY_POLICY)`, then the per-device PUT-root overlay
+  (`effective_update`), then **`_resolve` `{{vars}}` LAST** → an **effective
+  gateway device**. **Order matters — `_resolve` runs AFTER the device overlay,
+  matching `compile_device` (`compile/switch.py:95` resolves last, after the
+  per-device merge) (was a P2 order divergence).** Resolving before the overlay
+  would leave any device-supplied `{{var}}` unsubstituted; resolving last matches
+  the switch contract. **And `_resolve` is mandatory (was a P2 gap):** a
+  fold/overlay *without* `_resolve` leaves `{{var}}` refs literal, so a `vars`
+  edit never reaches the effective gateway `dhcpd_config`/`ip_configs` and the
+  vars-ripple DHCP screens (§4) silently no-op on gateways.
+- **`GATEWAY_POLICY` must DICT_MERGE the gateway keyed maps `port_config` /
+  `ip_configs` / `dhcpd_config` — NOT inherit the default REPLACE (was a P2 false-
+  diff).** `_POLICY` (`compile/merge.py:29-35`) lists no `port_config`/`ip_configs`
+  → they default to **REPLACE**; for switches that's fine because their per-port
+  merge happens at the *device-overlay* layer (`_DEVICE_DICT_MERGE_FIELDS`), not
+  the site-fold. But a `gatewaytemplate` carries `port_config`/`ip_configs` at the
+  **template** layer, so folding `[gatewaytemplate, sitetemplate, site_setting]`
+  under REPLACE would let a sitetemplate that defines **one** port range **wipe the
+  gatewaytemplate's other ports** — on **both** baseline and proposed, silently
+  corrupting the diff (→ false verdict). `GATEWAY_POLICY` therefore DICT_MERGEs
+  these keyed maps per key — the same principle `merge.py:35` already states
+  ("device defining one port range must not wipe the rest"). The exact per-layer
+  policy for these gateway maps is **Tier-2 live-verified** (Mist's real layering;
+  flagged below), starting from DICT_MERGE. Test: a sitetemplate defining one
+  gateway port range does **not** erase the gatewaytemplate's other ports.
 
 **Gateway effective → ingest handoff (the explicit contract — was a P1 gap).**
 Today the gateway ingest (`_gateway_ports_and_l3`, gateway dhcp) reads its facts
@@ -264,6 +280,12 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
 - `ORG_OBJECT_TYPES = ("networktemplate", "gatewaytemplate", "sitetemplate")`.
   object_gate ORG-mode recognizes all three; the single-template-id-per-plan
   invariant is kept (one template id, no `site_id`, all ops that type).
+  **Two ORG-detection sites must be aligned (was a P3 hardcode):**
+  `object_gate.check_objects` hardcodes `op.object_type == "networktemplate"`
+  (`scope/object_gate.py:31`) and the single-id message says "multiple
+  networktemplate ids" (`:41`) — change the predicate to `in ORG_OBJECT_TYPES` and
+  generalize the message; `pipeline.py:347` *already* uses `ORG_OBJECT_TYPES`, so
+  the two sites are inconsistent today and must agree.
 - **Allowlists per type:**
   - `gatewaytemplate` — **leaf-pattern entries, NOT root keys (was a P1
     false-allow).** The field gate is leaf-based (`scope/paths.py` descends added/
@@ -401,9 +423,17 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       row-level helper must therefore run **on the effective rows inside the
       derived gate** (it compares each `dhcpd_config.*` row's both-sides effective
       value), catching **both** the direct template edit *and* the `vars`/override
-      ripple. The raw field gate keeps allowing the `dhcpd_config.*` leaf *paths*
-      (so direct edits proceed to compile); the derived gate's value-aware screen
-      is the authoritative UNKNOWN. **For the gateway family this REQUIRES the §1
+      ripple. **The helper lives INSIDE `check_derived` itself (was a P3 wiring
+      gap) — NOT bolted onto the gateway iteration only.** `check_derived` is
+      called for the site-effective (switch/site `dhcpd_config`, `pipeline.py:140`),
+      the per-switch-device effective (`:146`), and the new gateway-effective
+      iteration; the DHCP row screen must fire on **all three** (a `dhcpd_config.*`
+      row appearing in any of them), so it belongs in `check_derived` after the
+      path-membership check, not in a gateway-only branch — otherwise the switch/
+      site `dhcpd_config` ripple the spec promises to tighten would be missed. The
+      raw field gate keeps allowing the `dhcpd_config.*` leaf *paths* (so direct
+      edits proceed to compile); the derived gate's value-aware screen is the
+      authoritative UNKNOWN. **For the gateway family this REQUIRES the §1
       contract** — gateway effective must be published into the derived-gate
       iteration set (extend `device_effective` to gateways or a sibling map);
       without it the derived gate never diffs gateway effective and this screen
@@ -721,6 +751,12 @@ Goldens:
 Live (read-only / simulate-only):
 - fan-out on a real `gatewaytemplate` and a real `sitetemplate` assigned to
   sites; the 8 single-site plans unchanged.
+- **verify `GATEWAY_POLICY` against Mist's real layering** — confirm whether
+  gateway `port_config` / `ip_configs` / `dhcpd_config` merge per-key (DICT_MERGE)
+  or REPLACE across the `gatewaytemplate → sitetemplate → site_setting` fold, and
+  whether gateway *device* objects can carry `{{vars}}` (which would force
+  `_resolve`-last, already adopted). Harden `GATEWAY_POLICY`/`_POLICY` from the
+  observed `derived_setting` like the existing Tier-2 gate.
 
 Gate: `uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
 
