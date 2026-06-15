@@ -245,6 +245,21 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       to the shared leaves wherever in scope — gateway **and** the switch/site path
       (identical serving-only minting) — as a uniform, test-pinned safety
       tightening.
+    - **Both screens evaluate the COMPILED EFFECTIVE diff, in the derived gate —
+      not just the raw field gate (was a P1 placement gap).** The derived gate
+      (`scope/derived_gate.py`) diffs the full effective baseline/proposed at leaf
+      granularity but today only checks path membership in `EFFECTIVE_ALLOWLIST` —
+      so an effective `dhcpd_config.*.servers` (or range/gateway) change that
+      **ripples in from an in-scope leaf** (e.g. a `vars.*` edit compiling through
+      DICT_MERGE into the effective `dhcpd_config`) is an allowed *path* and slips
+      through → false SAFE. The two screens must therefore run **on the effective
+      values inside the derived gate** (one shared "dhcp-row relevance" helper),
+      which catches **both** the direct template edit *and* the `vars`/override
+      ripple. The raw field gate keeps allowing the `dhcpd_config.*` leaf *paths*
+      (so direct edits proceed to compile); the derived gate's value-aware screen
+      is the authoritative UNKNOWN. Tests must pin the ripple path explicitly (a
+      `vars` edit producing effective relay-target `["10.1.1.1"] → ["10.2.2.2"]`,
+      and a `vars` edit moving a non-serving row's `gateway`, each → UNKNOWN).
     **`port_config.*.usage` is deliberately EXCLUDED (was a P1 false-allow):** the
     gateway ingest copies it only into `Port.profile`, an **inert** IR field no
     check/representation/analysis reads — so a usage-only edit would pass the gate,
@@ -391,10 +406,12 @@ both CLI and MCP.
 - unmodeled gateway field → field gate → UNKNOWN.
 - `dhcpd_config.*.servers` both-non-empty relay-target change →
   `Rejection(stage="dhcp_relay_target")` → UNKNOWN (only the active/inactive
-  boolean is modeled, not the target IPs).
+  boolean is modeled, not the target IPs). Evaluated on the effective diff in the
+  derived gate, so a `vars`/override ripple into the relay target is caught too.
 - `dhcpd_config.*.{ip_start,ip_end,gateway}` change on a row that is non-serving
   (relay/none) on **both** sides → `Rejection(stage="dhcp_scope_field")` →
   UNKNOWN (no `DhcpScope` is minted, so the change is invisible to the checks).
+  Also evaluated on the effective diff in the derived gate (ripple-safe).
 - relevant device-profile detected → `Rejection(stage="device_profile_gate")` →
   that site UNKNOWN (relevance-scoped; a gate rejection, not a REVIEW finding).
 - 0 assigned sites → SAFE (existing contract).
@@ -432,6 +449,12 @@ Unit:
   empty↔non-empty activation/deactivation → allowed (modeled provider gain/loss,
   resolves via `dhcp_path`). Assert the screen fires on the shared leaf for the
   switch/site path too (not gateway-only).
+- **DHCP screens run on the effective (derived) diff, not only the raw gate** —
+  a `vars.*` edit that compiles into an effective relay-target change
+  (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN; a `vars.*` edit that compiles into a
+  non-serving row's `gateway`/range change → UNKNOWN. (The raw-leaf direct-edit
+  cases above must hold via the same derived-gate screen, so direct + ripple are
+  covered by one path.)
 - **sitetemplate role-projection** — a sitetemplate edit to a gateway-only leaf
   moves only the gateway IR (switch verdict unchanged); a switch-only leaf moves
   only the switch IR — no accidental cross-family behavior.
