@@ -866,6 +866,17 @@ def _plan(payload):
                      "object_id": "nt1", "payload": payload}]}
 
 
+def test_org_template_rejects_site_plan_with_unknown():
+    # a normal site_setting/device plan must NOT be fanned out as a template
+    prov = _FakeProvider(sites={}, template={})
+    site_plan = {"source": "mist", "scope": {"org_id": "o1", "site_id": "s1"},
+                 "ops": [{"action": "update", "order": 0, "object_type": "device",
+                          "object_id": "d1", "payload": {}}]}
+    ov = simulate_org_template(site_plan, provider=prov)
+    assert ov.decision is Decision.UNKNOWN
+    assert any("simulate" in r and "org" in r.lower() for r in ov.decision_reasons)
+
+
 def test_org_template_zero_sites_is_safe():
     prov = _FakeProvider(sites={}, template={"id": "nt1", "networks": {}})
     ov = simulate_org_template(_plan({"networks": {}}), provider=prov)
@@ -934,14 +945,26 @@ def simulate_org_template(
         )
 
     plan = parse_change_plan(plan_data)
+    template_id = ""
     if isinstance(plan, Rejection):
-        template_id = ""
         return org_unknown((plan,))
     rejection = check_objects(plan)
-    op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
-    template_id = op.object_id
     if rejection:
         return org_unknown((rejection,))
+    # ORG-mode guard (symmetric with simulate's SITE guard): a valid SITE plan
+    # also passes check_objects — it must NOT be fanned out as a template.
+    is_org = (
+        bool(plan.ops)
+        and all(op.object_type == "networktemplate" for op in plan.ops)
+        and not plan.scope.site_id
+    )
+    if not is_org:
+        return org_unknown((Rejection(
+            stage="scope.pre",
+            reasons=("site-scoped plan: call simulate, not simulate_org_template",),
+        ),))
+    op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
+    template_id = op.object_id
 
     resolved = provider.resolve_org_template(OrgScope(org_id=plan.scope.org_id), template_id)
     if not isinstance(resolved, OrgTemplateContext):
@@ -1068,11 +1091,26 @@ First, `_RecordingProvider` (cli.py:25) currently forwards only `fetch_site`/`fe
         return self._inner.resolve_org_template(scope, template_id)
 ```
 
-In `cli.py`, after parsing the plan JSON, detect ORG mode — `all(op["object_type"] == "networktemplate" for op in plan["ops"]) and not plan["scope"].get("site_id")` — and call `simulate_org_template(plan, provider=recording, ...)` → `render_org_human` / `org_verdict_to_dict` (respect the existing `--json` flag), with exit codes from the ORG decision (reuse the existing `Decision -> exit code` map: SAFE=0/REVIEW=10/UNSAFE=20/UNKNOWN=30). SITE mode path unchanged.
+In `cli.py`, after parsing the plan JSON, detect ORG mode **defensively** — any malformed shape must NOT crash the driver; it falls through to the SITE path (`simulate` → envelope → UNKNOWN, the existing safety):
+
+```python
+def _is_org_plan(plan_data: object) -> bool:
+    if not isinstance(plan_data, dict):
+        return False
+    ops = plan_data.get("ops")
+    scope = plan_data.get("scope")
+    return (
+        isinstance(ops, list) and bool(ops)
+        and all(isinstance(o, dict) and o.get("object_type") == "networktemplate" for o in ops)
+        and isinstance(scope, dict) and not scope.get("site_id")
+    )
+```
+
+If `_is_org_plan(plan_data)` → `simulate_org_template(plan_data, provider=recording, ...)` → `render_org_human` / `org_verdict_to_dict` (respect `--json`), exit code from the ORG decision (existing `Decision -> exit` map: SAFE=0/REVIEW=10/UNSAFE=20/UNKNOWN=30). Else → the unchanged SITE path. A malformed plan (`ops` missing / non-list / op without `object_type`) returns `False` → SITE path → envelope rejects → UNKNOWN exit 30 (no driver crash).
 
 **`--replay-store` for org runs (MVP):** the org path does NOT record. `_RecordingProvider.recorded` stays `None` for org runs (resolve/fetch_sites don't set it), so the existing `if args.replay_store and recording.recorded is not None:` guard naturally skips capture — no crash, just no single-site fixture written. Document this in the `--replay-store` help text ("single-site runs only"); multi-site replay capture is out of scope (the spec's deferred fixture-optimization territory).
 
-Add a CLI test mirroring the existing one with an org-template plan JSON + the multi-site `FixtureProvider` (from Task 8) OR a fake provider, asserting the exit code + that the rendered output shows the org decision + a per-site line.
+Add CLI tests: (1) an org-template plan JSON + the multi-site `FixtureProvider` (from Task 8) OR a fake provider, asserting the exit code + that the rendered output shows the org decision + a per-site line; (2) a **malformed plan regression** — `{"source": "mist", "ops": "not-a-list"}` (and a plan with an op missing `object_type`) → the driver does NOT crash, exits **30** with an UNKNOWN verdict (the SITE-path envelope rejection).
 
 - [ ] **Step 4: MCP tool**
 
