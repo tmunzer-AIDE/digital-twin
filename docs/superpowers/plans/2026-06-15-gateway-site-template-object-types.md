@@ -16,13 +16,13 @@
 
 **New files:**
 - `src/digital_twin/adapters/mist/compile/fold.py` — `fold_layers(layers, policy)` primitive + `PolicyTable`.
-- `src/digital_twin/adapters/mist/compile/gateway.py` — `compile_gateway_device(...)` (fold gateway layers → overlay → `_resolve` last).
+- `src/digital_twin/adapters/mist/compile/gateway.py` — `GATEWAY_POLICY` + `compile_gateway_device(...)` (fold gateway layers → per-key device overlay → `_resolve` last).
 - `src/digital_twin/scope/dhcp_screen.py` — the shared row-level DHCP-relevance helper (`dhcp_row_rejection`).
 - `src/digital_twin/scope/device_profile_gate.py` — the post-ingest device-profile relevance gate.
 - `src/digital_twin/adapters/mist/oas/gatewaytemplate.schema.json`, `sitetemplate.schema.json` — committed OAS for L0.
 
 **Modified files:**
-- `src/digital_twin/adapters/mist/compile/merge.py` — reimplement `merge_site_effective` on `fold_layers`; add `SWITCH_POLICY`/`GATEWAY_POLICY`; keep `merge_only`/`merge_site_effective` 2-arg.
+- `src/digital_twin/adapters/mist/compile/merge.py` — reimplement `merge_site_effective` on `fold_layers`; add `SWITCH_POLICY`; keep `merge_only`/`merge_site_effective` 2-arg. (`GATEWAY_POLICY` lives in `compile/gateway.py`, NOT here — see the New files entry.)
 - `src/digital_twin/adapters/mist/compile/switch.py` — `merge_only`/`compile_site`/`compile_device` accept an optional `sitetemplate` layer.
 - `src/digital_twin/scope/allowlist.py` — `ORG_OBJECT_TYPES`; `RAW_ALLOWLIST` gateway/site entries; gateway leaf set; `GATEWAY_EFFECTIVE_ALLOWLIST`; `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE`.
 - `src/digital_twin/scope/object_gate.py` — ORG detection on `ORG_OBJECT_TYPES`.
