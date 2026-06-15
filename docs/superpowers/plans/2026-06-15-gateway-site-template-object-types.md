@@ -1001,6 +1001,19 @@ def test_unaffected_modeled_device_does_not_taint():
         affected_device_ids=set(),   # edit does not touch m1's path
     )
     assert rej is None
+
+
+def test_mac_normalized_and_changed_leaf_wildcard_matched():
+    # affected_device_ids is device_id-keyed (normalized: lower, no colons), and
+    # a concrete changed leaf must match the role's *.disabled pattern. This proves
+    # the gate normalizes dev["mac"] via device_id() and uses allowed() wildcards,
+    # NOT raw-string / exact-tuple comparison.
+    rej = device_profile_rejection(
+        devices=[{"type": "switch", "mac": "AA:BB:CC:DD:EE:FF", "deviceprofile_id": "p1"}],
+        changed_leaves=("port_config.ge-0/0/0.disabled",),
+        affected_device_ids={"aabbccddeeff"},
+    )
+    assert rej is not None and rej.stage == "device_profile_gate"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1043,14 +1056,93 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `src/digital_twin/engine/pipeline.py` (`_simulate_site_state`, the `rejections=()` site at ~line 167)
 - Test: `tests/engine/test_pipeline_device_profile.py`
 
-- [ ] **Step 1: Write the failing test** — a per-site sim where a modeled gateway carries `deviceprofile_id` and the edit changes an overridable, participating leaf → the site verdict is UNKNOWN via `device_profile_gate`; an AP-profile-only site with the same edit → not tainted (verdict per the real checks).
+- [ ] **Step 1: Write the failing test** — TWO test files.
 
-- [ ] **Step 2: Run test to verify it fails**
+  (a) `tests/scope/test_affected_devices.py` — the referenced-path helper. An **unused** `port_usages`/`networks` change must NOT taint; only a device that actually references the changed key is affected (review P2 — shared site/template maps appear in every switch effective, so "the effective carries the changed map" over-taints):
 
-Run: `uv run pytest tests/engine/test_pipeline_device_profile.py -q`
-Expected: FAIL — no device-profile rejection injected.
+```python
+# tests/scope/test_affected_devices.py
+from digital_twin.scope.device_profile_gate import affected_device_ids
 
-- [ ] **Step 3: Write minimal implementation** — in `_simulate_site_state`, after ingest and after computing the changed effective leaves + affected device ids (derive `affected_device_ids` from which devices' `device_effective`/`gateway_effective` carry a changed leaf), call `device_profile_rejection(...)`; thread its result into `DecisionInputs.rejections` (replace the hardcoded `rejections=()` at line 167 with `rejections=(dp_rej,) if dp_rej else ()`). This is the new post-ingest hook the spec calls for.
+# device d1 has a port using usage "foo" and network "corp"; d2 uses neither.
+D1 = {"port_config": {"ge-0/0/0": {"usage": "foo", "networks": ["corp"]}}}
+D2 = {"port_config": {"ge-0/0/1": {"usage": "bar", "networks": ["guest"]}}}
+EFF = {"d1": D1, "d2": D2}
+
+
+def test_unused_port_usage_change_taints_nobody():
+    # an unused profile "baz" no port references -> no device affected
+    assert affected_device_ids(("port_usages.baz.mode",), EFF) == set()
+
+
+def test_referenced_port_usage_taints_only_referencing_device():
+    assert affected_device_ids(("port_usages.foo.mode",), EFF) == {"d1"}
+
+
+def test_unused_network_change_taints_nobody():
+    assert affected_device_ids(("networks.iot.vlan_id",), EFF) == set()
+
+
+def test_referenced_network_taints_only_referencing_device():
+    assert affected_device_ids(("networks.corp.vlan_id",), EFF) == {"d1"}
+
+
+def test_owned_port_config_key_taints_its_device():
+    # a per-port/per-scope keyed map: the device whose effective owns that key
+    assert affected_device_ids(("port_config.ge-0/0/1.disabled",), EFF) == {"d2"}
+```
+
+  (b) `tests/engine/test_pipeline_device_profile.py` — end-to-end: a per-site sim where a modeled gateway carries `deviceprofile_id` and the edit changes an overridable, **referenced** leaf → site verdict UNKNOWN via `device_profile_gate`; an AP-profile-only site, or an **unused** `port_usages` edit, → not tainted (verdict per the real checks).
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/scope/test_affected_devices.py tests/engine/test_pipeline_device_profile.py -q`
+Expected: FAIL — `affected_device_ids` missing; no rejection injected.
+
+- [ ] **Step 3: Write minimal implementation** — add the referenced-path helper to `device_profile_gate.py`, then hook it into the pipeline.
+
+```python
+# src/digital_twin/scope/device_profile_gate.py  (add)
+# Maps whose changed KEY is a name referenced indirectly (a port/scope must point
+# at it). Everything else is a per-device-owned keyed map (the device that has the
+# key in its effective owns it).
+_REFERENCED_MAPS = {"port_usages", "networks"}
+
+
+def affected_device_ids(
+    changed_leaves: tuple[str, ...], device_effectives: dict[str, dict],
+) -> set[str]:
+    """device_effectives: device_id -> effective dict (switch device_effective +
+    gateway_effective). A device is affected by a changed leaf iff it actually
+    REFERENCES the changed keyed-map key — NOT merely carries the map. Unused
+    port_usages/networks changes taint nobody."""
+    out: set[str] = set()
+    for leaf in changed_leaves:
+        parts = leaf.split(".")
+        if len(parts) < 2:
+            continue
+        mp, key = parts[0], parts[1]
+        for did, eff in device_effectives.items():
+            ports = (eff.get("port_config") or {}).values()
+            if mp in _REFERENCED_MAPS:
+                if mp == "port_usages":
+                    referenced = any(
+                        (p or {}).get("usage") == key or (p or {}).get("dynamic_usage") == key
+                        for p in ports
+                    )
+                else:  # networks: a port references it by name, or an ip/dhcp scope is named it
+                    referenced = any(
+                        key in ((p or {}).get("networks") or []) or (p or {}).get("port_network") == key
+                        for p in ports
+                    ) or key in (eff.get("ip_configs") or {}) or key in (eff.get("dhcpd_config") or {})
+                if referenced:
+                    out.add(did)
+            elif key in (eff.get(mp) or {}):   # per-device-owned keyed map
+                out.add(did)
+    return out
+```
+
+In `_simulate_site_state`, after `proposed = adapter.ingest(proposed_raw)`: compute `changed = derived changed-leaf paths` (reuse `changed_leaf_paths` over the per-device effective baseline/proposed, switch + gateway), build `device_effectives = {**baseline.device_effective, **baseline.gateway_effective}` (proposed for the gateway side too — use the union of both snapshots' keys), call `aff = affected_device_ids(changed, device_effectives)`, then `dp_rej = device_profile_rejection(devices=proposed_raw.devices, changed_leaves=changed, affected_device_ids=aff)`. Thread it into `DecisionInputs.rejections` (replace the hardcoded `rejections=()` at line 167 with `rejections=(dp_rej,) if dp_rej else ()`). This is the new post-ingest hook the spec calls for.
 
 - [ ] **Step 4: Run test to verify it passes**
 
