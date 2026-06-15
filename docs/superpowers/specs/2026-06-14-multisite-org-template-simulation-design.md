@@ -71,10 +71,14 @@ Rejections (whole-plan UNKNOWN at the gate):
 
 - **Mixing** SITE and ORG object_types in one plan.
 - **ORG mode with `site_id` present**, or SITE mode with `site_id` absent.
-- **(Guardrail #1) Multiple template ids** — ORG mode requires all ops target the
-  SAME `object_id` (one template). Multiple distinct template ids → reject
-  ("one template per plan in M1"). Multiple ordered ops on the SAME template id
-  are fine (rolling apply).
+- **(Guardrail #1) One template, one op** — the envelope already enforces
+  one-op-per-`(object_type, object_id)` (`envelope.py`: "two ops target the same
+  object — full replacement makes the earlier op dead"). Combined with the
+  single-template rule, an ORG plan therefore carries EXACTLY ONE op: the one
+  `networktemplate` edit. The object_gate additionally rejects a plan whose
+  `networktemplate` ops carry more than one DISTINCT `object_id`
+  ("one template per plan in M1"). (Multiple ops on one template are already an
+  envelope rejection, so no rolling-apply over a template is possible or needed.)
 
 The CLI/MCP driver dispatches to `simulate` or `simulate_org_template` by mode.
 
@@ -85,9 +89,10 @@ path uses ONE resolved snapshot so the per-site diff is EXACTLY the edit:
 
 1. `resolve_org_template(scope, template_id)` returns the current template JSON
    (the **baseline snapshot**) + the assigned site ids.
-2. `proposed_template = effective_update(snapshot, op.payload)` per ordered op
-   (the existing root-level merge + `-key` deletion + identity preservation;
-   `update_conflicts` rejects set-AND-delete → UNKNOWN), applied to the snapshot.
+2. `proposed_template = effective_update(snapshot, op.payload)` for the SINGLE
+   template op (the existing root-level merge + `-key` deletion + identity
+   preservation; `update_conflicts` rejects a set-AND-delete on the same
+   attribute → UNKNOWN). One op, so this is a single application — no rolling.
 3. Per assigned site, AFTER `fetch_sites`, OVERRIDE the template on both sides
    from the single snapshot — never the per-site-fetched copy:
    - `baseline_raw = replace(fetched_raw, networktemplate=snapshot)`
@@ -121,13 +126,19 @@ each site's effective config recomputes with the edit. **No compile changes.**
 
 ### 5. networktemplate allowlist scope (guardrail #4 — explicit)
 
-`RAW_ALLOWLIST["networktemplate"]` = the SAME modeled leaf set as `site_setting`:
-`networks.*`, `port_usages.*`, `vars.*`, `stp_config.*`, `dhcpd_config.*`,
-`dhcp_snooping.*`, `ospf_*`. **`switch_matching` is NOT allowlisted** (as for
-`site_setting`): a template edit changing switch-matching / port-assignment rules
-→ UNKNOWN. So the MVP covers **shared networks / usages / STP / DHCP / snooping /
-OSPF / vars only**; template-matching and port-assignment changes remain UNKNOWN
-(honest — their device-port impact is not modeled as in-scope).
+`RAW_ALLOWLIST["networktemplate"]` = the **EXACT same leaf tuple** as
+`RAW_ALLOWLIST["site_setting"]` (reuse the constant — do NOT hand-copy, and do
+NOT broaden to subtree wildcards; the leaf-tightened doctrine forbids it). That
+tuple is leaf-level — e.g. `networks.*.vlan_id`, `networks.*.subnet`,
+`networks.*.gateway`, `port_usages.*.mode`, `stp_config.bridge_priority`,
+`dhcpd_config.*.type`, `dhcp_snooping.enabled`, `ospf_config.enabled`,
+`ospf_areas.*.networks.*.passive`, `vars.*`, … — NOT `networks.*`/`port_usages.*`
+subtrees. `switch_matching` is ABSENT from that tuple (as for `site_setting`), so
+a template edit changing switch-matching / port-assignment rules → UNKNOWN. The
+MVP thus covers **shared networks / usages / STP / DHCP / snooping / OSPF / vars
+only**; template-matching and port-assignment changes remain UNKNOWN (honest —
+their device-port impact is not modeled as in-scope). An unmodeled leaf can never
+simulate as SAFE.
 
 ### 6. Provider extension
 
@@ -147,6 +158,13 @@ lookup returning **0 assigned sites** → `OrgVerdict` **SAFE** with reason
 distinct). The heavy per-site fetch reuses the existing
 `fetch_sites(scope, site_ids=assigned)` (batched; per-site failures isolated).
 
+**Contract change (finding):** today `FetchError.scope` is typed `SiteScope`, but
+an org-level lookup failure must carry an `OrgScope`. Broaden it to
+`FetchError.scope: SiteScope | OrgScope` (a one-line widening; the single-site
+path and its tests are unaffected). The org engine treats a `resolve_org_template`
+`FetchError` as the whole-plan short-circuit (UNKNOWN, no fan-out), recording it in
+`OrgVerdict.org_rejections`/`decision_reasons`.
+
 `MistApiProvider` already has the internals (`_org_sites`, `_networktemplate`);
 `FixtureProvider` reads a multi-site fixture.
 
@@ -161,16 +179,26 @@ class OrgVerdict:
     per_site: Mapping[str, Verdict]          # full Verdict per site (incl. fetch-fail UNKNOWNs)
     driving_sites: tuple[str, ...]           # sites whose Verdict == the rollup decision
     site_failures: Mapping[str, str]         # site_id -> fetch error (surfaced subset)
-    template_findings: tuple[Finding, ...]   # org-level (template-edit) findings
+    template_findings: tuple[Finding, ...]   # org-level (template-edit) L0 Findings only
+    org_rejections: tuple[Rejection, ...]    # gate/conflict/lookup Rejections (structured)
 ```
 (Per-site freshness lives on each `per_site[*].state_meta`; no separate org
 state_meta in MVP. `site_failures` surfaces the fetch errors.)
 
+The two structured failure channels are kept distinct by TYPE, mirroring the
+single-site split: `template_findings` holds `Finding`s (non-fatal template L0
+schema violations — operational, REVIEW-driving); `org_rejections` holds
+`Rejection`s (the org field-gate rejection, the `update_conflicts`
+set-AND-delete, the assignment-lookup `FetchError` rendered as a Rejection).
+`decision_reasons` is the human-readable flattening of both (as in the
+single-site `unknown(rejection)` path).
+
 **Short-circuit before fan-out (whole-plan UNKNOWN, no per-site work):** an
 assignment-lookup failure (guardrail #2), a FATAL template L0, the
 set-AND-delete conflict, or an org field-gate rejection each return an
-`OrgVerdict` with `decision=UNKNOWN`, empty `per_site`, and the reason on
-`template_findings`/`decision_reasons`.
+`OrgVerdict` with `decision=UNKNOWN`, empty `per_site`, the structured cause on
+`org_rejections` (or `template_findings` for a fatal L0), and the human string on
+`decision_reasons`.
 
 Otherwise fan out, then roll up. Rollup `decision` = the WORST under
 `UNKNOWN > UNSAFE > REVIEW > SAFE` over BOTH:
