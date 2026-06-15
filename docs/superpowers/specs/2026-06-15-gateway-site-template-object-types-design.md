@@ -308,25 +308,30 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       **before** checks, `pipeline.py:139`, so it cannot ask whether `dhcp_path`
       emitted a finding — was a P2 stage-order bug). Define
       `serves(row) = _dhcp_serves_scope(row)` (type ∈ {local,server,absent}) and
-      `active(row) = _dhcp_active(row)` (serving, or relay with non-empty `servers`).
-      The only DHCP fact the IR/checks do **not** capture is an **active relay's
-      target** (the `servers` IPs when type=`relay` and active). So the helper
-      rejects a `dhcpd_config.*` row → **UNKNOWN** iff:
-      - **(a) live-relay target change** — both sides are active relays and their
-        `servers` differ → `Rejection(stage="dhcp_relay_target")`; or
-      - **(b) silent serving→relay replacement** — `serves(baseline)` ∧
-        `¬serves(proposed)` ∧ `active(proposed)`: a modeled local/server scope is
-        removed while the row stays active (replaced by an active relay whose target
-        is unmodeled, and `active` stays true so `dhcp_path` sees **no** provider
-        loss to flag) → `Rejection(stage="dhcp_mode_transition")`.
+      `active(row) = _dhcp_active(row)` (serving, or relay with non-empty `servers`),
+      and `active_relay(row) = active(row) ∧ type == "relay"` (a relay with non-empty
+      `servers`). The only DHCP fact the IR/checks do **not** capture is an **active
+      relay's target** (the `servers` IPs of an active relay) — an active-serving row
+      has **no** relay target, so its "target identity" is a fixed sentinel. When
+      **at least one side is INACTIVE**, the active flip itself is the modeled signal
+      (`dhcp_path` provider gain/loss) → allowed. When **both sides are active**, the
+      helper rejects → **UNKNOWN** iff the two sides' relay-target identity differs —
+      i.e. (symmetric, catches **both** directions):
+      - **exactly one side is an `active_relay`** (serving↔active-relay, **either**
+        direction — `local/server → relay+servers` *and* `relay+servers →
+        local/server`) → `Rejection(stage="dhcp_mode_transition")`; or
+      - **both sides are `active_relay`** and their `servers` differ →
+        `Rejection(stage="dhcp_relay_target")`.
 
       Everything else is **allowed**, because its whole modeled effect is captured by
       `active` (→ `dhcp_path` provider gain/loss) and `DhcpScope` presence/facts (→
-      `scope_lint`): a pure relay activation/deactivation, a serving↔`none` toggle, a
-      both-serving scope-fact edit, `local↔server`. Crucially the reviewer's case —
+      `scope_lint`): any change with ≥1 inactive side (pure relay activation/
+      deactivation, serving↔`none`), a both-active-serving scope-fact edit, `local↔
+      server`, or two identical active relays. Crucially the empty-`servers` case —
       **serving→relay with EMPTY/absent `servers`** (relay becomes inactive, last
-      provider lost) — has `active(proposed)=false`, so **(b) does not fire**; it
-      stays a modeled `dhcp_path` provider-loss verdict (REVIEW), not preempted to
+      provider lost) — has `active(proposed)=false` (≥1 inactive side), so it is **not
+      rejected**; it stays a modeled `dhcp_path` provider-loss verdict (REVIEW), not
+      preempted to
       UNKNOWN. Same shared leaves, same switch/site + gateway coverage, same
       derived-gate placement as below.
     - **The row-level helper evaluates the COMPILED EFFECTIVE diff, in the derived
@@ -533,12 +538,13 @@ both CLI and MCP.
   (relay/none) on **both** sides → `Rejection(stage="dhcp_scope_field")` →
   UNKNOWN (no `DhcpScope` is minted, so the change is invisible to the checks).
   Also evaluated on the effective diff in the derived gate (ripple-safe).
-- `dhcpd_config.*` row whose **active-relay target** differs across sides — both
-  sides active relays with differing `servers` (`dhcp_relay_target`), or a serving
-  scope removed while the row stays active i.e. serving→active-relay
-  (`dhcp_mode_transition`) → UNKNOWN. Pure row-local predicate (`_dhcp_active` /
-  `_dhcp_serves_scope`), no check-output dependency; serving→relay with empty
-  `servers` is NOT rejected (stays a modeled `dhcp_path` provider-loss verdict).
+- `dhcpd_config.*` row where **both sides are active** and their relay-target
+  identity differs → UNKNOWN: exactly one side an active relay (serving↔active-relay,
+  **either** direction → `dhcp_mode_transition`), or both active relays with
+  differing `servers` (`dhcp_relay_target`). Pure row-local predicate
+  (`_dhcp_active` / `_dhcp_serves_scope`), no check-output dependency; any change
+  with ≥1 inactive side (e.g. serving→relay with empty `servers`) is NOT rejected
+  (stays a modeled `dhcp_path` provider gain/loss verdict).
 - relevant device-profile detected → `Rejection(stage="device_profile_gate")` →
   that site UNKNOWN (relevance-scoped; a gate rejection, not a REVIEW finding).
 - 0 assigned sites → SAFE (existing contract).
@@ -585,13 +591,15 @@ Unit:
   → UNKNOWN (inert, `_dhcp_active` ignores `servers` there — must not slip through
   as "empty↔non-empty modeled"). Assert the screen fires on the shared leaf for
   the switch/site path too (not gateway-only).
-- **`dhcpd_config.*.type` mode-transition screen (row-local)** — `type: local →
-  relay` with an **unchanged non-empty** `servers` → UNKNOWN, **not** SAFE (silent
-  serving→active-relay to an unmodeled target); **`type: local → relay` with empty/
-  absent `servers`** → **NOT preempted** — stays a modeled `dhcp_path` provider-loss
-  verdict (REVIEW), proving the exemption is row-local (`active(proposed)=false`),
-  not check-output-dependent; serving→`none` → allowed (provider loss via
-  `dhcp_path`); `local→server` → no-op SAFE.
+- **`dhcpd_config.*.type` mode-transition screen (row-local, BOTH directions)** —
+  `type: local → relay` with **unchanged non-empty** `servers` → UNKNOWN (silent
+  serving→active-relay to an unmodeled target); **the reverse `relay` (non-empty
+  `servers`) → `local`/`server` with the same `servers`** → **UNKNOWN** too (active
+  on both sides, relay target silently disappears — the symmetric case); **`type:
+  local → relay` with empty/absent `servers`** → **NOT preempted** (≥1 inactive
+  side) — stays a modeled `dhcp_path` provider-loss verdict (REVIEW), proving the
+  exemption is row-local, not check-output-dependent; serving→`none` → allowed
+  (provider loss via `dhcp_path`); `local→server` → no-op SAFE.
 - **DHCP screens run on the effective (derived) diff, not only the raw gate** —
   a `vars.*` edit that compiles into an effective relay-target change
   (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN; a `vars.*` edit that compiles into a
