@@ -188,30 +188,44 @@ modeling" below.
 - 🟡 widen the field allowlist case-by-case (each needs an IR model + check, or
   an explicit "modeled" decision): `dhcp_snooping`, `dhcpd_config`,
   `port_mirroring`, `vrf_config`, … Default-deny stays the rule.
-- 🔵 multi-site / org-template simulation (the `fetch_sites` org-batch path and
-  template inheritance exist; the pipeline is single-site).
-- 🔵 networktemplate / sitetemplate as first-class `object_type`s (today only
-  `site_setting` + `device`).
-- 🔵 **template / org-object changes — modify + delete — and their multi-site
-  ripple.** Today every template/org `object_type` (`networktemplate` = switch
-  template, `gatewaytemplate`, `sitetemplate`, …) AND every non-`update` action
-  (incl. `delete`) is rejected pre-fetch → UNKNOWN (`object_gate`; fails safe,
-  never false-SAFE — both the template-`object_type` update rejection and the
-  `delete`-action rejection are test-pinned). The real hazard is the org→site
-  fan-out: a template assigned to sites that is **modified** (the common case) or
-  **deleted** changes/strips the INHERITED layer of EVERY assigned site at once
-  (networks / port_usages / vars / `ospf_areas` / `dhcpd_config` / STP / …) —
-  re-VLANed ports, moved subnets/gateways, altered OSPF areas, a mass-removal on
-  delete — which the existing per-site checks (`l2.blackhole.exit_lost`,
-  `gateway_gap.*`, `dhcp.path`, `ospf_withdrawal.*`) could catch IF the front-end
-  recomputed each assigned site's proposed effective state with the edited/absent
-  template. Needs: template/org `object_type`s + the `delete` action as
-  first-class change types, plus the multi-site fan-out (the `fetch_sites`
-  org-batch path already exists; the pipeline is single-site). **Gateway
-  templates are a wider gap — gateways aren't a compile target, so there is no
-  template-merge path on that side at all.** Distinct from Mist's attribute-delete
-  (`{"-attr": ""}`) inside an `update`, which IS modeled (`effective_update` /
-  `update_conflicts`, field gate "deleted vs changed").
+- ✅ **multi-site / org-template (networktemplate) simulation** — done 2026-06-14.
+  A `networktemplate` (switch template) edit is simulated across ALL sites
+  assigned to it: new `simulate_org_template(plan) -> OrgVerdict` (separate entry;
+  single-site `simulate()` unchanged). The per-site pipeline core was extracted
+  (`_simulate_site_state`, stages 5–10) and is reused per assigned site. Flow:
+  classify SITE vs ORG plan mode (object_gate — ORG = all-`networktemplate` +
+  no `site_id`, exactly one template id; both `simulate`/`simulate_org_template`
+  guard the wrong mode → UNKNOWN); `resolve_org_template` (listOrgSites filter by
+  `networktemplate_id` + fetch the template) → apply the edit to ONE snapshot →
+  **override each fetched site's `networktemplate` with the baseline/proposed
+  snapshot** so the per-site diff is exactly the edit (the fetch-race guardrail) →
+  org-level L0 + field gate ONCE (networktemplate allowlist = the site_setting
+  leaf tuple; `switch_matching` denied → UNKNOWN) → per-site dynamic/derived
+  gates + the existing checks → `decide_org` rollup (worst-of
+  `UNKNOWN>UNSAFE>REVIEW>SAFE` + a `template_findings` REVIEW floor + 0-sites
+  SAFE). `OrgVerdict` carries per-site `Verdict`s + driving sites + `site_failures`
+  + structured `org_rejections` (fatal-L0/conflict/field-gate/lookup) + non-fatal
+  `template_findings`. CLI/MCP dispatch by mode (defensive — malformed → SITE
+  path → UNKNOWN, never a crash). Goldens MS-a..d (network-removal breaks one
+  site → org UNSAFE naming it; fetch-fail site → UNKNOWN; cosmetic → SAFE;
+  0-assigned → SAFE). Live: 8 single-site plans unchanged; a no-op `{}` edit on a
+  real template assigned to 2 sites ran the full real-provider fan-out → SAFE,
+  rollup consistent. 770 tests. Spec/plan:
+  docs/superpowers/{specs,plans}/2026-06-14-multisite-org-template-simulation*.md.
+- 🔵 **gatewaytemplate / sitetemplate** as first-class `object_type`s (the
+  networktemplate slice above is done; gateways aren't a compile target so a
+  gateway-template needs the gateway-compile work first; sitetemplate inheritance
+  differs).
+- 🔵 **template / org-object changes — DELETE + the wider ripple.** A template
+  `delete` (object deletion) and a non-`update` action are still rejected
+  pre-fetch → UNKNOWN (`object_gate`; fails safe, test-pinned). Modify-ripple is
+  now DONE for networktemplate (above); delete-ripple, gateway/site templates,
+  multiple templates per plan, and other org objects (org_networks, WLAN/RF
+  templates) remain. **Gateway templates are a wider gap — gateways aren't a
+  compile target, so there is no template-merge path on that side at all.**
+  Distinct from Mist's attribute-delete (`{"-attr": ""}`) inside an `update`,
+  which IS modeled (`effective_update` / `update_conflicts`, field gate
+  "deleted vs changed").
 
 ## 4. Product / infrastructure (spec-deferred behind seams)
 
