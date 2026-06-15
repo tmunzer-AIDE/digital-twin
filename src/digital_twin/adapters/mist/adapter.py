@@ -9,7 +9,7 @@ IngestReport carries the names; the engine maps that to UNKNOWN.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,8 +45,10 @@ class MistAdapter:
             else [SwitchIngester(), LldpIngester(), ClientsIngester(), WlanIngester()]
         )
 
-    def validate(self, op: ChangeOp) -> L0Result:
-        return validate_payload(op.object_type, op.payload)
+    def validate(
+        self, op: ChangeOp, *, scope_roots: Collection[str] | None = None
+    ) -> L0Result:
+        return validate_payload(op.object_type, op.payload, scope_roots=scope_roots)
 
     def ingest(self, raw: RawSiteState) -> IngestOutcome:
         nt = dict(raw.networktemplate) if raw.networktemplate else None

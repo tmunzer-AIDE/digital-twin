@@ -7,7 +7,7 @@ apply returns Rejection on bad targets.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any, Protocol
 
 from digital_twin.contracts import ChangeOp, Rejection
@@ -15,7 +15,12 @@ from digital_twin.providers.base import RawSiteState
 
 
 class VendorAdapter(Protocol):
-    def validate(self, op: ChangeOp) -> Any: ...  # vendor L0 result (findings + fatal)
+    # scope_roots: restrict L0 to these top-level roots (None = whole object).
+    # The engine passes the change's touched roots so omitted/persisted roots
+    # aren't re-validated against the committed OAS (Mist root-level-merge PUT).
+    def validate(
+        self, op: ChangeOp, *, scope_roots: Collection[str] | None = None
+    ) -> Any: ...  # vendor L0 result (findings + fatal)
 
     def ingest(self, raw: RawSiteState) -> Any: ...  # effective configs + IR + report
 

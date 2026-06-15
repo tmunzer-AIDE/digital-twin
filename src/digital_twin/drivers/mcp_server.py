@@ -50,17 +50,23 @@ def _unknown_org_dict(reason: str, template_id: str = "") -> dict[str, Any]:
 
 
 def simulate_change(
-    change_plan: dict[str, Any], replay_fixture: str | None = None
+    change_plan: dict[str, Any],
+    replay_fixture: str | None = None,
+    l0_full_object: bool = False,
 ) -> dict[str, Any]:
     if _is_org_plan(change_plan):
         try:
-            org_verdict = simulate_org_template(change_plan, provider=_provider(replay_fixture))
+            org_verdict = simulate_org_template(
+                change_plan, provider=_provider(replay_fixture), l0_full_object=l0_full_object
+            )
             return org_verdict_to_dict(org_verdict)
         except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
             return _unknown_org_dict(f"internal error: {e}")
 
     try:
-        verdict = simulate(change_plan, provider=_provider(replay_fixture))
+        verdict = simulate(
+            change_plan, provider=_provider(replay_fixture), l0_full_object=l0_full_object
+        )
         return verdict_to_dict(verdict)
     except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
         # a REAL assembled UNKNOWN Verdict: agents get the identical document
@@ -78,15 +84,22 @@ def simulate_change(
 
 
 @mcp.tool()
-def simulate_change_tool(change_plan: dict[str, Any]) -> dict[str, Any]:
+def simulate_change_tool(
+    change_plan: dict[str, Any], l0_full_object: bool = False
+) -> dict[str, Any]:
     """Simulate a Mist ChangePlan against the live network state; returns the
     verdict document (decision: safe|review|unsafe|unknown + findings).
     For org/template plans (ops all have object_type 'networktemplate' and no
     site_id in scope), returns an OrgVerdict document with per-site rollup.
     Payloads follow Mist update semantics: root attributes present in the
     payload replace the current values wholesale, omitted roots persist, and
-    {"-attribute": ""} deletes an attribute."""
-    return simulate_change(change_plan)
+    {"-attribute": ""} deletes an attribute.
+    L0 schema validation defaults to the roots the change touches (matching
+    Mist's root-level-merge PUT, which never re-validates omitted roots). Set
+    l0_full_object=true to validate the whole effective object instead — useful
+    for auditing persisted config, at the cost of surfacing stale-OAS noise on
+    roots the change did not touch."""
+    return simulate_change(change_plan, l0_full_object=l0_full_object)
 
 
 def main() -> None:
