@@ -74,6 +74,49 @@ def test_secret_key_violations_are_suppressed():
     assert not any("secret" in str(f.evidence.get("path", "")) + f.message for f in res.findings)
 
 
+def test_scope_roots_suppresses_violations_on_untouched_roots():
+    # The EFFECTIVE object carries PERSISTED roots Mist already accepted. When a
+    # committed-OAS type disagrees with Mist reality (here extra_routes.*.via is
+    # typed string, but Mist stores an array of next-hops), a violation on a root
+    # the op never touched must NOT surface — Mist re-validates only the roots in
+    # the change (root-level-merge PUT).
+    effective = {
+        "type": "switch",
+        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"], "discard": False}},
+        "port_config": {"ge-0/0/10": {"usage": "srv"}},
+    }
+    res = validate_payload("device", effective, scope_roots={"port_config"})
+    assert res.findings == ()
+
+
+def test_scope_roots_keeps_violations_on_changed_roots():
+    effective = {
+        "type": "switch",
+        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+    }
+    res = validate_payload("device", effective, scope_roots={"extra_routes"})
+    assert any("extra_routes" in str(f.evidence.get("path")) for f in res.findings)
+
+
+def test_scope_roots_keeps_object_level_violations():
+    # an empty-path (root-level) violation — e.g. the schema-required 'type' is
+    # missing — is NOT tied to one root and must survive any scoping
+    res = validate_payload("device", {"port_config": {}}, scope_roots={"port_config"})
+    assert any("required" in f.message for f in res.findings)
+
+
+def test_scope_roots_none_validates_whole_object():
+    # the opt-in "extend to the whole object" mode (the legacy behavior): every
+    # violation surfaces, including on untouched persisted roots
+    effective = {
+        "type": "switch",
+        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+        "port_config": {"ge-0/0/10": {"usage": "srv"}},
+    }
+    res = validate_payload("device", effective)  # default: no scoping
+    assert any("extra_routes" in str(f.evidence.get("path")) for f in res.findings)
+
+
 def test_non_object_payload_is_fatal():
     res = validate_payload("site_setting", "just-a-string")  # type: ignore[arg-type]
     assert res.fatal is True and len(res.findings) == 1

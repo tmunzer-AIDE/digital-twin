@@ -1,5 +1,6 @@
 """simulate(): the 10-stage sequence with every failure a value -> decision."""
 
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 
 from digital_twin.engine.pipeline import simulate
@@ -189,6 +190,30 @@ def test_conflicting_set_and_delete_is_unknown():
     v = simulate(_plan([_op(payload=payload)]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
     assert any("conflict" in r.lower() for r in v.decision_reasons)
+
+
+def _switch_with_extra_routes():
+    # extra_routes.*.via is typed `string` in the committed OAS but Mist stores an
+    # ARRAY of next-hops — a live, already-accepted config the twin must not flag.
+    return {**SWITCH, "id": "dev-er", "mac": "aa0000000099",
+            "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}}}
+
+
+def test_l0_scopes_to_changed_roots_by_default():
+    # the op touches only `notes`; the persisted extra_routes root (stale OAS
+    # type) must NOT surface a schema violation by default
+    raw = dc_replace(_raw(), devices=(_switch_with_extra_routes(),))
+    plan = _plan([_op(object_type="device", object_id="dev-er", payload={"notes": "x"})])
+    v = simulate(plan, provider=FakeProvider(raw=raw))
+    assert not any(f.code.startswith("l0.schema") for f in v.findings), v.findings
+
+
+def test_l0_full_object_option_surfaces_untouched_root_violation():
+    # opt-in whole-object validation re-checks persisted roots too
+    raw = dc_replace(_raw(), devices=(_switch_with_extra_routes(),))
+    plan = _plan([_op(object_type="device", object_id="dev-er", payload={"notes": "x"})])
+    v = simulate(plan, provider=FakeProvider(raw=raw), l0_full_object=True)
+    assert any(f.code.startswith("l0.schema") for f in v.findings)
 
 
 def test_partial_device_payload_passes_l0_required():

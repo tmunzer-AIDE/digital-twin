@@ -66,6 +66,16 @@ from digital_twin.verdict.verdict import Verdict, assemble
 _EMPTY_DIFF = IRDiff((), (), ())
 
 
+def _changed_roots(payload: Mapping[str, Any]) -> frozenset[str]:
+    """Top-level roots the op actually SETS — the only roots Mist processes (and
+    thus re-validates) on a root-level-merge PUT. Dash-delete markers ('-attr')
+    remove a root from the effective object, so they can never produce a
+    violation and are excluded. This is the default L0 scope: it keeps L0 from
+    flagging stale committed-OAS types on persisted roots the change never
+    touched (which Mist already accepted)."""
+    return frozenset(k for k in payload if not k.startswith("-"))
+
+
 def _unknown(
     rejection: Rejection | None,
     *,
@@ -183,6 +193,7 @@ def simulate(
     adapter: MistAdapter | None = None,
     registry: CheckRegistry | None = None,
     run: RunContext | None = None,
+    l0_full_object: bool = False,
 ) -> Verdict:
     run = run or RunContext()
     trace = run.trace
@@ -274,7 +285,10 @@ def simulate(
                     state_meta=state_meta,
                 )
             effective = effective_update(current, op.payload)
-            result = adapter.validate(replace(op, payload=effective))
+            result = adapter.validate(
+                replace(op, payload=effective),
+                scope_roots=None if l0_full_object else _changed_roots(op.payload),
+            )
             adapter_findings += result.findings
             if result.fatal:
                 return _unknown(
@@ -316,6 +330,7 @@ def simulate_org_template(
     adapter: MistAdapter | None = None,
     registry: CheckRegistry | None = None,
     run: RunContext | None = None,
+    l0_full_object: bool = False,
 ) -> OrgVerdict:
     run = run or RunContext()
     adapter = adapter or MistAdapter()
@@ -372,7 +387,10 @@ def simulate_org_template(
 
     # org-level L0 — a FATAL violation short-circuits to org_rejections ONLY
     # (template_findings holds NON-fatal L0 only, per the spec's fatal-L0 rule)
-    l0 = adapter.validate(replace(op, payload=proposed_template))
+    l0 = adapter.validate(
+        replace(op, payload=proposed_template),
+        scope_roots=None if l0_full_object else _changed_roots(op.payload),
+    )
     if l0.fatal:
         return org_unknown(
             (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)

@@ -136,6 +136,38 @@ def test_replay_store_captures_the_exact_state_the_run_used(tmp_path, capsys, mo
     assert calls["n"] == 1  # ONE fetch: the recorded state IS what the run judged
 
 
+def test_cli_l0_full_object_flag_threads_through(tmp_path, monkeypatch):
+    # --l0-full-object flips the engine's L0 scope from changed-roots (default)
+    # to whole-object; the CLI must pass the flag through on the SITE path
+    import digital_twin.drivers.cli as cli
+
+    seen = []
+    real = cli.simulate
+
+    def spy(plan_data, **kwargs):
+        seen.append(kwargs.get("l0_full_object"))
+        return real(plan_data, **kwargs)
+
+    monkeypatch.setattr(cli, "simulate", spy)
+
+    fixture = _fixture(tmp_path)
+    fx_raw = load_fixture_raw(fixture)
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": fx_raw.scope.org_id, "site_id": fx_raw.scope.site_id},
+        "ops": [{"action": "update", "order": 0, "object_type": "site_setting",
+                 "object_id": fx_raw.scope.site_id, "payload": dict(fx_raw.setting)}],
+    }
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan))
+
+    assert main(["--plan", str(plan_path), "--replay-fixture", str(fixture)]) == 0
+    assert main(
+        ["--plan", str(plan_path), "--replay-fixture", str(fixture), "--l0-full-object"]
+    ) == 0
+    assert seen == [False, True]
+
+
 def test_safe_noop_exits_0_human(tmp_path, capsys):
     fixture = _fixture(tmp_path)
     fx_raw = load_fixture_raw(fixture)  # scope/site are REDACTED in the fixture

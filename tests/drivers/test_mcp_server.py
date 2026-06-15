@@ -30,6 +30,28 @@ def test_error_path_returns_the_full_verdict_document_shape(tmp_path):
     assert set(err.keys()) == set(ok.keys())  # identical document shape
 
 
+def test_l0_full_object_threads_to_simulate(tmp_path, monkeypatch):
+    # the MCP tool exposes l0_full_object; it must reach the engine (default
+    # False = changed-roots scope, True = whole-object validation)
+    import digital_twin.drivers.mcp_server as srv
+
+    seen = []
+    real = srv.simulate
+
+    def spy(plan, **kwargs):
+        seen.append(kwargs.get("l0_full_object"))
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(srv, "simulate", spy)
+    fixture = str(ReplayStore(tmp_path).save_raw("fx", raw_site()))
+
+    simulate_change({"source": "mist", "ops": "garbage"}, replay_fixture=fixture)
+    simulate_change(
+        {"source": "mist", "ops": "garbage"}, replay_fixture=fixture, l0_full_object=True
+    )
+    assert seen == [False, True]
+
+
 # ---------------------------------------------------------------------------
 # ORG (networktemplate) path tests
 # ---------------------------------------------------------------------------

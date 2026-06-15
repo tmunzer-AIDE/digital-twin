@@ -91,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         "--replay-store",
         help="directory to capture (raw, plan, verdict, trace) — single-site runs only",
     )
+    parser.add_argument(
+        "--l0-full-object",
+        action="store_true",
+        help="validate the WHOLE effective object against the OAS (default: only the "
+        "roots the change touches — Mist persists/keeps omitted roots unchanged)",
+    )
     args = parser.parse_args(argv)
 
     plan_text = sys.stdin.read() if args.plan == "-" else Path(args.plan).read_text()
@@ -109,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if _is_org_plan(plan_data):
         # ORG (template) path — fan-out across all assigned sites
-        org_verdict = simulate_org_template(plan_data, provider=recording, run=run)
+        org_verdict = simulate_org_template(
+            plan_data, provider=recording, run=run, l0_full_object=args.l0_full_object
+        )
         # --replay-store is single-site only; recording.recorded stays None for org runs
         # so the guard below naturally skips saving (no site state was captured here)
         print(
@@ -120,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CODES[org_verdict.decision]
 
     # SITE path (unchanged)
-    verdict = simulate(plan_data, provider=recording, run=run)
+    verdict = simulate(plan_data, provider=recording, run=run, l0_full_object=args.l0_full_object)
 
     if args.replay_store and recording.recorded is not None:
         assert run.trace is not None

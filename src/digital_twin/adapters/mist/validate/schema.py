@@ -13,7 +13,7 @@ no schema for the type) -> the engine short-circuits to UNKNOWN.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -65,6 +65,20 @@ def _touches_secret(err: jsonschema.ValidationError) -> bool:
     return any(part in blob for part in _SECRET_KEY_PARTS)
 
 
+def _in_scope(err: jsonschema.ValidationError, scope_roots: Collection[str] | None) -> bool:
+    """When `scope_roots` is given, report only violations on those top-level
+    roots (plus object-level violations with an EMPTY path, e.g. a root
+    `required`, which aren't tied to any one root). Mist's PUT is a root-level
+    merge: roots OMITTED from the change persist unchanged and Mist does not
+    re-validate them — so a stale committed-OAS type on an untouched root must
+    not surface as a violation of THIS change. `scope_roots=None` validates the
+    whole object (the opt-in legacy mode)."""
+    if scope_roots is None:
+        return True
+    path = err.absolute_path
+    return not path or str(path[0]) in scope_roots
+
+
 @dataclass(frozen=True)
 class L0Result:
     findings: tuple[Finding, ...]
@@ -111,7 +125,12 @@ def _validator(object_type: str) -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(schema)
 
 
-def validate_payload(object_type: str, payload: Mapping[str, Any]) -> L0Result:
+def validate_payload(
+    object_type: str,
+    payload: Mapping[str, Any],
+    *,
+    scope_roots: Collection[str] | None = None,
+) -> L0Result:
     if object_type not in _SCHEMA_FILES:
         return L0Result(
             findings=(
@@ -134,7 +153,7 @@ def validate_payload(object_type: str, payload: Mapping[str, Any]) -> L0Result:
     errors = (
         err
         for err in _validator(object_type).iter_errors(_without_nulls(dict(payload)))
-        if not _touches_secret(err)
+        if not _touches_secret(err) and _in_scope(err, scope_roots)
     )
     findings = tuple(
         _finding(
