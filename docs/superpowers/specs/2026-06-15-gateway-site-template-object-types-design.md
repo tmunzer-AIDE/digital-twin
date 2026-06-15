@@ -84,11 +84,21 @@ fold_layers(layers: Sequence[JsonObj | None], policy: PolicyTable) -> Effective
 Reimplementations on top of the primitive:
 - `merge_site_effective` → `fold_layers([networktemplate, sitetemplate,
   site_setting], SWITCH_POLICY)`. Behavior-identical when `sitetemplate` is
-  absent; **fixes the latent baseline gap** when it is present.
+  absent; **fixes the latent baseline gap** when it is present. The existing
+  `merge_only(networktemplate, site_setting)` / `merge_site_effective` **2-arg
+  signatures must be preserved** (the offline Tier-2 `tools/equivalence_gate.py`
+  calls `merge_only` with two args) — reimplement their *bodies* on `fold_layers`,
+  don't change their arities.
 - gateway site-effective → `fold_layers([gatewaytemplate, sitetemplate,
-  site_setting], GATEWAY_POLICY)`, then the per-device PUT-root overlay
-  (`effective_update`) → an **effective gateway device**. `GATEWAY_POLICY` starts
-  equal to `SWITCH_POLICY` for the shared keys and is hardened by the live gate.
+  site_setting], GATEWAY_POLICY)`, then **resolve `{{vars}}` via the same
+  `_resolve` step (`compile/switch.py:61`)**, then the per-device PUT-root overlay
+  (`effective_update`) → an **effective gateway device**. **The `_resolve` step is
+  mandatory (was a P2 gap):** `compile_site` is `_resolve(merge_only(...))` — a
+  fold/overlay *without* `_resolve` leaves `{{var}}` refs unsubstituted, so a
+  `vars` edit never reaches the effective gateway `dhcpd_config`/`ip_configs` and
+  the vars-ripple DHCP screens (§4) silently no-op on gateways. `GATEWAY_POLICY`
+  starts equal to `SWITCH_POLICY` for the shared keys and is hardened by the live
+  gate.
 
 **Gateway effective → ingest handoff (the explicit contract — was a P1 gap).**
 Today the gateway ingest (`_gateway_ports_and_l3`, gateway dhcp) reads its facts
@@ -102,7 +112,12 @@ effective gateway config back into the gateway-type entries of
 consumes from the device — `port_config`, `ip_configs`, `dhcpd_config`; **not**
 `networks`, whose namespace is `org_networks`, see §4 — on `type == "gateway"`
 devices; switch/AP devices untouched) for **both** the
-baseline and proposed snapshots, *before* ingest runs. **This is one of TWO
+baseline and proposed snapshots, *before* ingest runs. **`RawSiteState` is a
+**frozen** dataclass (`providers/base.py:48`) — "materialize back into" means
+**derive a NEW state via `dataclasses.replace(raw, devices=…)`** (like
+`apply/objects.py`'s `replace_object`), not an in-place mutation. This also keeps
+the *recorded* single-site fixture clean: `save_run` captures the pre-
+materialization fetched state, so replay re-folds from the recorded layers. **This is one of TWO
 required destinations for the folded gateway effective** — `RawSiteState.devices`
 feeds the *ingest* (raw reads); the *derived gate* needs its own copy (next
 paragraph). Materializing into devices alone leaves the derived gate blind. The existing GS22 ingest
@@ -128,8 +143,20 @@ it is gateway-blind today. Contract: the gateway compile must **also publish the
 folded effective gateway device (baseline + proposed) into a map the derived gate
 iterates** — extend `device_effective` to gateway device ids (or a sibling
 `gateway_effective` map fed into the same `check_derived` loop). `check_derived`
-then screens gateway effective against `EFFECTIVE_ALLOWLIST`, and the DHCP
-value-aware screens (§4) run on the gateway effective there too. Without this, the
+then screens gateway effective **against a GATEWAY effective allowlist — NOT the
+switch `EFFECTIVE_ALLOWLIST` (was a P1 false-UNKNOWN that contradicts our own
+goldens).** Today `EFFECTIVE_ALLOWLIST` (`scope/allowlist.py:172`) is the *switch*
+leaf set: it carries `poe_disabled` but **not** plain `port_config.*.disabled`,
+and `other_ip_configs.*.ip` (switch IRB) but **not** gateway `ip_configs.*.ip`. So
+screening gateway effective against it would reject a `gatewaytemplate.port_config.
+*.disabled` flip or an `ip_configs.*.ip` edit → UNKNOWN, **defeating the feature
+and contradicting the `disabled`-drift and `same_ip` goldens** (those leaves must
+reach the gateway checks). The derived gate must therefore be **role-keyed**:
+`check_derived` takes the allowlist to use, and the gateway-effective diff is
+screened against a new `GATEWAY_EFFECTIVE_ALLOWLIST` = exactly the §4 gateway leaf
+set (`port_config.*.{networks,port_network,disabled}`, `ip_configs.*.ip`,
+`dhcpd_config.*.{type,servers,ip_start,ip_end,gateway}`). The DHCP value-aware
+screens (§4) run on the gateway effective there too. Without this, the
 "screens run on the effective diff in the derived gate, so ripples are caught"
 guarantee is gateway-blind and false.
 
@@ -143,6 +170,14 @@ guarantee is gateway-blind and false.
   `gatewaytemplate: JsonObj | None` alongside today's `networktemplate`. The
   per-site fetch pulls the site's assigned ones (by `sitetemplate_id` /
   `gatewaytemplate_id`).
+- **Single-site replay surface must add the new fields too (was a P2 gap, distinct
+  from the org-fixture shape below).** The new `RawSiteState` fields must be added
+  to `observability/replay/store.py`'s `_RAW_FIELDS` (the write enumeration) **and**
+  to `load_fixture_doc` using the **`.get(..., None)` back-compat pattern** (like
+  `wlans`/`org_networks` today), so older fixtures load as `None` and current runs
+  round-trip `sitetemplate`/`gatewaytemplate`. Without this they are silently
+  dropped on replay → compile-without-sitetemplate → an optimistic (potentially
+  false-SAFE) replayed verdict, and `save_run` would omit them from saved fixtures.
 - **Replay-fixture shape must carry typed templates (was a P2 gap).** Today the
   multi-site fixture (`observability/replay/store.py`) holds a single top-level
   `"template"` and `resolve_org_template` filters only on `networktemplate_id`.
@@ -434,6 +469,14 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
   committed `gatewaytemplate`/`sitetemplate` OAS for server-managed roots and add
   them, so a server-managed field on a fetched template object can't trip a
   spurious out-of-scope rejection (fail-safe direction → UNKNOWN, but noisy).
+  **`deviceprofile_id` is dual-purpose — keep the stages distinct:** it must be
+  ignorable by the *field gate* (so a device op carrying it doesn't trip a spurious
+  rejection) yet still **readable** by the post-ingest *device-profile gate* (§5,
+  conjunct 1). Those are different stages over different inputs (field gate over the
+  raw op diff; device-profile gate over the retained `dev[...]`), so adding
+  `deviceprofile_id` to `IGNORED_RAW_FIELDS` does not hide it from the
+  device-profile gate — but the plan must verify the gate reads the raw dict, not a
+  gate-filtered view.
 
 ### 5. Device-profile honesty (guardrail #3 — one deterministic, relevance-scoped rule)
 
@@ -499,7 +542,14 @@ raw `dev[...]` / gateway effective. So the device-profile relevance test runs as
 available), and injects its `Rejection` into the site's `DecisionInputs.rejections`
 before `decide(...)`. The engine has no such hook today between ingest and verdict
 — adding it is an explicit plan task (a `rejections` channel threaded from the
-post-ingest stage into `decide`). The relevance-scoping and the per-site-UNKNOWN
+post-ingest stage into `decide`). **Conjunct-1 (`deviceprofile_id` present) reads
+from the raw/materialized device dict, NOT the IR (was a P2 gap):** the `Device`
+IR entity (`ir/entities.py:83`) does **not** carry `deviceprofile_id` (ingest
+never copies it), so the gate reads it from the retained raw `dev[...]`
+(`IGNORED_RAW_FIELDS`/identity stripping do not remove it). Conjunct-2 (the
+changed leaf participates in that device's effective config) uses the
+`device_effective` / materialized gateway dict + the IR. The relevance-scoping and
+the per-site-UNKNOWN
 outcome are locked. The full fix (model the layer) is the roadmap item added
 2026-06-15.
 
@@ -588,8 +638,17 @@ Unit:
   → UNKNOWN (today the derived gate iterates switch-only `device_effective` and
   would miss it).
 - **gateway-specific `disabled` drift** — a gatewaytemplate `port_config.*.disabled`
-  flip moves a verdict on the **gateway** family (not just a switch-port test), so
-  `disabled` isn't allowlisted-but-gateway-inert (the next `usage`).
+  flip **reaches the gateway check and moves a verdict** (NOT a derived-gate
+  UNKNOWN), proving the gateway effective is screened against the gateway effective
+  allowlist (which includes `port_config.*.disabled` / `ip_configs.*.ip`), not the
+  switch `EFFECTIVE_ALLOWLIST` which omits them (Finding-1 regression guard).
+- **single-site replay round-trips the new fields** — a fixture saved with
+  `sitetemplate`/`gatewaytemplate` reloads them (and a legacy fixture lacking the
+  keys loads them as `None`), so a replayed verdict compiles the same layers and
+  is not optimistically SAFE.
+- **gateway fold resolves `{{vars}}`** — a gatewaytemplate/sitetemplate `{{var}}`
+  in `dhcpd_config`/`ip_configs` is substituted in the effective gateway device
+  (so the vars-ripple DHCP screens actually fire on gateways).
 - device-profile rule — **both** conjuncts (leaf in
   `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` **and** affected for that device's
   path) → `Rejection(stage="device_profile_gate")` → site **UNKNOWN** (assert
