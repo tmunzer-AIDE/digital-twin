@@ -455,9 +455,10 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       set (the helper rejects → UNKNOWN if ANY holds — four distinct stages):** (1)
       **inert `servers`** — `servers` changed while the row is serving
       (`local`/`server`/absent) on **BOTH** sides (S→S, serving stable) →
-      `dhcp_inert_servers`; (2) **participation/target** — the matrix's four
-      both-`active` differing-target cells → `dhcp_mode_transition` (serving↔active-
-      relay) / `dhcp_relay_target` (both active relays, differing `servers`); (3)
+      `dhcp_inert_servers`; (2) **participation/target** — the matrix's **three**
+      differing-target rejection cases (`S→R`, `R→S`, `R→R`-differing) →
+      `dhcp_mode_transition` (serving↔active-relay) / `dhcp_relay_target` (both
+      active relays, differing `servers`); (3)
       **inert scope-fact** — `ip_start`/`ip_end`/`gateway` changed while **both**
       sides non-serving (relay/none) → `dhcp_scope_field`. Everything else defers to
       the modeled `dhcp_path`/`scope_lint` verdict. **(1) requires serving on BOTH
