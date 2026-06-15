@@ -213,6 +213,23 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
     `Port.disabled`, read by l2_isolation/snooping/link_boundary/l2_graph;
     `ip_configs.*.ip` → `L3Intf.ip` → `gateway_gap.same_ip`; the `dhcpd` leaves →
     `DhcpScope` + `_dhcp_active` source-crediting → `scope_lint`/`dhcp_path`.)
+    - **`dhcpd_config.*.servers` needs a value-aware screen (was a P1 false-allow).**
+      The IR models `servers` only as a **boolean** — `_dhcp_active` treats *any*
+      non-empty relay list as "active", and `Vlan.dhcp_sources` stores the provider
+      id, **not** the relay target IPs; `dhcp_path` reasons only about provider
+      gain/loss. So a both-non-empty **target change** (`["10.1.1.1"] →
+      ["10.2.2.2"]`, or adding a second server) keeps the boolean and the provider
+      set identical → no finding → false SAFE. The leaf stays allowlisted (the
+      modeled **empty↔non-empty** activation/deactivation is real provider
+      gain/loss signal), but the gate adds a value-aware screen: a `servers` change
+      where **both old and new are non-empty** (target/set changed, path-state
+      unchanged) → `Rejection(stage="dhcp_relay_target")` → **UNKNOWN**. This screen
+      attaches to the shared `dhcpd_config.*.servers` leaf **wherever it is in
+      scope** — gateway here *and* the pre-existing switch/site path, which carries
+      the identical limitation today — so it is a deliberate, test-pinned safety
+      tightening (SAFE→UNKNOWN only for the unmodeled target-change case), not a
+      gateway-only divergence. Modeling relay target IPs in the IR (to resolve such
+      edits to SAFE/REVIEW precisely) is recorded as future work.
     **`port_config.*.usage` is deliberately EXCLUDED (was a P1 false-allow):** the
     gateway ingest copies it only into `Port.profile`, an **inert** IR field no
     check/representation/analysis reads — so a usage-only edit would pass the gate,
@@ -357,6 +374,9 @@ both CLI and MCP.
 
 - assignment / template / sitetemplate / gatewaytemplate fetch failure → UNKNOWN.
 - unmodeled gateway field → field gate → UNKNOWN.
+- `dhcpd_config.*.servers` both-non-empty relay-target change →
+  `Rejection(stage="dhcp_relay_target")` → UNKNOWN (only the active/inactive
+  boolean is modeled, not the target IPs).
 - relevant device-profile detected → `Rejection(stage="device_profile_gate")` →
   that site UNKNOWN (relevance-scoped; a gate rejection, not a REVIEW finding).
 - 0 assigned sites → SAFE (existing contract).
@@ -389,6 +409,11 @@ Unit:
   UNKNOWN, **not** SAFE; plus the drift assertion (every allowlisted leaf is
   consumed **and acted on** by a check/representation/analysis, and every such
   acted-on leaf is allowlisted).
+- **`dhcpd_config.*.servers` value-aware screen** — a both-non-empty target
+  change (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN, **not** SAFE; an
+  empty↔non-empty activation/deactivation → allowed (modeled provider gain/loss,
+  resolves via `dhcp_path`). Assert the screen fires on the shared leaf for the
+  switch/site path too (not gateway-only).
 - **sitetemplate role-projection** — a sitetemplate edit to a gateway-only leaf
   moves only the gateway IR (switch verdict unchanged); a switch-only leaf moves
   only the switch IR — no accidental cross-family behavior.
@@ -422,7 +447,11 @@ Gate: `uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
 ## Out of scope (recorded, not built)
 
 device-profile layer (modeled only as relevance-scoped UNKNOWN; roadmap item);
-gateway routing/BGP/tunnels/security policy (→ UNKNOWN); **`gatewaytemplate.
+gateway routing/BGP/tunnels/security policy (→ UNKNOWN); **DHCP relay target-IP
+modeling** — the IR models `servers` only as an active/inactive boolean, so a
+both-non-empty relay-target change is gated to UNKNOWN rather than analyzed;
+modeling relay target IPs (in `Vlan.dhcp_sources` or a new field) + a check would
+let such edits resolve SAFE/REVIEW (applies to switch/site DHCP too); **`gatewaytemplate.
 networks` consumption** — the gateway namespace is `org_networks` and
 `_gateway_ports_and_l3` / VLAN+DHCP-scope minting don't read a device's own
 `networks`; until that path consumes the materialized gateway `networks`, a
