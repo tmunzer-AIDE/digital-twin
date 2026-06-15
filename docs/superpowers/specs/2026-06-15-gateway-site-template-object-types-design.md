@@ -98,9 +98,10 @@ straight off `ctx.raw.devices` (the raw device dict — `dev["port_config"]`,
 gatewaytemplate edit would compile correctly yet never reach the IR unless the
 handoff is explicit. The contract: the **compile stage materializes the folded
 effective gateway config back into the gateway-type entries of
-`RawSiteState.devices`** (replacing only the modeled gateway leaves —
-`port_config`, `ip_configs`, `dhcpd_config`, and any modeled `networks` — on
-`type == "gateway"` devices; switch/AP devices untouched) for **both** the
+`RawSiteState.devices`** (replacing only the modeled gateway leaves the ingest
+consumes from the device — `port_config`, `ip_configs`, `dhcpd_config`; **not**
+`networks`, whose namespace is `org_networks`, see §4 — on `type == "gateway"`
+devices; switch/AP devices untouched) for **both** the
 baseline and proposed snapshots, *before* ingest runs. The existing GS22 ingest
 then consumes them **unchanged** (guardrail #5 — no second gateway analysis
 path). Rejected alternative: teaching the ingest to read a separate
@@ -161,10 +162,18 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
   object_gate ORG-mode recognizes all three; the single-template-id-per-plan
   invariant is kept (one template id, no `site_id`, all ops that type).
 - **Allowlists per type:**
-  - `gatewaytemplate` = only the **modeled** gateway leaves that feed GS22 IR:
-    `networks`, `port_config`, `ip_configs`, `dhcpd_config`. Everything else
-    (routing, BGP, tunnels, security policy) is **not allowlisted → field gate →
-    UNKNOWN** (fail-safe).
+  - `gatewaytemplate` = only the **modeled** gateway leaves the GS22 ingest
+    actually consumes from the device: `port_config`, `ip_configs`,
+    `dhcpd_config`. **`networks` is deliberately excluded (was a P1 false-allow):**
+    the gateway namespace is the **org networks list** (`raw.org_networks`, then
+    `site_effective`), not the gateway device's own `networks` —
+    `_gateway_ports_and_l3` and VLAN/DHCP-scope minting resolve names there, so a
+    materialized `dev["networks"]` would be silently ignored. A
+    `gatewaytemplate.networks.*` edit therefore stays **not allowlisted → field
+    gate → UNKNOWN** (fail-safe), never an allowed-but-ignored change. Everything
+    else (routing, BGP, tunnels, security policy) is likewise **not allowlisted →
+    UNKNOWN**. Consuming materialized gateway `networks` in namespace resolution +
+    VLAN/DHCP minting is recorded as future work below.
   - `sitetemplate` = the **union of the modeled switch/site leaves and the
     modeled gateway leaves**, because sitetemplate sits in *both* stacks. This
     union MUST be **verified against the committed `sitetemplate` OAS / live
@@ -193,20 +202,32 @@ reality. The MVP rule is deterministic and **relevance-scoped**:
 This avoids a noisy "any device-profile → UNKNOWN" (the current fixtures carry
 many AP `deviceprofile_id`s).
 
-**"Could override" is a concrete, conservative leaf set (was a P3 gap).** Define
-`DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` — the modeled leaves a device-profile
-can override, keyed by device role (`switch` / `gateway`). The relevance test is
-exactly: *the edit changes a leaf in that role's set, for an in-scope modeled
-device of that role carrying a `deviceprofile_id`.* Start it conservatively from
-the modeled leaves each role actually consumes (e.g. gateway:
-`port_config` / `ip_configs` / `dhcpd_config` / `networks`; switch: the modeled
-switch/site leaves) and verify against the device-profile OAS shape, so the set
-neither over-taints every template edit nor under-taints a genuinely
-profile-overridable leaf (which would reintroduce a false SAFE). Mechanism: an
-analysis-context flag set when an in-scope modeled device has a profile id,
-consulted only against this leaf set for the leaves the edit actually changes.
-The relevance-scoping and the "cannot return SAFE for that site" outcome are
-locked. The full fix (model the layer) is the roadmap item added 2026-06-15.
+**"Could override" is a concrete leaf set AND an affected-device test (was a P3
++ P2 gap).** Define `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` — the modeled
+leaves a device-profile can override, keyed by device role (`switch` /
+`gateway`). Start it conservatively from the modeled leaves each role actually
+consumes from the device (gateway: `port_config` / `ip_configs` / `dhcpd_config`
+— **not** `networks`, which the gateway path doesn't consume from the device,
+§4; switch: the modeled switch/site leaves) and verify against the device-profile
+OAS shape, so the set neither over-taints every template edit nor under-taints a
+genuinely profile-overridable leaf (which would reintroduce a false SAFE).
+
+The taint test has **two** conjuncts — both required:
+1. the edit changes a leaf in that role's overridable set, **and**
+2. the changed leaf is **affected for that specific device** — it participates in
+   that device's effective config or its referenced network/usage path (e.g. the
+   device's effective `port_config` references the changed `port_usages`/network
+   key, or the changed leaf resolves onto that device). A change to an
+   overridable-typed leaf the device does **not** reference (an unused or purely
+   cosmetic change) does **not** taint.
+
+This keeps the device-profile rule consistent with the cosmetic-edit → SAFE
+golden: a no-op/unused edit affects no device's path, so it neither produces a
+finding nor a profile taint. Mechanism: an analysis-context flag set only when an
+in-scope modeled device with a `deviceprofile_id` is **affected** (both conjuncts)
+by the edit. The relevance-scoping and the "cannot return SAFE for that site"
+outcome are locked. The full fix (model the layer) is the roadmap item added
+2026-06-15.
 
 ### 6. Checks & verdict
 
@@ -257,9 +278,13 @@ Unit:
 - gateway compile → **materialize into `RawSiteState.devices`** → GS22 IR
   equivalence (a gatewaytemplate edit actually moves the gateway IR; switch/AP
   device entries untouched).
-- device-profile rule — leaf in `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` for a
-  relevant modeled device → site UNKNOWN; edit hitting a non-overridable leaf, an
-  unrelated AP profile, or an unaffected device → no taint.
+- device-profile rule — **both** conjuncts (leaf in
+  `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` **and** affected for that device's
+  path) → site UNKNOWN; a non-overridable leaf, an unrelated AP profile, an
+  unaffected device, or an unused/cosmetic overridable-typed edit → no taint
+  (the last pins consistency with the cosmetic-SAFE golden).
+- `gatewaytemplate.networks.*` edit → field gate → UNKNOWN (not allowlisted;
+  gateway namespace is `org_networks`, not consumed from the device in MVP).
 - **edited layer not re-fetched per site**; a **non-edited** assigned layer
   (e.g. sitetemplate) fetch-miss → UNKNOWN.
 
@@ -281,6 +306,10 @@ Gate: `uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
 ## Out of scope (recorded, not built)
 
 device-profile layer (modeled only as relevance-scoped UNKNOWN; roadmap item);
-gateway routing/BGP/tunnels/security policy (→ UNKNOWN); `aptemplate`;
+gateway routing/BGP/tunnels/security policy (→ UNKNOWN); **`gatewaytemplate.
+networks` consumption** — the gateway namespace is `org_networks` and
+`_gateway_ports_and_l3` / VLAN+DHCP-scope minting don't read a device's own
+`networks`; until that path consumes the materialized gateway `networks`, a
+`gatewaytemplate.networks` edit stays UNKNOWN (future work); `aptemplate`;
 `switch_matching` (denied); template `delete`-ripple; multiple templates per
 plan; other org objects (`org_networks`, WLAN/RF templates).
