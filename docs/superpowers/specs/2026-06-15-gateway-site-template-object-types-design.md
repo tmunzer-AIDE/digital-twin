@@ -198,25 +198,38 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
     `port_config.*.mtu`, `ip_configs.*.netmask`), yielding **unchanged IR that can
     resolve SAFE** despite a real config change. The allowlist is **exactly** the
     leaves `_gateway_ports_and_l3` / gateway-dhcp actually consume, in the existing
-    `networks.*.vlan_id` entry style:
+    `networks.*.vlan_id` entry style — only leaves the ingest **consumes AND acts
+    on** (i.e. the value reaches an IR field some check / representation / analysis
+    actually reasons about):
     ```
     port_config.*.networks        port_config.*.port_network
-    port_config.*.usage           port_config.*.disabled
+    port_config.*.disabled
     ip_configs.*.ip
     dhcpd_config.*.type           dhcpd_config.*.servers
     dhcpd_config.*.ip_start       dhcpd_config.*.ip_end
     dhcpd_config.*.gateway
     ```
-    Any other leaf — `port_config.*.mtu`, `ip_configs.*.netmask`, routing / BGP /
-    tunnels / security policy, etc. — is **not allowlisted → field gate →
-    UNKNOWN** (fail-safe), never allowed-but-ignored. **`networks.*` is
+    (`networks`/`port_network` → `Port.native/tagged_vlan`; `disabled` →
+    `Port.disabled`, read by l2_isolation/snooping/link_boundary/l2_graph;
+    `ip_configs.*.ip` → `L3Intf.ip` → `gateway_gap.same_ip`; the `dhcpd` leaves →
+    `DhcpScope` + `_dhcp_active` source-crediting → `scope_lint`/`dhcp_path`.)
+    **`port_config.*.usage` is deliberately EXCLUDED (was a P1 false-allow):** the
+    gateway ingest copies it only into `Port.profile`, an **inert** IR field no
+    check/representation/analysis reads — so a usage-only edit would pass the gate,
+    change nothing the checks reason about, and could resolve SAFE. It stays **not
+    allowlisted → UNKNOWN** until a check or gateway usage-resolution gives it
+    meaning. Any other leaf — `port_config.*.mtu`, `ip_configs.*.netmask`, routing /
+    BGP / tunnels / security policy, etc. — is likewise **not allowlisted → field
+    gate → UNKNOWN** (fail-safe), never allowed-but-ignored. **`networks.*` is
     deliberately absent:** the gateway namespace is the **org networks list**
     (`raw.org_networks`, then `site_effective`), not the device's own `networks`,
     so a materialized `dev["networks"]` would be silently ignored — a
-    `gatewaytemplate.networks.*` edit stays UNKNOWN. (Plan task: assert each
-    listed leaf is read by the ingest and no consumed leaf is missing, so the
-    allowlist can't drift from what the IR models.) Consuming materialized gateway
-    `networks` in namespace resolution + VLAN/DHCP minting is future work below.
+    `gatewaytemplate.networks.*` edit stays UNKNOWN. **Drift assertion (plan task):
+    every allowlisted leaf is ingest-consumed AND its value influences a
+    check/representation/analysis, and no such acted-on leaf is missing** — the
+    standard is "consumed and acted on," not merely "read by ingest" (that's what
+    catches `usage`). Consuming materialized gateway `networks` in namespace
+    resolution + VLAN/DHCP minting is future work below.
   - `sitetemplate` = the **union of the modeled switch/site leaves and the
     modeled gateway leaves**, because sitetemplate sits in *both* stacks. This
     union MUST be **verified against the committed `sitetemplate` OAS / live
@@ -371,9 +384,11 @@ Unit:
 - `gatewaytemplate.networks.*` edit → field gate → UNKNOWN (not allowlisted;
   gateway namespace is `org_networks`, not consumed from the device in MVP).
 - **gatewaytemplate ignored-leaf false-allow guard** — an edit to a leaf the
-  ingest never reads (`port_config.*.mtu`, `ip_configs.*.netmask`) → field gate →
+  ingest never reads (`port_config.*.mtu`, `ip_configs.*.netmask`) **and** to a
+  read-but-inert leaf (`port_config.*.usage` → `Port.profile`) → field gate →
   UNKNOWN, **not** SAFE; plus the drift assertion (every allowlisted leaf is
-  ingest-consumed, every ingest-consumed leaf is allowlisted).
+  consumed **and acted on** by a check/representation/analysis, and every such
+  acted-on leaf is allowlisted).
 - **sitetemplate role-projection** — a sitetemplate edit to a gateway-only leaf
   moves only the gateway IR (switch verdict unchanged); a switch-only leaf moves
   only the switch IR — no accidental cross-family behavior.
