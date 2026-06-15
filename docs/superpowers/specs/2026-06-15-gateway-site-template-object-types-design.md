@@ -175,12 +175,22 @@ screening gateway effective against it would reject a `gatewaytemplate.port_conf
 and contradicting the `disabled`-drift and `same_ip` goldens** (those leaves must
 reach the gateway checks). The derived gate must therefore be **role-keyed**:
 `check_derived` takes the allowlist to use, and the gateway-effective diff is
-screened against a new `GATEWAY_EFFECTIVE_ALLOWLIST` = exactly the §4 gateway leaf
-set (`port_config.*.{networks,port_network,disabled}`, `ip_configs.*.ip`,
-`dhcpd_config.*.{type,servers,ip_start,ip_end,gateway}`). The DHCP value-aware
-screens (§4) run on the gateway effective there too. Without this, the
-"screens run on the effective diff in the derived gate, so ripples are caught"
-guarantee is gateway-blind and false.
+screened against a new `GATEWAY_EFFECTIVE_ALLOWLIST` = the §4 gateway leaf set
+(`port_config.*.{networks,port_network,disabled}`, `ip_configs.*.ip`,
+`dhcpd_config.*.{type,servers,ip_start,ip_end,gateway}`) **plus `vars.*` (was a P2
+omission).** `_resolve` (`compile/switch.py:61`) substitutes `{{vars}}` but
+**preserves the `vars` root**, so a `vars.*` edit appears in the gateway effective
+diff as a residual `vars.*` leaf change. The switch `EFFECTIVE_ALLOWLIST` already
+allowlists `vars.*` as a whole subtree for exactly this reason (`allowlist.py:181`,
+comment at `:117/:170`) — the derived gate catches the *ripple* into modeled
+leaves, so the `vars.*` leaf itself must be allowed or **every** gateway `vars`
+edit trips a generic out-of-scope `derived_gate` rejection → UNKNOWN, preempting
+the DHCP row helper / the real modeled-leaf screen. `GATEWAY_EFFECTIVE_ALLOWLIST`
+must mirror that (`+ vars.*`). The DHCP value-aware screens (§4) run on the gateway
+effective there too. Without this, the "screens run on the effective diff in the
+derived gate, so ripples are caught" guarantee is gateway-blind and false; and a
+benign gateway `vars` edit (rippling only into in-scope modeled leaves) would
+wrongly UNKNOWN on the `vars.*` path alone.
 
 ### 2. Provider surface
 
@@ -427,8 +437,10 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       (one axis); the two inert-leaf screens are orthogonal and compose on top —
       "allowed" below means "no *participation* rejection," and a cell can still be
       UNKNOWN if an inert leaf changed within it (noted per cell).** The
-      participation subrule fires in the four both-`active` differing-target cells
-      (S→R, R→S, R→R differing); every cell with ≥1 `I` side defers to the modeled
+      participation subrule fires in **three** differing-target transitions —
+      `S→R`, `R→S`, and the `R→R`-with-differing-`servers` **subcase** (the four
+      both-`active` cells are S→S, S→R, R→S, R→R; S→S and R→R-same are allowed, so
+      three transitions reject); every cell with ≥1 `I` side defers to the modeled
       `dhcp_path`/`scope_lint` signal:
 
       | base ↓ \ prop → | **S** (serving) | **R** (active relay) | **I** (inactive) |
@@ -437,8 +449,9 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       | **R** | **UNKNOWN** `dhcp_mode_transition` (relay target silently gone; `active` stays true) | same `servers`: participation-allowed *(a range/gateway edit → UNKNOWN, scope-field screen — R is non-serving)* · differing: **UNKNOWN** `dhcp_relay_target` | allowed → `dhcp_path` provider-loss (REVIEW) |
       | **I** | allowed → provider gain + `scope_lint` on the new scope | allowed → provider gain (additive; no modeled service replaced) | participation-allowed *(an inert range/gateway edit on these both-non-serving rows → UNKNOWN, scope-field screen)* |
 
-      The four UNKNOWN cells above are the participation/target rejections; the inert-
-      leaf screens add UNKNOWN within otherwise-allowed cells. **Complete rejection
+      The three UNKNOWN transitions above (`S→R`, `R→S`, `R→R`-differing) are the
+      participation/target rejections; the inert-leaf screens add UNKNOWN within
+      otherwise-allowed cells. **Complete rejection
       set (the helper rejects → UNKNOWN if ANY holds — four distinct stages):** (1)
       **inert `servers`** — `servers` changed while the row is serving
       (`local`/`server`/absent) on **BOTH** sides (S→S, serving stable) →
@@ -711,6 +724,10 @@ Unit:
   actually-unmodeled gateway leaf, e.g. `ip_configs.*.netmask`) → `check_derived`
   → UNKNOWN (today the derived gate iterates switch-only `device_effective` and
   would miss it).
+- **`vars.*` allowlisted on the gateway effective** — a benign gateway `vars` edit
+  whose ripple lands ONLY in in-scope modeled leaves is **not** rejected on the
+  residual `vars.*` path itself (the `vars` root survives `_resolve`); it resolves
+  per the modeled ripple (SAFE/REVIEW), not a generic `derived_gate` UNKNOWN.
 - **gateway-specific `disabled` drift** — a gatewaytemplate `port_config.*.disabled`
   flip **reaches the gateway check and moves a verdict** (NOT a derived-gate
   UNKNOWN), proving the gateway effective is screened against the gateway effective
@@ -756,8 +773,9 @@ Unit:
   exemption is row-local, not check-output-dependent; serving→`none` → allowed
   (provider loss via `dhcp_path`); `local→server` → no-op SAFE.
 - **full 3×3 participation matrix + the two inert-leaf screens** — parametrize all
-  nine (S/R/I)×(S/R/I) baseline→proposed transitions (incl. R→R same/differing
-  `servers`); assert the 4 participation-UNKNOWN cells (S→R, R→S, R→R-differing) and
+  nine (S/R/I)×(S/R/I) baseline→proposed transitions (R→R covers same *and*
+  differing `servers` as two subcases); assert the **three** participation-UNKNOWN
+  transitions (S→R, R→S, R→R-differing) and
   that the rest are SAFE/REVIEW via `dhcp_path`/`scope_lint`. **Plus the orthogonal
   inert-leaf cases that compose ON TOP within allowed cells:** a `servers` edit on
   an S→S row → UNKNOWN (inert-servers), and an `ip_start`/`gateway` edit on a
