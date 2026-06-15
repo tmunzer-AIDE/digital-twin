@@ -102,7 +102,10 @@ effective gateway config back into the gateway-type entries of
 consumes from the device — `port_config`, `ip_configs`, `dhcpd_config`; **not**
 `networks`, whose namespace is `org_networks`, see §4 — on `type == "gateway"`
 devices; switch/AP devices untouched) for **both** the
-baseline and proposed snapshots, *before* ingest runs. The existing GS22 ingest
+baseline and proposed snapshots, *before* ingest runs. **This is one of TWO
+required destinations for the folded gateway effective** — `RawSiteState.devices`
+feeds the *ingest* (raw reads); the *derived gate* needs its own copy (next
+paragraph). Materializing into devices alone leaves the derived gate blind. The existing GS22 ingest
 then consumes them **unchanged** (guardrail #5 — no second gateway analysis
 path). Rejected alternative: teaching the ingest to read a separate
 `ctx.gateway_device_effective` source — that forks the device read path for one
@@ -301,7 +304,11 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       which catches **both** the direct template edit *and* the `vars`/override
       ripple. The raw field gate keeps allowing the `dhcpd_config.*` leaf *paths*
       (so direct edits proceed to compile); the derived gate's value-aware screen
-      is the authoritative UNKNOWN. Tests must pin the ripple path explicitly (a
+      is the authoritative UNKNOWN. **For the gateway family this REQUIRES the §1
+      contract** — gateway effective must be published into the derived-gate
+      iteration set (extend `device_effective` to gateways or a sibling map);
+      without it the derived gate never diffs gateway effective and this screen
+      cannot fire on a gateway. Tests must pin the ripple path explicitly (a
       `vars` edit producing effective relay-target `["10.1.1.1"] → ["10.2.2.2"]`,
       and a `vars` edit moving a non-serving row's `gateway`, each → UNKNOWN).
     **`port_config.*.usage` is deliberately EXCLUDED (was a P1 false-allow):** the
