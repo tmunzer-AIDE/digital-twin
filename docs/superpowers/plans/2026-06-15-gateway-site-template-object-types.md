@@ -1065,31 +1065,50 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 from digital_twin.scope.device_profile_gate import affected_device_ids
 
 # device d1 has a port using usage "foo" and network "corp"; d2 uses neither.
-D1 = {"port_config": {"ge-0/0/0": {"usage": "foo", "networks": ["corp"]}}}
-D2 = {"port_config": {"ge-0/0/1": {"usage": "bar", "networks": ["guest"]}}}
+# d1's port uses profile "foo"; the profile (port_usages.foo) references network
+# "corp" -> the network is referenced INDIRECTLY through the usage (the helper must
+# resolve it, not only read raw port_config attrs). d2 uses "bar"/"guest".
+D1 = {"port_config": {"ge-0/0/0": {"usage": "foo"}}, "port_usages": {"foo": {"networks": ["corp"]}}}
+D2 = {"port_config": {"ge-0/0/1": {"usage": "bar"}}, "port_usages": {"bar": {"networks": ["guest"]}}}
 EFF = {"d1": D1, "d2": D2}
 
 
 def test_unused_port_usage_change_taints_nobody():
-    # an unused profile "baz" no port references -> no device affected
-    assert affected_device_ids(("port_usages.baz.mode",), EFF) == set()
+    assert affected_device_ids(("port_usages.baz.mode",), EFF, EFF) == set()
 
 
 def test_referenced_port_usage_taints_only_referencing_device():
-    assert affected_device_ids(("port_usages.foo.mode",), EFF) == {"d1"}
+    assert affected_device_ids(("port_usages.foo.mode",), EFF, EFF) == {"d1"}
 
 
 def test_unused_network_change_taints_nobody():
-    assert affected_device_ids(("networks.iot.vlan_id",), EFF) == set()
+    assert affected_device_ids(("networks.iot.vlan_id",), EFF, EFF) == set()
 
 
-def test_referenced_network_taints_only_referencing_device():
-    assert affected_device_ids(("networks.corp.vlan_id",), EFF) == {"d1"}
+def test_network_referenced_THROUGH_usage_taints_device():
+    # networks.corp reached via port_usages.foo -> d1 affected even though no
+    # port lists "corp" directly (review P2 — must resolve, not read raw attrs)
+    assert affected_device_ids(("networks.corp.vlan_id",), EFF, EFF) == {"d1"}
 
 
 def test_owned_port_config_key_taints_its_device():
-    # a per-port/per-scope keyed map: the device whose effective owns that key
-    assert affected_device_ids(("port_config.ge-0/0/1.disabled",), EFF) == {"d2"}
+    assert affected_device_ids(("port_config.ge-0/0/1.disabled",), EFF, EFF) == {"d2"}
+
+
+def test_added_reference_in_proposed_only_taints_device():
+    # baseline port references guest; proposed switches it to corp. A networks.corp
+    # edit affects the device via the PROPOSED side (review P2 — baseline-only misses
+    # newly-introduced references).
+    base = {"d": {"port_config": {"p": {"networks": ["guest"]}}}}
+    prop = {"d": {"port_config": {"p": {"networks": ["corp"]}}}}
+    assert affected_device_ids(("networks.corp.vlan_id",), base, prop) == {"d"}
+
+
+def test_removed_reference_in_baseline_only_taints_device():
+    # symmetric: baseline referenced corp, proposed removed it -> still affected
+    base = {"d": {"port_config": {"p": {"networks": ["corp"]}}}}
+    prop = {"d": {"port_config": {"p": {"networks": ["guest"]}}}}
+    assert affected_device_ids(("networks.corp.vlan_id",), base, prop) == {"d"}
 ```
 
   (b) `tests/engine/test_pipeline_device_profile.py` — end-to-end: a per-site sim where a modeled gateway carries `deviceprofile_id` and the edit changes an overridable, **referenced** leaf → site verdict UNKNOWN via `device_profile_gate`; an AP-profile-only site, or an **unused** `port_usages` edit, → not tainted (verdict per the real checks).
@@ -1103,50 +1122,89 @@ Expected: FAIL — `affected_device_ids` missing; no rejection injected.
 
 ```python
 # src/digital_twin/scope/device_profile_gate.py  (add)
-# Maps whose changed KEY is a name referenced indirectly (a port/scope must point
-# at it). Everything else is a per-device-owned keyed map (the device that has the
-# key in its effective owns it).
-_REFERENCED_MAPS = {"port_usages", "networks"}
+from digital_twin.adapters.mist.ingest.ports import resolve_effective_ports
+
+# Keyed maps whose changed KEY is a name referenced INDIRECTLY (a resolved port,
+# IP-config, or DHCP scope must point at it). port_config/local_port_config/
+# ip_configs/dhcpd_config keys are owned per-device directly.
+
+
+def _resolved_ports(eff: dict) -> list:
+    # resolve_effective_ports layers port_config + local_port_config +
+    # port_config_overwrite onto the named port_usages profile, so a network
+    # referenced via port_usages.foo.{networks,port_network} (NOT directly on the
+    # port) is surfaced. _USAGE_OVERRIDE_ATTRS includes networks/port_network, so
+    # inline gateway ports (no usage) are surfaced the same way — uniform.
+    return list(resolve_effective_ports(eff or {}))
+
+
+def _device_ports(eff: dict) -> set[str]:
+    return {m for m, _u, _un, _r in _resolved_ports(eff)}
+
+
+def _device_usages(eff: dict) -> set[str]:
+    return {un for _m, _u, un, _r in _resolved_ports(eff) if un}
+
+
+def _device_networks(eff: dict) -> set[str]:
+    nets: set[str] = set()
+    for _m, usage, _un, _r in _resolved_ports(eff):
+        usage = usage or {}
+        nets.update(str(n) for n in (usage.get("networks") or []))
+        if usage.get("port_network"):
+            nets.add(str(usage["port_network"]))
+    # gateway ip_configs/dhcpd_config keys ARE network names
+    nets.update(str(k) for k in ((eff or {}).get("ip_configs") or {}))
+    nets.update(str(k) for k in ((eff or {}).get("dhcpd_config") or {}))
+    return nets
+
+
+def _references_all_networks(eff: dict) -> bool:
+    return any((u or {}).get("all_networks") for _m, u, _un, _r in _resolved_ports(eff))
 
 
 def affected_device_ids(
-    changed_leaves: tuple[str, ...], device_effectives: dict[str, dict],
+    changed_leaves: tuple[str, ...],
+    baseline_eff: dict[str, dict],
+    proposed_eff: dict[str, dict],
 ) -> set[str]:
-    """device_effectives: device_id -> effective dict (switch device_effective +
-    gateway_effective). A device is affected by a changed leaf iff it actually
-    REFERENCES the changed keyed-map key — NOT merely carries the map. Unused
-    port_usages/networks changes taint nobody."""
+    """*_eff: device_id -> effective dict (switch device_effective + gateway_effective)
+    for that snapshot. A device is affected by a changed leaf iff it RESOLVES a
+    reference to the changed keyed-map key in EITHER baseline OR proposed (so an
+    edit that ADDS or REMOVES the reference still counts) — NOT merely carries the
+    map. Unused port_usages/networks changes taint nobody (review P2)."""
     out: set[str] = set()
+    dids = set(baseline_eff) | set(proposed_eff)
     for leaf in changed_leaves:
         parts = leaf.split(".")
         if len(parts) < 2:
             continue
         mp, key = parts[0], parts[1]
-        for did, eff in device_effectives.items():
-            ports = (eff.get("port_config") or {}).values()
-            if mp in _REFERENCED_MAPS:
-                if mp == "port_usages":
-                    referenced = any(
-                        (p or {}).get("usage") == key or (p or {}).get("dynamic_usage") == key
-                        for p in ports
-                    )
-                else:  # networks: a port references it by name, or an ip/dhcp scope is named it
-                    referenced = any(
-                        key in ((p or {}).get("networks") or []) or (p or {}).get("port_network") == key
-                        for p in ports
-                    ) or key in (eff.get("ip_configs") or {}) or key in (eff.get("dhcpd_config") or {})
-                if referenced:
-                    out.add(did)
-            elif key in (eff.get(mp) or {}):   # per-device-owned keyed map
+        for did in dids:
+            be, pe = baseline_eff.get(did) or {}, proposed_eff.get(did) or {}
+            if mp == "port_usages":
+                hit = key in _device_usages(be) or key in _device_usages(pe)
+            elif mp == "networks":
+                hit = (
+                    key in _device_networks(be) or key in _device_networks(pe)
+                    or _references_all_networks(be) or _references_all_networks(pe)
+                )
+            elif mp in ("port_config", "local_port_config"):
+                hit = key in _device_ports(be) or key in _device_ports(pe)
+            elif mp in ("ip_configs", "dhcpd_config"):
+                hit = key in (be.get(mp) or {}) or key in (pe.get(mp) or {})
+            else:
+                hit = False
+            if hit:
                 out.add(did)
     return out
 ```
 
-In `_simulate_site_state`, after `proposed = adapter.ingest(proposed_raw)`: compute `changed = derived changed-leaf paths` (reuse `changed_leaf_paths` over the per-device effective baseline/proposed, switch + gateway), build `device_effectives = {**baseline.device_effective, **baseline.gateway_effective}` (proposed for the gateway side too — use the union of both snapshots' keys), call `aff = affected_device_ids(changed, device_effectives)`, then `dp_rej = device_profile_rejection(devices=proposed_raw.devices, changed_leaves=changed, affected_device_ids=aff)`. Thread it into `DecisionInputs.rejections` (replace the hardcoded `rejections=()` at line 167 with `rejections=(dp_rej,) if dp_rej else ()`). This is the new post-ingest hook the spec calls for.
+In `_simulate_site_state`, after `proposed = adapter.ingest(proposed_raw)`: compute `changed = changed_leaf_paths` over the per-device effective baseline/proposed (switch `device_effective` + gateway `gateway_effective`), build `baseline_eff = {**baseline.device_effective, **baseline.gateway_effective}` and `proposed_eff = {**proposed.device_effective, **proposed.gateway_effective}` (BOTH snapshots — a baseline-only map misses references the edit introduces), call `aff = affected_device_ids(changed, baseline_eff, proposed_eff)`, then `dp_rej = device_profile_rejection(devices=proposed_raw.devices, changed_leaves=changed, affected_device_ids=aff)`. Thread it into `DecisionInputs.rejections` (replace the hardcoded `rejections=()` at line 167 with `rejections=(dp_rej,) if dp_rej else ()`). This is the new post-ingest hook the spec calls for.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run pytest tests/engine/test_pipeline_device_profile.py -q`
+Run: `uv run pytest tests/scope/test_affected_devices.py tests/engine/test_pipeline_device_profile.py -q`
 Expected: PASS (assert UNKNOWN, **not** REVIEW).
 
 - [ ] **Step 5: Commit**
