@@ -108,6 +108,28 @@ path). Rejected alternative: teaching the ingest to read a separate
 `ctx.gateway_device_effective` source — that forks the device read path for one
 family and is exactly the parallel path #5 forbids.
 
+**Gateway effective MUST also enter the derived-gate set (was a P1 false-SAFE —
+the materialization feeds ingest but bypasses the derived gate).** Today
+`adapter.ingest` builds `device_effective` **only for `type == "switch"`**
+(`adapters/mist/adapter.py:55-58`), and the derived gate iterates exactly that
+set (`pipeline.py:145` over `set(baseline.device_effective) |
+set(proposed.device_effective)`). So a gateway has **no** compiled-effective
+artifact the derived gate ever diffs — which means **every** out-of-scope or
+value-inert gateway effective ripple (a `vars`/sitetemplate/override change
+compiling into the gateway's effective `dhcpd_config`, `ip_configs`, …) is
+**unscreened** and can resolve SAFE. The IR ingesting the materialized device is
+**not** enough: the IR is a projection of in-scope leaves only, so an
+out-of-scope or value-inert effective ripple never enters the IR and the *IR*
+diff can't see it — the derived gate is the layer that catches exactly those, and
+it is gateway-blind today. Contract: the gateway compile must **also publish the
+folded effective gateway device (baseline + proposed) into a map the derived gate
+iterates** — extend `device_effective` to gateway device ids (or a sibling
+`gateway_effective` map fed into the same `check_derived` loop). `check_derived`
+then screens gateway effective against `EFFECTIVE_ALLOWLIST`, and the DHCP
+value-aware screens (§4) run on the gateway effective there too. Without this, the
+"screens run on the effective diff in the derived gate, so ripples are caught"
+guarantee is gateway-blind and false.
+
 ### 2. Provider surface
 
 - `resolve_org_template(scope, template_id, object_type)` — generalized: filter
@@ -158,7 +180,22 @@ family and is exactly the parallel path #5 forbids.
 at layer X; every other fetched layer (the other templates, `sitetemplate`,
 `site_setting`) stays **pinned** per site to a single snapshot (the fetch-race
 guardrail, carried from the networktemplate doc). So each site's diff is exactly
-the edit and nothing else moves:
+the edit and nothing else moves.
+
+**`override_template` must generalize from one hard-wired field to a typed
+field-set (was a P2 under-spec).** Today `override_template`
+(`engine/org_template.py`) sets only `networktemplate=` on the `RawSiteState`,
+and `RawSiteState` has no `sitetemplate`/`gatewaytemplate` fields
+(`providers/base.py`); `simulate_org_template` hard-codes
+`resolve_org_template(scope, template_id)` (no `object_type`) and
+`screen_op("networktemplate", …)` (`pipeline.py:355,382`). Generalize: set the
+**typed** field for `object_type` on **both** the baseline and proposed raws,
+leaving every other layer at the single fetched snapshot. The `sitetemplate` case
+is the one a single-field override cannot express — the proposed `sitetemplate`
+must replace that field in the **one** fetched raw that feeds **both** the switch
+**and** gateway compiles (sitetemplate is in both stacks), so the typed setter
+writes one field consumed by two fold chains; a test must assert a sitetemplate
+edit re-derives both stacks from the single pinned sitetemplate.
 
 In all three cases the **full** IR is still built from **all** assigned layers
 (§2) — "identical" / "no findings" on the non-edited side means it is *accurately
@@ -219,11 +256,18 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       id, **not** the relay target IPs; `dhcp_path` reasons only about provider
       gain/loss. So a both-non-empty **target change** (`["10.1.1.1"] →
       ["10.2.2.2"]`, or adding a second server) keeps the boolean and the provider
-      set identical → no finding → false SAFE. The leaf stays allowlisted (the
-      modeled **empty↔non-empty** activation/deactivation is real provider
-      gain/loss signal), but the gate adds a value-aware screen: a `servers` change
-      where **both old and new are non-empty** (target/set changed, path-state
-      unchanged) → `Rejection(stage="dhcp_relay_target")` → **UNKNOWN**. This screen
+      set identical → no finding → false SAFE. **`servers` is meaningful ONLY on a
+      `relay` row** — `_dhcp_active` (`ingest/switch.py:91-99`) returns active for
+      `local`/`server` (serving) rows *regardless of* `servers`, and only toggles
+      on `servers` for `relay`. So the screen is **row-type-aware**:
+      - **`relay` row:** an **empty↔non-empty** `servers` change is the modeled
+        activation/deactivation (real provider gain/loss) → **allowed**; a
+        **both-non-empty** change is an unmodeled target/set change →
+        `Rejection(stage="dhcp_relay_target")` → **UNKNOWN**.
+      - **serving (`local`/`server`/absent) row:** `servers` is **inert** (read by
+        nothing) → any `servers` change is like `usage` → not modeled → **UNKNOWN**
+        (do NOT allow it through as "empty↔non-empty modeled").
+      This screen
       attaches to the shared `dhcpd_config.*.servers` leaf **wherever it is in
       scope** — gateway here *and* the pre-existing switch/site path, which carries
       the identical limitation today — so it is a deliberate, test-pinned safety
@@ -294,13 +338,31 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       leaf drives gateway IR (real signal) without manufacturing a phantom
       switch-side change, and vice versa. Assumption (flag if Mist differs): a
       sitetemplate leaf affects a family **iff** that family models it; this is
-      safe whether the key is family-distinct or genuinely shared. **Test:** a
-      sitetemplate edit to a gateway-only leaf moves only the gateway IR (switch
-      verdict unchanged), and a switch-only leaf moves only the switch IR — no
-      accidental cross-family behavior.
+      safe whether the key is family-distinct or genuinely shared. **Test (use a
+      genuinely family-distinct leaf):** a sitetemplate edit to `ip_configs.*.ip`
+      (gateway-only — the switch path never reads it) moves only the gateway IR
+      (switch verdict unchanged), and a switch-only leaf (e.g. a `port_usages`
+      profile leaf) moves only the switch IR — no accidental cross-family
+      behavior. **Do NOT use `dhcpd_config.*` for this test:** it is a genuinely
+      *shared* leaf — the switch/site path reads `site_effective.dhcpd_config`
+      (`ingest/switch.py:450,484`), so a `dhcpd_config` change in a sitetemplate
+      legitimately moves the switch/site `dhcp_sources` too; that is shared-leaf
+      behavior, not cross-family contamination, and using it would make the test
+      misleadingly green.
 - Committed OAS L0 schemas: `gatewaytemplate.schema.json`,
   `sitetemplate.schema.json` (added to the schema registry, like
   networktemplate). Provenance recorded in the OAS `VERSION`/source notes.
+  **These files do not exist yet** — `oas/` holds only `device_switch`,
+  `networktemplate`, `site_setting`. **Ordering dependency (was a P3):** the L0
+  step (data-flow step 4) is *not* a given — committing + registering the two
+  schemas is a prerequisite plan task, and a **missing/unregistered schema must
+  fail closed → UNKNOWN**, never silently skip validation (assert this).
+- **`IGNORED_RAW_FIELDS` audit (was a P3).** `scope/allowlist.py`'s
+  `IGNORED_RAW_FIELDS` strips `id`/`org_id`/`site_id` but not template
+  server-managed roots (assignment back-refs, `*_template_id`, etc.). Audit the
+  committed `gatewaytemplate`/`sitetemplate` OAS for server-managed roots and add
+  them, so a server-managed field on a fetched template object can't trip a
+  spurious out-of-scope rejection (fail-safe direction → UNKNOWN, but noisy).
 
 ### 5. Device-profile honesty (guardrail #3 — one deterministic, relevance-scoped rule)
 
@@ -352,7 +414,21 @@ when an in-scope modeled switch/gateway device with a `deviceprofile_id` is
 **affected** (both conjuncts) by the edit. That rejection flows into the site's
 `DecisionInputs.rejections` (exactly like the field/scope gates) →
 `decide(...) → UNKNOWN` for that site → the existing `decide_org` rollup surfaces
-it as a driving UNKNOWN site. The relevance-scoping and the per-site-UNKNOWN
+it as a driving UNKNOWN site.
+
+**Stage placement — POST-ingest, not the pre-ingest field gate (was a P2 timing
+gap).** Conjunct 2 needs the device's **compiled effective** config / the IR
+(does the device's effective `port_config` reference the changed network/usage
+key?), which does **not** exist at the raw `screen_op` field-gate stage
+(`pipeline.py:287`, before `adapter.ingest` at `:110/:117`); and gateways have no
+`device_effective` at all (P1) — their reference data is the post-materialization
+raw `dev[...]` / gateway effective. So the device-profile relevance test runs as a
+**post-ingest stage inside `_simulate_site_state`** (after ingest, where
+`device_effective`, the materialized gateway devices, and the IR are all
+available), and injects its `Rejection` into the site's `DecisionInputs.rejections`
+before `decide(...)`. The engine has no such hook today between ingest and verdict
+— adding it is an explicit plan task (a `rejections` channel threaded from the
+post-ingest stage into `decide`). The relevance-scoping and the per-site-UNKNOWN
 outcome are locked. The full fix (model the layer) is the roadmap item added
 2026-06-15.
 
@@ -429,6 +505,13 @@ Unit:
 - gateway compile → **materialize into `RawSiteState.devices`** → GS22 IR
   equivalence (a gatewaytemplate edit actually moves the gateway IR; switch/AP
   device entries untouched).
+- **gateway effective is in the derived-gate set** — a `vars`/sitetemplate ripple
+  into an effective gateway leaf **outside** `EFFECTIVE_ALLOWLIST` → `check_derived`
+  → UNKNOWN (today the derived gate iterates switch-only `device_effective` and
+  would miss it).
+- **gateway-specific `disabled` drift** — a gatewaytemplate `port_config.*.disabled`
+  flip moves a verdict on the **gateway** family (not just a switch-port test), so
+  `disabled` isn't allowlisted-but-gateway-inert (the next `usage`).
 - device-profile rule — **both** conjuncts (leaf in
   `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` **and** affected for that device's
   path) → `Rejection(stage="device_profile_gate")` → site **UNKNOWN** (assert
@@ -444,20 +527,23 @@ Unit:
   UNKNOWN, **not** SAFE; plus the drift assertion (every allowlisted leaf is
   consumed **and acted on** by a check/representation/analysis, and every such
   acted-on leaf is allowlisted).
-- **`dhcpd_config.*.servers` value-aware screen** — a both-non-empty target
-  change (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN, **not** SAFE; an
-  empty↔non-empty activation/deactivation → allowed (modeled provider gain/loss,
-  resolves via `dhcp_path`). Assert the screen fires on the shared leaf for the
-  switch/site path too (not gateway-only).
+- **`dhcpd_config.*.servers` value-aware screen (row-type-aware)** — on a `relay`
+  row: both-non-empty target change (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN, an
+  empty↔non-empty activation/deactivation → allowed (modeled provider gain/loss
+  via `dhcp_path`); on a **serving (`local`/`server`) row**: ANY `servers` change
+  → UNKNOWN (inert, `_dhcp_active` ignores `servers` there — must not slip through
+  as "empty↔non-empty modeled"). Assert the screen fires on the shared leaf for
+  the switch/site path too (not gateway-only).
 - **DHCP screens run on the effective (derived) diff, not only the raw gate** —
   a `vars.*` edit that compiles into an effective relay-target change
   (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN; a `vars.*` edit that compiles into a
   non-serving row's `gateway`/range change → UNKNOWN. (The raw-leaf direct-edit
   cases above must hold via the same derived-gate screen, so direct + ripple are
   covered by one path.)
-- **sitetemplate role-projection** — a sitetemplate edit to a gateway-only leaf
-  moves only the gateway IR (switch verdict unchanged); a switch-only leaf moves
-  only the switch IR — no accidental cross-family behavior.
+- **sitetemplate role-projection** — a sitetemplate edit to a **family-distinct**
+  gateway-only leaf (`ip_configs.*.ip`) moves only the gateway IR (switch verdict
+  unchanged); a switch-only leaf moves only the switch IR — no accidental
+  cross-family behavior. (NOT `dhcpd_config.*`, which is a genuinely shared leaf.)
 - **edited layer not re-fetched per site**; **every other assigned layer needed
   for the full IR is fetched** — incl. the cross-stack one (a `gatewaytemplate`
   edit fetches the assigned `networktemplate`; a `networktemplate` edit fetches
