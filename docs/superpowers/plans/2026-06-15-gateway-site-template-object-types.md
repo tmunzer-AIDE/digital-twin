@@ -928,7 +928,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `src/digital_twin/engine/pipeline.py` (`_simulate_site_state`, the derived-gate stage ~line 139)
 - Test: `tests/engine/test_pipeline_gateway_derived.py`
 
-- [ ] **Step 1: Write the failing test** — THREE assertions: (1) a gatewaytemplate edit rippling (via `vars`) into an effective gateway leaf **outside `GATEWAY_EFFECTIVE_ALLOWLIST`** (e.g. `ip_configs.*.netmask`) → per-site UNKNOWN with a `derived_gate` rejection; (2) a benign gateway `vars` edit landing only in in-scope leaves is NOT rejected on the `vars.*` path; (3) **a `sitetemplate.networks.*` edit on a site that also has a gateway is NOT rejected by the GATEWAY derived gate** (the switch derived gate owns `networks`; the gateway namespace is `org_networks`, so `networks` must be ignored on the gateway side — review P2). Use the FixtureProvider/builders path (read `tests/golden/builders.py`).
+- [ ] **Step 1: Write the failing test** — FOUR assertions: (1) a gatewaytemplate edit rippling (via `vars`) into an effective gateway leaf **outside `GATEWAY_EFFECTIVE_ALLOWLIST`** (e.g. `ip_configs.*.netmask`) → per-site UNKNOWN with a `derived_gate` rejection; (2) a benign gateway `vars` edit landing only in in-scope leaves is NOT rejected on the `vars.*` path; (3) **a `sitetemplate.networks.*` edit on a site that also has a gateway is NOT rejected by the GATEWAY derived gate** (the switch derived gate owns `networks`; the gateway namespace is `org_networks`, so `networks` is projected away on the gateway side — review P2); (4) **a `gatewaytemplate.vars.*` edit that resolves INTO `gatewaytemplate.networks.*` → UNKNOWN** (gatewaytemplate's own `networks` is NOT in site_effective, so the switch gate never sees it; the gateway gate screens FULL for gatewaytemplate edits — review P1, a false-SAFE otherwise). Use the FixtureProvider/builders path (read `tests/golden/builders.py`).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -941,14 +941,21 @@ Expected: FAIL — gateway effective is not diffed by the derived gate; and `net
 # in pipeline.py (module-level)
 GATEWAY_SCREENED_ROOTS = ("port_config", "ip_configs", "dhcpd_config", "vars")
 
-def _gw_screen_view(eff: dict) -> dict:
-    # only the roots the gateway IR consumes + vars (ripple); other roots
-    # (networks/port_usages/snooping/...) are the switch derived gate's job and
-    # the gateway namespace is org_networks, so they must NOT be screened here.
-    return {k: eff[k] for k in GATEWAY_SCREENED_ROOTS if k in eff}
+def _gw_screen_view(eff: dict, *, full: bool) -> dict:
+    # SOURCE-AWARE (review P1). For a `gatewaytemplate` edit, screen the FULL
+    # effective: gatewaytemplate's OWN roots (e.g. networks, or a vars edit
+    # rippling into networks) are NOT in site_effective, so the switch derived
+    # gate never sees them — dropping them here would resolve a gatewaytemplate
+    # networks/vars-into-networks change SAFE (false-SAFE). For a sitetemplate/
+    # site_setting edit, project to the gateway-consumed roots: a networks change
+    # there IS in site_effective and the switch gate owns it (the gateway
+    # namespace is org_networks), so screening it here would false-UNKNOWN.
+    return eff if full else {k: eff[k] for k in GATEWAY_SCREENED_ROOTS if k in eff}
 ```
 
-In `_simulate_site_state`, after `proposed = adapter.ingest(proposed_raw)`, in addition to the existing site + switch-`device_effective` `check_derived` calls, iterate the gateway map: for each `did` in `set(baseline.gateway_effective) | set(proposed.gateway_effective)`, call `check_derived(_gw_screen_view(baseline.gateway_effective.get(did, {})), _gw_screen_view(proposed.gateway_effective.get(did, {})), allowlist=GATEWAY_EFFECTIVE_ALLOWLIST)`; the first non-None rejection → `_unknown(rejection, ...)`. Import `GATEWAY_EFFECTIVE_ALLOWLIST`. (Note: `gateway_effective` stays FULL on `IngestOutcome` — `affected_device_ids` (Task 14) needs `port_usages`/`networks` to resolve references; only the derived-gate *input* is projected.)
+In `_simulate_site_state`, after `proposed = adapter.ingest(proposed_raw)`, in addition to the existing site + switch-`device_effective` `check_derived` calls, iterate the gateway map: for each `did` in `set(baseline.gateway_effective) | set(proposed.gateway_effective)`, call `check_derived(_gw_screen_view(baseline.gateway_effective.get(did, {}), full=gateway_screen_full), _gw_screen_view(proposed.gateway_effective.get(did, {}), full=gateway_screen_full), allowlist=GATEWAY_EFFECTIVE_ALLOWLIST)`; the first non-None rejection → `_unknown(rejection, ...)`. Import `GATEWAY_EFFECTIVE_ALLOWLIST`. Add a `gateway_screen_full: bool` kwarg to `_simulate_site_state`: the org fan-out passes `gateway_screen_full=(object_type == "gatewaytemplate")`; single-site `simulate` passes `False` (single-site edits are `site_setting`/`device`, never `gatewaytemplate`). (Note: `gateway_effective` stays FULL on `IngestOutcome` — `affected_device_ids` (Task 14) needs `port_usages`/`networks` to resolve references; only the derived-gate *input* is conditionally projected.)
+
+The Step 1 test (3) must therefore distinguish: a **sitetemplate**`.networks.*` edit → NOT rejected by the gateway gate (projected away); a **gatewaytemplate**`.vars.*` edit that resolves into `gatewaytemplate.networks.*` → **UNKNOWN** (screened full).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1066,7 +1073,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 14: Hook the device-profile gate into `_simulate_site_state` (post-ingest)
 
 **Files:**
-- Modify: `src/digital_twin/engine/pipeline.py` — `_simulate_site_state` (new `apply_device_profile_gate: bool` kwarg; the `rejections=()` site at ~line 167) AND both call sites: `simulate` (~line 326, pass `any(op.object_type != "device" for op in plan.ops)`) and the org fan-out (~line 453, pass `True`).
+- Modify: `src/digital_twin/engine/pipeline.py` — `_simulate_site_state` (new kwargs `profile_proposed: IngestOutcome | None = None` for the below-profile gate input, and `gateway_screen_full: bool = False` for the source-aware gateway derived gate; the `rejections=()` site at ~line 167) AND both call sites: `simulate` (~line 326 — build the below-profile-only `profile_proposed` when the plan has device ops; `gateway_screen_full=False`) and the org fan-out (~line 453 — `profile_proposed=None`; `gateway_screen_full=(object_type == "gatewaytemplate")`).
 - Modify: `src/digital_twin/scope/device_profile_gate.py` (the `affected_device_ids` helper from Task 13)
 - Test: `tests/scope/test_affected_devices.py`, `tests/engine/test_pipeline_device_profile.py`
 
@@ -1109,6 +1116,14 @@ def test_owned_port_config_key_taints_its_device():
     assert affected_device_ids(("port_config.ge-0/0/1.disabled",), EFF, EFF) == {"d2"}
 
 
+def test_port_config_RANGE_key_matches_expanded_members():
+    # Mist supports range/list port keys; the changed key "ge-0/0/0-1" must match a
+    # device whose resolved members include ge-0/0/0 (review P2 — exact match would
+    # miss it; _device_ports holds expanded members).
+    dev = {"d": {"port_config": {"ge-0/0/0": {"usage": "foo"}}, "port_usages": {"foo": {}}}}
+    assert affected_device_ids(("port_config.ge-0/0/0-1.disabled",), dev, dev) == {"d"}
+
+
 def test_added_reference_in_proposed_only_taints_device():
     # baseline port references guest; proposed switches it to corp. A networks.corp
     # edit affects the device via the PROPOSED side (review P2 — baseline-only misses
@@ -1136,7 +1151,10 @@ Expected: FAIL — `affected_device_ids` missing; no rejection injected.
 
 ```python
 # src/digital_twin/scope/device_profile_gate.py  (add)
-from digital_twin.adapters.mist.ingest.ports import resolve_effective_ports
+from digital_twin.adapters.mist.ingest.ports import (
+    expand_port_members,
+    resolve_effective_ports,
+)
 
 # Keyed maps whose changed KEY is a name referenced INDIRECTLY (a resolved port,
 # IP-config, or DHCP scope must point at it). port_config/local_port_config/
@@ -1204,7 +1222,12 @@ def affected_device_ids(
                     or _references_all_networks(be) or _references_all_networks(pe)
                 )
             elif mp in ("port_config", "local_port_config"):
-                hit = key in _device_ports(be) or key in _device_ports(pe)
+                # the changed key may be a RANGE/LIST (e.g. "ge-0/0/0-3" or
+                # "ge-0/0/0,ge-0/0/2"); _device_ports holds EXPANDED members, so
+                # expand the key and intersect (review P2 — exact match misses
+                # range/list keys Mist supports).
+                members = set(expand_port_members(key))
+                hit = bool(members & (_device_ports(be) | _device_ports(pe)))
             elif mp in ("ip_configs", "dhcpd_config"):
                 hit = key in (be.get(mp) or {}) or key in (pe.get(mp) or {})
             else:
@@ -1224,14 +1247,19 @@ proposed_eff = {**proposed.device_effective, **proposed.gateway_effective}
 # changed = DE-PREFIXED union of per-device effective leaf diffs. (was a P1 bug:
 # changed_leaf_paths over the whole {did -> eff} map yields "d1.port_usages.foo.x",
 # so affected_device_ids would parse parts[0]=="d1" and match nothing.)
+# CRUCIAL (review P2): diff baseline against the BELOW-PROFILE effective, NOT the
+# full proposed. A `device` edit is ABOVE the profile (device wins), so its changes
+# must NOT taint; only changes from below-profile layers (template/sitetemplate/
+# site_setting) can be overridden by the unmodeled profile.
+profile_eff = {**profile_proposed.device_effective, **profile_proposed.gateway_effective}
 changed: set[str] = set()
-for did in set(baseline_eff) | set(proposed_eff):
-    changed |= set(changed_leaf_paths(baseline_eff.get(did) or {}, proposed_eff.get(did) or {}))
+for did in set(baseline_eff) | set(profile_eff):
+    changed |= set(changed_leaf_paths(baseline_eff.get(did) or {}, profile_eff.get(did) or {}))
 changed_leaves = tuple(sorted(changed))
 
 dp_rej = None
-if apply_device_profile_gate:            # see below — skip for `device` edits
-    aff = affected_device_ids(changed_leaves, baseline_eff, proposed_eff)
+if changed_leaves:                       # empty for an all-`device` plan -> no taint
+    aff = affected_device_ids(changed_leaves, baseline_eff, profile_eff)
     dp_rej = device_profile_rejection(
         devices=proposed_raw.devices, changed_leaves=changed_leaves, affected_device_ids=aff,
     )
@@ -1239,16 +1267,11 @@ if apply_device_profile_gate:            # see below — skip for `device` edits
 
 Then thread `dp_rej` into `DecisionInputs.rejections` (replace the hardcoded `rejections=()` at line ~167 with `rejections=(dp_rej,) if dp_rej else ()`).
 
-**Skip the gate for `device`-level edits (was a P2):** the precedence stack is
-`<type>template → sitetemplate → site_setting → device-profile → device` — a direct
-**`device`** edit is ABOVE the device-profile, so the unmodeled profile cannot
-override it; tainting a device edit would be a false UNKNOWN. `_simulate_site_state`
-is shared by `simulate` (single-site — incl. `device` plans, `pipeline.py:326`) and
-the org fan-out (`:453`). Add a keyword param `apply_device_profile_gate: bool` to
-`_simulate_site_state`: the org-template callers pass `True` (template edits are
-below the profile); `simulate` passes `any(op.object_type != "device" for op in plan.ops)`
-(run the gate only when at least one edited layer sits below the profile; an
-all-`device` plan → `False` → gate skipped). This is the new post-ingest hook the spec calls for.
+**The gate diffs the BELOW-PROFILE effective (was a P1 over-skip + a P2 mixed-plan over-taint):** the precedence stack is `<type>template → sitetemplate → site_setting → device-profile → device` — a `device` edit is ABOVE the profile (it wins), so its effective changes must NOT taint; only below-profile changes can. Add a kwarg `profile_proposed: IngestOutcome | None = None` to `_simulate_site_state` (the ingest of the proposed state with **only below-profile ops applied**); default `None` → use `proposed` (all changes are below-profile). The callers build it:
+- **org fan-out** (`pipeline.py:453`): every op is a template edit (below-profile) → pass `profile_proposed=None` (= `proposed`).
+- **single-site `simulate`** (`pipeline.py:326`): if the plan has device ops, build `below_profile_proposed_raw = apply_ops(baseline_raw, [op for op in plan.ops if op.object_type != "device"])`, ingest it, pass that; a **pure-`device`** plan → its below-profile application equals the baseline → `changed_leaves` empty → no taint (subsumes the old skip); a **pure-`site_setting`** plan → below == proposed; a **mixed** plan → only the `site_setting`-attributable changes reach the gate (the `device`-edit changes are excluded → no false UNKNOWN on a device-owned leaf). This is the new post-ingest hook the spec calls for.
+
+Add a mixed-plan regression: a single-site plan with a `device` op (changing the profiled device's own `port_config`) **and** an unrelated `site_setting` op that does NOT affect the profiled device → the profiled device is NOT tainted (its only change is the device-edit, above the profile).
 
 - [ ] **Step 4: Run test to verify it passes**
 
