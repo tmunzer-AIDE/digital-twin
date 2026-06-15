@@ -190,18 +190,33 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
   object_gate ORG-mode recognizes all three; the single-template-id-per-plan
   invariant is kept (one template id, no `site_id`, all ops that type).
 - **Allowlists per type:**
-  - `gatewaytemplate` = only the **modeled** gateway leaves the GS22 ingest
-    actually consumes from the device: `port_config`, `ip_configs`,
-    `dhcpd_config`. **`networks` is deliberately excluded (was a P1 false-allow):**
-    the gateway namespace is the **org networks list** (`raw.org_networks`, then
-    `site_effective`), not the gateway device's own `networks` —
-    `_gateway_ports_and_l3` and VLAN/DHCP-scope minting resolve names there, so a
-    materialized `dev["networks"]` would be silently ignored. A
-    `gatewaytemplate.networks.*` edit therefore stays **not allowlisted → field
-    gate → UNKNOWN** (fail-safe), never an allowed-but-ignored change. Everything
-    else (routing, BGP, tunnels, security policy) is likewise **not allowlisted →
-    UNKNOWN**. Consuming materialized gateway `networks` in namespace resolution +
-    VLAN/DHCP minting is recorded as future work below.
+  - `gatewaytemplate` — **leaf-pattern entries, NOT root keys (was a P1
+    false-allow).** The field gate is leaf-based (`scope/paths.py` descends added/
+    removed subtrees and gates every leaf on its own), so a root-shaped entry like
+    `port_config` / `ip_configs` / `dhcpd_config` — or copying the switch *device*
+    allowlist — would bless leaves the gateway ingest never reads (e.g.
+    `port_config.*.mtu`, `ip_configs.*.netmask`), yielding **unchanged IR that can
+    resolve SAFE** despite a real config change. The allowlist is **exactly** the
+    leaves `_gateway_ports_and_l3` / gateway-dhcp actually consume, in the existing
+    `networks.*.vlan_id` entry style:
+    ```
+    port_config.*.networks        port_config.*.port_network
+    port_config.*.usage           port_config.*.disabled
+    ip_configs.*.ip
+    dhcpd_config.*.type           dhcpd_config.*.servers
+    dhcpd_config.*.ip_start       dhcpd_config.*.ip_end
+    dhcpd_config.*.gateway
+    ```
+    Any other leaf — `port_config.*.mtu`, `ip_configs.*.netmask`, routing / BGP /
+    tunnels / security policy, etc. — is **not allowlisted → field gate →
+    UNKNOWN** (fail-safe), never allowed-but-ignored. **`networks.*` is
+    deliberately absent:** the gateway namespace is the **org networks list**
+    (`raw.org_networks`, then `site_effective`), not the device's own `networks`,
+    so a materialized `dev["networks"]` would be silently ignored — a
+    `gatewaytemplate.networks.*` edit stays UNKNOWN. (Plan task: assert each
+    listed leaf is read by the ingest and no consumed leaf is missing, so the
+    allowlist can't drift from what the IR models.) Consuming materialized gateway
+    `networks` in namespace resolution + VLAN/DHCP minting is future work below.
   - `sitetemplate` = the **union of the modeled switch/site leaves and the
     modeled gateway leaves**, because sitetemplate sits in *both* stacks. This
     union MUST be **verified against the committed `sitetemplate` OAS / live
@@ -210,6 +225,19 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
     schema proves a leaf cannot appear. Do **not** assume "sitetemplate = the
     switch/site surface" — under-allowlisting would reject a sitetemplate change
     the MVP can actually analyze as UNKNOWN.
+    - **Folding is role-projected — the union gates allow/deny only, it does NOT
+      cross families (resolves the open question).** A sitetemplate is folded into
+      *both* stacks, but each family's ingest consumes **only its own modeled
+      leaves** from that stack's effective: the switch ingest reads switch leaves,
+      the gateway ingest reads gateway leaves, and the inert keys for the other
+      family sit unread in the effective dict. So a gateway-shaped sitetemplate
+      leaf drives gateway IR (real signal) without manufacturing a phantom
+      switch-side change, and vice versa. Assumption (flag if Mist differs): a
+      sitetemplate leaf affects a family **iff** that family models it; this is
+      safe whether the key is family-distinct or genuinely shared. **Test:** a
+      sitetemplate edit to a gateway-only leaf moves only the gateway IR (switch
+      verdict unchanged), and a switch-only leaf moves only the switch IR — no
+      accidental cross-family behavior.
 - Committed OAS L0 schemas: `gatewaytemplate.schema.json`,
   `sitetemplate.schema.json` (added to the schema registry, like
   networktemplate). Provenance recorded in the OAS `VERSION`/source notes.
@@ -342,6 +370,13 @@ Unit:
   with the cosmetic-SAFE golden).
 - `gatewaytemplate.networks.*` edit → field gate → UNKNOWN (not allowlisted;
   gateway namespace is `org_networks`, not consumed from the device in MVP).
+- **gatewaytemplate ignored-leaf false-allow guard** — an edit to a leaf the
+  ingest never reads (`port_config.*.mtu`, `ip_configs.*.netmask`) → field gate →
+  UNKNOWN, **not** SAFE; plus the drift assertion (every allowlisted leaf is
+  ingest-consumed, every ingest-consumed leaf is allowlisted).
+- **sitetemplate role-projection** — a sitetemplate edit to a gateway-only leaf
+  moves only the gateway IR (switch verdict unchanged); a switch-only leaf moves
+  only the switch IR — no accidental cross-family behavior.
 - **edited layer not re-fetched per site**; **every other assigned layer needed
   for the full IR is fetched** — incl. the cross-stack one (a `gatewaytemplate`
   edit fetches the assigned `networktemplate`; a `networktemplate` edit fetches
