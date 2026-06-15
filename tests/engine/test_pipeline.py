@@ -216,6 +216,21 @@ def test_l0_full_object_option_surfaces_untouched_root_violation():
     assert any(f.code.startswith("l0.schema") for f in v.findings)
 
 
+def test_l0_findings_name_their_object():
+    # every L0 finding must carry a subject identifying WHICH object it's about —
+    # the device op's id/type plus the friendly name from the fetched config
+    raw = dc_replace(_raw(), devices=(_switch_with_extra_routes(),))
+    plan = _plan([_op(object_type="device", object_id="dev-er", payload={"notes": "x"})])
+    v = simulate(plan, provider=FakeProvider(raw=raw), l0_full_object=True)
+    l0 = [f for f in v.findings if f.code.startswith("l0.schema")]
+    assert l0, "expected an L0 finding to stamp"
+    subj = l0[0].subject
+    assert subj is not None
+    assert subj.kind == "device"
+    assert subj.id == "dev-er"
+    assert subj.name == "sw-a"  # SWITCH fixture's name, carried from fetched config
+
+
 def test_partial_device_payload_passes_l0_required():
     # L0 validates the EFFECTIVE object (current + update), so a partial device
     # payload without top-level 'type' (schema-required) yields no false finding

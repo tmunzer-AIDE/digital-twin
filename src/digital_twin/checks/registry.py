@@ -9,10 +9,13 @@ an OPERATIONAL finding (a crash is never network breakage -> REVIEW, not UNSAFE)
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel
 
 from .base import Check, CheckContext, CheckResult, Coverage, CoverageState, Status
+from .subjects import name_findings
 
 
 class CheckRegistry:
@@ -49,7 +52,13 @@ class CheckRegistry:
                 reasoning=f"applicable but lacking capabilities: {sorted(missing)}",
             )
         try:
-            return check.run(ctx)
+            result = check.run(ctx)
+            # resolve each finding's headline-object NAME centrally (the check set
+            # only kind+id) — proposed IR first, baseline fallback for removals
+            return replace(
+                result,
+                findings=name_findings(result.findings, ctx.proposed.ir, ctx.baseline.ir),
+            )
         except Exception as e:  # noqa: BLE001 — isolated per the spec's component contract
             return CheckResult(
                 check_id=check.id,

@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -159,6 +159,7 @@ class OspfWithdrawalCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.egress_lost",
+                    subject=ObjectRef("device", did),
                     severity=severity,
                     confidence=(_HIGH if severity is Severity.ERROR else _EGRESS_UNCONFIRMED),
                     message=(
@@ -187,6 +188,7 @@ class OspfWithdrawalCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.advertised_removed",
+                    subject=ObjectRef("vlan", str(vid)),
                     severity=Severity.WARNING,
                     confidence=_UNVERIFIED,
                     message=(
@@ -212,6 +214,7 @@ class OspfWithdrawalCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code=f"{self.id}.transit_mutation",
+                    subject=ObjectRef("vlan", str(vid)),
                     severity=Severity.WARNING,
                     confidence=_UNVERIFIED,
                     message=(

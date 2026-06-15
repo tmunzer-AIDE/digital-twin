@@ -27,7 +27,7 @@ from collections import defaultdict
 import networkx as nx
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -112,6 +112,7 @@ class L2IsolationCheck:
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
                     code="wired.l2.isolation.severed",
+                    subject=ObjectRef("device", sorted(fragment)[0]),
                     severity=Severity.ERROR if high else Severity.WARNING,
                     confidence=confidence,
                     message=(

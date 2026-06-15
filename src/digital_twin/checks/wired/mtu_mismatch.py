@@ -29,7 +29,7 @@ Attribution and honesty:
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -152,6 +152,7 @@ class MtuMismatchCheck:
                     confidence=confidence,
                     message=message,
                     affected_entities=(pa.id, pb.id),
+                    subject=ObjectRef("link", lnk.id),
                     evidence={
                         "link": lnk.id,
                         "a_port": pa.id,

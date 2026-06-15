@@ -25,7 +25,7 @@ import networkx as nx
 
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -196,6 +196,7 @@ class DhcpSnoopingCheck:
                             source=FindingSource.CHECK,
                             category=FindingCategory.NETWORK,
                             code=f"{self.id}.untrusted_path",
+                            subject=ObjectRef("device", did),
                             severity=Severity.INFO if pre else Severity.WARNING,
                             confidence=confidence,
                             message=(

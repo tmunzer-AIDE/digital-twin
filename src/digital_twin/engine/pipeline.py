@@ -41,7 +41,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
-from digital_twin.contracts import Finding, Rejection
+from digital_twin.contracts import Finding, ObjectRef, Rejection
 from digital_twin.engine.org_template import apply_template, override_template
 from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
@@ -64,6 +64,12 @@ from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
 _EMPTY_DIFF = IRDiff((), (), ())
+
+
+def _stamp(findings: tuple[Finding, ...], subject: ObjectRef) -> tuple[Finding, ...]:
+    """Attach the headline object to every L0 finding so the verdict says WHICH
+    object (and the existing evidence path says which attribute)."""
+    return tuple(replace(f, subject=subject) for f in findings)
 
 
 def _changed_roots(payload: Mapping[str, Any]) -> frozenset[str]:
@@ -289,7 +295,8 @@ def simulate(
                 replace(op, payload=effective),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload),
             )
-            adapter_findings += result.findings
+            subject = ObjectRef(op.object_type, op.object_id, name=current.get("name"))
+            adapter_findings += _stamp(result.findings, subject)
             if result.fatal:
                 return _unknown(
                     None,
@@ -395,7 +402,9 @@ def simulate_org_template(
         return org_unknown(
             (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
         )
-    template_findings = tuple(l0.findings)
+    template_findings = _stamp(
+        l0.findings, ObjectRef("networktemplate", template_id, name=snapshot.get("name"))
+    )
     # org-level field gate (no role check — networktemplate branch)
     fg = screen_op("networktemplate", snapshot, proposed_template)
     if fg:
