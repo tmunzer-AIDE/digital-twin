@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Confidence,
     ConfidenceLevel,
@@ -231,6 +231,11 @@ def invalid_bridge_priority_findings(
                 source=FindingSource.ADAPTER,
                 category=FindingCategory.OPERATIONAL,
                 code="scope.stp.bridge_priority_invalid",
+                subject=ObjectRef(
+                    "device", did,
+                    name=(proposed_effective.get(did) or {}).get("name")
+                    or (baseline_effective.get(did) or {}).get("name"),
+                ),
                 severity=Severity.WARNING,
                 confidence=Confidence(level=ConfidenceLevel.HIGH),
                 message=(
@@ -275,6 +280,7 @@ def unresolved_dhcp_range_findings(
                     source=FindingSource.ADAPTER,
                     category=FindingCategory.OPERATIONAL,
                     code="scope.dhcp.range_unresolved",
+                    subject=ObjectRef("dhcp_scope", str(name)),
                     severity=Severity.WARNING,
                     confidence=Confidence(level=ConfidenceLevel.HIGH),
                     message=(

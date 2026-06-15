@@ -89,12 +89,11 @@ def test_registry_resolves_finding_subject_names():
         Severity as Sev,
     )
     from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder, diff_ir
-    from digital_twin.ir.entities import Device, DeviceRole
+    from digital_twin.ir.entities import Vlan
 
     b1, b2 = IRBuilder(), IRBuilder()
-    b1.add_device(Device(id="dev-a", role=DeviceRole.SWITCH, site="s1", model="EX-9000"))
-    b2.add_device(Device(id="dev-a", role=DeviceRole.SWITCH, site="s1", model="EX-9000"))
-    b2.add_device(sw("B"))  # a diff so applies_to is satisfied
+    b1.add_device(sw("A")).add_vlan(Vlan(vlan_id=10, name="corp"))
+    b2.add_device(sw("A")).add_device(sw("B")).add_vlan(Vlan(vlan_id=10, name="corp"))
     ir1, ir2 = b1.build(), b2.build()
     ctx = CheckContext(
         baseline=AnalysisContext(ir1), proposed=AnalysisContext(ir2), diff=diff_ir(ir1, ir2)
@@ -121,7 +120,7 @@ def test_registry_resolves_finding_subject_names():
                         severity=Sev.WARNING,
                         confidence=Confidence(level=ConfidenceLevel.HIGH),
                         message="m",
-                        subject=ObjectRef("device", "dev-a"),  # no name set by the check
+                        subject=ObjectRef("vlan", "10"),  # no name set by the check
                     ),
                 ),
                 coverage=Coverage(state=CoverageState.COMPLETE),
@@ -130,7 +129,7 @@ def test_registry_resolves_finding_subject_names():
             )
 
     (result,) = CheckRegistry([SubjectCheck()]).run_all(ctx)
-    assert result.findings[0].subject.name == "EX-9000"  # filled by the registry
+    assert result.findings[0].subject.name == "corp"  # filled by the registry
 
 
 def test_crash_is_isolated_to_check_error_with_operational_finding():

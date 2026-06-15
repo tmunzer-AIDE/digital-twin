@@ -26,8 +26,15 @@ def _ir():
 def test_resolve_fills_names_from_ir():
     ir = _ir()
     assert resolve_subject(ObjectRef("vlan", "10"), ir, ir).name == "corp"
-    assert resolve_subject(ObjectRef("device", _DID), ir, ir).name == "EX4100-48P"
     assert resolve_subject(ObjectRef("port", _PID), ir, ir).name == "ge-0/0/0"
+
+
+def test_resolve_device_does_not_use_model_as_name():
+    # Device.model is NOT an identity (many devices share a model) — using it as
+    # the name would hide the unique id. Until the IR has a true device name,
+    # device subjects resolve to None and render as the id.
+    ir = _ir()  # device has model "EX4100-48P"
+    assert resolve_subject(ObjectRef("device", _DID), ir, ir).name is None
 
 
 def test_resolve_unknown_or_nameless_stays_none():

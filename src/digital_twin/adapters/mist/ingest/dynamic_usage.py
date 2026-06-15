@@ -22,7 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel, device_id
 
 # expression grammar (per the OAS): an optional `split(<delim>)` followed by
@@ -216,6 +216,7 @@ def unresolved_dynamic_findings(
                 source=FindingSource.ADAPTER,
                 category=FindingCategory.OPERATIONAL,
                 code="scope.dynamic_ports.unverifiable",
+                subject=ObjectRef("device", did, name=prop.get("name") or base.get("name")),
                 severity=Severity.WARNING,
                 confidence=Confidence(level=ConfidenceLevel.HIGH),
                 message=(

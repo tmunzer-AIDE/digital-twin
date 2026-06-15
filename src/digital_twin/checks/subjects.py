@@ -3,11 +3,14 @@
 Checks set only the headline object's `kind` + `id` (what they know locally);
 the registry calls `name_findings()` to fill `ObjectRef.name` once, here, with
 the IR in hand. The IR carries names for vlans (`Vlan.name`) and ports
-(`Port.name`) but NOT devices (`Device` has only `model`); a link's label is
-composed from its two port names. Unknown/absent names stay None and the
-renderer falls back to the id. Proposed IR is consulted first, then baseline —
-so a finding about a REMOVED entity (gone from the proposed IR) still resolves.
-The full set of involved entities still rides in `Finding.affected_entities`.
+(`Port.name`); a link's label is composed from its two port names. DEVICES have
+no name source — `Device.model` is a product type, not an identity (many
+devices share one), so using it as the name would HIDE the unique id. Device
+subjects therefore resolve to None and render as the id, until the IR carries a
+true device name. Unknown/absent names stay None and the renderer falls back to
+the id. Proposed IR is consulted first, then baseline — so a finding about a
+REMOVED entity (gone from the proposed IR) still resolves. The full set of
+involved entities still rides in `Finding.affected_entities`.
 """
 
 from __future__ import annotations
@@ -25,9 +28,6 @@ def _name_for(kind: str, oid: str, ir: IR) -> str | None:
         except ValueError:
             return None
         return v.name if v else None
-    if kind == "device":
-        d = ir.devices.get(oid)
-        return d.model if d else None
     if kind == "port":
         p = ir.ports.get(oid)
         return p.name if p else None

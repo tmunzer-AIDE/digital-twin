@@ -112,6 +112,10 @@ def test_definition_change_flags_only_unresolved_dynamic_ports():
     assert len(findings) == 1
     blob = str(findings[0].evidence)
     assert "ge-0/0/9" in blob and "ge-0/0/1" not in blob
+    # the finding names its object: the device it's about
+    assert findings[0].subject is not None
+    assert findings[0].subject.kind == "device"
+    assert findings[0].subject.id == "aa0000000001"
 
 
 def test_all_dynamic_ports_resolved_means_no_finding():
