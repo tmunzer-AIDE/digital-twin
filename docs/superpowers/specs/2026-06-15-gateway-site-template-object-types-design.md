@@ -118,19 +118,26 @@ family and is exactly the parallel path #5 forbids.
   `gatewaytemplate: JsonObj | None` alongside today's `networktemplate`. The
   per-site fetch pulls the site's assigned ones (by `sitetemplate_id` /
   `gatewaytemplate_id`).
-- **The edited layer is not re-fetched per site (was a P2 over-requirement).**
-  The edited layer's baseline snapshot already comes from `resolve_org_template`
-  (one org-level fetch) and is **pinned** into every assigned site (§3). The
-  per-site fetch therefore requires only the **non-edited assigned layers** that
-  the affected compile actually consumes (e.g. a `gatewaytemplate` edit fetches
-  per site `site_setting` + `sitetemplate` + devices, **not** the gatewaytemplate
-  again). This avoids a duplicate per-site template fetch that could manufacture
-  a false UNKNOWN even though the exact edited snapshot is already in hand.
-- **Fetch-miss rule (guardrail #4):** for a **non-edited assigned layer the
-  simulation consumes**, a site assigned that layer which fails to fetch must
-  **not** compile without it — it is a recorded per-site fetch failure → that
-  site is UNKNOWN (the existing `site_failures` → org rollup UNKNOWN path), never
-  a silent SAFE.
+- **Fetch the full IR's layers; pin only the edited one (corrects an earlier
+  over-narrowing).** `_simulate_site_state` builds the **whole** IR + check suite
+  every run, and the checks are cross-cutting — gateway exits/DHCP depend on
+  switch-side VLANs/carried-networks/client-attachment/L2 graph and vice versa.
+  So the per-site fetch must pull **every assigned layer needed to build the full
+  baseline/proposed IR**, not just the edited stack:
+  - the **edited** layer is supplied from `resolve_org_template`'s org-level
+    snapshot and **pinned** into every site (§3) — **not** re-fetched per site
+    (avoids a duplicate fetch that could manufacture a false UNKNOWN).
+  - **every other assigned layer is fetched per site:** `site_setting`,
+    `sitetemplate`, **and the other org template** — i.e. a `gatewaytemplate`
+    edit still fetches the assigned `networktemplate` (so the switch IR is built
+    correctly), and a `networktemplate` edit still fetches the assigned
+    `gatewaytemplate` (so gateway exits/DHCP context is built correctly), plus
+    devices.
+- **Fetch-miss rule (guardrail #4):** for **any assigned layer the simulation
+  consumes to build the IR** (edited or not), a site assigned that layer which
+  fails to fetch must **not** compile without it — it is a recorded per-site
+  fetch failure → that site is UNKNOWN (the existing `site_failures` → org rollup
+  UNKNOWN path), never a silent SAFE.
 
 ### 3. Org fan-out — pin exactly one edited layer (guardrail #2)
 
@@ -141,14 +148,23 @@ at layer X; every other fetched layer (the other templates, `sitetemplate`,
 guardrail, carried from the networktemplate doc). So each site's diff is exactly
 the edit and nothing else moves:
 
+In all three cases the **full** IR is still built from **all** assigned layers
+(§2) — "identical" / "no findings" on the non-edited side means it is *accurately
+built and unchanged*, not skipped:
+
 - `networktemplate` edit → pins networktemplate, holds sitetemplate +
-  site_setting; gateway effective is identical baseline/proposed → no gateway
-  findings.
+  site_setting + the assigned **gatewaytemplate**; the gateway effective is built
+  accurately from that gatewaytemplate and is identical baseline/proposed → no
+  gateway findings (but gateway exits/DHCP context the switch checks rely on is
+  correct).
 - `sitetemplate` edit → pins sitetemplate, holds both org templates +
   site_setting; re-derives **both** switch and gateway effective (sitetemplate is
   in both stacks).
 - `gatewaytemplate` edit → pins gatewaytemplate, holds sitetemplate +
-  site_setting; switch effective identical → no switch findings.
+  site_setting + the assigned **networktemplate**; the switch effective is built
+  accurately from that networktemplate and is identical baseline/proposed → no
+  switch findings (but switch/L2/VLAN/client context the gateway checks rely on is
+  correct).
 
 `simulate_org_template` dispatches by `object_type`, resolves assignment, fans
 out, and per site builds the effective config(s) with the edited layer pinned,
@@ -247,15 +263,18 @@ is already object_type-agnostic (defensive — malformed → SITE path → UNKNO
 4. Org-level L0 (`gatewaytemplate.schema.json`) + field gate once: modeled
    gateway leaves allowed; any unmodeled field → UNKNOWN.
 5. Apply the edit to one gatewaytemplate snapshot.
-6. Per assigned site: fetch only the **non-edited** consumed layers —
-   `site_setting`, `sitetemplate`, devices (fetch-miss on `sitetemplate` → site
-   UNKNOWN). The gatewaytemplate is **not** re-fetched: its baseline/proposed
-   snapshots are pinned from step 3/5. Build gateway site-effective baseline &
-   proposed (`fold_layers`), overlay each gateway device (`effective_update`),
-   and **materialize the result back into the gateway-type entries of
-   `RawSiteState.devices`** for both snapshots. Run the unchanged GS22 gateway
-   ingest → gateway IR → gateway checks. Device-profile rule applied per the
-   relevance-scoped leaf-set test.
+6. Per assigned site: fetch **every assigned layer needed for the full IR except
+   the edited one** — `site_setting`, `sitetemplate`, the assigned
+   `networktemplate` (for the switch-side context the gateway checks rely on),
+   and devices (fetch-miss on any consumed layer → site UNKNOWN). The
+   gatewaytemplate is **not** re-fetched: its baseline/proposed snapshots are
+   pinned from step 3/5. Build the switch effective (from networktemplate +
+   sitetemplate + site_setting) and the gateway site-effective baseline & proposed
+   (`fold_layers`), overlay each gateway device (`effective_update`), and
+   **materialize the gateway result back into the gateway-type entries of
+   `RawSiteState.devices`** for both snapshots. Run the unchanged GS22 ingest →
+   full IR → checks. Device-profile rule applied per the relevance-scoped
+   leaf-set + affected-device test.
 7. `decide_org` rollup → `OrgVerdict`.
 
 ## Error / honesty rails
@@ -285,8 +304,10 @@ Unit:
   (the last pins consistency with the cosmetic-SAFE golden).
 - `gatewaytemplate.networks.*` edit → field gate → UNKNOWN (not allowlisted;
   gateway namespace is `org_networks`, not consumed from the device in MVP).
-- **edited layer not re-fetched per site**; a **non-edited** assigned layer
-  (e.g. sitetemplate) fetch-miss → UNKNOWN.
+- **edited layer not re-fetched per site**; **every other assigned layer needed
+  for the full IR is fetched** — incl. the cross-stack one (a `gatewaytemplate`
+  edit fetches the assigned `networktemplate`; a `networktemplate` edit fetches
+  the assigned `gatewaytemplate`) — and any consumed-layer fetch-miss → UNKNOWN.
 
 Goldens:
 - sitetemplate edit breaks a switch leaf at one site → org UNSAFE naming it.
