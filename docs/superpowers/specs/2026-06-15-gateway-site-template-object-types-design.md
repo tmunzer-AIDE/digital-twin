@@ -158,8 +158,14 @@ diff can't see it — the derived gate is the layer that catches exactly those, 
 it is gateway-blind today. Contract: the gateway compile must **also publish the
 folded effective gateway device (baseline + proposed) into a map the derived gate
 iterates** — extend `device_effective` to gateway device ids (or a sibling
-`gateway_effective` map fed into the same `check_derived` loop). `check_derived`
-then screens gateway effective **against a GATEWAY effective allowlist — NOT the
+`gateway_effective` map fed into the same `check_derived` loop). **Key the gateway
+effective the SAME way ingest keys devices (`device_id(mac)`,
+`ingest/switch.py:332`): a gateway lacking `mac` is silently dropped from ingest,
+so the materialization/derived-gate publishing MUST drop it too — uniformly absent
+from both, a consistent blind spot (no IR facts either, so no false-SAFE), never
+an asymmetry where one stage sees the gateway and the other doesn't.**
+`check_derived` then screens gateway effective **against a GATEWAY effective
+allowlist — NOT the
 switch `EFFECTIVE_ALLOWLIST` (was a P1 false-UNKNOWN that contradicts our own
 goldens).** Today `EFFECTIVE_ALLOWLIST` (`scope/allowlist.py:172`) is the *switch*
 leaf set: it carries `poe_disabled` but **not** plain `port_config.*.disabled`,
@@ -310,6 +316,13 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
     `Port.disabled`, read by l2_isolation/snooping/link_boundary/l2_graph;
     `ip_configs.*.ip` → `L3Intf.ip` → `gateway_gap.same_ip`; the `dhcpd` leaves →
     `DhcpScope` + `_dhcp_active` source-crediting → `scope_lint`/`dhcp_path`.)
+    *Documented coverage boundary (not a defect): an `ip_configs.*.ip` edit on a
+    VLAN with **no routed intent** (no declared subnet in `org_networks`) mints/
+    drops an `L3Intf` that `gateway_gap` skips (`gateway_gap.py:108-116`), so it can
+    resolve SAFE — the same modeled-SAFE boundary as the existing switch
+    `other_ip_configs` path (GS22). The leaf is allowlisted (it DOES drive
+    `same_ip` on routed VLANs); the drift assertion should note this is partial
+    coverage, not mistake the allowlist entry for full L3 coverage.*
     - **`dhcpd_config.*.servers` needs a value-aware screen (was a P1 false-allow).**
       The IR models `servers` only as a **boolean** — `_dhcp_active` treats *any*
       non-empty relay list as "active", and `Vlan.dhcp_sources` stores the provider
