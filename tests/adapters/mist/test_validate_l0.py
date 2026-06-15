@@ -83,3 +83,9 @@ def test_unknown_object_type_is_fatal():
     res = validate_payload("wlan", {})
     assert res.fatal is True
     assert "wlan" in res.findings[0].message
+
+
+def test_networktemplate_l0_schema_registered():
+    from digital_twin.adapters.mist.validate import validate_payload
+    res = validate_payload("networktemplate", {"id": "nt1", "ospf_config": {"enabled": True}})
+    assert res.fatal is False  # a valid template body validates

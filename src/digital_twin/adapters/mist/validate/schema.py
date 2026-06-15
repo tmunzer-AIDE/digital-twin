@@ -27,6 +27,7 @@ from digital_twin.ir import Confidence, ConfidenceLevel
 _SCHEMA_FILES: dict[str, str] = {
     "site_setting": "site_setting.schema.json",
     "device": "device_switch.schema.json",
+    "networktemplate": "networktemplate.schema.json",
 }
 _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)

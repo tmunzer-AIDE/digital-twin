@@ -266,3 +266,18 @@ def test_mtu_is_in_scope():
     # still NOT honored from port_config_overwrite (resolver doesn't read it)
     ow = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"mtu": 9200}}}
     assert isinstance(screen_op("device", SWITCH_CUR, ow), Rejection)
+
+
+def test_screen_op_networktemplate_allows_modeled_leaf_no_role_check():
+    from digital_twin.scope.field_gate import screen_op
+    current = {"id": "nt1", "networks": {"corp": {"vlan_id": 10}}}
+    payload = {"id": "nt1", "networks": {"corp": {"vlan_id": 20}}}
+    assert screen_op("networktemplate", current, payload) is None  # vlan_id is modeled
+
+
+def test_screen_op_networktemplate_rejects_switch_matching():
+    from digital_twin.scope.field_gate import screen_op
+    r = screen_op("networktemplate",
+                  {"id": "nt1", "switch_matching": {"enable": True}},
+                  {"id": "nt1", "switch_matching": {"enable": False}})
+    assert r is not None  # switch_matching not allowlisted

@@ -87,3 +87,41 @@ def test_all_offending_ops_reported():
     )
     r = check_objects(plan)
     assert isinstance(r, Rejection) and len(r.reasons) == 2
+
+
+def _nt_op(object_id="nt1", action="update"):
+    return ChangeOp(action=action, order=0, object_type="networktemplate",
+                    object_id=object_id, payload={})
+
+
+def _org_plan(ops, org_id="o1", site_id=None):
+    return ChangePlan(source="mist", scope=ChangeScope(org_id=org_id, site_id=site_id),
+                      ops=tuple(ops))
+
+
+def test_org_mode_template_plan_passes():
+    # ORG mode triggers ONLY when ALL ops are networktemplate AND site_id absent
+    assert check_objects(_org_plan([_nt_op()])) is None
+
+
+def test_networktemplate_with_site_id_is_out_of_scope_single_site():
+    # site_id present -> NOT org mode -> SITE logic -> the EXISTING
+    # "unsupported object_type" rejection (preserves test_template_object_type_*)
+    r = check_objects(_org_plan([_nt_op()], site_id="s1"))
+    assert isinstance(r, Rejection)
+    assert any("networktemplate" in reason for reason in r.reasons)
+
+
+def test_org_mode_rejects_multiple_template_ids():
+    r = check_objects(_org_plan([_nt_op(object_id="ntA"), ChangeOp(
+        action="update", order=1, object_type="networktemplate", object_id="ntB", payload={})]))
+    assert isinstance(r, Rejection)
+    assert any("one template" in reason for reason in r.reasons)
+
+
+def test_mixing_site_and_org_object_types_rejects():
+    r = check_objects(
+        _org_plan([_nt_op(), _op(object_type="device", object_id="d1")], site_id=None)
+    )
+    assert isinstance(r, Rejection)
+    assert any("networktemplate" in reason for reason in r.reasons)

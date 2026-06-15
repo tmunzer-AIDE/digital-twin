@@ -196,7 +196,17 @@ def simulate(
 
     # 3 — fetch
     with trace.stage("fetch"):
-        assert plan.scope.site_id is not None  # object gate guaranteed it
+        if plan.scope.site_id is None:  # an ORG (template) plan reached single-site simulate
+            return _unknown(
+                Rejection(
+                    stage="scope.pre",
+                    reasons=(
+                        "org/template plan has no site_id"
+                        " — call simulate_org_template, not simulate",
+                    ),
+                ),
+                adapter_findings=adapter_findings, run=run,
+            )
         raw = provider.fetch_site(SiteScope(org_id=plan.scope.org_id, site_id=plan.scope.site_id))
         if not isinstance(raw, RawSiteState):
             # the FetchError still carries host/acquired_at/failures — agents

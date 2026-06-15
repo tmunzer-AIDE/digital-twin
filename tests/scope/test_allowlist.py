@@ -52,3 +52,9 @@ def test_ospf_allowlist_is_leaf_tightened():
         assert not allowed("ospf_areas.0.type", al)
         assert not allowed("ospf_areas.0.networks.corp.auth_password", al)
         assert not allowed("ospf_areas.0.networks.corp.interface_type", al)
+
+
+def test_networktemplate_allowlist_equals_site_setting_exactly():
+    from digital_twin.scope.allowlist import ORG_OBJECT_TYPES, RAW_ALLOWLIST
+    assert ORG_OBJECT_TYPES == ("networktemplate",)
+    assert RAW_ALLOWLIST["networktemplate"] == RAW_ALLOWLIST["site_setting"]

@@ -201,3 +201,18 @@ def test_partial_device_payload_passes_l0_required():
     )
     assert not any("'type' is a required property" in f.message for f in v.findings)
     assert v.decision is not Decision.UNKNOWN
+
+
+def test_simulate_rejects_org_plan_with_unknown_not_crash():
+    from digital_twin.engine.pipeline import simulate
+    from digital_twin.verdict.decision import Decision
+
+    class _AnyProvider:
+        pass
+
+    plan = {"source": "mist", "scope": {"org_id": "o1"},  # no site_id
+            "ops": [{"action": "update", "order": 0, "object_type": "networktemplate",
+                     "object_id": "nt1", "payload": {}}]}
+    v = simulate(plan, provider=_AnyProvider())  # guarded before fetch — never touches provider
+    assert v.decision is Decision.UNKNOWN
+    assert any("simulate_org_template" in r for r in v.decision_reasons)
