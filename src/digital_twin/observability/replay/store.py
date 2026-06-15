@@ -147,9 +147,12 @@ class FixtureProvider:
             for sid, site_doc in data["sites"].items():
                 self._site_docs[str(sid)] = site_doc
                 self._sites[str(sid)] = load_fixture_doc(site_doc)
-            # a representative host for FetchError construction
+            # a representative host/org/time for FetchError construction (the
+            # multi-site fixture's sites share one org — the replay authority)
             first = next(iter(self._sites.values()), None)
             self._host = first.meta.host if first is not None else ""
+            self._org_id = first.scope.org_id if first is not None else ""
+            self._acquired_at = first.meta.acquired_at if first is not None else datetime.now(UTC)
         else:  # single-site fixture (unchanged)
             self._raw = load_fixture_doc(data)
             self._host = self._raw.meta.host
@@ -204,7 +207,24 @@ class FixtureProvider:
             sid: self.fetch_site(SiteScope(org_id=scope.org_id, site_id=sid)) for sid in targets
         }
 
+    def _wrong_org(self, scope: OrgScope) -> bool:
+        # STRICT (like single-site fetch_site): replaying a fixture against a
+        # different org than it captured must NOT silently succeed
+        return self._strict and scope.org_id != self._org_id
+
     def _fetch_multisite(self, scope: OrgScope, sid: str) -> RawSiteState | FetchError:
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=SiteScope(org_id=scope.org_id, site_id=sid),
+                failures=(
+                    FetchFailure(
+                        object="fixture",
+                        error=f"fixture holds org {self._org_id}, not the requested {scope.org_id}",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
         is_failure = sid in self._fetch_failures
         if is_failure or sid not in self._sites:
             error = (
@@ -231,8 +251,9 @@ class FixtureProvider:
     ) -> OrgTemplateContext | FetchError:
         """Multi-site: filter the fixture's sites to those whose site.
         networktemplate_id == template_id and return the shared template + their
-        ids (0 assigned is a SUCCESS, per the contract). Single-site fixtures do
-        not carry a template -> FetchError (-> UNKNOWN)."""
+        ids (0 assigned is a SUCCESS, per the contract — but only when the
+        template EXISTS). Single-site fixtures do not carry a template ->
+        FetchError (-> UNKNOWN)."""
         if self._template is None:
             return FetchError(
                 scope=scope,
@@ -243,6 +264,32 @@ class FixtureProvider:
                     ),
                 ),
                 acquired_at=datetime.now(UTC),
+                host=self._host,
+            )
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="fixture",
+                        error=f"fixture holds org {self._org_id}, not the requested {scope.org_id}",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        # template-not-found is a FetchError (-> UNKNOWN), NOT a 0-assigned SUCCESS:
+        # a typo'd/missing template_id must never resolve SAFE
+        if str(self._template.get("id")) != template_id:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="networktemplate",
+                        error=f"{template_id} not found in the multi-site fixture",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
                 host=self._host,
             )
         assigned = tuple(

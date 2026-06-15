@@ -405,10 +405,14 @@ def simulate_org_template(
             site_failures[sid] = "; ".join(
                 f"{f.object}: {f.error}" for f in failures
             ) or "fetch failed"
+            # preserve the FetchError's own acquired_at (like the single-site
+            # total-fetch-failure path) so the failed site's freshness/age is
+            # honest, not test-execution "now"
+            acquired_at = fetched.acquired_at if fetched is not None else datetime.now(UTC)
             per_site[sid] = _unknown(
                 None, adapter_findings=(), run=run, baseline_unavailable=True,
                 state_meta=build_state_meta(
-                    StateMeta(acquired_at=datetime.now(UTC), host=fetched.host if fetched else "",
+                    StateMeta(acquired_at=acquired_at, host=fetched.host if fetched else "",
                               fetched=(), failures=failures),
                     now=datetime.now(UTC),
                 ),
