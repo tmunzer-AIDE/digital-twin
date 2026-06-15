@@ -382,22 +382,29 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       and `active_relay(row) = active(row) ∧ type == "relay"` (a relay with non-empty
       `servers`). The only DHCP fact the IR/checks do **not** capture is an **active
       relay's target** (the `servers` IPs of an active relay) — an active-serving row
-      has **no** relay target, so its "target identity" is a fixed sentinel. When
-      **at least one side is INACTIVE**, the active flip itself is the modeled signal
-      (`dhcp_path` provider gain/loss) → allowed. When **both sides are active**, the
-      helper rejects → **UNKNOWN** iff the two sides' relay-target identity differs —
-      i.e. (symmetric, catches **both** directions):
+      has **no** relay target, so its "target identity" is a fixed sentinel. This
+      sub-bullet defines the **participation/relay-target subrule** (one of the
+      helper's three screens — the inert-`servers` and inert-range/gateway screens
+      in the two sub-bullets above are ALSO part of the helper; see "Complete
+      rejection set" below). When **at least one side is INACTIVE**, the active flip
+      itself is the modeled signal (`dhcp_path` provider gain/loss) → no
+      participation rejection. When **both sides are active**, this subrule rejects
+      → **UNKNOWN** iff the two sides' relay-target identity differs — i.e.
+      (symmetric, catches **both** directions):
       - **exactly one side is an `active_relay`** (serving↔active-relay, **either**
         direction — `local/server → relay+servers` *and* `relay+servers →
         local/server`) → `Rejection(stage="dhcp_mode_transition")`; or
       - **both sides are `active_relay`** and their `servers` differ →
         `Rejection(stage="dhcp_relay_target")`.
 
-      Everything else is **allowed**, because its whole modeled effect is captured by
-      `active` (→ `dhcp_path` provider gain/loss) and `DhcpScope` presence/facts (→
-      `scope_lint`): any change with ≥1 inactive side (pure relay activation/
-      deactivation, serving↔`none`), a both-active-serving scope-fact edit, `local↔
-      server`, or two identical active relays. Crucially the empty-`servers` case —
+      Everything else is **participation-allowed** (defers to the modeled checks),
+      because its whole participation effect is captured by `active` (→ `dhcp_path`
+      provider gain/loss) and `DhcpScope` presence/facts (→ `scope_lint`): any change
+      with ≥1 inactive side (pure relay activation/deactivation, serving↔`none`), a
+      both-active-serving scope-fact edit, `local↔server`, or two identical active
+      relays — **subject still to the two inert-leaf screens** (an inert `servers` or
+      range/gateway edit within such a change is independently UNKNOWN). Crucially
+      the empty-`servers` case —
       **serving→relay with EMPTY/absent `servers`** (relay becomes inactive, last
       provider lost) — has `active(proposed)=false` (≥1 inactive side), so it is **not
       rejected**; it stays a modeled `dhcp_path` provider-loss verdict (REVIEW), not
@@ -411,20 +418,29 @@ unchanged (worst-of `UNKNOWN>UNSAFE>REVIEW>SAFE` + template-findings floor +
       `DhcpScope`, `active`, no relay target), **R** = active relay (`relay` +
       non-empty `servers` → `active`, no scope, **unmodeled** target), **I** =
       inactive (`none`, or `relay` with empty/absent `servers` → not `active`, no
-      scope, no provider). The screen depends only on the (baseline → proposed) pair
-      — **the relay-target screen fires exactly in the four both-`active` cells where
-      the target identity differs (S→R, R→S, and R→R with differing `servers`); every
-      cell with ≥1 `I` side defers to the modeled `dhcp_path`/`scope_lint` signal:**
+      scope, no provider). **This matrix is the participation/relay-target subrule ONLY
+      (one axis); the two inert-leaf screens are orthogonal and compose on top —
+      "allowed" below means "no *participation* rejection," and a cell can still be
+      UNKNOWN if an inert leaf changed within it (noted per cell).** The
+      participation subrule fires in the four both-`active` differing-target cells
+      (S→R, R→S, R→R differing); every cell with ≥1 `I` side defers to the modeled
+      `dhcp_path`/`scope_lint` signal:
 
       | base ↓ \ prop → | **S** (serving) | **R** (active relay) | **I** (inactive) |
       |---|---|---|---|
-      | **S** | allowed → `scope_lint` reads the scope-fact delta | **UNKNOWN** `dhcp_mode_transition` (scope lost silently; `active` stays true → no `dhcp_path` loss) | allowed → `dhcp_path` provider-loss (REVIEW) |
-      | **R** | **UNKNOWN** `dhcp_mode_transition` (relay target silently gone; `active` stays true) | same `servers`: allowed (no-op SAFE) · differing: **UNKNOWN** `dhcp_relay_target` | allowed → `dhcp_path` provider-loss (REVIEW) |
-      | **I** | allowed → provider gain + `scope_lint` on the new scope | allowed → provider gain (additive; no modeled service replaced) | allowed (no participation change; an inert range/gateway leaf edit on these both-non-serving rows is caught by the orthogonal scope-field screen → UNKNOWN) |
+      | **S** | participation-allowed → `scope_lint` reads the scope-fact delta · *(a `servers` edit here → UNKNOWN, inert-servers screen)* | **UNKNOWN** `dhcp_mode_transition` (scope lost silently; `active` stays true → no `dhcp_path` loss) | allowed → `dhcp_path` provider-loss (REVIEW) |
+      | **R** | **UNKNOWN** `dhcp_mode_transition` (relay target silently gone; `active` stays true) | same `servers`: participation-allowed *(a range/gateway edit → UNKNOWN, scope-field screen — R is non-serving)* · differing: **UNKNOWN** `dhcp_relay_target` | allowed → `dhcp_path` provider-loss (REVIEW) |
+      | **I** | allowed → provider gain + `scope_lint` on the new scope | allowed → provider gain (additive; no modeled service replaced) | participation-allowed *(an inert range/gateway edit on these both-non-serving rows → UNKNOWN, scope-field screen)* |
 
-      The four UNKNOWN cells are exactly the both-`active` differing-target cases; the
-      five `I`-touching cells are SAFE/REVIEW via the existing checks. This is the
-      whole 3×3 — no transition is unscreened.
+      The four UNKNOWN cells above are the participation/target rejections; the inert-
+      leaf screens add UNKNOWN within otherwise-allowed cells. **Complete rejection
+      set (the helper rejects → UNKNOWN if ANY holds):** (1) **inert `servers`** —
+      `servers` changed while the row is serving (`local`/`server`) on the changed
+      side → `dhcp_relay_target`/inert; (2) **participation/target** — the matrix's
+      four both-`active` differing-target cells → `dhcp_mode_transition` /
+      `dhcp_relay_target`; (3) **inert scope-fact** — `ip_start`/`ip_end`/`gateway`
+      changed while **both** sides non-serving (relay/none) → `dhcp_scope_field`.
+      Everything else defers to the modeled `dhcp_path`/`scope_lint` verdict.
     - **The row-level helper evaluates the COMPILED EFFECTIVE diff, in the derived
       gate — not just the raw field gate (was a P1 placement gap).** The derived
       gate (`scope/derived_gate.py`) diffs the full effective baseline/proposed at
@@ -677,7 +693,8 @@ Unit:
   equivalence (a gatewaytemplate edit actually moves the gateway IR; switch/AP
   device entries untouched).
 - **gateway effective is in the derived-gate set** — a `vars`/sitetemplate ripple
-  into an effective gateway leaf **outside** `EFFECTIVE_ALLOWLIST` → `check_derived`
+  into an effective gateway leaf **outside `GATEWAY_EFFECTIVE_ALLOWLIST`** (use an
+  actually-unmodeled gateway leaf, e.g. `ip_configs.*.netmask`) → `check_derived`
   → UNKNOWN (today the derived gate iterates switch-only `device_effective` and
   would miss it).
 - **gateway-specific `disabled` drift** — a gatewaytemplate `port_config.*.disabled`
@@ -723,11 +740,14 @@ Unit:
   side) — stays a modeled `dhcp_path` provider-loss verdict (REVIEW), proving the
   exemption is row-local, not check-output-dependent; serving→`none` → allowed
   (provider loss via `dhcp_path`); `local→server` → no-op SAFE.
-- **full 3×3 participation matrix** — parametrize all nine (S/R/I)×(S/R/I)
-  baseline→proposed transitions (incl. R→R same/differing `servers`) and assert
-  each matches the matrix verdict (4 UNKNOWN cells: S→R, R→S, R→R-differing; the
-  rest SAFE/REVIEW via `dhcp_path`/`scope_lint`). Pins completeness — no
-  unscreened transition.
+- **full 3×3 participation matrix + the two inert-leaf screens** — parametrize all
+  nine (S/R/I)×(S/R/I) baseline→proposed transitions (incl. R→R same/differing
+  `servers`); assert the 4 participation-UNKNOWN cells (S→R, R→S, R→R-differing) and
+  that the rest are SAFE/REVIEW via `dhcp_path`/`scope_lint`. **Plus the orthogonal
+  inert-leaf cases that compose ON TOP within allowed cells:** a `servers` edit on
+  an S→S row → UNKNOWN (inert-servers), and an `ip_start`/`gateway` edit on a
+  both-non-serving (R/I) row → UNKNOWN (scope-field). Pins the complete rejection
+  set — no transition AND no inert-leaf edit unscreened.
 - **DHCP screens run on the effective (derived) diff, not only the raw gate** —
   a `vars.*` edit that compiles into an effective relay-target change
   (`["10.1.1.1"] → ["10.2.2.2"]`) → UNKNOWN; a `vars.*` edit that compiles into a
