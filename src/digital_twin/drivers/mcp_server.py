@@ -2,6 +2,8 @@
 
 The tool itself NEVER throws to the agent (spec) — any internal error becomes
 an UNKNOWN verdict document with the error in decision_reasons.
+For ORG (networktemplate) plans the tool auto-detects the mode and returns an
+OrgVerdict dict; for SITE plans it returns the standard Verdict dict.
 """
 
 from __future__ import annotations
@@ -11,12 +13,14 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from digital_twin.contracts import Rejection
-from digital_twin.drivers.render import verdict_to_dict
-from digital_twin.engine.pipeline import simulate
+from digital_twin.drivers.cli import _is_org_plan
+from digital_twin.drivers.render import org_verdict_to_dict, verdict_to_dict
+from digital_twin.engine.pipeline import simulate, simulate_org_template
 from digital_twin.ir import IRDiff
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.providers.base import StateProvider
-from digital_twin.verdict.decision import DecisionInputs
+from digital_twin.verdict.decision import Decision, DecisionInputs
+from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import assemble
 
 mcp = FastMCP("digital-twin")
@@ -30,9 +34,31 @@ def _provider(replay_fixture: str | None) -> StateProvider:
     return MistApiProvider()
 
 
+def _unknown_org_dict(reason: str, template_id: str = "") -> dict[str, Any]:
+    """Build a well-formed UNKNOWN OrgVerdict dict for the MCP error envelope."""
+    ov = OrgVerdict(
+        decision=Decision.UNKNOWN,
+        decision_reasons=(reason,),
+        template_id=template_id,
+        per_site={},
+        driving_sites=(),
+        site_failures={},
+        template_findings=(),
+        org_rejections=(Rejection(stage="driver", reasons=(reason,)),),
+    )
+    return org_verdict_to_dict(ov)
+
+
 def simulate_change(
     change_plan: dict[str, Any], replay_fixture: str | None = None
 ) -> dict[str, Any]:
+    if _is_org_plan(change_plan):
+        try:
+            org_verdict = simulate_org_template(change_plan, provider=_provider(replay_fixture))
+            return org_verdict_to_dict(org_verdict)
+        except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
+            return _unknown_org_dict(f"internal error: {e}")
+
     try:
         verdict = simulate(change_plan, provider=_provider(replay_fixture))
         return verdict_to_dict(verdict)
@@ -55,6 +81,8 @@ def simulate_change(
 def simulate_change_tool(change_plan: dict[str, Any]) -> dict[str, Any]:
     """Simulate a Mist ChangePlan against the live network state; returns the
     verdict document (decision: safe|review|unsafe|unknown + findings).
+    For org/template plans (ops all have object_type 'networktemplate' and no
+    site_id in scope), returns an OrgVerdict document with per-site rollup.
     Payloads follow Mist update semantics: root attributes present in the
     payload replace the current values wholesale, omitted roots persist, and
     {"-attribute": ""} deletes an attribute."""

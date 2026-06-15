@@ -5,6 +5,7 @@ from digital_twin.providers.base import (
     FetchError,
     FetchFailure,
     OrgScope,
+    OrgTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -76,9 +77,26 @@ def test_state_provider_is_a_protocol():
         ) -> dict[str, RawSiteState | FetchError]:
             raise NotImplementedError
 
+        def resolve_org_template(
+            self, scope: OrgScope, template_id: str
+        ) -> OrgTemplateContext | FetchError:
+            raise NotImplementedError
+
     provider: StateProvider = Fake()
     assert provider is not None
 
 
 def test_org_scope_construct():
     assert OrgScope(org_id="o1").org_id == "o1"
+
+
+def test_org_template_context_and_orgscope_fetch_error():
+    from datetime import UTC, datetime
+
+    from digital_twin.providers.base import FetchError, OrgScope, OrgTemplateContext
+    ctx = OrgTemplateContext(template={"id": "nt1"}, assigned_site_ids=("s1", "s2"))
+    assert ctx.assigned_site_ids == ("s1", "s2")
+    err = FetchError(
+        scope=OrgScope(org_id="o1"), failures=(), acquired_at=datetime.now(UTC), host="h"
+    )
+    assert err.scope.org_id == "o1"

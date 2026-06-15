@@ -42,14 +42,24 @@ from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.contracts import Finding, Rejection
+from digital_twin.engine.org_template import apply_template, override_template
 from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
-from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta, StateProvider
+from digital_twin.providers.base import (
+    OrgScope,
+    OrgTemplateContext,
+    RawSiteState,
+    SiteScope,
+    StateMeta,
+    StateProvider,
+)
+from digital_twin.scope.allowlist import ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
-from digital_twin.verdict.decision import DecisionInputs
+from digital_twin.verdict.decision import Decision, DecisionInputs
+from digital_twin.verdict.org_verdict import OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
@@ -296,4 +306,133 @@ def simulate(
         raw, proposed_raw,
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
+    )
+
+
+def simulate_org_template(
+    plan_data: Mapping[str, Any],
+    *,
+    provider: StateProvider,
+    adapter: MistAdapter | None = None,
+    registry: CheckRegistry | None = None,
+    run: RunContext | None = None,
+) -> OrgVerdict:
+    run = run or RunContext()
+    adapter = adapter or MistAdapter()
+    registry = registry or CheckRegistry(ALL_WIRED_CHECKS)
+
+    def org_unknown(
+        rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = ()
+    ) -> OrgVerdict:
+        return OrgVerdict(
+            decision=Decision.UNKNOWN,
+            decision_reasons=tuple(f"[{r.stage}] {x}" for r in rejections for x in r.reasons),
+            template_id=template_id, per_site={}, driving_sites=(), site_failures={},
+            template_findings=tuple(template_findings), org_rejections=tuple(rejections),
+        )
+
+    plan = parse_change_plan(plan_data)
+    # resolved after the ORG guard below; org_unknown() calls before that point
+    # correctly surface "" (the template id is genuinely unknown that early)
+    template_id = ""
+    if isinstance(plan, Rejection):
+        return org_unknown((plan,))
+    rejection = check_objects(plan)
+    if rejection:
+        return org_unknown((rejection,))
+    # ORG-mode guard (symmetric with simulate's SITE guard): a valid SITE plan
+    # also passes check_objects — it must NOT be fanned out as a template.
+    is_org = (
+        bool(plan.ops)
+        and all(op.object_type in ORG_OBJECT_TYPES for op in plan.ops)
+        and not plan.scope.site_id
+    )
+    if not is_org:
+        return org_unknown((Rejection(
+            stage="scope.pre",
+            reasons=("site-scoped plan: call simulate, not simulate_org_template",),
+        ),))
+    op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
+    template_id = op.object_id
+
+    resolved = provider.resolve_org_template(OrgScope(org_id=plan.scope.org_id), template_id)
+    if not isinstance(resolved, OrgTemplateContext):
+        return org_unknown((Rejection(
+            stage="fetch",
+            reasons=tuple(
+                f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
+            )
+            or ("org-template lookup failed",),
+        ),))
+
+    snapshot = dict(resolved.template)
+    proposed_template = apply_template(snapshot, op.payload)
+    if isinstance(proposed_template, Rejection):
+        return org_unknown((proposed_template,))
+
+    # org-level L0 — a FATAL violation short-circuits to org_rejections ONLY
+    # (template_findings holds NON-fatal L0 only, per the spec's fatal-L0 rule)
+    l0 = adapter.validate(replace(op, payload=proposed_template))
+    if l0.fatal:
+        return org_unknown(
+            (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
+        )
+    template_findings = tuple(l0.findings)
+    # org-level field gate (no role check — networktemplate branch)
+    fg = screen_op("networktemplate", snapshot, proposed_template)
+    if fg:
+        return org_unknown((fg,), template_findings=template_findings)
+
+    if not resolved.assigned_site_ids:  # valid template, 0 sites
+        decision, reasons, driving = decide_org(
+            {}, template_findings=template_findings, org_rejections=()
+        )
+        return OrgVerdict(
+            decision=decision, decision_reasons=reasons, template_id=template_id,
+            per_site={}, driving_sites=driving, site_failures={},
+            template_findings=template_findings, org_rejections=(),
+        )
+
+    raw_map = provider.fetch_sites(
+        OrgScope(org_id=plan.scope.org_id), site_ids=resolved.assigned_site_ids
+    )
+    per_site: dict[str, Verdict] = {}
+    site_failures: dict[str, str] = {}
+    for sid in resolved.assigned_site_ids:
+        fetched = raw_map.get(sid)
+        if not isinstance(fetched, RawSiteState):
+            failures = fetched.failures if fetched is not None else ()
+            site_failures[sid] = "; ".join(
+                f"{f.object}: {f.error}" for f in failures
+            ) or "fetch failed"
+            # preserve the FetchError's own acquired_at (like the single-site
+            # total-fetch-failure path) so the failed site's freshness/age is
+            # honest, not test-execution "now"
+            acquired_at = fetched.acquired_at if fetched is not None else datetime.now(UTC)
+            per_site[sid] = _unknown(
+                None, adapter_findings=(), run=run, baseline_unavailable=True,
+                state_meta=build_state_meta(
+                    StateMeta(acquired_at=acquired_at, host=fetched.host if fetched else "",
+                              fetched=(), failures=failures),
+                    now=datetime.now(UTC),
+                ),
+            )
+            continue
+        base_raw, prop_raw = override_template(fetched, snapshot, proposed_template)
+        sm = build_state_meta(fetched.meta, now=datetime.now(UTC))
+        # adapter_findings=() — template L0 findings live ONLY on OrgVerdict
+        # .template_findings (the rollup floors REVIEW on them via decide_org);
+        # do NOT echo them into every per-site Verdict.
+        per_site[sid] = _simulate_site_state(
+            base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
+            state_meta=sm, adapter_findings=(),
+        )
+
+    decision, reasons, driving = decide_org(
+        per_site, template_findings=template_findings, org_rejections=()
+    )
+    return OrgVerdict(
+        decision=decision, decision_reasons=reasons, template_id=template_id,
+        per_site=per_site, driving_sites=driving, site_failures=site_failures,
+        template_findings=template_findings, org_rejections=(),
     )

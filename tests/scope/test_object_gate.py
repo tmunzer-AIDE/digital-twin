@@ -124,4 +124,6 @@ def test_mixing_site_and_org_object_types_rejects():
         _org_plan([_nt_op(), _op(object_type="device", object_id="d1")], site_id=None)
     )
     assert isinstance(r, Rejection)
+    # SITE branch surfaces BOTH the unsupported networktemplate op AND site_id-required
     assert any("networktemplate" in reason for reason in r.reasons)
+    assert any("site_id" in reason for reason in r.reasons)

@@ -84,6 +84,7 @@ def test_plan2_public_api():
         FetchError,
         MistApiProvider,
         OrgScope,
+        OrgTemplateContext,
         RawSiteState,
         SiteScope,
         StateProvider,
@@ -102,6 +103,7 @@ def test_plan2_public_api():
             RawSiteState,
             SiteScope,
             OrgScope,
+            OrgTemplateContext,
             StateProvider,
         )
     )
@@ -208,7 +210,7 @@ def test_plan5_public_api():
     from digital_twin.drivers.cli import main
     from digital_twin.drivers.mcp_server import simulate_change
     from digital_twin.drivers.render import render_human, verdict_to_dict
-    from digital_twin.engine.pipeline import simulate
+    from digital_twin.engine.pipeline import simulate, simulate_org_template
     from digital_twin.engine.run_context import RunContext
     from digital_twin.observability.logging import bound_logger
     from digital_twin.observability.replay.redaction import redact
@@ -218,12 +220,14 @@ def test_plan5_public_api():
         load_fixture_raw,
     )
     from digital_twin.observability.trace import Trace
+    from digital_twin.verdict.org_verdict import OrgVerdict
     from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 
     assert all(
         callable(f)
         for f in (
             simulate,
+            simulate_org_template,
             main,
             simulate_change,
             render_human,
@@ -235,7 +239,8 @@ def test_plan5_public_api():
         )
     )
     assert all(
-        x is not None for x in (RunContext, Trace, ReplayStore, FixtureProvider, StateMetaView)
+        x is not None
+        for x in (RunContext, Trace, ReplayStore, FixtureProvider, StateMetaView, OrgVerdict)
     )
 
 

@@ -24,6 +24,8 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
     # ORG mode ONLY when EVERY op is networktemplate AND there is no site_id.
     # Anything else (incl. networktemplate WITH a site_id, or a mix) falls into
     # the SITE branch, which preserves the existing per-op diagnostics verbatim.
+    # NB: this keys on the literal "networktemplate"; a new ORG type must be added
+    # BOTH here and to ORG_OBJECT_TYPES in allowlist.py (used by the CLI for mode).
     is_org = (
         bool(ops)
         and all(op.object_type == "networktemplate" for op in ops)

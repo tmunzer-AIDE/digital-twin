@@ -10,7 +10,7 @@ import json
 import pytest
 
 from digital_twin.checks.base import CoverageState
-from digital_twin.engine.pipeline import simulate
+from digital_twin.engine.pipeline import simulate, simulate_org_template
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
 
@@ -29,6 +29,10 @@ from .builders import (
     device_op,
     dynamic_ap_wlan_doc,
     fixture_doc,
+    multisite_add_unused_vlan,
+    multisite_remove_corp,
+    multisite_template_with_no_assigned_sites,
+    multisite_with_failed_site,
     ospf_doc,
     ospf_op,
     plan_for,
@@ -39,6 +43,11 @@ from .builders import (
 def _simulate(doc, plan, tmp_path):
     fixture = write_doc(doc, tmp_path / "fx.json")
     return simulate(plan, provider=FixtureProvider(fixture))
+
+
+def _simulate_org(doc, plan, tmp_path):
+    fixture = write_doc(doc, tmp_path / "ms.json")
+    return simulate_org_template(plan, provider=FixtureProvider(fixture))
 
 
 def test_gs1_single_uplink_vlan_removal_is_unsafe(tmp_path):
@@ -1100,3 +1109,33 @@ def test_gs26e_noncollapsing_passive_flip_is_review(tmp_path):
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.REVIEW, v.decision_reasons
     assert "wired.l3.ospf_withdrawal.transit_mutation" in {f.code for f in v.findings}
+
+
+# --- MS: multi-site / org networktemplate simulation ----------------------
+
+def test_ms_a_template_network_removal_breaks_one_site_unsafe(tmp_path):
+    # the template edit removes corp from the uplink trunk -> site A loses its
+    # exit (UNSAFE), site B unaffected (SAFE) -> org rollup UNSAFE naming A
+    doc, plan = multisite_remove_corp()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert "siteA" in ov.driving_sites and ov.per_site["siteB"].decision is Decision.SAFE
+
+
+def test_ms_b_one_site_fetch_fails_rolls_up_unknown(tmp_path):
+    doc, plan = multisite_with_failed_site()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN
+    assert "siteB" in ov.site_failures
+
+
+def test_ms_c_cosmetic_template_edit_is_safe(tmp_path):
+    doc, plan = multisite_add_unused_vlan()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+
+
+def test_ms_d_zero_assigned_sites_is_safe(tmp_path):
+    doc, plan = multisite_template_with_no_assigned_sites()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.SAFE
