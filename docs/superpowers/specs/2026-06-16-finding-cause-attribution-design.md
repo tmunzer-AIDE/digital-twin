@@ -77,15 +77,29 @@ A new frozen dataclass in `contracts/`, and a new trailing-defaulted field on
 class Cause:
     """A changed entity responsible for a finding. `ref` locates the changed
     object (the same ObjectRef vocabulary as Finding.subject); `fields` are the
-    changed leaf field name(s) on it (e.g. ("usage",), ("vlan_id",), ("enabled",))."""
+    NORMALIZED IR field name(s) that changed on it (e.g. ("poe",), ("stp_priority",),
+    ("dhcp_snooping",), ("native_vlan",)) — empty for pure add/remove deltas."""
     ref: ObjectRef                 # kind/id/name of the CHANGED entity
-    fields: tuple[str, ...] = ()   # which leaf field(s) changed (may be empty for add/remove)
+    fields: tuple[str, ...] = ()   # which IR field(s) changed (empty for add/remove)
 
 @dataclass(frozen=True)
 class Finding:
     ...
     caused_by: tuple[Cause, ...] = ()   # changed entities responsible (delta-attributed only)
 ```
+
+**`fields` vocabulary — IR-normalized, NOT raw config paths.** The single source
+of truth (below) is `IRDiff.changed_fields`, which compares IR dataclass
+attributes (`Port.poe`, `Port.mtu`, `Device.stp_priority`, `Device.dhcp_snooping`,
+`Vlan.dhcp_sources`, …). The raw config leaves the admin literally edited
+(`port_config.*.usage`, `stp_config.bridge_priority`, `dhcp_snooping.enabled`,
+`servers`, …) are **not recoverable from `IRDiff` alone**, so `fields` exposes the
+IR field name, not the raw path. This still answers "which entity and roughly
+what about it changed," and the admin already holds the raw `ChangePlan` they
+pushed. Raw-path `fields` (and the field-gate's `changed_leaf_paths` index that
+would feed them) are a documented future enhancement that the deferred per-leaf
+differential mode would also consume — explicitly out of scope here to keep the
+source of truth single and the feature bounded.
 
 `caused_by` is distinct from the existing fields:
 - `subject` — the **symptom** object (the affected vlan/device); unchanged.
@@ -132,46 +146,71 @@ carries `caused_by=()` by construction (the checks already compute that boolean)
 ### Family 1 — leaf/port/device-local (≈11 checks): direct
 
 These checks already iterate the changed entity and emit a finding whose subject
-is (or maps 1:1 to) that entity. The cause is the same entity + its changed
-field — built directly from the `DeltaIndex`, no graph analysis:
+is (or maps 1:1 to) that entity. The cause is the same entity + its changed IR
+field — built directly from the `DeltaIndex`, no graph analysis. `fields` below
+are **IR field names** (per the vocabulary note above):
 
-| Check | Cause `ref.kind` | typical `fields` |
+| Check | Cause `ref.kind` | IR `fields` (examples) |
 |---|---|---|
-| `mtu_mismatch` | link / port | `mtu` |
-| `native_mismatch` | link / port | `native_vlan` / port usage leaf |
+| `mtu_mismatch` | port / link | `mtu` |
+| `native_mismatch` | port / link | `native_vlan` |
 | `stp_edge` | port | `stp_edge` |
-| `poe_disconnect` | port | `poe_disabled` / `usage` |
-| `stp_root` | device | `stp_config.bridge_priority` |
-| `ospf_withdrawal` | device / l3intf | `ospf_config.enabled`, `…passive` |
-| `dhcp_path` | dhcp_scope / device | `type`, `servers` |
-| `snooping` | device | `dhcp_snooping.*` |
-| `scope_lint` | dhcp_scope | `ip_start` / `gateway` / … |
-| `gateway_gap` | l3intf / vlan | removed l3intf (add/remove → empty `fields`) |
-| `link_boundary` | link / port | usage leaf |
+| `poe_disconnect` | port | `poe` |
+| `stp_root` | device | `stp_priority` |
+| `ospf_withdrawal` | ospf_intf / device | ospf_intf changed fields |
+| `dhcp_path` | vlan / dhcp_scope | `dhcp_sources` |
+| `snooping` | device | `dhcp_snooping` |
+| `scope_lint` | dhcp_scope | dhcp_scope changed fields |
+| `gateway_gap` | l3intf / vlan | removed l3intf → empty `fields` |
+| `link_boundary` | link / port | link/port changed fields |
 
-### Family 2 — graph-effect, many-to-one (5 checks): cut mapping
+### Family 2 — graph-effect, many-to-one: four mapping rules
 
 `l2_blackhole`, `l2_vlan_segmentation`, `l2_isolation`, `l2_loop`,
 `client_impact`. The finding is about a vlan/component/cycle/client; the cause is
-a **set** of changed ports/links. Mapping rule, computed by the shared helper:
+a **set** of changed ports/links. There is **no single mapping** — each condition
+needs its own rule, all computed by the shared helper:
 
-- For a partitioned / exit-losing vlan `vid` over affected component `C`: the
-  cause set is the delta-changed ports and links **incident to C's nodes whose
-  change altered `vid`'s carriage** — i.e. edges that carried `vid` in the
-  baseline vlan-graph and no longer do, mapped to their backing port(s) (L2
-  edges are port-derived), filtered to those present in the `DeltaIndex`.
-- For `l2_loop`: the cause is the delta entity that *armed* the cycle — an added
-  edge in the cycle, or a port whose `stp_*` change unblocked it — drawn from
-  `cycle.member_ports ∩ delta`.
-- For `client_impact`: per affected client, the cause is the changed port/link on
-  the client's own attachment path (the check already enumerates per-client
-  impacts; attribution attaches to each).
+1. **VLAN-graph cut** (`l2_vlan_segmentation.split`, `l2_blackhole.exit_lost`):
+   cause = delta-changed ports/links **incident to the affected component whose
+   change removed `vid`'s carriage** — edges that carried `vid` in the baseline
+   vlan-graph and no longer do, mapped to their backing port(s) (L2 edges are
+   port-derived), intersected with the `DeltaIndex`.
+2. **Physical L2 severance** (`l2_isolation`): cause = the delta-changed *links*
+   (removed/disabled) on the boundary between the isolated island and its former
+   domain — a physical-topology cut, independent of any single vlan's carriage.
+3. **Added-member stranding** (`l2_blackhole.new_member_stranded` /
+   `new_member_ports`): the cause is **directly** the added/changed access
+   port(s) that introduced the stranded membership — these are already in the
+   delta (the check computes `new_member_ports`), so the mapping is a direct
+   `new_member_ports ∩ delta`, not a cut analysis.
+4. **Loop arming** (`l2_loop`): cause = the delta entity that *armed* the cycle —
+   an added edge in the cycle (`added ∩ cycle.member_ports`' links), or a port
+   whose `stp_enabled` flipped to unblock it (`cycle.member_ports ∩ delta`).
+
+`client_impact` is handled separately (next section) — it aggregates clients, so
+its causes are per-impact, not a single component cut.
 
 Because a cut can legitimately require more than one removed edge, and one trunk
 going to `default` can drop several vlans at once, `caused_by` for Family 2 is a
 **set** and may name multiple ports — that is correct, not a defect. (The
 many-vlans-one-port readability problem is what the deferred cause-first
 rendering solves; it does not block this spec.)
+
+### `client_impact` — aggregate finding, per-impact causes
+
+`ClientImpactCheck` emits ONE aggregate finding (`evidence["impacts"]` is a list,
+one entry per affected client) and deliberately has no single `subject`. A single
+top-level `caused_by` would conflate clients impacted by *different* ports. The
+spec's non-goal forbids changing which findings are emitted, so the finding stays
+aggregate; attribution is two-layer:
+
+- Each `evidence["impacts"][i]` entry gains its own `caused_by` — the changed
+  port/link on **that** client's attachment path (the entry already records the
+  client's attachment).
+- The finding's top-level `Finding.caused_by` is the **deduplicated union** of
+  the per-impact causes — a faithful "all ports that affected some client,"
+  with the precise per-client mapping preserved in evidence.
 
 ### The exclusion — pre-existing / context findings
 
@@ -186,9 +225,26 @@ is a feature — it tells the admin which warnings are *not* their change's doin
 ### Adapter / dynamic-gate findings
 
 `scope.dynamic_ports.unverifiable`, `scope.stp.bridge_priority_invalid`,
-`scope.dhcp.range_unresolved` already carry a device/dhcp_scope subject and are
-inherently single-leaf; they set `caused_by` inline at construction (they bypass
-the registry resolver, same as they already do for subject names).
+`scope.dhcp.range_unresolved` carry a device/dhcp_scope subject and set
+`caused_by` inline at construction (they bypass the registry resolver, same as
+they already do for subject names) — **but only under the same delta/parity rule
+as the checks.** These findings fire on a malformed value present in *either*
+baseline or proposed: e.g. `invalid_bridge_priority_findings` sets `invalid` when
+the baseline OR the proposed effective is uninterpretable, so an **unchanged
+malformed baseline** fires it. That row MUST carry `caused_by=()` — the change did
+not introduce it. The inline construction therefore compares the offending value
+baseline-vs-proposed and attributes a cause only when it actually changed (the
+findings already receive both effective maps, so the parity is local).
+
+### L0 schema findings — explicitly out of scope
+
+L0/`schema.py` validation findings are **excluded** from `caused_by` in this
+work. They are structural validity of the pushed object, not a baseline→proposed
+condition (there is no meaningful parity: an invalid shape is invalid regardless
+of baseline), and their `subject` already names the edited object. Including them
+would invite exactly the pre-existing-blame trap P1b warns about under
+full-object L0 mode. They keep `caused_by=()`; revisiting them belongs with the
+future raw-path `fields` work, where the field-gate change-paths are available.
 
 ### Parity note
 
@@ -206,7 +262,9 @@ uniformly "here is the thing you changed that caused this."
   `(caused by mge-0/0/0 [usage], mge-0/0/1 [usage])`. No clause when
   `caused_by=()` (pre-existing or unattributable).
 - **Dict (`verdict_to_dict`):** each finding gains a `caused_by` array of
-  `{ref: {kind,id,name}, fields: [...]}`. Additive; existing keys unchanged.
+  `{ref: {kind,id,name}, fields: [...]}`. Additive; existing keys unchanged. For
+  `client_impact`, the top-level array is the union and each
+  `evidence["impacts"][i]` also carries its own `caused_by`.
 
 ## Impact on verdict / contracts
 
@@ -238,20 +296,36 @@ uniformly "here is the thing you changed that caused this."
 1. **Contract + plumbing:** `Cause`, `Finding.caused_by`, extend
    `subjects.py:name_findings`, render (human + dict), the non-load-bearing
    golden. Lands with empty `caused_by` everywhere (no behavior change yet).
-2. **Shared helper:** `analysis/delta_cause.py` (`delta_index` + the Family-2 cut
-   mapping), memoized on `AnalysisContext`, fully unit-tested in isolation.
+2. **Shared helper:** `analysis/delta_cause.py` (`delta_index` + the four Family-2
+   mapping rules), memoized on `AnalysisContext`, each rule unit-tested in
+   isolation against constructed graphs (incl. the "ambiguous → `()`" cases).
 3. **Family 1 wiring:** the ≈11 leaf-local checks set `caused_by` from the index
    (mechanical, near-free).
-4. **Family 2 wiring:** the 5 graph-effect checks set `caused_by` via the cut
-   mapping; the motivating golden.
-5. **Adapter/dynamic-gate findings** + docs/roadmap/memory + live verify.
+4. **Family 2 wiring:** the 4 graph-effect checks (vlan-cut, physical severance,
+   added-member, loop) + `client_impact`'s per-impact/union shape; the motivating
+   golden.
+5. **Adapter/dynamic-gate findings** (with the delta/parity rule) + docs/roadmap/
+   memory + live verify.
+
+## Resolved decisions (from spec review)
+
+- **`fields` are IR-normalized, not raw config paths** (P1a). The Family-1 table
+  and `Cause` docstring use IR field names; raw-path `fields` are deferred (needs
+  a field-gate change-path index, shared with the future differential mode).
+- **Adapter findings obey the same delta/parity rule** (P1b): attribute only when
+  the offending value changed; an unchanged malformed baseline → `caused_by=()`.
+- **L0 schema findings are excluded** from `caused_by` in this work (P1b).
+- **`client_impact` stays one aggregate finding** (P2a): per-impact causes nested
+  in `evidence["impacts"]`, top-level `caused_by` = their deduplicated union.
+- **Family 2 has four distinct mapping rules** (P2b): vlan-graph cut, physical L2
+  severance, added-member stranding, loop arming — not one carriage rule.
 
 ## Open questions / risks
 
-- **Family-2 cut precision.** The cut mapping is the only non-trivial piece; the
-  honesty rule (emit `()` when unsure) bounds the risk to "sometimes silent,"
-  never "wrong." The plan should TDD the mapping against constructed graphs
-  before wiring the checks.
+- **Family-2 mapping precision.** The four cut/arm mappings are the only
+  non-trivial pieces; the honesty rule (emit `()` when unsure) bounds the risk to
+  "sometimes silent," never "wrong." The plan must TDD each mapping against
+  constructed graphs before wiring the checks.
 - **`fields` for add/remove deltas.** An added/removed port or l3intf has no
   "changed field"; `fields=()` is acceptable (the `ref` alone is the cause).
 - **Name resolution for device causes.** Devices have no IR name → cause shows
