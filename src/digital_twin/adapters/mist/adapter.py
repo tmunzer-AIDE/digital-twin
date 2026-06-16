@@ -9,11 +9,13 @@ IngestReport carries the names; the engine maps that to UNKNOWN.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+import dataclasses
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from digital_twin.adapters.mist.apply import apply_plan
+from digital_twin.adapters.mist.compile.gateway import compile_gateway_device
 from digital_twin.adapters.mist.compile.switch import compile_device, compile_site
 from digital_twin.adapters.mist.ingest.base import IngestContext, Ingester
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
@@ -35,6 +37,7 @@ class IngestOutcome:
     site_effective: _Json
     device_effective: dict[str, _Json]
     report: IngestReport
+    gateway_effective: dict[str, _Json] = field(default_factory=dict)
 
 
 class MistAdapter:
@@ -60,10 +63,33 @@ class MistAdapter:
             for d in raw.devices
             if d.get("type") == "switch" and d.get("mac")
         }
+        gt = dict(raw.gatewaytemplate) if raw.gatewaytemplate else None
+        gateway_effective = {
+            device_id(str(d["mac"])): compile_gateway_device(gt, st, setting, dict(d))
+            for d in raw.devices
+            if d.get("type") == "gateway" and d.get("mac")
+        }
+
+        def _materialize(d: Mapping[str, Any]) -> Mapping[str, Any]:
+            if d.get("type") == "gateway" and d.get("mac"):
+                eff = gateway_effective[device_id(str(d["mac"]))]
+                # Materialize port_config and ip_configs from the effective
+                # (gatewaytemplate / sitetemplate inheritance). dhcpd_config is
+                # intentionally excluded: the ingest reads site dhcpd_config via
+                # site_effective and gateway dhcpd_config via the raw device
+                # separately; folding them together here would cause site-level
+                # DHCP scopes to be double-minted as both site-owned and
+                # gateway-owned when site_setting carries dhcpd_config entries.
+                return {**d, **{k: eff.get(k, {}) for k in ("port_config", "ip_configs")}}
+            return d
+
+        raw_for_ingest = dataclasses.replace(
+            raw, devices=tuple(_materialize(d) for d in raw.devices)
+        )
         builder = IRBuilder()
         report = self._registry.run(
             IngestContext(
-                raw=raw,
+                raw=raw_for_ingest,
                 site_effective=site_effective,
                 device_effective=device_effective,
                 builder=builder,
@@ -74,6 +100,7 @@ class MistAdapter:
             ir=ir,
             site_effective=site_effective,
             device_effective=device_effective,
+            gateway_effective=gateway_effective,
             report=report,
         )
 
