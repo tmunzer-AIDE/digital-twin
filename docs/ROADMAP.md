@@ -212,19 +212,31 @@ modeling" below.
   real template assigned to 2 sites ran the full real-provider fan-out → SAFE,
   rollup consistent. 770 tests. Spec/plan:
   docs/superpowers/{specs,plans}/2026-06-14-multisite-org-template-simulation*.md.
-- 🟡 **gatewaytemplate / sitetemplate** as first-class `object_type`s
-  (spec'd 2026-06-15, in progress). Generalizes the networktemplate fan-out to a
-  **typed** set `{networktemplate, gatewaytemplate, sitetemplate}` over a unified
-  layered effective-config compiler (`fold_layers(layers, policy)`). The vendor
-  derivation is one uniform stack for every device family:
-  `<type>template → sitetemplate → site_setting → device-profile → device`. Adds
-  the **sitetemplate** layer (fixes the latent baseline gap for sites already
-  assigned one) and a **gateway compile** (gatewaytemplate folded under the device
-  via the PUT-root overlay → existing GS22 gateway IR/checks reused, no parallel
-  path; unmodeled gateway fields — routing/BGP/tunnels/security — stay field-gated
-  → UNKNOWN). Org fan-out pins exactly one edited layer per plan. Device-profile is
-  the named out-of-scope layer below (relevance-scoped UNKNOWN, not silent).
-  Spec: docs/superpowers/specs/2026-06-15-gateway-site-template-object-types-design.md.
+- ✅ **gatewaytemplate / sitetemplate** as first-class `object_type`s —
+  done 2026-06-15 (21 TDD tasks, branch `feat/gateway-site-templates`). Generalizes
+  the networktemplate fan-out to a **typed** set `{networktemplate, gatewaytemplate,
+  sitetemplate}` over a unified layered effective-config compiler
+  (`fold_layers(layers, policy)`; the vendor stack is uniform per family:
+  `<type>template → sitetemplate → site_setting → device-profile → device`). Adds
+  the **sitetemplate** layer (fixes the latent baseline gap) and a **gateway
+  compile** (`compile_gateway_device` = fold gateway layers → **per-key device
+  overlay** → `_resolve` vars last; materialized back into `RawSiteState.devices`
+  so the existing GS22 gateway IR/checks run unchanged; unmodeled gateway fields —
+  routing/BGP/tunnels/security — stay field-gated → UNKNOWN). Role-keyed
+  `check_derived` also screens gateway effective (source-aware projection) + a
+  shared row-level DHCP-relevance helper (the 3×3 S/R/I participation matrix).
+  Device-profile is a **coarse fail-safe gate** (a profiled modeled device whose
+  own effective, restricted to the role's overridable leaves, differs vs the
+  below-profile proposed → site UNKNOWN; can't diverge from the IR). Domain
+  findings during build: gateway `dhcpd_config`/`networks` are gateway-namespace
+  only (NOT inherited from site-level layers — confirmed with the owner); the OAS
+  `site_template` component is thin (auto_upgrade/name/vars) but a real sitetemplate
+  carries more, so L0 stays permissive. **Live-verified** read-only on the real org:
+  8 single-site plans unchanged (a dhcpd_config `enabled`-flag crash was caught live
+  + fixed), and a no-op gatewaytemplate org fan-out → SAFE with a consistent rollup.
+  Two Tier-2 items observed consistent (gateway DICT_MERGE; gateway-device vars
+  resolve). Spec/plan:
+  docs/superpowers/{specs,plans}/2026-06-15-gateway-site-template-object-types*.md.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
