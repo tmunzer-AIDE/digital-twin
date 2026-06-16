@@ -16,7 +16,7 @@ SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device")
 # Org-level object types simulated by fan-out (NOT single-site). networktemplate
 # carries the SAME modeled config layer as a site_setting, so its raw field gate
 # reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
-ORG_OBJECT_TYPES: tuple[str, ...] = ("networktemplate",)
+ORG_OBJECT_TYPES: tuple[str, ...] = ("networktemplate", "gatewaytemplate", "sitetemplate")
 
 # What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
 # + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
@@ -68,6 +68,26 @@ _DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.ip_end",
     "dhcpd_config.*.gateway",
 )
+# Gateway modeled effective leaves: exactly what _gateway_ports_and_l3 + gateway
+# dhcp consume AND act on. NOT port_config.*.usage (inert -> Port.profile), NOT
+# networks (gateway namespace is org_networks, not the device's own networks).
+_GATEWAY_PORT_LEAVES: tuple[str, ...] = (
+    "port_config.*.networks",
+    "port_config.*.port_network",
+    "port_config.*.disabled",
+)
+_GATEWAY_L3_LEAVES: tuple[str, ...] = ("ip_configs.*.ip",)
+_GATEWAY_DHCP_LEAVES: tuple[str, ...] = (
+    "dhcpd_config.*.type",
+    "dhcpd_config.*.servers",
+    "dhcpd_config.*.ip_start",
+    "dhcpd_config.*.ip_end",
+    "dhcpd_config.*.gateway",
+)
+_GATEWAY_LEAVES: tuple[str, ...] = (
+    *_GATEWAY_PORT_LEAVES, *_GATEWAY_L3_LEAVES, *_GATEWAY_DHCP_LEAVES,
+)
+
 # Snooping intent (Device.dhcp_snooping, the wired.dhcp.snooping check):
 # the toggle, the all-networks switch, and the per-network list — atomically.
 _SNOOPING_LEAVES: tuple[str, ...] = (
@@ -140,6 +160,13 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
 }
 
 RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
+# vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate
+# vars edit passes the RAW field gate and the derived gate evaluates its ripple.
+RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES, "vars.*")
+# sitetemplate sits in BOTH stacks -> union of switch/site leaves + gateway leaves.
+# Verified against the committed sitetemplate OAS in a later task (narrow only if
+# the schema proves a leaf cannot appear).
+RAW_ALLOWLIST["sitetemplate"] = (*RAW_ALLOWLIST["site_setting"], *_GATEWAY_LEAVES, "vars.*")
 
 # Server-managed fields excluded from the raw diff: a PUT payload never carries
 # them, and their absence is not a user change. Two groups: identity/audit
@@ -180,3 +207,8 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_OSPF_LEAVES,
     "vars.*",
 )
+
+# Gateway effective allowlist (role-keyed derived gate): the gateway modeled leaves
+# + vars.* (the vars root survives _resolve; the derived gate catches its ripple,
+# so the vars.* leaf itself must be allowed).
+GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (*_GATEWAY_LEAVES, "vars.*")

@@ -1,6 +1,8 @@
 from digital_twin.scope.allowlist import (
     EFFECTIVE_ALLOWLIST,
+    GATEWAY_EFFECTIVE_ALLOWLIST,
     IGNORED_RAW_FIELDS,
+    ORG_OBJECT_TYPES,
     RAW_ALLOWLIST,
     SUPPORTED_OBJECT_TYPES,
 )
@@ -55,6 +57,30 @@ def test_ospf_allowlist_is_leaf_tightened():
 
 
 def test_networktemplate_allowlist_equals_site_setting_exactly():
-    from digital_twin.scope.allowlist import ORG_OBJECT_TYPES, RAW_ALLOWLIST
-    assert ORG_OBJECT_TYPES == ("networktemplate",)
+    from digital_twin.scope.allowlist import RAW_ALLOWLIST
     assert RAW_ALLOWLIST["networktemplate"] == RAW_ALLOWLIST["site_setting"]
+
+
+def test_org_object_types_includes_all_three():
+    assert set(ORG_OBJECT_TYPES) == {"networktemplate", "gatewaytemplate", "sitetemplate"}
+
+
+def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
+    gw = set(RAW_ALLOWLIST["gatewaytemplate"])
+    assert "port_config.*.disabled" in gw and "ip_configs.*.ip" in gw
+    assert "vars.*" in gw                        # a vars edit must pass the RAW field
+    # gate so the derived gate can evaluate the ripple (mirrors site_setting)
+    assert "port_config.*.usage" not in gw      # inert -> excluded
+    assert "networks.*.vlan_id" not in gw       # org-namespace -> excluded
+
+
+def test_sitetemplate_raw_allowlist_is_union():
+    st = set(RAW_ALLOWLIST["sitetemplate"])
+    assert set(RAW_ALLOWLIST["site_setting"]).issubset(st)        # switch/site surface
+    assert "ip_configs.*.ip" in st                                # + gateway leaves
+
+
+def test_gateway_effective_allowlist_includes_disabled_ip_and_vars():
+    gw = set(GATEWAY_EFFECTIVE_ALLOWLIST)
+    assert {"port_config.*.disabled", "ip_configs.*.ip", "vars.*"} <= gw
+    assert "port_config.*.disabled" not in set(EFFECTIVE_ALLOWLIST)  # switch lacks it
