@@ -53,9 +53,10 @@ class MistAdapter:
     def ingest(self, raw: RawSiteState) -> IngestOutcome:
         nt = dict(raw.networktemplate) if raw.networktemplate else None
         setting = dict(raw.setting)
-        site_effective = compile_site(nt, setting)
+        st = dict(raw.sitetemplate) if raw.sitetemplate else None
+        site_effective = compile_site(nt, setting, sitetemplate=st)
         device_effective = {
-            device_id(str(d["mac"])): compile_device(nt, setting, dict(d))
+            device_id(str(d["mac"])): compile_device(nt, setting, dict(d), sitetemplate=st)
             for d in raw.devices
             if d.get("type") == "switch" and d.get("mac")
         }
