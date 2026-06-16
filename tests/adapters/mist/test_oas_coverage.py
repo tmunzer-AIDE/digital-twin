@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from digital_twin.adapters.mist.compile.merge import MergePolicy, merge_site_effective
+from digital_twin.adapters.mist.compile.fold import MergePolicy
+from digital_twin.adapters.mist.compile.merge import SWITCH_POLICY, merge_site_effective
 from digital_twin.adapters.mist.oas import load_schema, norm_schema
 
 
@@ -78,7 +79,8 @@ def test_site_wins_on_every_overlapping_leaf(schemas):
     out_leaves = _leaves(out)
     for path, value in _leaves(site).items():
         top = path.split(".", 1)[0]
-        if MergePolicy.for_field(top) is MergePolicy.DICT_MERGE and ".key_tpl" in f".{path}":
+        is_dict_merge = SWITCH_POLICY.get(top, MergePolicy.REPLACE) is MergePolicy.DICT_MERGE
+        if is_dict_merge and ".key_tpl" in f".{path}":
             continue  # template-only keys of merged dicts are not in `site`
         assert out_leaves.get(path) == value, f"site value lost at {path}"
 
@@ -97,7 +99,7 @@ def test_dict_merge_unions_keys_from_both_sides(schemas):
     out = merge_site_effective(tpl, site)
     for field, policy_field in (("networks", "networks"), ("port_usages", "port_usages")):
         if field in tpl and field in site:
-            assert MergePolicy.for_field(policy_field) is MergePolicy.DICT_MERGE
+            assert SWITCH_POLICY.get(policy_field, MergePolicy.REPLACE) is MergePolicy.DICT_MERGE
             assert "key_tpl" in out[field], f"{field}: template-only key lost"
             assert "key_site" in out[field], f"{field}: site key lost"
             assert out[field]["key_shared"] == site[field]["key_shared"], f"{field}: site must win"

@@ -1,4 +1,5 @@
-from digital_twin.adapters.mist.compile.merge import MergePolicy, merge_site_effective
+from digital_twin.adapters.mist.compile.fold import MergePolicy
+from digital_twin.adapters.mist.compile.merge import SWITCH_POLICY, merge_site_effective
 
 
 def test_site_scalar_overrides_template():
@@ -49,5 +50,5 @@ def test_inputs_are_not_mutated():
 
 
 def test_policy_table_is_data():
-    assert MergePolicy.for_field("networks") is MergePolicy.DICT_MERGE
-    assert MergePolicy.for_field("unknown_future_field") is MergePolicy.REPLACE
+    assert SWITCH_POLICY.get("networks") is MergePolicy.DICT_MERGE
+    assert SWITCH_POLICY.get("unknown_future_field", MergePolicy.REPLACE) is MergePolicy.REPLACE
