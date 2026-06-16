@@ -212,3 +212,12 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
 # + vars.* (the vars root survives _resolve; the derived gate catches its ripple,
 # so the vars.* leaf itself must be allowed).
 GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (*_GATEWAY_LEAVES, "vars.*")
+
+# Modeled leaves a device-profile (higher precedence, unmodeled layer) can
+# override, per role. EXACTLY the leaves the IR consumes for that role (so the
+# gate cannot disagree with ingest): gateway = the modeled gateway leaves;
+# switch = the modeled switch leaves.
+DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
+    "gateway": (*_GATEWAY_LEAVES,),
+    "switch": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_DHCP_LEAVES),
+}
