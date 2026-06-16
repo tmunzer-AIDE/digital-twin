@@ -145,6 +145,20 @@ def test_sitetemplate_plan_classified_org():
     assert check_objects(_org_plan([_gt_op("sitetemplate")])) is None
 
 
+def test_org_mode_rejects_mixed_types_same_id():
+    """REGRESSION (PR #4 review P2): two org ops sharing one object_id but different
+    object_types (gatewaytemplate + sitetemplate, both id="same") must be rejected.
+    They pass the distinct-id check but the org path only simulates ops[0], silently
+    dropping the second op (false-SAFE). The one-org-op rule closes it."""
+    r = check_objects(_org_plan([
+        _gt_op("gatewaytemplate", object_id="same"),
+        ChangeOp(action="update", order=1, object_type="sitetemplate",
+                 object_id="same", payload={}),
+    ]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("one template" in reason for reason in r.reasons)
+
+
 def test_org_mode_rejects_multiple_template_ids_gatewaytemplate():
     # Single-template-id invariant applies to gatewaytemplate too.
     r = check_objects(_org_plan([

@@ -39,7 +39,6 @@ from .base import (
 )
 
 _Json = dict[str, Any]
-_Attempt = Callable[[str, Callable[[], Any], Any], Any]
 
 
 def _now() -> datetime:
@@ -194,7 +193,17 @@ class MistApiProvider(StateProvider):
                 scope=scope, failures=tuple(failures), acquired_at=_now(), host=self._host
             )
 
-        networktemplate = self._templatecached(scope, site, nt_cache, fetched, attempt)
+        # Guardrail #4 (cross-stack): an ASSIGNED networktemplate is consumed by the
+        # switch IR (and by any sitetemplate org run that folds it). If its fetch
+        # raises, the site must be UNKNOWN — never silently compiled with the layer
+        # missing (which the verdict does NOT floor on, so it could false-SAFE).
+        try:
+            networktemplate = self._templatecached(scope, site, nt_cache, fetched)
+        except Exception as e:  # noqa: BLE001
+            failures.append(FetchFailure(object="networktemplate", error=str(e)))
+            return FetchError(
+                scope=scope, failures=tuple(failures), acquired_at=_now(), host=self._host
+            )
 
         # Guardrail #4: sitetemplate/gatewaytemplate fetch failure → whole site is
         # FetchError (UNKNOWN). Do NOT use attempt(..., None) here — if the id is
@@ -261,11 +270,13 @@ class MistApiProvider(StateProvider):
         site: _Json,
         nt_cache: dict[str, _Json | None],
         fetched: list[str],
-        attempt: _Attempt,
     ) -> _Json | None:
         """Network templates are org-level and shared: fetch each unique id once,
-        reuse across sites. Only successful fetches are cached (a failure retries
-        so its gap stays recorded per site)."""
+        reuse across sites. Only successful fetches are cached (a failure is NOT
+        cached, so a later site with the same id retries). A present-but-failing
+        fetch RAISES — the caller floors the whole site to FetchError (guardrail #4:
+        a consumed assigned layer that cannot be fetched → UNKNOWN, never silently
+        compiled as missing)."""
         nt_id = site.get("networktemplate_id")
         if not nt_id:
             return None
@@ -273,11 +284,9 @@ class MistApiProvider(StateProvider):
         if nt_id in nt_cache:
             fetched.append("networktemplate")  # reused from an earlier site this batch
             return nt_cache[nt_id]
-        result: _Json | None = attempt(
-            "networktemplate", lambda: self._networktemplate(scope, nt_id), None
-        )
-        if result is not None:
-            nt_cache[nt_id] = result
+        result: _Json | None = self._networktemplate(scope, nt_id)  # may raise → FetchError
+        fetched.append("networktemplate")
+        nt_cache[nt_id] = result
         return result
 
     def _org_slice(self, fetch: Callable[[], list[_Json]]) -> Callable[[str], list[_Json]]:

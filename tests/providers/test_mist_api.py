@@ -236,6 +236,34 @@ def test_fetch_site_populates_sitetemplate_when_assigned():
     assert raw.sitetemplate == {"id": "st1", "name": "site-tpl-one"}
 
 
+def test_fetch_site_networktemplate_fetch_fail_returns_fetch_error():
+    """REGRESSION (PR #4 review P1): a site assigned a networktemplate_id whose fetch
+    raises → FetchError (UNKNOWN), not a RawSiteState with networktemplate=None. The
+    networktemplate is a consumed layer of the switch IR (incl. in a gatewaytemplate/
+    sitetemplate org run); silently dropping it compiles an incomplete IR that the
+    verdict does not floor on (meta.failures alone never floors) → false-SAFE."""
+
+    class FailingNetworktemplate(FakeProvider):
+        def _networktemplate(self, s: Any, nt_id: str) -> dict[str, Any]:
+            raise RuntimeError("network template 404")
+
+    p = FailingNetworktemplate(sites=_sites("s1", nt="nt_missing"), ports=[], wired=[])
+    out = p.fetch_sites(OrgScope("o1"), ["s1"])
+    result = out["s1"]
+    assert isinstance(result, FetchError), (
+        f"Expected FetchError but got {type(result).__name__}: {result}"
+    )
+    assert any("networktemplate" in f.object for f in result.failures)
+
+
+def test_fetch_site_unassigned_networktemplate_is_not_an_error():
+    """A site with NO networktemplate_id is not floored — networktemplate stays None
+    and the site is a normal RawSiteState (the guardrail only fires on a present id)."""
+    p = FakeProvider(sites=_sites("s1"), ports=[], wired=[])
+    raw = p.fetch_sites(OrgScope("o1"), ["s1"])["s1"]
+    assert isinstance(raw, RawSiteState) and raw.networktemplate is None
+
+
 def test_fetch_site_gatewaytemplate_fetch_fail_returns_fetch_error():
     """A site assigned a gatewaytemplate_id whose fetch raises → FetchError (UNKNOWN),
     not a RawSiteState with None gatewaytemplate."""

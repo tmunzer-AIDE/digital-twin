@@ -453,7 +453,7 @@ def simulate_org_template(
             stage="scope.pre",
             reasons=("site-scoped plan: call simulate, not simulate_org_template",),
         ),))
-    op = plan.ops[0]  # ORG mode guarantees exactly one ORG-type op
+    op = plan.ops[0]  # check_objects enforces exactly one ORG-type op in ORG mode
     object_type = op.object_type
     template_id = op.object_id
 
