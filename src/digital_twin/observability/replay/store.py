@@ -157,6 +157,17 @@ class FixtureProvider:
             self._host = first.meta.host if first is not None else ""
             self._org_id = first.scope.org_id if first is not None else ""
             self._acquired_at = first.meta.acquired_at if first is not None else datetime.now(UTC)
+            # Build typed templates map: object_type -> {template_id -> body}
+            # Start from the new "templates" key (typed shape), then fold in the
+            # legacy single "template" key as "networktemplate" for back-compat.
+            self._templates: dict[str, dict[str, dict[str, Any]]] = {}
+            typed: dict[str, Any] = data.get("templates") or {}
+            for obj_type, by_id in typed.items():
+                self._templates[str(obj_type)] = {str(k): v for k, v in by_id.items()}
+            if self._template is not None:
+                template = self._template
+                nt_map = self._templates.setdefault("networktemplate", {})
+                nt_map.setdefault(str(template["id"]), template)
         else:  # single-site fixture (unchanged)
             self._raw = load_fixture_doc(data)
             self._host = self._raw.meta.host
@@ -250,16 +261,20 @@ class FixtureProvider:
             )
         return self._sites[sid]
 
-    # object_type: typed filtering added in a later task (T19)
     def resolve_org_template(
         self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
         """Multi-site: filter the fixture's sites to those whose site.
-        networktemplate_id == template_id and return the shared template + their
+        <object_type>_id == template_id and return the shared template + their
         ids (0 assigned is a SUCCESS, per the contract — but only when the
-        template EXISTS). Single-site fixtures do not carry a template ->
-        FetchError (-> UNKNOWN)."""
-        if self._template is None:
+        template EXISTS). Single-site fixtures do not carry any templates ->
+        FetchError (-> UNKNOWN).
+
+        Supports both the new typed 'templates' key and the legacy 'template'
+        key (folded in as 'networktemplate' at construction time).
+        """
+        # Single-site fixtures carry no templates at all — always FetchError
+        if not self._multisite or not self._templates:
             return FetchError(
                 scope=scope,
                 failures=(
@@ -284,22 +299,25 @@ class FixtureProvider:
                 host=self._host,
             )
         # template-not-found is a FetchError (-> UNKNOWN), NOT a 0-assigned SUCCESS:
-        # a typo'd/missing template_id must never resolve SAFE
-        if str(self._template.get("id")) != template_id:
+        # a typo'd/missing template_id must never resolve SAFE — per type
+        template = self._templates.get(object_type, {}).get(template_id)
+        if template is None:
             return FetchError(
                 scope=scope,
                 failures=(
                     FetchFailure(
-                        object="networktemplate",
+                        object=object_type,
                         error=f"{template_id} not found in the multi-site fixture",
                     ),
                 ),
                 acquired_at=self._acquired_at,
                 host=self._host,
             )
+        # filter assigned sites by the per-type id field
+        id_field = f"{object_type}_id"
         assigned = tuple(
             sid
             for sid, doc in self._site_docs.items()
-            if str((doc.get("site") or {}).get("networktemplate_id")) == template_id
+            if str((doc.get("site") or {}).get(id_field) or "") == template_id
         )
-        return OrgTemplateContext(template=self._template, assigned_site_ids=assigned)
+        return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
