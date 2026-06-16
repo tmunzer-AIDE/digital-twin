@@ -39,6 +39,8 @@ _RAW_FIELDS = (
     "wlans",
     "org_networks",
     "derived_setting",
+    "sitetemplate",
+    "gatewaytemplate",
 )
 
 
@@ -102,6 +104,8 @@ def load_fixture_doc(data: dict[str, Any]) -> RawSiteState:
         wlans=tuple(data.get("wlans", ())),  # .get: fixtures predating WLAN support
         org_networks=tuple(data.get("org_networks", ())),  # .get: pre-GS22 fixtures
         derived_setting=data["derived_setting"],
+        sitetemplate=data.get("sitetemplate"),  # .get: pre-gateway-site-templates fixtures
+        gatewaytemplate=data.get("gatewaytemplate"),  # .get: pre-gateway-site-templates fixtures
         meta=StateMeta(
             acquired_at=datetime.fromisoformat(meta["acquired_at"]).astimezone(UTC),
             host=meta["host"],

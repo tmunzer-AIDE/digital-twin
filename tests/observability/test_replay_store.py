@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 from digital_twin.observability.replay.store import (
@@ -199,6 +200,28 @@ def test_multisite_rejects_wrong_org_on_resolve_and_fetch(tmp_path):
     assert isinstance(result, FetchError)
     out = provider.fetch_sites(OrgScope("WRONG-ORG"), ["siteA"])
     assert isinstance(out["siteA"], FetchError)
+
+
+def test_new_template_fields_round_trip(tmp_path):
+    store = ReplayStore(tmp_path)
+    raw = dataclasses.replace(
+        raw_site(), sitetemplate={"networks": {}}, gatewaytemplate={"port_config": {}}
+    )
+    loaded = load_fixture_raw(store.save_raw("r", raw))
+    assert loaded.sitetemplate == {"networks": {}}
+    assert loaded.gatewaytemplate == {"port_config": {}}
+
+
+def test_legacy_fixture_without_new_fields_loads_as_none(tmp_path):
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("r", raw_site())
+    data = json.loads(path.read_text())
+    data.pop("sitetemplate", None)
+    data.pop("gatewaytemplate", None)
+    p = tmp_path / "legacy.json"
+    p.write_text(json.dumps(data))
+    assert load_fixture_raw(p).sitetemplate is None
+    assert load_fixture_raw(p).gatewaytemplate is None
 
 
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):
