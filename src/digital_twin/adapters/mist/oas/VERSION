@@ -1,1 +1,6 @@
 <mist_openapi @ 2026-06-09, github tmunzer/mist_openapi master>
+gatewaytemplate.schema.json + sitetemplate.schema.json extracted 2026-06-15 from
+github tmunzer/mist_openapi master (components: gateway_template, site_template).
+NOTE: the OAS `site_template` component is incomplete (auto_upgrade/name/vars only);
+a real sitetemplate carries the switch-config surface — confirmed with the domain
+owner, OAS fix upstream. L0 stays permissive for sitetemplate (no additionalProperties).

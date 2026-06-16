@@ -22,6 +22,8 @@ WANTED = {
     "site_setting": "site_setting.schema.json",
     "network_template": "networktemplate.schema.json",
     "device_switch": "device_switch.schema.json",
+    "gateway_template": "gatewaytemplate.schema.json",
+    "site_template": "sitetemplate.schema.json",
 }
 
 
