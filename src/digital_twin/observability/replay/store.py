@@ -246,8 +246,9 @@ class FixtureProvider:
             )
         return self._sites[sid]
 
+    # object_type: typed filtering added in a later task (T19)
     def resolve_org_template(
-        self, scope: OrgScope, template_id: str
+        self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
         """Multi-site: filter the fixture's sites to those whose site.
         networktemplate_id == template_id and return the shared template + their

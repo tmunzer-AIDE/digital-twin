@@ -60,9 +60,9 @@ class _RecordingProvider:
         return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)  # type: ignore[arg-type]
 
     def resolve_org_template(
-        self, scope: OrgScope, template_id: str
+        self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
-        return self._inner.resolve_org_template(scope, template_id)
+        return self._inner.resolve_org_template(scope, template_id, object_type)
 
 
 def _is_org_plan(plan_data: object) -> bool:

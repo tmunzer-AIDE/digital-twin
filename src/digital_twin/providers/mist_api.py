@@ -120,8 +120,9 @@ class MistApiProvider(StateProvider):
             )
         return out
 
+    # object_type: typed filtering added in a later task (T6)
     def resolve_org_template(
-        self, scope: OrgScope, template_id: str
+        self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
         try:
             sites = self._org_sites(scope)

@@ -67,6 +67,10 @@ class RawSiteState:
     # port_config/ip_configs; site/template networks are the SWITCH namespace.
     # Defaulted: absence leaves gateway carriage vlan-blind (never config-empty).
     org_networks: tuple[JsonObj, ...] = ()
+    # assigned sitetemplate / gatewaytemplate bodies (None = not assigned/not fetched).
+    # Trailing + defaulted so every existing constructor/fixture stays valid.
+    sitetemplate: JsonObj | None = None
+    gatewaytemplate: JsonObj | None = None
 
 
 @dataclass(frozen=True)
@@ -111,7 +115,7 @@ class StateProvider(Protocol):
         ...
 
     def resolve_org_template(
-        self, scope: OrgScope, template_id: str
+        self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
         """List the org's sites, filter to those whose networktemplate_id ==
         template_id, and fetch the template. A lookup failure (sites or template)

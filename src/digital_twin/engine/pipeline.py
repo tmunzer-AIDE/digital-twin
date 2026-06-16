@@ -377,7 +377,9 @@ def simulate_org_template(
     op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
     template_id = op.object_id
 
-    resolved = provider.resolve_org_template(OrgScope(org_id=plan.scope.org_id), template_id)
+    resolved = provider.resolve_org_template(
+        OrgScope(org_id=plan.scope.org_id), template_id, "networktemplate"
+    )
     if not isinstance(resolved, OrgTemplateContext):
         return org_unknown((Rejection(
             stage="fetch",

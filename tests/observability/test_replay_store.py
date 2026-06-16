@@ -127,7 +127,7 @@ def test_multisite_resolve_filters_assigned_sites_and_returns_template(tmp_path)
     path.write_text(json.dumps(doc))
     provider = FixtureProvider(path)
 
-    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1", "networktemplate")
     assert isinstance(resolved, OrgTemplateContext)
     assert set(resolved.assigned_site_ids) == {"siteA", "siteB"}
     assert resolved.template["networks"]["corp"]["vlan_id"] == 10
@@ -156,7 +156,7 @@ def test_multisite_resolve_excludes_other_templates_and_marks_fetch_failures(tmp
     path.write_text(json.dumps(doc))
     provider = FixtureProvider(path)
 
-    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1", "networktemplate")
     assert isinstance(resolved, OrgTemplateContext)
     assert resolved.assigned_site_ids == ("siteA",)  # nt2 site excluded
 
@@ -184,7 +184,7 @@ def test_multisite_missing_template_is_fetch_error_not_zero_assigned(tmp_path):
     from digital_twin.providers.base import FetchError, OrgScope
 
     provider = _ms_one_site(tmp_path)
-    r = provider.resolve_org_template(OrgScope("o1"), "missing-template")
+    r = provider.resolve_org_template(OrgScope("o1"), "missing-template", "networktemplate")
     assert isinstance(r, FetchError)
     assert any("not found" in f.error for f in r.failures)
 
@@ -195,7 +195,8 @@ def test_multisite_rejects_wrong_org_on_resolve_and_fetch(tmp_path):
     from digital_twin.providers.base import FetchError, OrgScope
 
     provider = _ms_one_site(tmp_path)
-    assert isinstance(provider.resolve_org_template(OrgScope("WRONG-ORG"), "nt1"), FetchError)
+    result = provider.resolve_org_template(OrgScope("WRONG-ORG"), "nt1", "networktemplate")
+    assert isinstance(result, FetchError)
     out = provider.fetch_sites(OrgScope("WRONG-ORG"), ["siteA"])
     assert isinstance(out["siteA"], FetchError)
 

@@ -183,7 +183,7 @@ def test_resolve_org_template_filters_assigned_sites():
         wired=[],
         templates={"ntX": {"id": "ntX", "networks": {}}},
     )
-    ctx = p.resolve_org_template(OrgScope(org_id="o1"), "ntX")
+    ctx = p.resolve_org_template(OrgScope(org_id="o1"), "ntX", "networktemplate")
     assert isinstance(ctx, OrgTemplateContext)
     assert set(ctx.assigned_site_ids) == {"s1", "s3"}
     assert ctx.template["id"] == "ntX"
