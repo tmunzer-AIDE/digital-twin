@@ -43,6 +43,23 @@ sharp UNSAFE during live testing on the Live-Demo site.
   isn't in its `port_config` (system/dynamic), so inter-switch links are
   blind-peer (MEDIUM). Resolving the *neighbor's* dynamic/system ports would
   lift those to HIGH.
+- 🔵 **Richer impacted-client reporting** — enrich what `wired.client.impact`
+  says about each affected client (evidence-only; never changes the verdict).
+  Pairs with the cause-attribution spec
+  (`docs/superpowers/specs/2026-06-16-finding-cause-attribution-design.md`),
+  which already nests per-client entries in `evidence["impacts"]` — these hang
+  off the same structure:
+  - **Client identity** — report each impacted wired client's **hostname** and
+    **device type / fingerprint** (Mist client objects carry these), not just the
+    MAC. Turns "3 clients affected" into "Printer-3F, an HP printer; …".
+  - **DHCP context** — leverage the wired-client **DHCP info** (IP / subnet /
+    lease, already on the client object in the `wired_clients` fetch) to say which
+    addressing the impacted clients rely on and whether the delta touches their
+    DHCP path.
+  - **Traffic significance (optional)** — if available, pull the impacted
+    interface's **traffic pattern** (port tx/rx stats) to weight the impact: real
+    traffic → higher significance; an idle port → low. Gated on "only if there is
+    traffic" — absence is not interesting and must not floor or inflate anything.
 
 ## 2. New coverage — more checks over the existing IR
 
