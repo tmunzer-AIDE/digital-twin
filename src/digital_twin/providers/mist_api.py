@@ -120,13 +120,21 @@ class MistApiProvider(StateProvider):
             )
         return out
 
-    # object_type: typed filtering added in a later task (T6)
     def resolve_org_template(
         self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
+        # Map object_type to (site id-field, fetch method)
+        _type_map: dict[str, tuple[str, Callable[[SiteScope, str], _Json]]] = {
+            "networktemplate": ("networktemplate_id", self._networktemplate),
+            "gatewaytemplate": ("gatewaytemplate_id", self._gatewaytemplate),
+            "sitetemplate": ("sitetemplate_id", self._sitetemplate),
+        }
+        id_field, fetch_fn = _type_map.get(
+            object_type, ("networktemplate_id", self._networktemplate)
+        )
         try:
             sites = self._org_sites(scope)
-            template = self._networktemplate(SiteScope(scope.org_id, ""), template_id)
+            template = fetch_fn(SiteScope(scope.org_id, ""), template_id)
         except Exception as exc:  # noqa: BLE001 — total lookup failure is a VALUE
             return FetchError(
                 scope=scope,
@@ -134,20 +142,20 @@ class MistApiProvider(StateProvider):
                 acquired_at=_now(),
                 host=self._host,
             )
-        # defensive: the live `_networktemplate` raises (-> the except above) on a
-        # missing id, but a subclass/SDK change could return None instead of raising
+        # defensive: the live fetch raises (-> the except above) on a missing id,
+        # but a subclass/SDK change could return None instead of raising
         if template is None:
             return FetchError(
                 scope=scope,
                 failures=(
-                    FetchFailure(object="networktemplate", error=f"{template_id} not found"),
+                    FetchFailure(object=object_type, error=f"{template_id} not found"),
                 ),
                 acquired_at=_now(),
                 host=self._host,
             )
         assigned = tuple(
             str(s["id"]) for s in sites
-            if s.get("id") and str(s.get("networktemplate_id") or "") == template_id
+            if s.get("id") and str(s.get(id_field) or "") == template_id
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
 
@@ -187,6 +195,36 @@ class MistApiProvider(StateProvider):
             )
 
         networktemplate = self._templatecached(scope, site, nt_cache, fetched, attempt)
+
+        # Guardrail #4: sitetemplate/gatewaytemplate fetch failure → whole site is
+        # FetchError (UNKNOWN). Do NOT use attempt(..., None) here — if the id is
+        # present and the fetch raises, the site must be UNKNOWN, not silently None.
+        gt_id = site.get("gatewaytemplate_id")
+        if gt_id:
+            try:
+                gatewaytemplate: _Json | None = self._gatewaytemplate(scope, str(gt_id))
+                fetched.append("gatewaytemplate")
+            except Exception as e:  # noqa: BLE001
+                failures.append(FetchFailure(object="gatewaytemplate", error=str(e)))
+                return FetchError(
+                    scope=scope, failures=tuple(failures), acquired_at=_now(), host=self._host
+                )
+        else:
+            gatewaytemplate = None
+
+        st_id = site.get("sitetemplate_id")
+        if st_id:
+            try:
+                sitetemplate: _Json | None = self._sitetemplate(scope, str(st_id))
+                fetched.append("sitetemplate")
+            except Exception as e:  # noqa: BLE001
+                failures.append(FetchFailure(object="sitetemplate", error=str(e)))
+                return FetchError(
+                    scope=scope, failures=tuple(failures), acquired_at=_now(), host=self._host
+                )
+        else:
+            sitetemplate = None
+
         derived = (
             attempt("derived_setting", lambda: self._derived(scope), None)
             if include_derived
@@ -197,6 +235,8 @@ class MistApiProvider(StateProvider):
             site=site,
             setting=setting,
             networktemplate=networktemplate,
+            gatewaytemplate=gatewaytemplate,
+            sitetemplate=sitetemplate,
             devices=tuple(attempt("devices", lambda: self._devices(scope), [])),
             device_stats=tuple(attempt("device_stats", device_stats_fn, [])),
             port_stats=tuple(attempt("port_stats", port_stats_fn, [])),
@@ -269,6 +309,20 @@ class MistApiProvider(StateProvider):
         return dict(
             mistapi.api.v1.orgs.networktemplates.getOrgNetworkTemplate(
                 self._session, s.org_id, nt_id
+            ).data
+        )
+
+    def _gatewaytemplate(self, s: SiteScope, gt_id: str) -> _Json:
+        return dict(
+            mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                self._session, s.org_id, gt_id
+            ).data
+        )
+
+    def _sitetemplate(self, s: SiteScope, st_id: str) -> _Json:
+        return dict(
+            mistapi.api.v1.orgs.sitetemplates.getOrgSiteTemplate(
+                self._session, s.org_id, st_id
             ).data
         )
 
