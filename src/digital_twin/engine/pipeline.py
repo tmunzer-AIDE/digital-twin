@@ -86,6 +86,23 @@ def _gw_screen_view(eff: dict[str, Any], *, full: bool) -> dict[str, Any]:
     return eff if full else {k: eff[k] for k in GATEWAY_SCREENED_ROOTS if k in eff}
 
 
+# Gateway-NAMESPACE roots the sitetemplate fold leaks into site_effective
+# (merge_site_effective folds the FULL sitetemplate, and fold_layers preserves
+# unknown roots). They are NOT switch/site roots — switch L3 is `other_ip_configs`
+# and switch ports are device-level `port_config` (screened in the device_effective
+# gate, not the site one) — so the switch/site derived gate must screen them OUT, or
+# a gateway-only sitetemplate edit (e.g. ip_configs.*.ip) false-UNKNOWNs against the
+# switch EFFECTIVE_ALLOWLIST. They ARE screened by the gateway derived gate on
+# gateway_effective (and are inert when the site has no gateway). dhcpd_config/vars
+# are deliberately excluded: per spec they are genuinely shared site roots the
+# switch/site gate must keep screening.
+_GATEWAY_ONLY_SITE_ROOTS: tuple[str, ...] = ("port_config", "ip_configs")
+
+
+def _site_screen_view(eff: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in eff.items() if k not in _GATEWAY_ONLY_SITE_ROOTS}
+
+
 def _stamp(findings: tuple[Finding, ...], subject: ObjectRef) -> tuple[Finding, ...]:
     """Attach the headline object to every L0 finding so the verdict says WHICH
     object (and the existing evidence path says which attribute)."""
@@ -175,7 +192,9 @@ def _simulate_site_state(
             unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
     with trace.stage("derived_gate"):
-        rejection = check_derived(baseline.site_effective, proposed.site_effective)
+        rejection = check_derived(
+            _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
+        )
         if rejection:
             return _unknown(
                 rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta

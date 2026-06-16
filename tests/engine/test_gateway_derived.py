@@ -162,6 +162,54 @@ def test_out_of_scope_gateway_leaf_rejected_as_unknown():
     assert any("derived_gate" in r for r in verdict.decision_reasons), verdict.decision_reasons
 
 
+def _raw_with_sitetemplate(sitetemplate: dict, devices: tuple = ()) -> RawSiteState:
+    return RawSiteState(
+        scope=SiteScope(org_id="o1", site_id="s1"),
+        site={"id": "s1"},
+        setting={"networks": {"corp": {"vlan_id": 10}}},
+        networktemplate=None,
+        devices=devices,
+        device_stats=(),
+        port_stats=(),
+        wireless_clients=(),
+        wired_clients=(),
+        derived_setting=None,
+        meta=_meta(),
+        sitetemplate=sitetemplate,
+    )
+
+
+def test_sitetemplate_gateway_only_leaf_does_not_taint_switch_gate():
+    """REGRESSION (PR #4 review P1, spec role-projection line 801): a sitetemplate
+    edit to a family-distinct gateway-only leaf (ip_configs.*.ip) MUST NOT trip the
+    switch/site derived gate. merge_site_effective folds the FULL sitetemplate into
+    site_effective and fold_layers preserves the unknown `ip_configs` root, so the
+    leaked root reaches the switch/site gate whose EFFECTIVE_ALLOWLIST does not list
+    it (switch L3 is other_ip_configs) -> it false-UNKNOWNed before the
+    _site_screen_view fix. The gateway namespace is owned by the gateway derived gate;
+    with no gateway device here the edit affects nothing -> the switch verdict is
+    unchanged (no derived_gate rejection attributable to the site config)."""
+    # A switch is present so the switch IR / site gate path is genuinely exercised.
+    switch = {"mac": "aa0000000099", "id": "sw-9", "type": "switch", "model": "EX4100-48P"}
+    baseline_raw = _raw_with_sitetemplate(
+        {"ip_configs": {"corp": {"ip": "10.0.0.1"}}}, devices=(switch,)
+    )
+    proposed_raw = _raw_with_sitetemplate(
+        {"ip_configs": {"corp": {"ip": "10.0.0.2"}}}, devices=(switch,)
+    )
+
+    verdict = _simulate_site_state(
+        baseline_raw, proposed_raw,
+        adapter=MistAdapter(),
+        registry=CheckRegistry([]),
+        run=RunContext(),
+        state_meta=build_state_meta(_meta(), now=datetime.now(UTC)),
+    )
+    assert not any(
+        "derived_gate" in r and "site config" in r for r in verdict.decision_reasons
+    ), verdict.decision_reasons
+
+
 def test_in_scope_gateway_leaf_not_rejected():
     """A gateway whose ip_configs.*.ip differs (ip IS in GATEWAY_EFFECTIVE_ALLOWLIST)
     -> NOT rejected at derived_gate (may be SAFE or have check results)."""
