@@ -209,27 +209,20 @@ def test_device_only_plan_on_profiled_device_not_tainted():
 # ---------------------------------------------------------------------------
 
 
-def test_mixed_plan_site_setting_changes_non_overridable_leaf():
+def test_mixed_plan_site_setting_does_not_touch_profiled_device_effective():
     """A mixed plan: device op changes the profiled switch's port_config (above-
-    profile), site_setting op changes stp_config.bridge_priority — a leaf that
-    IS in the switch effective but NOT in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE
-    for 'switch' (stp_config is not in _NETWORK_LEAVES/_USAGE_LEAVES/_DEVICE_PORT_LEAVES
-    /_DHCP_LEAVES).
+    profile, excluded via the below-profile scoping), site_setting op adds an
+    UNUSED var — it does not resolve into any modeled leaf, so the profiled
+    switch's overridable-restricted effective is UNCHANGED -> gate passes.
 
-    The below-profile effective (site_setting applied, device op excluded): the
-    profiled switch gets the stp_config change, but no overridable leaf differs
-    from baseline -> gate passes.
-
-    This validates that the below-profile scoping correctly ignores non-overridable
-    leaf changes and does not false-taint mixed plans.
+    Validates that the below-profile scoping does not false-taint a mixed plan
+    when the below-profile op leaves the profiled device's modeled surface alone.
+    (vars.* is deliberately NOT in the switch overridable set; an unused var
+    changes the `vars` root but no modeled leaf.)
     """
-    # Site_setting op: change stp_config.bridge_priority (NOT in switch overridable
-    # leaves — stp_config is site-level STP, NOT in DEVICE_PROFILE_OVERRIDABLE_LEAVES
-    # for switches which only covers _NETWORK_LEAVES, _USAGE_LEAVES, _DEVICE_PORT_LEAVES,
-    # _DHCP_LEAVES). Port_usages are UNCHANGED -> no overridable diff for profiled sw.
     new_setting = {
         **BASE_SETTING,
-        "stp_config": {"bridge_priority": 8192},
+        "vars": {**(BASE_SETTING.get("vars") or {}), "UNUSED_VAR": "x"},
     }
     site_op = _site_op(new_setting, order=0)
 
@@ -239,12 +232,31 @@ def test_mixed_plan_site_setting_changes_non_overridable_leaf():
     dev_op = _device_op("dev-p1", dev, order=1)
 
     provider = FakeProvider(_raw())
-
     verdict = simulate(_plan([site_op, dev_op]), provider=provider)
 
     assert verdict.decision is not Decision.UNKNOWN or not any(
         "device_profile_gate" in r for r in verdict.decision_reasons
     ), (
-        f"mixed plan where site_setting changes only non-overridable leaf must not "
-        f"be tainted by device_profile_gate; got: {verdict.decision_reasons}"
+        f"mixed plan whose below-profile op leaves the profiled device's modeled "
+        f"effective unchanged must not taint; got: {verdict.decision_reasons}"
+    )
+
+
+def test_below_profile_stp_edit_on_profiled_switch_is_unknown():
+    """REGRESSION (final-review Critical false-SAFE): a below-profile site_setting
+    edit to stp_config.bridge_priority on a switch carrying a deviceprofile_id MUST
+    taint -> UNKNOWN. stp_config (like dhcp_snooping/ospf/other_ip_configs) is a
+    modeled switch leaf a device-profile CAN override, so it belongs in the switch
+    overridable set; omitting it resolved SAFE/REVIEW instead of UNKNOWN."""
+    new_setting = {**BASE_SETTING, "stp_config": {"bridge_priority": 8192}}
+    site_op = _site_op(new_setting, order=0)
+
+    provider = FakeProvider(_raw())
+    verdict = simulate(_plan([site_op]), provider=provider)
+
+    assert verdict.decision is Decision.UNKNOWN and any(
+        "device_profile_gate" in r for r in verdict.decision_reasons
+    ), (
+        f"a below-profile stp_config edit on a profiled switch must be UNKNOWN via "
+        f"device_profile_gate; got {verdict.decision}: {verdict.decision_reasons}"
     )

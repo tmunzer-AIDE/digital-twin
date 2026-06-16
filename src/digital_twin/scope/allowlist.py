@@ -219,5 +219,15 @@ GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (*_GATEWAY_LEAVES, "vars.*")
 # switch = the modeled switch leaves.
 DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     "gateway": (*_GATEWAY_LEAVES,),
-    "switch": (*_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_DHCP_LEAVES),
+    # The FULL modeled switch surface (= EFFECTIVE_ALLOWLIST minus vars.*). The
+    # device-profile is an UNMODELED layer that wins over the template/site layers,
+    # so it could override ANY modeled leaf — under-listing one (stp_config /
+    # dhcp_snooping / ospf / other_ip_configs, which device profiles DO carry per the
+    # device_switch OAS) is a false-SAFE: a below-profile edit to it on a profiled
+    # switch would resolve SAFE/REVIEW instead of UNKNOWN. Fail-safe = list every
+    # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
+    "switch": (
+        *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
+        *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES,
+    ),
 }
