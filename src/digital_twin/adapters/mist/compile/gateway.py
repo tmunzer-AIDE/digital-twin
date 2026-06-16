@@ -29,6 +29,18 @@ GATEWAY_POLICY: PolicyTable = {
     "ip_configs": MergePolicy.DICT_MERGE,
 }
 
+# switch/site-namespace keys a gateway does NOT inherit from the SITE-level layers
+# (sitetemplate/site_setting): gateway networks = org_networks; gateway dhcpd_config
+# comes from the gatewaytemplate + the gateway device. (Mirrors how `networks` is
+# already excluded from the gateway namespace.)
+_SITE_NAMESPACE_KEYS = ("networks", "dhcpd_config")
+
+
+def _gateway_site_layer(layer: JsonObj | None) -> JsonObj | None:
+    if layer is None:
+        return None
+    return {k: v for k, v in layer.items() if k not in _SITE_NAMESPACE_KEYS}
+
 
 def compile_gateway_device(
     gatewaytemplate: JsonObj | None,
@@ -37,7 +49,8 @@ def compile_gateway_device(
     device: JsonObj,
 ) -> JsonObj:
     site_effective = fold_layers(
-        [gatewaytemplate, sitetemplate, site_setting], GATEWAY_POLICY
+        [gatewaytemplate, _gateway_site_layer(sitetemplate), _gateway_site_layer(site_setting)],
+        GATEWAY_POLICY,
     )
     # device overlay = one more fold layer under the same policy: keyed maps merge
     # per key (device port adds, template ports survive), device-own roots replace.

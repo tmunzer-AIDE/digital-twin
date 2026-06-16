@@ -73,14 +73,14 @@ class MistAdapter:
         def _materialize(d: Mapping[str, Any]) -> Mapping[str, Any]:
             if d.get("type") == "gateway" and d.get("mac"):
                 eff = gateway_effective[device_id(str(d["mac"]))]
-                # Materialize port_config and ip_configs from the effective
-                # (gatewaytemplate / sitetemplate inheritance). dhcpd_config is
-                # intentionally excluded: the ingest reads site dhcpd_config via
-                # site_effective and gateway dhcpd_config via the raw device
-                # separately; folding them together here would cause site-level
-                # DHCP scopes to be double-minted as both site-owned and
-                # gateway-owned when site_setting carries dhcpd_config entries.
-                return {**d, **{k: eff.get(k, {}) for k in ("port_config", "ip_configs")}}
+                # Materialize port_config, ip_configs, and dhcpd_config from the
+                # effective (gatewaytemplate + device inheritance).  dhcpd_config
+                # is now safe to include: compile_gateway_device strips
+                # dhcpd_config from the site-level layers (sitetemplate /
+                # site_setting), so the gateway effective only carries the
+                # gatewaytemplate + device scopes.  There is no double-mint risk.
+                keys = ("port_config", "ip_configs", "dhcpd_config")
+                return {**d, **{k: eff.get(k, {}) for k in keys}}
             return d
 
         raw_for_ingest = dataclasses.replace(

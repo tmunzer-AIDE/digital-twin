@@ -113,3 +113,77 @@ def test_gatewaytemplate_port_config_reflected_in_gateway_ir():
         f"gateway_effective port_config missing ge-0/0/3: "
         f"{out.gateway_effective[gw_id].get('port_config')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test (c): gatewaytemplate.dhcpd_config is materialized into gateway device
+# ---------------------------------------------------------------------------
+
+
+def _raw_with_gateway_dhcpd():
+    """RawSiteState with a gatewaytemplate that carries dhcpd_config AND a
+    site_setting that also carries dhcpd_config (the latter must be excluded)."""
+    from datetime import UTC, datetime
+
+    from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta
+    from tests.adapters.mist.fixtures import ALL_FETCHED, SITE_EFFECTIVE
+
+    gw_dev = {
+        "type": "gateway",
+        "mac": _GW_MAC,
+        "id": "00000000-0000-0000-2000-cc0000000001",
+    }
+    gt_with_dhcp = {
+        **_GATEWAYTEMPLATE,
+        "dhcpd_config": {
+            "gw_scope": {"type": "local", "ip_start": "10.100.0.10",
+                         "ip_end": "10.100.0.99"},
+        },
+    }
+    # site_setting also carries a dhcpd_config (switch/site namespace —
+    # must NOT pollute the gateway effective)
+    site_setting_with_dhcp = {
+        **SITE_EFFECTIVE,
+        "dhcpd_config": {
+            "site_scope": {"type": "local", "ip_start": "192.168.1.10",
+                           "ip_end": "192.168.1.99"},
+        },
+    }
+    return RawSiteState(
+        scope=SiteScope(org_id="o1", site_id="s1"),
+        site={"id": "s1", "networktemplate_id": None},
+        setting=site_setting_with_dhcp,
+        networktemplate=None,
+        devices=(gw_dev,),
+        device_stats=(),
+        port_stats=(),
+        wireless_clients=(),
+        wired_clients=(),
+        wlans=(),
+        org_networks=_ORG_NETWORKS,
+        derived_setting=None,
+        sitetemplate=None,
+        gatewaytemplate=gt_with_dhcp,
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC),
+            host="test",
+            fetched=ALL_FETCHED,
+            failures=(),
+        ),
+    )
+
+
+def test_gatewaytemplate_dhcpd_config_in_gateway_effective():
+    """gatewaytemplate.dhcpd_config must appear in gateway_effective (it
+    reaches the gateway), while site_setting.dhcpd_config must not."""
+    raw = _raw_with_gateway_dhcpd()
+    out = MistAdapter().ingest(raw)
+    gw_id = device_id(_GW_MAC)
+
+    dhcp = out.gateway_effective[gw_id].get("dhcpd_config", {})
+    assert "gw_scope" in dhcp, (
+        f"gatewaytemplate dhcpd_config scope missing from gateway_effective: {dhcp}"
+    )
+    assert "site_scope" not in dhcp, (
+        f"site_setting.dhcpd_config must NOT reach gateway_effective: {dhcp}"
+    )
