@@ -16,6 +16,18 @@ def _raw(nt):
     )
 
 
+def _raw_gt():
+    """RawSiteState with both sitetemplate and gatewaytemplate set."""
+    return RawSiteState(
+        scope=SiteScope("o1", "s1"), site={"id": "s1"},
+        setting={"id": "s1"}, networktemplate=None, devices=(), device_stats=(),
+        port_stats=(), wireless_clients=(), wired_clients=(), derived_setting=None,
+        meta=StateMeta(acquired_at=datetime.now(UTC), host="h", fetched=("site",), failures=()),
+        sitetemplate={"networks": {}},
+        gatewaytemplate={"port_config": {}},
+    )
+
+
 def test_apply_template_edits_one_snapshot():
     snap = {"id": "nt1", "networks": {"corp": {"vlan_id": 10}}}
     out = apply_template(snap, {"networks": {"corp": {"vlan_id": 20}}})
@@ -33,8 +45,15 @@ def test_override_template_baseline_and_proposed_differ_only_by_edit():
     fetched = _raw(nt={"id": "nt1", "networks": {"corp": {"vlan_id": 999}}})  # stale
     snapshot = {"id": "nt1", "networks": {"corp": {"vlan_id": 10}}}
     proposed = {"id": "nt1", "networks": {"corp": {"vlan_id": 20}}}
-    base_raw, prop_raw = override_template(fetched, snapshot, proposed)
+    base_raw, prop_raw = override_template("networktemplate", fetched, snapshot, proposed)
     assert base_raw.networktemplate == snapshot      # NOT the stale 999
     assert prop_raw.networktemplate == proposed
     # everything else identical
     assert base_raw.setting == prop_raw.setting and base_raw.devices == prop_raw.devices
+
+
+def test_override_sets_typed_field_both_sides():
+    fetched = _raw_gt()
+    base, prop = override_template("gatewaytemplate", fetched, {"id": "g"}, {"id": "g", "x": 1})
+    assert base.gatewaytemplate == {"id": "g"} and prop.gatewaytemplate["x"] == 1
+    assert base.sitetemplate == fetched.sitetemplate   # other layers pinned

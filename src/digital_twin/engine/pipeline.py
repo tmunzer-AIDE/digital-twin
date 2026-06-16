@@ -434,11 +434,12 @@ def simulate_org_template(
             stage="scope.pre",
             reasons=("site-scoped plan: call simulate, not simulate_org_template",),
         ),))
-    op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
+    op = plan.ops[0]  # ORG mode guarantees exactly one ORG-type op
+    object_type = op.object_type
     template_id = op.object_id
 
     resolved = provider.resolve_org_template(
-        OrgScope(org_id=plan.scope.org_id), template_id, "networktemplate"
+        OrgScope(org_id=plan.scope.org_id), template_id, object_type
     )
     if not isinstance(resolved, OrgTemplateContext):
         return org_unknown((Rejection(
@@ -465,10 +466,10 @@ def simulate_org_template(
             (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
         )
     template_findings = _stamp(
-        l0.findings, ObjectRef("networktemplate", template_id, name=snapshot.get("name"))
+        l0.findings, ObjectRef(object_type, template_id, name=snapshot.get("name"))
     )
-    # org-level field gate (no role check — networktemplate branch)
-    fg = screen_op("networktemplate", snapshot, proposed_template)
+    # org-level field gate (no role check — org-template branch)
+    fg = screen_op(object_type, snapshot, proposed_template)
     if fg:
         return org_unknown((fg,), template_findings=template_findings)
 
@@ -507,17 +508,17 @@ def simulate_org_template(
                 ),
             )
             continue
-        base_raw, prop_raw = override_template(fetched, snapshot, proposed_template)
+        base_raw, prop_raw = override_template(object_type, fetched, snapshot, proposed_template)
         sm = build_state_meta(fetched.meta, now=datetime.now(UTC))
         # adapter_findings=() — template L0 findings live ONLY on OrgVerdict
         # .template_findings (the rollup floors REVIEW on them via decide_org);
         # do NOT echo them into every per-site Verdict.
-        # T15: pass gateway_screen_full=(object_type=="gatewaytemplate")
         # All ops are template edits (below-profile) -> profile_proposed=None
         # means the full proposed is used as the below-profile reference.
         per_site[sid] = _simulate_site_state(
             base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
             state_meta=sm, adapter_findings=(), profile_proposed=None,
+            gateway_screen_full=(object_type == "gatewaytemplate"),
         )
 
     decision, reasons, driving = decide_org(
