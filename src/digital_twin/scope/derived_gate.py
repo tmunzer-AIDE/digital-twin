@@ -18,6 +18,7 @@ from typing import Any
 
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
+from digital_twin.scope.dhcp_screen import dhcp_row_rejection
 from digital_twin.scope.paths import allowed, changed_leaf_paths
 
 _STAGE = "derived_gate"
@@ -30,12 +31,16 @@ def changed_effective_paths(
 
 
 def check_derived(
-    baseline: Mapping[str, Any], proposed: Mapping[str, Any], *, artifact: str = "site"
+    baseline: Mapping[str, Any],
+    proposed: Mapping[str, Any],
+    *,
+    artifact: str = "site",
+    allowlist: tuple[str, ...] = EFFECTIVE_ALLOWLIST,
 ) -> Rejection | None:
     offending = [
         path
         for path in changed_effective_paths(baseline, proposed)
-        if not allowed(path, EFFECTIVE_ALLOWLIST)
+        if not allowed(path, allowlist)
     ]
     if offending:
         return Rejection(
@@ -46,4 +51,10 @@ def check_derived(
                 for path in offending
             ),
         )
+    b_dhcp = baseline.get("dhcpd_config") or {}
+    p_dhcp = proposed.get("dhcpd_config") or {}
+    for name in sorted(set(b_dhcp) | set(p_dhcp)):
+        rej = dhcp_row_rejection(b_dhcp.get(name) or {}, p_dhcp.get(name) or {})
+        if rej is not None:
+            return rej
     return None
