@@ -23,7 +23,10 @@ def _is_active_relay(row: JsonObj) -> bool:
 
 
 def dhcp_row_rejection(base: JsonObj, prop: JsonObj) -> Rejection | None:
-    base, prop = base or {}, prop or {}
+    # a non-dict value (the `dhcpd_config.enabled` boolean flag Mist stores
+    # alongside the per-network scope dicts) is not a scope row -> nothing to screen
+    base = base if isinstance(base, dict) else {}
+    prop = prop if isinstance(prop, dict) else {}
     serves_b, serves_p = _dhcp_serves_scope(base), _dhcp_serves_scope(prop)
     active_b, active_p = _dhcp_active(base), _dhcp_active(prop)
 

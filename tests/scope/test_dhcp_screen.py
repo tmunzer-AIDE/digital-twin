@@ -49,3 +49,10 @@ def test_inert_scope_field_on_both_non_serving_is_unknown():
     prop = {"type": "relay", "servers": [], "gateway": "10.9.9.9"}
     rej = dhcp_row_rejection(base, prop)
     assert rej is not None and rej.stage == "dhcp_scope_field"
+
+
+def test_dhcp_row_rejection_handles_non_dict_enabled_flag():
+    # dhcpd_config carries a top-level boolean `enabled` alongside scope dicts;
+    # the row screen must not crash on a non-dict value (regression: live gateway)
+    assert dhcp_row_rejection(True, True) is None
+    assert dhcp_row_rejection(True, {"type": "local", "ip_start": "1"}) is None

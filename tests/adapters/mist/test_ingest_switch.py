@@ -1294,3 +1294,13 @@ def test_ospf_ingest_unresolved_name():
     ir = _ospf_ir(eff)
     o = next(o for o in ir.ospf_intfs if o.network_name == "ghost")
     assert o.vlan_id is None and o.unresolved is True
+
+
+def test_dhcp_predicates_skip_non_dict_enabled_flag():
+    # Mist stores dhcpd_config.enabled as a BOOLEAN alongside per-network scopes;
+    # the predicates must treat it as not-a-scope (regression: gatewaytemplate
+    # dhcpd_config materialized onto a gateway device crashed the ingest live)
+    from digital_twin.adapters.mist.ingest.switch import _dhcp_active, _dhcp_serves_scope
+    assert _dhcp_serves_scope(True) is False
+    assert _dhcp_active(True) is False
+    assert _dhcp_serves_scope({"type": "local"}) is True
