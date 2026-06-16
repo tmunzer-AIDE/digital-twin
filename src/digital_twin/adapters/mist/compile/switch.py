@@ -53,9 +53,14 @@ _DEVICE_OWN_FIELDS = (
 )
 
 
-def merge_only(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
+def merge_only(
+    networktemplate: JsonObj | None,
+    site_setting: JsonObj,
+    *,
+    sitetemplate: JsonObj | None = None,
+) -> JsonObj:
     """Site-level merge with {{vars}} left intact (the oracle-comparison artifact)."""
-    return merge_site_effective(networktemplate, site_setting)
+    return merge_site_effective(networktemplate, site_setting, sitetemplate=sitetemplate)
 
 
 def _resolve(effective: JsonObj) -> JsonObj:
@@ -66,12 +71,21 @@ def _resolve(effective: JsonObj) -> JsonObj:
     return resolved
 
 
-def compile_site(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
-    return _resolve(merge_only(networktemplate, site_setting))
+def compile_site(
+    networktemplate: JsonObj | None,
+    site_setting: JsonObj,
+    *,
+    sitetemplate: JsonObj | None = None,
+) -> JsonObj:
+    return _resolve(merge_only(networktemplate, site_setting, sitetemplate=sitetemplate))
 
 
 def compile_device(
-    networktemplate: JsonObj | None, site_setting: JsonObj, device: JsonObj
+    networktemplate: JsonObj | None,
+    site_setting: JsonObj,
+    device: JsonObj,
+    *,
+    sitetemplate: JsonObj | None = None,
 ) -> JsonObj:
     """Per-device effective: unresolved site merge + device overlay, then vars once.
 
@@ -79,7 +93,7 @@ def compile_device(
     matching rule wins); the device's own port_config then overlays it per-port via
     the per-key DICT_MERGE below.
     """
-    out = merge_only(networktemplate, site_setting)
+    out = merge_only(networktemplate, site_setting, sitetemplate=sitetemplate)
     base_port_config = resolve_switch_matching(out.get("switch_matching"), device)
     if base_port_config:
         out["port_config"] = base_port_config

@@ -1,32 +1,21 @@
-"""Site-level merge: networktemplate (base) + site_setting (wins), per-field policy.
+"""Site-level merge: <type>template (base) + sitetemplate + site_setting (wins).
 
-The policy table is DATA. Default is REPLACE (site value replaces the field
-wholesale) — conservative and Mist-like. DICT_MERGE fields merge per key with the
-site winning per key. The Tier-1 OAS tests assert precedence for every schema leaf;
-the Tier-2 live gate hardens this table against Mist's real derivation.
+Reimplemented on fold_layers. The 2-arg merge_site_effective(nt, ss) signature
+is preserved (existing callers + the offline Tier-2 equivalence gate); the
+optional sitetemplate layer folds between the template and site_setting.
 """
 
 from __future__ import annotations
 
-import copy
-from enum import StrEnum
 from typing import Any
+
+from .fold import MergePolicy, PolicyTable, fold_layers
 
 JsonObj = dict[str, Any]
 
-
-class MergePolicy(StrEnum):
-    REPLACE = "replace"
-    DICT_MERGE = "dict_merge"
-
-    @classmethod
-    def for_field(cls, field: str) -> MergePolicy:
-        return _POLICY.get(field, cls.REPLACE)
-
-
-# Fields whose values are keyed collections merged per key (site wins per key).
-# Everything else: REPLACE. Grow/adjust as the Tier-2 gate uncovers divergences.
-_POLICY: dict[str, MergePolicy] = {
+# Keyed collections merged per key (later layer wins per key). Everything else
+# REPLACE. GATEWAY_POLICY adds the gateway keyed maps (Phase 3).
+SWITCH_POLICY: PolicyTable = {
     "networks": MergePolicy.DICT_MERGE,
     "port_usages": MergePolicy.DICT_MERGE,
     "vars": MergePolicy.DICT_MERGE,
@@ -35,20 +24,12 @@ _POLICY: dict[str, MergePolicy] = {
 }
 
 
-def merge_site_effective(networktemplate: JsonObj | None, site_setting: JsonObj) -> JsonObj:
-    """Full effective SITE config (all fields, including out-of-scope ones)."""
-    out: JsonObj = copy.deepcopy(dict(networktemplate or {}))
-    for field, site_value in site_setting.items():
-        policy = MergePolicy.for_field(field)
-        base_value = out.get(field)
-        if (
-            policy is MergePolicy.DICT_MERGE
-            and isinstance(base_value, dict)
-            and isinstance(site_value, dict)
-        ):
-            merged = dict(base_value)
-            merged.update(copy.deepcopy(site_value))
-            out[field] = merged
-        else:
-            out[field] = copy.deepcopy(site_value)
-    return out
+def merge_site_effective(
+    networktemplate: JsonObj | None,
+    site_setting: JsonObj,
+    *,
+    sitetemplate: JsonObj | None = None,
+) -> JsonObj:
+    """Full effective SITE config (all fields). nt (base) -> sitetemplate ->
+    site_setting (wins)."""
+    return fold_layers([networktemplate, sitetemplate, site_setting], SWITCH_POLICY)

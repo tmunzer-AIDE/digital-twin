@@ -60,7 +60,7 @@ class _OrgFakeProvider:
     sites: dict
     template: dict
 
-    def resolve_org_template(self, scope, template_id):
+    def resolve_org_template(self, scope, template_id, object_type="networktemplate"):
         return OrgTemplateContext(template=self.template, assigned_site_ids=tuple(self.sites))
 
     def fetch_sites(self, scope, site_ids=None, *, include_derived=False):
@@ -194,6 +194,23 @@ def test_safe_noop_exits_0_human(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 # _is_org_plan unit tests
 # ---------------------------------------------------------------------------
+
+def test_is_org_plan_recognizes_all_org_types():
+    for t in ("networktemplate", "gatewaytemplate", "sitetemplate"):
+        plan = {
+            "source": "mist",
+            "scope": {"org_id": "o1"},
+            "ops": [{"action": "update", "order": 0, "object_type": t,
+                     "object_id": "nt1", "payload": {}}],
+        }
+        assert _is_org_plan(plan) is True, f"{t!r} should be recognized as ORG type"
+    assert _is_org_plan({
+        "source": "mist",
+        "scope": {"org_id": "o1"},
+        "ops": [{"action": "update", "order": 0, "object_type": "device",
+                 "object_id": "d1", "payload": {}}],
+    }) is False
+
 
 def test_is_org_plan_true():
     plan = {

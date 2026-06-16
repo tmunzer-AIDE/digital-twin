@@ -78,7 +78,7 @@ def test_state_provider_is_a_protocol():
             raise NotImplementedError
 
         def resolve_org_template(
-            self, scope: OrgScope, template_id: str
+            self, scope: OrgScope, template_id: str, object_type: str
         ) -> OrgTemplateContext | FetchError:
             raise NotImplementedError
 
@@ -88,6 +88,11 @@ def test_state_provider_is_a_protocol():
 
 def test_org_scope_construct():
     assert OrgScope(org_id="o1").org_id == "o1"
+
+
+def test_rawsitestate_has_new_template_fields():
+    fields = RawSiteState.__dataclass_fields__
+    assert "sitetemplate" in fields and "gatewaytemplate" in fields
 
 
 def test_org_template_context_and_orgscope_fetch_error():

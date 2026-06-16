@@ -1,4 +1,5 @@
 from digital_twin.contracts import Rejection
+from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST
 from digital_twin.scope.derived_gate import changed_effective_paths, check_derived
 
 BASE = {
@@ -56,3 +57,19 @@ def test_modeled_local_and_overwrite_effective_changes_pass():
 def test_changed_effective_paths_are_leaf_level():
     prop = {**BASE, "networks": {"corp": {"vlan_id": 11}}, "extra": 1}
     assert changed_effective_paths(BASE, prop) == ("extra", "networks.corp.vlan_id")
+
+
+def test_role_keyed_allowlist_param():
+    # gateway disabled flip is in GATEWAY_EFFECTIVE_ALLOWLIST -> NOT rejected by path
+    base = {"port_config": {"a": {"disabled": False}}}
+    prop = {"port_config": {"a": {"disabled": True}}}
+    assert check_derived(base, prop, allowlist=GATEWAY_EFFECTIVE_ALLOWLIST) is None
+
+
+def test_dhcp_row_screen_runs_inside_check_derived():
+    # an effective dhcpd row transition the row helper rejects -> UNKNOWN, even
+    # though dhcpd_config.*.* paths are allowlisted
+    base = {"dhcpd_config": {"n": {"type": "local", "servers": ["a"], "ip_start": "1"}}}
+    prop = {"dhcpd_config": {"n": {"type": "relay", "servers": ["a"]}}}
+    rej = check_derived(base, prop, allowlist=GATEWAY_EFFECTIVE_ALLOWLIST)
+    assert rej is not None and rej.stage == "dhcp_mode_transition"

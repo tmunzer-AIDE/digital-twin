@@ -34,13 +34,27 @@ def apply_template(snapshot: _Json, payload: _Json) -> dict[str, Any] | Rejectio
     return effective_update(snapshot, payload)
 
 
+def _pin(raw: RawSiteState, object_type: str, value: dict[str, Any]) -> RawSiteState:
+    """Return a new RawSiteState with exactly the named template field replaced.
+
+    The three ORG object types each map to a same-named field on RawSiteState.
+    Using an explicit branch keeps mypy happy without casting."""
+    if object_type == "gatewaytemplate":
+        return dc_replace(raw, gatewaytemplate=value)
+    if object_type == "sitetemplate":
+        return dc_replace(raw, sitetemplate=value)
+    # default: networktemplate (object_gate already validated object_type)
+    return dc_replace(raw, networktemplate=value)
+
+
 def override_template(
-    fetched_raw: RawSiteState, snapshot: _Json, proposed: _Json
+    object_type: str, fetched_raw: RawSiteState, snapshot: _Json, proposed: _Json
 ) -> tuple[RawSiteState, RawSiteState]:
     """(baseline_raw, proposed_raw) for one site, both pinned to the ONE snapshot
-    — discards the per-site-fetched template copy to avoid a fetch race."""
+    of the edited layer (object_type), discarding the per-site-fetched copy of
+    that layer (fetch-race guard). The other fetched layers stay pinned."""
     # shallow dict() is sufficient: compile/merge.py deepcopies the template
     # before touching nested values, so no caller mutates these in place
-    baseline_raw = dc_replace(fetched_raw, networktemplate=dict(snapshot))
-    proposed_raw = dc_replace(fetched_raw, networktemplate=dict(proposed))
+    baseline_raw = _pin(fetched_raw, object_type, dict(snapshot))
+    proposed_raw = _pin(fetched_raw, object_type, dict(proposed))
     return baseline_raw, proposed_raw

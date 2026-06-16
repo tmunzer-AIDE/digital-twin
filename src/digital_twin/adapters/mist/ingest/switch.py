@@ -91,8 +91,11 @@ _DHCP_SERVING_TYPES = frozenset({"local", "server"})
 def _dhcp_active(entry: Any) -> bool:
     """A dhcpd_config entry IS a DHCP path when it serves (type local/server,
     absent defaults to serving) or forwards somewhere (relay WITH servers);
-    'none' is an explicit no-path statement."""
-    entry = entry or {}
+    'none' is an explicit no-path statement. A NON-DICT value (e.g. the
+    `dhcpd_config.enabled` BOOLEAN flag Mist stores alongside the per-network
+    scope dicts — surfaces on gatewaytemplate dhcpd_config) is NOT a path."""
+    if not isinstance(entry, dict):
+        return False
     kind = str(entry.get("type") or "local")
     if kind in _DHCP_SERVING_TYPES:
         return True
@@ -103,8 +106,11 @@ def _dhcp_serves_scope(entry: Any) -> bool:
     """Does this dhcpd entry OWN a scope (GS25)? Distinct from _dhcp_active
     ("is this a PATH"): relay-with-servers is an active path but owns no
     ip_start..ip_end — minting a range-less row would drag PARTIAL noise
-    onto every normal relay config."""
-    kind = str((entry or {}).get("type") or "local")
+    onto every normal relay config. A non-dict value (the `enabled` flag) owns
+    no scope."""
+    if not isinstance(entry, dict):
+        return False
+    kind = str(entry.get("type") or "local")
     return kind in _DHCP_SERVING_TYPES
 
 

@@ -9,11 +9,13 @@ IngestReport carries the names; the engine maps that to UNKNOWN.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+import dataclasses
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from digital_twin.adapters.mist.apply import apply_plan
+from digital_twin.adapters.mist.compile.gateway import compile_gateway_device
 from digital_twin.adapters.mist.compile.switch import compile_device, compile_site
 from digital_twin.adapters.mist.ingest.base import IngestContext, Ingester
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
@@ -35,6 +37,7 @@ class IngestOutcome:
     site_effective: _Json
     device_effective: dict[str, _Json]
     report: IngestReport
+    gateway_effective: dict[str, _Json] = field(default_factory=dict)
 
 
 class MistAdapter:
@@ -53,16 +56,40 @@ class MistAdapter:
     def ingest(self, raw: RawSiteState) -> IngestOutcome:
         nt = dict(raw.networktemplate) if raw.networktemplate else None
         setting = dict(raw.setting)
-        site_effective = compile_site(nt, setting)
+        st = dict(raw.sitetemplate) if raw.sitetemplate else None
+        site_effective = compile_site(nt, setting, sitetemplate=st)
         device_effective = {
-            device_id(str(d["mac"])): compile_device(nt, setting, dict(d))
+            device_id(str(d["mac"])): compile_device(nt, setting, dict(d), sitetemplate=st)
             for d in raw.devices
             if d.get("type") == "switch" and d.get("mac")
         }
+        gt = dict(raw.gatewaytemplate) if raw.gatewaytemplate else None
+        gateway_effective = {
+            device_id(str(d["mac"])): compile_gateway_device(gt, st, setting, dict(d))
+            for d in raw.devices
+            if d.get("type") == "gateway" and d.get("mac")
+        }
+
+        def _materialize(d: Mapping[str, Any]) -> Mapping[str, Any]:
+            if d.get("type") == "gateway" and d.get("mac"):
+                eff = gateway_effective[device_id(str(d["mac"]))]
+                # Materialize port_config, ip_configs, and dhcpd_config from the
+                # effective (gatewaytemplate + device inheritance).  dhcpd_config
+                # is now safe to include: compile_gateway_device strips
+                # dhcpd_config from the site-level layers (sitetemplate /
+                # site_setting), so the gateway effective only carries the
+                # gatewaytemplate + device scopes.  There is no double-mint risk.
+                keys = ("port_config", "ip_configs", "dhcpd_config")
+                return {**d, **{k: eff.get(k, {}) for k in keys}}
+            return d
+
+        raw_for_ingest = dataclasses.replace(
+            raw, devices=tuple(_materialize(d) for d in raw.devices)
+        )
         builder = IRBuilder()
         report = self._registry.run(
             IngestContext(
-                raw=raw,
+                raw=raw_for_ingest,
                 site_effective=site_effective,
                 device_effective=device_effective,
                 builder=builder,
@@ -73,6 +100,7 @@ class MistAdapter:
             ir=ir,
             site_effective=site_effective,
             device_effective=device_effective,
+            gateway_effective=gateway_effective,
             report=report,
         )
 

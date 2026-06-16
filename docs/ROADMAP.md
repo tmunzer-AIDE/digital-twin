@@ -212,10 +212,44 @@ modeling" below.
   real template assigned to 2 sites ran the full real-provider fan-out → SAFE,
   rollup consistent. 770 tests. Spec/plan:
   docs/superpowers/{specs,plans}/2026-06-14-multisite-org-template-simulation*.md.
-- 🔵 **gatewaytemplate / sitetemplate** as first-class `object_type`s (the
-  networktemplate slice above is done; gateways aren't a compile target so a
-  gateway-template needs the gateway-compile work first; sitetemplate inheritance
-  differs).
+- ✅ **gatewaytemplate / sitetemplate** as first-class `object_type`s —
+  done 2026-06-15 (21 TDD tasks, branch `feat/gateway-site-templates`). Generalizes
+  the networktemplate fan-out to a **typed** set `{networktemplate, gatewaytemplate,
+  sitetemplate}` over a unified layered effective-config compiler
+  (`fold_layers(layers, policy)`; the vendor stack is uniform per family:
+  `<type>template → sitetemplate → site_setting → device-profile → device`). Adds
+  the **sitetemplate** layer (fixes the latent baseline gap) and a **gateway
+  compile** (`compile_gateway_device` = fold gateway layers → **per-key device
+  overlay** → `_resolve` vars last; materialized back into `RawSiteState.devices`
+  so the existing GS22 gateway IR/checks run unchanged; unmodeled gateway fields —
+  routing/BGP/tunnels/security — stay field-gated → UNKNOWN). Role-keyed
+  `check_derived` also screens gateway effective (source-aware projection) + a
+  shared row-level DHCP-relevance helper (the 3×3 S/R/I participation matrix).
+  Device-profile is a **coarse fail-safe gate** (a profiled modeled device whose
+  own effective, restricted to the role's overridable leaves, differs vs the
+  below-profile proposed → site UNKNOWN; can't diverge from the IR). Domain
+  findings during build: gateway `dhcpd_config`/`networks` are gateway-namespace
+  only (NOT inherited from site-level layers — confirmed with the owner); the OAS
+  `site_template` component is thin (auto_upgrade/name/vars) but a real sitetemplate
+  carries more, so L0 stays permissive. **Live-verified** read-only on the real org:
+  8 single-site plans unchanged (a dhcpd_config `enabled`-flag crash was caught live
+  + fixed), and a no-op gatewaytemplate org fan-out → SAFE with a consistent rollup.
+  Two Tier-2 items observed consistent (gateway DICT_MERGE; gateway-device vars
+  resolve). Spec/plan:
+  docs/superpowers/{specs,plans}/2026-06-15-gateway-site-template-object-types*.md.
+- 🔵 **device-profile as a modeled compile layer.** The derivation stack is
+  `<type>template → sitetemplate → site_setting → device-profile → device`, and
+  the twin does not model the **device-profile** layer (a pre-existing gap, true
+  since M1). Because the profile *wins* over the template/site/sitetemplate
+  layers, ignoring it can make an upper-layer template edit look more or less
+  impactful than reality. Interim honesty (shipped with the
+  gatewaytemplate/sitetemplate slice): a modeled switch/gateway device carrying a
+  `deviceprofile_id` whose unknown content could override a leaf the edit changes
+  forces that **site** → UNKNOWN (relevance-scoped — unrelated AP profiles /
+  unaffected devices do not taint the org verdict). This item is to model the
+  device-profile layer for real (fetch + fold it into `fold_layers` as the
+  highest-precedence non-device layer) so those edits can resolve
+  SAFE/REVIEW/UNSAFE instead of UNKNOWN.
 - 🔵 **template / org-object changes — DELETE + the wider ripple.** A template
   `delete` (object deletion) and a non-`update` action are still rejected
   pre-fetch → UNKNOWN (`object_gate`; fails safe, test-pinned). Modify-ripple is

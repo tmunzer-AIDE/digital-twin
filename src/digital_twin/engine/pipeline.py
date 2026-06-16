@@ -29,7 +29,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from digital_twin.adapters.mist.adapter import MistAdapter
+from digital_twin.adapters.mist.adapter import IngestOutcome, MistAdapter
 from digital_twin.adapters.mist.apply import get_object
 from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
 from digital_twin.adapters.mist.ingest.dynamic_usage import unresolved_dynamic_findings
@@ -53,8 +53,9 @@ from digital_twin.providers.base import (
     StateMeta,
     StateProvider,
 )
-from digital_twin.scope.allowlist import ORG_OBJECT_TYPES
+from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived
+from digital_twin.scope.device_profile_gate import device_profile_rejection
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -64,6 +65,42 @@ from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
 _EMPTY_DIFF = IRDiff((), (), ())
+
+# Gateway roots screened by the derived gate when the edit is NOT a
+# gatewaytemplate op (i.e. for sitetemplate/site_setting edits the switch
+# derived gate already owns `networks` via site_effective, so projecting it
+# here would false-UNKNOWN those edits). For gatewaytemplate edits the FULL
+# effective is screened (full=True) to catch networks changes owned by the
+# gateway namespace that never appear in site_effective.
+GATEWAY_SCREENED_ROOTS: tuple[str, ...] = ("port_config", "ip_configs", "dhcpd_config", "vars")
+
+
+def _gw_screen_view(eff: dict[str, Any], *, full: bool) -> dict[str, Any]:
+    # SOURCE-AWARE. For a gatewaytemplate edit, screen the FULL effective:
+    # gatewaytemplate's OWN networks (or a vars edit rippling into networks) is NOT
+    # in site_effective, so the switch derived gate never sees it -> dropping it
+    # here would resolve a gatewaytemplate networks change SAFE (false-SAFE). For a
+    # sitetemplate/site_setting edit, project to the gateway-consumed roots: a
+    # networks change there IS in site_effective and the switch gate owns it (the
+    # gateway namespace is org_networks), so screening it here would false-UNKNOWN.
+    return eff if full else {k: eff[k] for k in GATEWAY_SCREENED_ROOTS if k in eff}
+
+
+# Gateway-NAMESPACE roots the sitetemplate fold leaks into site_effective
+# (merge_site_effective folds the FULL sitetemplate, and fold_layers preserves
+# unknown roots). They are NOT switch/site roots — switch L3 is `other_ip_configs`
+# and switch ports are device-level `port_config` (screened in the device_effective
+# gate, not the site one) — so the switch/site derived gate must screen them OUT, or
+# a gateway-only sitetemplate edit (e.g. ip_configs.*.ip) false-UNKNOWNs against the
+# switch EFFECTIVE_ALLOWLIST. They ARE screened by the gateway derived gate on
+# gateway_effective (and are inert when the site has no gateway). dhcpd_config/vars
+# are deliberately excluded: per spec they are genuinely shared site roots the
+# switch/site gate must keep screening.
+_GATEWAY_ONLY_SITE_ROOTS: tuple[str, ...] = ("port_config", "ip_configs")
+
+
+def _site_screen_view(eff: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in eff.items() if k not in _GATEWAY_ONLY_SITE_ROOTS}
 
 
 def _stamp(findings: tuple[Finding, ...], subject: ObjectRef) -> tuple[Finding, ...]:
@@ -114,6 +151,8 @@ def _simulate_site_state(
     run: RunContext,
     state_meta: StateMetaView | None,
     adapter_findings: tuple[Finding, ...] = (),
+    gateway_screen_full: bool = False,
+    profile_proposed: IngestOutcome | None = None,
 ) -> Verdict:
     """Stages 5-10 for ONE site: ingest baseline + proposed, dynamic gate,
     derived gate, diff + checks, verdict. Both `simulate` (single-site) and
@@ -153,7 +192,9 @@ def _simulate_site_state(
             unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
     with trace.stage("derived_gate"):
-        rejection = check_derived(baseline.site_effective, proposed.site_effective)
+        rejection = check_derived(
+            _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
+        )
         if rejection:
             return _unknown(
                 rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
@@ -168,6 +209,17 @@ def _simulate_site_state(
                 return _unknown(
                     rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
                 )
+        for did in sorted(set(baseline.gateway_effective) | set(proposed.gateway_effective)):
+            rejection = check_derived(
+                _gw_screen_view(baseline.gateway_effective.get(did, {}), full=gateway_screen_full),
+                _gw_screen_view(proposed.gateway_effective.get(did, {}), full=gateway_screen_full),
+                allowlist=GATEWAY_EFFECTIVE_ALLOWLIST,
+                artifact=f"gateway {did}",
+            )
+            if rejection:
+                return _unknown(
+                    rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
+                )
     with trace.stage("checks"):
         diff = diff_ir(baseline.ir, proposed.ir)
         results = registry.run_all(
@@ -177,10 +229,16 @@ def _simulate_site_state(
                 diff=diff,
             )
         )
+    profile_outcome = profile_proposed if profile_proposed is not None else proposed
+    dp_rej = device_profile_rejection(
+        proposed_raw.devices,
+        {**baseline.device_effective, **baseline.gateway_effective},
+        {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
+    )
     with trace.stage("verdict"):
         return assemble(
             inputs=DecisionInputs(
-                rejections=(),
+                rejections=(dp_rej,) if dp_rej else (),
                 l0_fatal=False,
                 baseline_unavailable=False,
                 check_results=results,
@@ -323,10 +381,31 @@ def simulate(
                 )
             proposed_raw = applied
 
+    # Build the below-profile proposed: apply ONLY the non-device ops against the
+    # baseline (raw), so device-level changes (above the profile) are excluded.
+    # This lets the gate diff baseline vs below-profile: if the only changes are
+    # device ops, the diff is empty -> gate passes (pure-device plan is safe).
+    non_device_ops = tuple(
+        op for op in plan.ops if op.object_type != "device"
+    )
+    if len(non_device_ops) == len(plan.ops):
+        # No device ops -> below-profile == proposed_raw; skip the extra ingest.
+        profile_proposed = None
+    else:
+        below_raw = adapter.apply(raw, non_device_ops)
+        if isinstance(below_raw, Rejection):
+            # If the non-device apply fails (e.g. missing target), fall back to
+            # baseline so the gate sees no below-profile change (conservative:
+            # the apply failure was already caught for the full op set above).
+            profile_proposed = adapter.ingest(raw)
+        else:
+            profile_proposed = adapter.ingest(below_raw)
+
     return _simulate_site_state(
         raw, proposed_raw,
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
+        profile_proposed=profile_proposed,
     )
 
 
@@ -374,10 +453,13 @@ def simulate_org_template(
             stage="scope.pre",
             reasons=("site-scoped plan: call simulate, not simulate_org_template",),
         ),))
-    op = plan.ops[0]  # ORG mode guarantees exactly one networktemplate op
+    op = plan.ops[0]  # check_objects enforces exactly one ORG-type op in ORG mode
+    object_type = op.object_type
     template_id = op.object_id
 
-    resolved = provider.resolve_org_template(OrgScope(org_id=plan.scope.org_id), template_id)
+    resolved = provider.resolve_org_template(
+        OrgScope(org_id=plan.scope.org_id), template_id, object_type
+    )
     if not isinstance(resolved, OrgTemplateContext):
         return org_unknown((Rejection(
             stage="fetch",
@@ -403,10 +485,10 @@ def simulate_org_template(
             (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
         )
     template_findings = _stamp(
-        l0.findings, ObjectRef("networktemplate", template_id, name=snapshot.get("name"))
+        l0.findings, ObjectRef(object_type, template_id, name=snapshot.get("name"))
     )
-    # org-level field gate (no role check — networktemplate branch)
-    fg = screen_op("networktemplate", snapshot, proposed_template)
+    # org-level field gate (no role check — org-template branch)
+    fg = screen_op(object_type, snapshot, proposed_template)
     if fg:
         return org_unknown((fg,), template_findings=template_findings)
 
@@ -445,14 +527,17 @@ def simulate_org_template(
                 ),
             )
             continue
-        base_raw, prop_raw = override_template(fetched, snapshot, proposed_template)
+        base_raw, prop_raw = override_template(object_type, fetched, snapshot, proposed_template)
         sm = build_state_meta(fetched.meta, now=datetime.now(UTC))
         # adapter_findings=() — template L0 findings live ONLY on OrgVerdict
         # .template_findings (the rollup floors REVIEW on them via decide_org);
         # do NOT echo them into every per-site Verdict.
+        # All ops are template edits (below-profile) -> profile_proposed=None
+        # means the full proposed is used as the below-profile reference.
         per_site[sid] = _simulate_site_state(
             base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
-            state_meta=sm, adapter_findings=(),
+            state_meta=sm, adapter_findings=(), profile_proposed=None,
+            gateway_screen_full=(object_type == "gatewaytemplate"),
         )
 
     decision, reasons, driving = decide_org(

@@ -1,0 +1,47 @@
+{
+ "properties": {
+  "auto_upgrade": {
+   "properties": {
+    "day_of_week": {
+     "description": "enum: `any`, `fri`, `mon`, `sat`, `sun`, `thu`, `tue`, `wed`",
+     "enum": [
+      "any",
+      "fri",
+      "mon",
+      "sat",
+      "sun",
+      "thu",
+      "tue",
+      "wed"
+     ],
+     "type": "string"
+    },
+    "enabled": {
+     "type": "boolean"
+    },
+    "time_of_day": {
+     "type": "string"
+    },
+    "version": {
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "name": {
+   "type": "string"
+  },
+  "vars": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "description": "Dictionary of name->value, the vars can then be used in Wlans. This can overwrite those from Site Vars",
+   "example": {
+    "RADIUS_IP1": "172.31.2.5",
+    "RADIUS_SECRET": "11s64632d"
+   },
+   "type": "object"
+  }
+ },
+ "type": "object"
+}

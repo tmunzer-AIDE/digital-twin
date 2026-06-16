@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 from digital_twin.observability.replay.store import (
@@ -127,7 +128,7 @@ def test_multisite_resolve_filters_assigned_sites_and_returns_template(tmp_path)
     path.write_text(json.dumps(doc))
     provider = FixtureProvider(path)
 
-    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1", "networktemplate")
     assert isinstance(resolved, OrgTemplateContext)
     assert set(resolved.assigned_site_ids) == {"siteA", "siteB"}
     assert resolved.template["networks"]["corp"]["vlan_id"] == 10
@@ -156,7 +157,7 @@ def test_multisite_resolve_excludes_other_templates_and_marks_fetch_failures(tmp
     path.write_text(json.dumps(doc))
     provider = FixtureProvider(path)
 
-    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1")
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1", "networktemplate")
     assert isinstance(resolved, OrgTemplateContext)
     assert resolved.assigned_site_ids == ("siteA",)  # nt2 site excluded
 
@@ -184,7 +185,7 @@ def test_multisite_missing_template_is_fetch_error_not_zero_assigned(tmp_path):
     from digital_twin.providers.base import FetchError, OrgScope
 
     provider = _ms_one_site(tmp_path)
-    r = provider.resolve_org_template(OrgScope("o1"), "missing-template")
+    r = provider.resolve_org_template(OrgScope("o1"), "missing-template", "networktemplate")
     assert isinstance(r, FetchError)
     assert any("not found" in f.error for f in r.failures)
 
@@ -195,9 +196,120 @@ def test_multisite_rejects_wrong_org_on_resolve_and_fetch(tmp_path):
     from digital_twin.providers.base import FetchError, OrgScope
 
     provider = _ms_one_site(tmp_path)
-    assert isinstance(provider.resolve_org_template(OrgScope("WRONG-ORG"), "nt1"), FetchError)
+    result = provider.resolve_org_template(OrgScope("WRONG-ORG"), "nt1", "networktemplate")
+    assert isinstance(result, FetchError)
     out = provider.fetch_sites(OrgScope("WRONG-ORG"), ["siteA"])
     assert isinstance(out["siteA"], FetchError)
+
+
+def test_new_template_fields_round_trip(tmp_path):
+    store = ReplayStore(tmp_path)
+    raw = dataclasses.replace(
+        raw_site(), sitetemplate={"networks": {}}, gatewaytemplate={"port_config": {}}
+    )
+    loaded = load_fixture_raw(store.save_raw("r", raw))
+    assert loaded.sitetemplate == {"networks": {}}
+    assert loaded.gatewaytemplate == {"port_config": {}}
+
+
+def test_legacy_fixture_without_new_fields_loads_as_none(tmp_path):
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("r", raw_site())
+    data = json.loads(path.read_text())
+    data.pop("sitetemplate", None)
+    data.pop("gatewaytemplate", None)
+    p = tmp_path / "legacy.json"
+    p.write_text(json.dumps(data))
+    assert load_fixture_raw(p).sitetemplate is None
+    assert load_fixture_raw(p).gatewaytemplate is None
+
+
+# ---------------------------------------------------------------------------
+# T19: typed multi-template FixtureProvider
+# ---------------------------------------------------------------------------
+
+
+def _ms_typed_gatewaytemplate(tmp_path):
+    """A multi-site fixture using the new typed 'templates' key with a gatewaytemplate."""
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site())
+    b = _site_doc(store, "b", raw_site())
+    c = _site_doc(store, "c", raw_site())
+    a["site"]["gatewaytemplate_id"] = "g1"
+    a["scope"]["site_id"] = "siteA"
+    b["site"]["gatewaytemplate_id"] = "g1"
+    b["scope"]["site_id"] = "siteB"
+    c["site"]["gatewaytemplate_id"] = "g2"  # different gateway template
+    c["scope"]["site_id"] = "siteC"
+    # ensure org_id is consistent (raw_site produces a deterministic org_id)
+    org_id = a["scope"]["org_id"]
+    b["scope"]["org_id"] = org_id
+    c["scope"]["org_id"] = org_id
+    doc = {
+        "templates": {
+            "gatewaytemplate": {
+                "g1": {"id": "g1", "name": "gw-template-1", "ip_config": {"type": "dhcp"}},
+                "g2": {"id": "g2", "name": "gw-template-2"},
+            }
+        },
+        "sites": {"siteA": a, "siteB": b, "siteC": c},
+    }
+    path = tmp_path / "ms_gw.json"
+    path.write_text(json.dumps(doc))
+    return FixtureProvider(path)
+
+
+def test_typed_templates_gatewaytemplate_resolves_correct_sites(tmp_path):
+    """New 'templates' shape: resolve_org_template with object_type='gatewaytemplate'
+    returns only sites with matching gatewaytemplate_id and the correct template body."""
+    from digital_twin.providers.base import OrgScope, OrgTemplateContext
+
+    provider = _ms_typed_gatewaytemplate(tmp_path)
+    resolved = provider.resolve_org_template(OrgScope("o1"), "g1", "gatewaytemplate")
+    assert isinstance(resolved, OrgTemplateContext)
+    assert set(resolved.assigned_site_ids) == {"siteA", "siteB"}
+    assert resolved.template["ip_config"]["type"] == "dhcp"
+
+
+def test_typed_templates_gatewaytemplate_excludes_other_type_sites(tmp_path):
+    """Sites assigned to a different gatewaytemplate_id are excluded."""
+    from digital_twin.providers.base import OrgScope, OrgTemplateContext
+
+    provider = _ms_typed_gatewaytemplate(tmp_path)
+    resolved = provider.resolve_org_template(OrgScope("o1"), "g2", "gatewaytemplate")
+    assert isinstance(resolved, OrgTemplateContext)
+    assert set(resolved.assigned_site_ids) == {"siteC"}
+
+
+def test_typed_templates_missing_gatewaytemplate_is_fetch_error(tmp_path):
+    """Requesting a gatewaytemplate_id not in the fixture -> FetchError, not 0-assigned SUCCESS."""
+    from digital_twin.providers.base import FetchError, OrgScope
+
+    provider = _ms_typed_gatewaytemplate(tmp_path)
+    r = provider.resolve_org_template(OrgScope("o1"), "nope", "gatewaytemplate")
+    assert isinstance(r, FetchError)
+    assert any("not found" in f.error for f in r.failures)
+
+
+def test_typed_templates_wrong_org_is_fetch_error(tmp_path):
+    """Wrong org on a typed-templates fixture -> FetchError (unchanged strictness)."""
+    from digital_twin.providers.base import FetchError, OrgScope
+
+    provider = _ms_typed_gatewaytemplate(tmp_path)
+    r = provider.resolve_org_template(OrgScope("WRONG-ORG"), "g1", "gatewaytemplate")
+    assert isinstance(r, FetchError)
+
+
+def test_legacy_template_key_still_resolves_as_networktemplate(tmp_path):
+    """Back-compat: the legacy 'template' key is folded in as networktemplate and
+    still resolves via resolve_org_template(..., '<id>', 'networktemplate')."""
+    from digital_twin.providers.base import OrgScope, OrgTemplateContext
+
+    # _ms_one_site uses the legacy 'template' key
+    provider = _ms_one_site(tmp_path)
+    resolved = provider.resolve_org_template(OrgScope("o1"), "nt1", "networktemplate")
+    assert isinstance(resolved, OrgTemplateContext)
+    assert set(resolved.assigned_site_ids) == {"siteA"}
 
 
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):

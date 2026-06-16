@@ -19,7 +19,10 @@ from .builders import (
     EDGE_ACCESS_PORT,
     EDGE_PAR_PORT,
     EDGE_UPLINK_PORT,
+    GT_SITE_A,
+    GT_SITE_B,
     OSPF_NETS,
+    ST_SITE_B,
     WIRED_CLIENT_MAC,
     WIRELESS_CLIENT_MAC,
     ap_devlan_doc,
@@ -27,8 +30,15 @@ from .builders import (
     ap_wlan_doc,
     augmented_doc,
     device_op,
+    dp_gatewaytemplate_edit_with_profiled_gw,
+    dp_only_ap_profiled_not_tainted,
     dynamic_ap_wlan_doc,
     fixture_doc,
+    gt_break_gateway_ip,
+    gt_cosmetic_edit,
+    gt_edit_networks,
+    gt_edit_unmodeled_field,
+    gt_fetch_fail_site,
     multisite_add_unused_vlan,
     multisite_remove_corp,
     multisite_template_with_no_assigned_sites,
@@ -36,6 +46,8 @@ from .builders import (
     ospf_doc,
     ospf_op,
     plan_for,
+    st_add_unused_vlan,
+    st_fetch_fail_site,
     write_doc,
 )
 
@@ -1139,3 +1151,112 @@ def test_ms_d_zero_assigned_sites_is_safe(tmp_path):
     doc, plan = multisite_template_with_no_assigned_sites()
     ov = _simulate_org(doc, plan, tmp_path)
     assert ov.decision is Decision.SAFE
+
+
+# ---------------------------------------------------------------------------
+# GT: gatewaytemplate org-template goldens (Task 20 scenarios 1-4 + 6)
+# ---------------------------------------------------------------------------
+
+
+def test_gt_a_break_gateway_ip_is_unsafe(tmp_path):
+    # Scenario 1: gatewaytemplate changes ip_configs.gt_corp.ip to an address
+    # that no L3 interface owns. The baseline gateway L3Intf was the KNOWN owner
+    # of the vlan's declared gateway (198.51.96.1); moving it away fires
+    # gateway_gap.gateway_unowned (ERROR/HIGH) -> org UNSAFE naming gtSiteA.
+    # gtSiteB has no gateway device -> unaffected (SAFE).
+    doc, plan = gt_break_gateway_ip()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert GT_SITE_A in ov.driving_sites
+    assert ov.per_site[GT_SITE_B].decision is Decision.SAFE
+
+
+def test_gt_b_unmodeled_field_edit_is_unknown(tmp_path):
+    # Scenario 2: edit routing_policies (NOT in the gatewaytemplate allowlist)
+    # -> raw field gate fires -> org UNKNOWN. The reason text comes from the
+    # field_gate stage (not 'UNSUPPORTED', which is the decision prefix).
+    doc, plan = gt_edit_unmodeled_field()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("field_gate" in r for r in ov.decision_reasons)
+
+
+def test_gt_c_networks_field_edit_is_unknown(tmp_path):
+    # Scenario 3: edit gatewaytemplate.networks (NOT in the gatewaytemplate
+    # allowlist) -> raw field gate fires -> org UNKNOWN.
+    doc, plan = gt_edit_networks()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("field_gate" in r for r in ov.decision_reasons)
+
+
+def test_gt_d_cosmetic_edit_is_safe(tmp_path):
+    # Scenario 4: no-op ip_configs change (same value as baseline) -> the IR is
+    # identical before and after -> SAFE.
+    doc, plan = gt_cosmetic_edit()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+
+
+def test_gt_e_fetch_fail_site_is_unknown(tmp_path):
+    # Scenario 6: same IP change as GT-a but site B's fetch fails -> org
+    # UNKNOWN with GT_SITE_B in site_failures.
+    doc, plan = gt_fetch_fail_site()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert GT_SITE_B in ov.site_failures
+
+
+# ---------------------------------------------------------------------------
+# ST: sitetemplate org-template goldens (Task 20 scenario 5 + 6)
+# ---------------------------------------------------------------------------
+
+
+def test_st_a_cosmetic_edit_is_safe(tmp_path):
+    # Scenario 5 (benign): a sitetemplate edit adds a new network nothing uses
+    # -> no switch member/IRB broken -> SAFE on all sites.
+    doc, plan = st_add_unused_vlan()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+
+
+def test_st_b_fetch_fail_site_is_unknown(tmp_path):
+    # Scenario 6 (ST variant): sitetemplate cosmetic edit, but site B's fetch
+    # fails -> org UNKNOWN with ST_SITE_B in site_failures.
+    doc, plan = st_fetch_fail_site()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert ST_SITE_B in ov.site_failures
+
+
+# ---------------------------------------------------------------------------
+# DP: device-profile goldens (Task 20 scenario 7)
+# ---------------------------------------------------------------------------
+
+
+def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
+    # Scenario 7a: gatewaytemplate changes ip_configs.*.ip on a site whose
+    # gateway carries a deviceprofile_id -> device_profile_gate fires -> UNKNOWN.
+    # The per-site verdict (not the org-level rollup reason) carries the gate text.
+    doc, plan = dp_gatewaytemplate_edit_with_profiled_gw()
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    # The gate is surfaced in the per-site verdict's decision_reasons
+    from .builders import DP_SITE
+    per = ov.per_site[DP_SITE]
+    assert per.decision is Decision.UNKNOWN
+    assert any("device_profile_gate" in r for r in per.decision_reasons)
+
+
+def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
+    # Scenario 7b: ONLY the AP has a deviceprofile_id; the gateway is
+    # unprofiled. APs are not modeled by the device-profile gate -> gate does
+    # NOT fire -> the ip_configs.*.ip change gets a real verdict. Since the edit
+    # moves the IP away from the declared vlan gateway (the known owner), the
+    # result is UNSAFE (gateway_unowned), not UNKNOWN.
+    doc, plan = dp_only_ap_profiled_not_tainted()
+    ov = _simulate_org(doc, plan, tmp_path)
+    # AP profile must NOT gate to UNKNOWN
+    assert not any("device_profile_gate" in r for r in ov.decision_reasons)
+    # The ip change breaks the known gateway owner -> UNSAFE
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons

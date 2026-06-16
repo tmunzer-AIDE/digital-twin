@@ -29,6 +29,7 @@ from digital_twin.providers.base import (
     SiteScope,
     StateProvider,
 )
+from digital_twin.scope.allowlist import ORG_OBJECT_TYPES
 from digital_twin.verdict.decision import Decision
 
 EXIT_CODES = {Decision.SAFE: 0, Decision.REVIEW: 10, Decision.UNSAFE: 20, Decision.UNKNOWN: 30}
@@ -60,13 +61,14 @@ class _RecordingProvider:
         return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)  # type: ignore[arg-type]
 
     def resolve_org_template(
-        self, scope: OrgScope, template_id: str
+        self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
-        return self._inner.resolve_org_template(scope, template_id)
+        return self._inner.resolve_org_template(scope, template_id, object_type)
 
 
 def _is_org_plan(plan_data: object) -> bool:
-    """Return True if plan_data looks like an ORG (networktemplate) plan.
+    """Return True if plan_data looks like an ORG-template plan (networktemplate,
+    gatewaytemplate, or sitetemplate).
 
     Defensive: any malformed plan (missing/wrong-typed fields) returns False so
     it falls through to the SITE path, which will envelope-reject it properly.
@@ -77,7 +79,7 @@ def _is_org_plan(plan_data: object) -> bool:
     scope = plan_data.get("scope")
     return (
         isinstance(ops, list) and bool(ops)
-        and all(isinstance(o, dict) and o.get("object_type") == "networktemplate" for o in ops)
+        and all(isinstance(o, dict) and o.get("object_type") in ORG_OBJECT_TYPES for o in ops)
         and isinstance(scope, dict) and not scope.get("site_id")
     )
 

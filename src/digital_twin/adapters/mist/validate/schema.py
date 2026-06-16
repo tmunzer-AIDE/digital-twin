@@ -28,6 +28,13 @@ _SCHEMA_FILES: dict[str, str] = {
     "site_setting": "site_setting.schema.json",
     "device": "device_switch.schema.json",
     "networktemplate": "networktemplate.schema.json",
+    "gatewaytemplate": "gatewaytemplate.schema.json",
+    # NOTE: the Mist OAS `site_template` component is thin (auto_upgrade/name/vars
+    # only) and does NOT yet document the switch-config surface a real sitetemplate
+    # carries (confirmed with the domain owner; OAS fix is upstream). The committed
+    # schema has no `additionalProperties: false`, so L0 stays PERMISSIVE for those
+    # fields (no false-reject) — the field gate + compile + checks still cover them.
+    "sitetemplate": "sitetemplate.schema.json",
 }
 _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)

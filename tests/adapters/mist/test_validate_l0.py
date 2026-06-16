@@ -132,3 +132,29 @@ def test_networktemplate_l0_schema_registered():
     from digital_twin.adapters.mist.validate import validate_payload
     res = validate_payload("networktemplate", {"id": "nt1", "ospf_config": {"enabled": True}})
     assert res.fatal is False  # a valid template body validates
+
+
+def test_gatewaytemplate_schema_registered_and_validates():
+    # a structurally-valid gatewaytemplate payload yields no L0 findings
+    res = validate_payload("gatewaytemplate", {"name": "gw1", "port_config": {}})
+    assert isinstance(res, L0Result) and not res.fatal
+
+
+def test_gatewaytemplate_type_violation_detected():
+    # port_config must be an object -> a string is an L0 violation
+    res = validate_payload("gatewaytemplate", {"port_config": "nope"})
+    assert any(f.severity.value in ("error", "critical") for f in res.findings)
+
+
+def test_sitetemplate_schema_registered_permissive():
+    # the thin OAS sitetemplate schema is permissive (no additionalProperties:false)
+    # -> the rich fields it omits do NOT false-reject; vars validates structurally
+    res = validate_payload("sitetemplate", {"name": "st1", "vars": {"X": "1"},
+                                            "networks": {"corp": {"vlan_id": 10}}})
+    assert isinstance(res, L0Result) and not res.fatal
+
+
+def test_unregistered_org_type_fails_closed():
+    # an object_type with no committed schema must FAIL CLOSED (fatal -> UNKNOWN)
+    res = validate_payload("rftemplate", {"x": 1})
+    assert res.fatal

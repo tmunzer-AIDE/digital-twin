@@ -36,7 +36,7 @@ class _FakeProvider:
     sites: dict
     template: dict
 
-    def resolve_org_template(self, scope, template_id):
+    def resolve_org_template(self, scope, template_id, object_type="networktemplate"):
         return OrgTemplateContext(template=self.template, assigned_site_ids=tuple(self.sites))
 
     def fetch_sites(self, scope, site_ids=None, *, include_derived=False):

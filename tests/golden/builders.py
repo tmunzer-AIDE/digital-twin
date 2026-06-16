@@ -556,6 +556,509 @@ def multisite_template_with_no_assigned_sites() -> tuple[dict[str, Any], dict[st
     return doc, _ms_plan(doc["template"], payload)
 
 
+# ---------------------------------------------------------------------------
+# GT / ST: gatewaytemplate + sitetemplate org-template goldens (Task 20)
+#
+# Two sites share ONE gatewaytemplate `g1`. The template defines ip_configs for
+# a `gt_corp` network (vlan 960, subnet 198.51.96.0/24) and the port_config
+# that carries it. A gateway device on each site inherits from the template.
+#
+# The `gt_corp` vlan carries a declared default `gateway` pointing at the
+# template's ip_configs address (198.51.96.1), which the ingest resolves to a
+# gateway L3Intf (CONFIG/HIGH) via org_networks. Moving that address to an
+# address no modeled interface owns breaks the known gateway -> UNSAFE.
+#
+# Site A: has the gateway device AND a wired switch environment. Changing the
+#   template's ip_configs.gt_corp.ip breaks the gateway_gap.gateway_unowned
+#   check -> UNSAFE.
+# Site B: a minimal site with NO gateway device; a template edit that would
+#   change the gateway L3Intf is harmless here (no gateway to affect).
+# ---------------------------------------------------------------------------
+
+GT_TEMPLATE_ID = "g1"
+GT_NET = "gt_corp"
+GT_VLAN = 960
+GT_SUBNET = "198.51.96.0/24"
+GT_GW_IP = "198.51.96.1"         # baseline: gateway L3Intf + vlan's declared GW
+GT_GW_IP_ALT = "198.51.96.99"    # proposed: different IP, unowned by any interface
+GT_SITE_A = "gtSiteA"
+GT_SITE_B = "gtSiteB"
+GT_GW_MAC = "aa0000000099"
+GT_GW_ID = "gw-gt1"
+# A minimal switch on Site A so the switch pipeline has something to ingest
+GT_SW_MAC = "aa0000000001"
+GT_SW_ID = "sw-gt1"
+
+# The org_id shared by both GT sites (borrowed from the real fixture to keep
+# the FixtureProvider strict-scope guard happy when replay uses a unique id).
+_GT_ORG_ID = "org-gt-tests"
+
+
+def _gt_org_networks() -> list[dict[str, Any]]:
+    """org_networks row for gt_corp so the gateway ip_configs resolves."""
+    return [{"name": GT_NET, "vlan_id": GT_VLAN, "subnet": GT_SUBNET}]
+
+
+def _gt_base_template() -> dict[str, Any]:
+    """The shared gatewaytemplate g1: ip_configs for gt_corp + a LAN port."""
+    return {
+        "id": GT_TEMPLATE_ID,
+        "name": "gt-shared",
+        "ip_configs": {GT_NET: {"ip": GT_GW_IP}},
+        "port_config": {"ge-0/0/0": {"networks": [GT_NET]}},
+    }
+
+
+def _gt_site_a_doc() -> dict[str, Any]:
+    """Site A: a gateway device inheriting from the template + a switch.
+
+    The site_setting carries gt_corp (vlan 960, subnet, gateway 198.51.96.1).
+    org_networks is fetched and contains gt_corp so gateway ip_configs resolves.
+    The switch has one member port on vlan 960.
+    """
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": _GT_ORG_ID, "site_id": GT_SITE_A},
+        "meta": {
+            "acquired_at": "2026-06-15T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "networktemplate", "devices",
+                "device_stats", "port_stats", "wireless_clients",
+                "wired_clients", "org_networks",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": GT_SITE_A,
+            "org_id": _GT_ORG_ID,
+            "networktemplate_id": None,
+            "gatewaytemplate_id": GT_TEMPLATE_ID,
+            "sitetemplate_id": None,
+        },
+        "setting": {
+            "networks": {GT_NET: {"vlan_id": GT_VLAN, "subnet": GT_SUBNET,
+                                  "gateway": GT_GW_IP}},
+            "port_usages": {"gt_access": {"mode": "access", "port_network": GT_NET}},
+        },
+        "networktemplate": None,
+        "gatewaytemplate": _gt_base_template(),
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GT_GW_MAC,
+                "id": GT_GW_ID,
+                "type": "gateway",
+                "model": "SRX300",
+                "ip_configs": {},  # template inherits via compile_gateway_device
+                "port_config": {},
+            },
+            {
+                "mac": GT_SW_MAC,
+                "id": GT_SW_ID,
+                "type": "switch",
+                "model": "EX2300-24P",
+                "port_config": {"ge-0/0/0": {"usage": "gt_access"}},
+            },
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": _gt_org_networks(),
+    }
+
+
+def _gt_site_b_doc() -> dict[str, Any]:
+    """Site B: a minimal site with NO gateway device.
+
+    Even if the template's ip_configs changes, there is no gateway L3Intf to
+    lose here — the site is unaffected.
+    """
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": _GT_ORG_ID, "site_id": GT_SITE_B},
+        "meta": {
+            "acquired_at": "2026-06-15T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "networktemplate", "devices",
+                "device_stats", "port_stats", "wireless_clients",
+                "wired_clients", "org_networks",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": GT_SITE_B,
+            "org_id": _GT_ORG_ID,
+            "networktemplate_id": None,
+            "gatewaytemplate_id": GT_TEMPLATE_ID,
+            "sitetemplate_id": None,
+        },
+        "setting": {
+            "networks": {GT_NET: {"vlan_id": GT_VLAN}},
+            "port_usages": {},
+        },
+        "networktemplate": None,
+        "gatewaytemplate": _gt_base_template(),
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": _gt_org_networks(),
+    }
+
+
+def gt_multisite_doc(
+    *,
+    site_a_template_id: str = GT_TEMPLATE_ID,
+    site_b_template_id: str = GT_TEMPLATE_ID,
+    fetch_failures: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The 2-site gatewaytemplate fixture using the typed 'templates' shape."""
+    site_a = _gt_site_a_doc()
+    site_b = _gt_site_b_doc()
+    site_a["site"]["gatewaytemplate_id"] = site_a_template_id
+    site_b["site"]["gatewaytemplate_id"] = site_b_template_id
+    return {
+        "templates": {
+            "gatewaytemplate": {
+                GT_TEMPLATE_ID: _gt_base_template(),
+            }
+        },
+        "sites": {GT_SITE_A: site_a, GT_SITE_B: site_b},
+        "fetch_failures": list(fetch_failures),
+    }
+
+
+def _gt_plan(payload: dict[str, Any], *, template_id: str = GT_TEMPLATE_ID) -> dict[str, Any]:
+    return {
+        "source": "mist",
+        "scope": {"org_id": _GT_ORG_ID},  # NO site_id -> org mode
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": template_id, "payload": payload,
+        }],
+    }
+
+
+def gt_break_gateway_ip() -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-a: the template changes ip_configs.gt_corp.ip to an address that does
+    NOT match the vlan's declared gateway (198.51.96.1). The baseline L3Intf is
+    the KNOWN owner of the declared gateway; breaking it -> gateway_unowned
+    (ERROR/HIGH) -> org UNSAFE. Site B has no gateway -> unaffected (SAFE)."""
+    doc = gt_multisite_doc()
+    # Full ip_configs payload (root-replace semantics: omitting a net-name
+    # removes it; provide ALL intended names to avoid false deletions).
+    payload = {"ip_configs": {GT_NET: {"ip": GT_GW_IP_ALT}}}
+    return doc, _gt_plan(payload)
+
+
+def gt_edit_unmodeled_field() -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-b: edit routing_policies (NOT in the gatewaytemplate allowlist) ->
+    raw field gate fires -> org UNKNOWN."""
+    doc = gt_multisite_doc()
+    payload = {"routing_policies": {"my-policy": {"action": "permit"}}}
+    return doc, _gt_plan(payload)
+
+
+def gt_edit_networks() -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-c: edit gatewaytemplate.networks (NOT in the gatewaytemplate allowlist
+    — gateway networks come from org_networks, not the device's own networks
+    field) -> raw field gate fires -> org UNKNOWN."""
+    doc = gt_multisite_doc()
+    payload = {"networks": {GT_NET: {"vlan_id": GT_VLAN, "subnet": GT_SUBNET}}}
+    return doc, _gt_plan(payload)
+
+
+def gt_cosmetic_edit() -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-d: a no-op edit — the payload carries the SAME ip_configs value as the
+    baseline. The IR is identical before and after -> SAFE (no findings, full
+    coverage). Uses the minimal ip_configs payload; the field gate passes because
+    ip_configs.*.ip IS in the gatewaytemplate allowlist."""
+    doc = gt_multisite_doc()
+    # Same value as baseline -> identical effective after template override
+    payload = {"ip_configs": {GT_NET: {"ip": GT_GW_IP}}}
+    return doc, _gt_plan(payload)
+
+
+def gt_fetch_fail_site() -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-e: same IP change as GT-a but site B's fetch fails -> org UNKNOWN
+    (site_failures contains GT_SITE_B)."""
+    doc = gt_multisite_doc(fetch_failures=(GT_SITE_B,))
+    payload = {"ip_configs": {GT_NET: {"ip": GT_GW_IP_ALT}}}
+    return doc, _gt_plan(payload)
+
+
+# ---------------------------------------------------------------------------
+# ST: sitetemplate org-template goldens
+#
+# A sitetemplate (`st1`) is shared by two sites. The sitetemplate carries a
+# switch surface (port_usages + networks). The switch site uses the template's
+# usages via the switch compile path.
+#
+# A cosmetic sitetemplate edit (add a new network nothing uses) -> SAFE.
+# An edit to a sitetemplate.networks.*.vlan_id (modeled leaf) -> SAFE when no
+#   existing device/usage references the changed vlan.
+# ---------------------------------------------------------------------------
+
+ST_TEMPLATE_ID = "st1"
+ST_NET = "st_mgmt"
+ST_VLAN = 940
+ST_SITE_A = "stSiteA"
+ST_SITE_B = "stSiteB"
+_ST_ORG_ID = "org-st-tests"
+
+
+def _st_base_template() -> dict[str, Any]:
+    """The shared sitetemplate st1."""
+    return {
+        "id": ST_TEMPLATE_ID,
+        "name": "st-shared",
+        "networks": {ST_NET: {"vlan_id": ST_VLAN}},
+        "port_usages": {"st_access": {"mode": "access", "port_network": ST_NET}},
+    }
+
+
+def _st_site_doc(site_id: str, *, sitetemplate_id: str = ST_TEMPLATE_ID) -> dict[str, Any]:
+    """A minimal switch site using the sitetemplate."""
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": _ST_ORG_ID, "site_id": site_id},
+        "meta": {
+            "acquired_at": "2026-06-15T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "networktemplate", "devices",
+                "device_stats", "port_stats", "wireless_clients", "wired_clients",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": site_id,
+            "org_id": _ST_ORG_ID,
+            "networktemplate_id": None,
+            "gatewaytemplate_id": None,
+            "sitetemplate_id": sitetemplate_id,
+        },
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": _st_base_template(),
+        "derived_setting": None,
+        "devices": [],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+
+
+def st_multisite_doc(
+    *,
+    site_a_template_id: str = ST_TEMPLATE_ID,
+    site_b_template_id: str = ST_TEMPLATE_ID,
+    fetch_failures: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The 2-site sitetemplate fixture using the typed 'templates' shape."""
+    return {
+        "templates": {
+            "sitetemplate": {
+                ST_TEMPLATE_ID: _st_base_template(),
+            }
+        },
+        "sites": {
+            ST_SITE_A: _st_site_doc(ST_SITE_A, sitetemplate_id=site_a_template_id),
+            ST_SITE_B: _st_site_doc(ST_SITE_B, sitetemplate_id=site_b_template_id),
+        },
+        "fetch_failures": list(fetch_failures),
+    }
+
+
+def _st_plan(payload: dict[str, Any], *, template_id: str = ST_TEMPLATE_ID) -> dict[str, Any]:
+    return {
+        "source": "mist",
+        "scope": {"org_id": _ST_ORG_ID},  # NO site_id -> org mode
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "sitetemplate",
+            "object_id": template_id, "payload": payload,
+        }],
+    }
+
+
+def st_add_unused_vlan() -> tuple[dict[str, Any], dict[str, Any]]:
+    """ST-a: cosmetic sitetemplate edit — add a new network nothing uses -> SAFE."""
+    doc = st_multisite_doc()
+    nets = {k: dict(v) for k, v in (_st_base_template().get("networks") or {}).items()}
+    nets["st_unused"] = {"vlan_id": 941}
+    payload = {"networks": nets}
+    return doc, _st_plan(payload)
+
+
+def st_fetch_fail_site() -> tuple[dict[str, Any], dict[str, Any]]:
+    """ST-b: cosmetic sitetemplate edit but site B's fetch fails -> UNKNOWN."""
+    doc = st_multisite_doc(fetch_failures=(ST_SITE_B,))
+    nets = {k: dict(v) for k, v in (_st_base_template().get("networks") or {}).items()}
+    nets["st_unused"] = {"vlan_id": 941}
+    payload = {"networks": nets}
+    return doc, _st_plan(payload)
+
+
+# ---------------------------------------------------------------------------
+# DP: device-profile golden (Task 20 scenario 7)
+#
+# A site with a gateway device carrying a `deviceprofile_id`. A gatewaytemplate
+# edit that changes an OVERRIDABLE gateway leaf (ip_configs.*.ip) on that device
+# -> the device-profile gate fires (UNKNOWN), because the unmodeled profile layer
+# could override the outcome. A site where ONLY an AP carries a profile is not
+# tainted (APs are ignored by the gate).
+# ---------------------------------------------------------------------------
+
+DP_ORG_ID = "org-dp-tests"
+DP_SITE = "dpSite"
+DP_GT_ID = "dp-g1"
+DP_NET = "dp_net"
+DP_VLAN = 970
+DP_GW_MAC = "bb0000000001"
+DP_GW_ID = "gw-dp1"
+DP_AP_MAC = "cc0000000001"
+DP_AP_ID = "ap-dp1"
+
+
+def _dp_gateway_device(*, with_profile: bool) -> dict[str, Any]:
+    gw: dict[str, Any] = {
+        "mac": DP_GW_MAC,
+        "id": DP_GW_ID,
+        "type": "gateway",
+        "model": "SRX300",
+        "ip_configs": {},
+        "port_config": {},
+    }
+    if with_profile:
+        gw["deviceprofile_id"] = "dp-profile-1"
+    return gw
+
+
+def _dp_ap_device(*, with_profile: bool) -> dict[str, Any]:
+    ap: dict[str, Any] = {
+        "mac": DP_AP_MAC,
+        "id": DP_AP_ID,
+        "type": "ap",
+        "model": "AP45",
+    }
+    if with_profile:
+        ap["deviceprofile_id"] = "ap-profile-1"
+    return ap
+
+
+def _dp_site_doc(*, gw_profiled: bool, ap_profiled: bool) -> dict[str, Any]:
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": DP_ORG_ID, "site_id": DP_SITE},
+        "meta": {
+            "acquired_at": "2026-06-15T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "networktemplate", "devices",
+                "device_stats", "port_stats", "wireless_clients",
+                "wired_clients", "org_networks",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": DP_SITE,
+            "org_id": DP_ORG_ID,
+            "networktemplate_id": None,
+            "gatewaytemplate_id": DP_GT_ID,
+            "sitetemplate_id": None,
+        },
+        "setting": {
+            "networks": {DP_NET: {"vlan_id": DP_VLAN, "subnet": "198.51.97.0/24",
+                                  "gateway": "198.51.97.1"}},
+            "port_usages": {},
+        },
+        "networktemplate": None,
+        "gatewaytemplate": {
+            "id": DP_GT_ID,
+            "name": "dp-template",
+            "ip_configs": {DP_NET: {"ip": "198.51.97.1"}},
+            "port_config": {"ge-0/0/0": {"networks": [DP_NET]}},
+        },
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [_dp_gateway_device(with_profile=gw_profiled),
+                    _dp_ap_device(with_profile=ap_profiled)],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [{"name": DP_NET, "vlan_id": DP_VLAN, "subnet": "198.51.97.0/24"}],
+    }
+
+
+def _dp_gt_template() -> dict[str, Any]:
+    return {
+        "id": DP_GT_ID,
+        "name": "dp-template",
+        "ip_configs": {DP_NET: {"ip": "198.51.97.1"}},
+        "port_config": {"ge-0/0/0": {"networks": [DP_NET]}},
+    }
+
+
+def dp_gatewaytemplate_edit_with_profiled_gw() -> tuple[dict[str, Any], dict[str, Any]]:
+    """DP-a: the gatewaytemplate changes ip_configs.dp_net.ip on a site whose
+    gateway carries a deviceprofile_id -> device_profile_gate fires -> UNKNOWN."""
+    site_doc = _dp_site_doc(gw_profiled=True, ap_profiled=False)
+    doc = {
+        "templates": {"gatewaytemplate": {DP_GT_ID: _dp_gt_template()}},
+        "sites": {DP_SITE: site_doc},
+        "fetch_failures": [],
+    }
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": DP_ORG_ID},
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": DP_GT_ID,
+            "payload": {"ip_configs": {DP_NET: {"ip": "198.51.97.2"}}},
+        }],
+    }
+    return doc, plan
+
+
+def dp_only_ap_profiled_not_tainted() -> tuple[dict[str, Any], dict[str, Any]]:
+    """DP-b: ONLY the AP carries a deviceprofile_id (gateways do not). The
+    gatewaytemplate changes ip_configs.dp_net.ip — APs are ignored by the
+    device-profile gate -> the gate does NOT fire -> gets a real verdict
+    (gateway_gap.gateway_unowned -> UNSAFE, since the known gateway owner
+    changes)."""
+    site_doc = _dp_site_doc(gw_profiled=False, ap_profiled=True)
+    doc = {
+        "templates": {"gatewaytemplate": {DP_GT_ID: _dp_gt_template()}},
+        "sites": {DP_SITE: site_doc},
+        "fetch_failures": [],
+    }
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": DP_ORG_ID},
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": DP_GT_ID,
+            "payload": {"ip_configs": {DP_NET: {"ip": "198.51.97.99"}}},
+        }],
+    }
+    return doc, plan
+
+
 def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
             disable: bool = False, order: int = 0) -> dict[str, Any]:
     """A HUB device op whose payload sets ospf to the given state. `entries=None`
