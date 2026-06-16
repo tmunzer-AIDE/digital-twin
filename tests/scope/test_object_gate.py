@@ -127,3 +127,30 @@ def test_mixing_site_and_org_object_types_rejects():
     # SITE branch surfaces BOTH the unsupported networktemplate op AND site_id-required
     assert any("networktemplate" in reason for reason in r.reasons)
     assert any("site_id" in reason for reason in r.reasons)
+
+
+def _gt_op(object_type, object_id="t1", action="update"):
+    return ChangeOp(action=action, order=0, object_type=object_type,
+                    object_id=object_id, payload={})
+
+
+def test_gatewaytemplate_plan_classified_org():
+    # A single-op gatewaytemplate plan with no site_id must classify as ORG-mode
+    # (no rejection) — just like networktemplate.
+    assert check_objects(_org_plan([_gt_op("gatewaytemplate")])) is None
+
+
+def test_sitetemplate_plan_classified_org():
+    # A single-op sitetemplate plan with no site_id must classify as ORG-mode.
+    assert check_objects(_org_plan([_gt_op("sitetemplate")])) is None
+
+
+def test_org_mode_rejects_multiple_template_ids_gatewaytemplate():
+    # Single-template-id invariant applies to gatewaytemplate too.
+    r = check_objects(_org_plan([
+        _gt_op("gatewaytemplate", object_id="gtA"),
+        ChangeOp(action="update", order=1, object_type="gatewaytemplate",
+                 object_id="gtB", payload={}),
+    ]))
+    assert isinstance(r, Rejection)
+    assert any("one template" in reason for reason in r.reasons)

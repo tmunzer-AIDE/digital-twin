@@ -9,7 +9,7 @@ the field gate where the fetched device is available.
 from __future__ import annotations
 
 from digital_twin.contracts import ChangePlan, Rejection
-from digital_twin.scope.allowlist import SUPPORTED_OBJECT_TYPES
+from digital_twin.scope.allowlist import ORG_OBJECT_TYPES, SUPPORTED_OBJECT_TYPES
 
 _STAGE = "object_gate"
 _M1_SOURCE = "mist"
@@ -21,14 +21,13 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
     if plan.source != _M1_SOURCE:
         reasons.append(f"unsupported source {plan.source!r} (M1 supports only 'mist')")
     ops = plan.ops
-    # ORG mode ONLY when EVERY op is networktemplate AND there is no site_id.
-    # Anything else (incl. networktemplate WITH a site_id, or a mix) falls into
-    # the SITE branch, which preserves the existing per-op diagnostics verbatim.
-    # NB: this keys on the literal "networktemplate"; a new ORG type must be added
-    # BOTH here and to ORG_OBJECT_TYPES in allowlist.py (used by the CLI for mode).
+    # ORG mode ONLY when EVERY op is an ORG_OBJECT_TYPE AND there is no site_id.
+    # Anything else (incl. an org type WITH a site_id, or a mix) falls into the
+    # SITE branch, which preserves the existing per-op diagnostics verbatim.
+    # ORG_OBJECT_TYPES drives this check; keep it in sync with allowlist.py.
     is_org = (
         bool(ops)
-        and all(op.object_type == "networktemplate" for op in ops)
+        and all(op.object_type in ORG_OBJECT_TYPES for op in ops)
         and not plan.scope.site_id
     )
     for op in ops:
@@ -39,7 +38,7 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
             )
     if is_org:
         if len({op.object_id for op in ops}) > 1:
-            reasons.append("one template per plan in M1 (multiple networktemplate ids)")
+            reasons.append("one template per plan in M1 (multiple template ids)")
     else:  # SITE mode + everything else — UNCHANGED from today
         if not plan.scope.site_id:
             reasons.append("scope.site_id is required (M1 simulates exactly one site)")
