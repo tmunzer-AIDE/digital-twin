@@ -53,7 +53,7 @@ from digital_twin.providers.base import (
     StateMeta,
     StateProvider,
 )
-from digital_twin.scope.allowlist import ORG_OBJECT_TYPES
+from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
@@ -64,6 +64,25 @@ from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
 _EMPTY_DIFF = IRDiff((), (), ())
+
+# Gateway roots screened by the derived gate when the edit is NOT a
+# gatewaytemplate op (i.e. for sitetemplate/site_setting edits the switch
+# derived gate already owns `networks` via site_effective, so projecting it
+# here would false-UNKNOWN those edits). For gatewaytemplate edits the FULL
+# effective is screened (full=True) to catch networks changes owned by the
+# gateway namespace that never appear in site_effective.
+GATEWAY_SCREENED_ROOTS: tuple[str, ...] = ("port_config", "ip_configs", "dhcpd_config", "vars")
+
+
+def _gw_screen_view(eff: dict[str, Any], *, full: bool) -> dict[str, Any]:
+    # SOURCE-AWARE. For a gatewaytemplate edit, screen the FULL effective:
+    # gatewaytemplate's OWN networks (or a vars edit rippling into networks) is NOT
+    # in site_effective, so the switch derived gate never sees it -> dropping it
+    # here would resolve a gatewaytemplate networks change SAFE (false-SAFE). For a
+    # sitetemplate/site_setting edit, project to the gateway-consumed roots: a
+    # networks change there IS in site_effective and the switch gate owns it (the
+    # gateway namespace is org_networks), so screening it here would false-UNKNOWN.
+    return eff if full else {k: eff[k] for k in GATEWAY_SCREENED_ROOTS if k in eff}
 
 
 def _stamp(findings: tuple[Finding, ...], subject: ObjectRef) -> tuple[Finding, ...]:
@@ -114,6 +133,7 @@ def _simulate_site_state(
     run: RunContext,
     state_meta: StateMetaView | None,
     adapter_findings: tuple[Finding, ...] = (),
+    gateway_screen_full: bool = False,
 ) -> Verdict:
     """Stages 5-10 for ONE site: ingest baseline + proposed, dynamic gate,
     derived gate, diff + checks, verdict. Both `simulate` (single-site) and
@@ -163,6 +183,17 @@ def _simulate_site_state(
                 baseline.device_effective.get(did, {}),
                 proposed.device_effective.get(did, {}),
                 artifact=f"device {did}",
+            )
+            if rejection:
+                return _unknown(
+                    rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
+                )
+        for did in sorted(set(baseline.gateway_effective) | set(proposed.gateway_effective)):
+            rejection = check_derived(
+                _gw_screen_view(baseline.gateway_effective.get(did, {}), full=gateway_screen_full),
+                _gw_screen_view(proposed.gateway_effective.get(did, {}), full=gateway_screen_full),
+                allowlist=GATEWAY_EFFECTIVE_ALLOWLIST,
+                artifact=f"gateway {did}",
             )
             if rejection:
                 return _unknown(
@@ -452,6 +483,7 @@ def simulate_org_template(
         # adapter_findings=() — template L0 findings live ONLY on OrgVerdict
         # .template_findings (the rollup floors REVIEW on them via decide_org);
         # do NOT echo them into every per-site Verdict.
+        # T15: pass gateway_screen_full=(object_type=="gatewaytemplate")
         per_site[sid] = _simulate_site_state(
             base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
             state_meta=sm, adapter_findings=(),
