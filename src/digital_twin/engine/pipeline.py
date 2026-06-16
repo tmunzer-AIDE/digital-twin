@@ -29,7 +29,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from digital_twin.adapters.mist.adapter import MistAdapter
+from digital_twin.adapters.mist.adapter import IngestOutcome, MistAdapter
 from digital_twin.adapters.mist.apply import get_object
 from digital_twin.adapters.mist.apply.objects import effective_update, update_conflicts
 from digital_twin.adapters.mist.ingest.dynamic_usage import unresolved_dynamic_findings
@@ -55,6 +55,7 @@ from digital_twin.providers.base import (
 )
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived
+from digital_twin.scope.device_profile_gate import device_profile_rejection
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -134,6 +135,7 @@ def _simulate_site_state(
     state_meta: StateMetaView | None,
     adapter_findings: tuple[Finding, ...] = (),
     gateway_screen_full: bool = False,
+    profile_proposed: IngestOutcome | None = None,
 ) -> Verdict:
     """Stages 5-10 for ONE site: ingest baseline + proposed, dynamic gate,
     derived gate, diff + checks, verdict. Both `simulate` (single-site) and
@@ -208,10 +210,16 @@ def _simulate_site_state(
                 diff=diff,
             )
         )
+    profile_outcome = profile_proposed if profile_proposed is not None else proposed
+    dp_rej = device_profile_rejection(
+        proposed_raw.devices,
+        {**baseline.device_effective, **baseline.gateway_effective},
+        {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
+    )
     with trace.stage("verdict"):
         return assemble(
             inputs=DecisionInputs(
-                rejections=(),
+                rejections=(dp_rej,) if dp_rej else (),
                 l0_fatal=False,
                 baseline_unavailable=False,
                 check_results=results,
@@ -354,10 +362,31 @@ def simulate(
                 )
             proposed_raw = applied
 
+    # Build the below-profile proposed: apply ONLY the non-device ops against the
+    # baseline (raw), so device-level changes (above the profile) are excluded.
+    # This lets the gate diff baseline vs below-profile: if the only changes are
+    # device ops, the diff is empty -> gate passes (pure-device plan is safe).
+    non_device_ops = tuple(
+        op for op in plan.ops if op.object_type != "device"
+    )
+    if len(non_device_ops) == len(plan.ops):
+        # No device ops -> below-profile == proposed_raw; skip the extra ingest.
+        profile_proposed = None
+    else:
+        below_raw = adapter.apply(raw, non_device_ops)
+        if isinstance(below_raw, Rejection):
+            # If the non-device apply fails (e.g. missing target), fall back to
+            # baseline so the gate sees no below-profile change (conservative:
+            # the apply failure was already caught for the full op set above).
+            profile_proposed = adapter.ingest(raw)
+        else:
+            profile_proposed = adapter.ingest(below_raw)
+
     return _simulate_site_state(
         raw, proposed_raw,
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
+        profile_proposed=profile_proposed,
     )
 
 
@@ -484,9 +513,11 @@ def simulate_org_template(
         # .template_findings (the rollup floors REVIEW on them via decide_org);
         # do NOT echo them into every per-site Verdict.
         # T15: pass gateway_screen_full=(object_type=="gatewaytemplate")
+        # All ops are template edits (below-profile) -> profile_proposed=None
+        # means the full proposed is used as the below-profile reference.
         per_site[sid] = _simulate_site_state(
             base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
-            state_meta=sm, adapter_findings=(),
+            state_meta=sm, adapter_findings=(), profile_proposed=None,
         )
 
     decision, reasons, driving = decide_org(
