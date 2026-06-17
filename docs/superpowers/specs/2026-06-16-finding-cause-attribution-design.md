@@ -48,7 +48,7 @@ ports and nodes. It is simply never threaded from the diff into the finding.
   responsible for it, with the field(s) that changed.
 - **Pre-existing / context** findings explicitly carry *no* cause — telling the
   admin "this was not caused by your change."
-- Uniform across all 16 wired checks and the adapter/dynamic-gate findings, with
+- Uniform across the wired checks and the adapter/dynamic-gate findings, with
   one shared mechanism and one rendering path.
 - **Strictly additive and non-load-bearing**: attribution is evidence only. It
   MUST NOT change any severity, confidence, coverage, decision, or decision
@@ -132,8 +132,19 @@ into a per-entity-kind index the checks query:
 ```python
 # analysis/delta_cause.py (new, pure)
 def delta_index(diff: IRDiff) -> DeltaIndex: ...
-# DeltaIndex answers: is port/link/device/l3intf/dhcp_scope/vlan X in the delta,
-# and with which changed_fields? Plus reverse lookups used by Family 2 below.
+# DeltaIndex is ONLY the cached diff lookup: is port/link/device/l3intf/
+# dhcp_scope/vlan X in the delta, and with which changed_fields? It is built ONCE
+# from the diff. It does NOT do graph analysis.
+
+# Family-2 mappings are SEPARATE functions: they take the CheckContext (for the
+# baseline/proposed graphs) PLUS the affected component/cycle/vid the check is
+# reporting, and return the responsible Causes — consulting the DeltaIndex to
+# keep only delta-changed entities. They cannot be "built once from the diff"
+# because the cut/root analysis is per-finding.
+def causes_for_vlan_cut(ctx, vid, component) -> tuple[Cause, ...]: ...
+def causes_for_severance(ctx, island) -> tuple[Cause, ...]: ...
+def causes_for_loop(ctx, cycle) -> tuple[Cause, ...]: ...
+def causes_for_root_move(ctx, component) -> tuple[Cause, ...]: ...
 ```
 
 The helper lives in `analysis/` (pure), not in any single check, so all checks
@@ -154,7 +165,9 @@ the attribution analog of the project's cardinal verdict rule.
 
 ## Per-check attribution
 
-The 16 wired checks split into two families plus one exclusion. Attribution is
+The 15 registered wired checks (`ALL_WIRED_CHECKS`) split into two families plus
+one exclusion. (`link_boundary` is a shared *helper* used by native/MTU/STP-edge,
+not a registry check, so it has no findings of its own to attribute.) Attribution is
 applied **only to delta-attributed findings**; every `preexisting`/context row
 carries `caused_by=()` by construction (the checks already compute that boolean).
 
@@ -178,7 +191,6 @@ the root with no priority change; it is a Family-2 hybrid rule, #5 below.)
 | `snooping` | device | `dhcp_snooping` |
 | `scope_lint` | dhcp_scope | dhcp_scope changed fields |
 | `gateway_gap` | l3intf / vlan | removed l3intf → empty `fields` |
-| `link_boundary` | link / port | link/port changed fields |
 
 ### Family 2 — graph-effect, many-to-one: five mapping rules
 
@@ -192,14 +204,23 @@ condition needs its own rule, all computed by the shared helper:
    change removed `vid`'s carriage** — edges that carried `vid` in the baseline
    vlan-graph and no longer do, mapped to their backing port(s) (L2 edges are
    port-derived), intersected with the `DeltaIndex`.
-2. **Physical L2 severance** (`l2_isolation`): cause = the delta-changed *links*
-   (removed/disabled) on the boundary between the isolated island and its former
-   domain — a physical-topology cut, independent of any single vlan's carriage.
-3. **Added-member stranding** (`l2_blackhole.new_member_stranded` /
-   `new_member_ports`): the cause is **directly** the added/changed access
-   port(s) that introduced the stranded membership — these are already in the
-   delta (the check computes `new_member_ports`), so the mapping is a direct
-   `new_member_ports ∩ delta`, not a cut analysis.
+2. **Physical L2 severance** (`l2_isolation`): cause = the delta-changed boundary
+   **links OR their endpoint ports** whose change made the physical edge vanish.
+   NOTE the edge usually disappears via a **port**, not a link: `l2_graph` drops
+   an edge when *either endpoint port is `disabled`* (and a removed port removes
+   its links), so the diff typically touches `port.disabled`, not `link`. The rule
+   therefore looks at both — boundary links in `removed`, and endpoint ports in the
+   delta whose `disabled`/removal severs the island — independent of any single
+   vlan's carriage.
+3. **Added-member stranding** (`l2_blackhole.new_member_stranded`): the check
+   detects newly-stranded membership of THREE kinds — `new_member_ports` (access
+   ports), `new_wireless` (observed wireless clients), and `new_wlan`
+   (WLAN-required APs). For **access ports** the cause is direct:
+   `new_member_ports ∩ delta` (the added/changed port). For **wireless/WLAN**
+   members there is no port in the delta to point at unless the AP's own path
+   changed — so attribute to the delta-changed uplink **port/link on that AP's
+   path** if one is identifiable, otherwise `caused_by=()` (honesty rule: the
+   membership became visible via observation/WLAN config, not a nameable L2 delta).
 4. **Loop arming** (`l2_loop`): cause = the delta entity that *armed* the cycle —
    an added edge in the cycle (`added ∩ cycle.member_ports`' links), or a port
    whose `stp_enabled` flipped to unblock it (`cycle.member_ports ∩ delta`).
@@ -325,10 +346,11 @@ uniformly "here is the thing you changed that caused this."
    field, extend `subjects.py:name_findings` (incl. nested `client_impact`
    causes), render (human + dict), the non-load-bearing golden. Lands with empty
    `caused_by` everywhere (no behavior change yet).
-2. **Shared helper:** `analysis/delta_cause.py` (`delta_index` + the five Family-2
-   mapping rules), built once from `ctx.diff` and carried on `CheckContext`; each
-   rule unit-tested in isolation against constructed graphs (incl. the
-   "ambiguous → `()`" cases).
+2. **Shared helper:** `analysis/delta_cause.py` — the `DeltaIndex` (cached diff
+   lookup, built once from `ctx.diff` and carried on `CheckContext`) AND the five
+   Family-2 mapping *functions* (each takes `CheckContext` + the affected
+   component/cycle/vid and consults the `DeltaIndex`). Each function unit-tested in
+   isolation against constructed graphs (incl. the "ambiguous → `()`" cases).
 3. **Family 1 wiring:** the leaf-local checks set `caused_by` from the index
    (mechanical, near-free).
 4. **Family 2 wiring:** the five graph-effect rules (vlan-cut, physical severance,
@@ -356,6 +378,16 @@ uniformly "here is the thing you changed that caused this."
   else topology-change → port/link.
 - **`DeltaIndex` lives on `CheckContext`, not `AnalysisContext`** (round 2):
   `CheckContext` is the only context that owns the `diff`.
+- **`DeltaIndex` (cached diff) is separate from the Family-2 mapping functions**
+  (round 3): only the index is built once; the cut/root mappings are per-finding
+  functions taking `CheckContext` + the affected component/cycle/vid.
+- **Physical severance keys off `port.disabled`/port-removal, not a link field**
+  (round 3): `l2_graph` drops an edge when either endpoint port is `disabled`, so
+  the rule inspects boundary links AND their endpoint ports.
+- **15 registered wired checks, not 16** (round 3): `link_boundary` is a shared
+  helper, not a registry check — excluded from the attribution surface.
+- **Added-member stranding covers wireless/WLAN members** (round 3) with an
+  honesty fallback to `caused_by=()` when no L2 delta on the AP's path is nameable.
 
 ## Open questions / risks
 
