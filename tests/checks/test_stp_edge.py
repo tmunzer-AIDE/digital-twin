@@ -80,3 +80,23 @@ def test_preexisting_stp_edge_is_silent():
 def test_stp_edge_on_an_ap_uplink_is_correct_practice():
     assert _run(_ir(peer_ap=True), _ir(a_edge=True, peer_ap=True)).findings == ()
     assert _run(_ir(peer_ap=True), _ir(a_filter=True, peer_ap=True)).findings == ()
+
+
+# ── caused_by attribution ──────────────────────────────────────────────────────
+
+def test_introduced_bpdu_filter_caused_by_is_non_empty():
+    # delta sets bpdu_filter on S:ge-0/0/1 -> it appears in caused_by
+    result = _run(_ir(), _ir(a_filter=True))
+    f = result.findings[0]
+    assert f.severity is not Severity.INFO
+    assert len(f.caused_by) > 0
+    assert f.caused_by[0].ref.kind == "port"
+    assert f.caused_by[0].ref.id == "S:ge-0/0/1"
+
+
+def test_preexisting_bpdu_filter_caused_by_is_empty():
+    # bpdu_filter unchanged in delta -> INFO row -> caused_by must be ()
+    result = _run(_ir(a_filter=True), _ir(a_filter=True))
+    f = result.findings[0]
+    assert f.severity is Severity.INFO
+    assert f.caused_by == ()

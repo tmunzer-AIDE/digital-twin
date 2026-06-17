@@ -135,6 +135,9 @@ class PoeDisconnectCheck:
                         "observed_power_draw": observed,
                         "affected_wireless_clients": n_clients,
                     },
+                    caused_by=tuple(
+                        c for c in (ctx.delta_index.cause("port", pid),) if c is not None
+                    ),
                 )
             )
         worst = Status.PASS

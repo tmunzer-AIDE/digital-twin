@@ -135,6 +135,13 @@ class NativeVlanMismatchCheck:
                         "a_native": na,
                         "b_native": nb,
                     },
+                    caused_by=tuple(
+                        c for c in (
+                            ctx.delta_index.cause("port", lnk.a_port),
+                            ctx.delta_index.cause("port", lnk.b_port),
+                            ctx.delta_index.cause("link", lnk.id),
+                        ) if c is not None
+                    ) if severity is not Severity.INFO else (),
                 )
             )
         worst = Status.PASS
