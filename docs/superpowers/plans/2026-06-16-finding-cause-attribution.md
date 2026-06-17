@@ -514,14 +514,20 @@ git commit -m "feat(cause-attribution): carry DeltaIndex on CheckContext"
 - Modify: `src/digital_twin/analysis/delta_cause.py`
 - Test: `tests/analysis/test_delta_cause_vlan_cut.py` (create)
 
-The rule (spec rule 1): cause = delta-changed ports incident to **THIS stranded component** whose change removed `vid`'s carriage — baseline vlan-graph edges touching the component's nodes that are gone in the proposed vlan-graph, mapped to their `L2Edge.member_ports`, kept only if in the delta. **Component-local, not whole-graph** — so two independent cuts in one plan never cross-contaminate. If none in the delta, `()`.
+Two mappings (blackhole vs split need different geometry):
+- `causes_for_vlan_cut(ctx, vid, component)` (blackhole `exit_lost`): cause = the **boundary** edges of THIS stranded proposed component that are gone in proposed — baseline vlan-graph edges with **exactly one endpoint inside** the component (`(u in C) ^ (v in C)`), so an unrelated *internal* edge loss is never blamed. Each lost edge contributes its `member_ports` AND `link_ids`, kept only if in the delta.
+- `causes_for_vlan_split(ctx, vid)` (segmentation `.split`): the check has no single `component` — cause = baseline edges gone in proposed whose endpoints now land in **different** proposed fragments (the separating edges).
+
+Both are component-local — two independent cuts in one plan never cross-contaminate — and both return `()` when no lost edge is in the delta (honesty rule).
 
 **Confirmed payload:** vlan-graph edges store an `L2Edge` under `data["data"]` (`src/digital_twin/representations/graph_data.py:L2Edge`) with `member_ports: list[str]` and `link_ids: list[str]`. There is NO `data["link"]`.
 
-- [ ] **Step 1: Write the failing tests** — build baseline/proposed IRs via the existing factories (follow `tests/analysis/test_vlan_reachability*.py`). Three cases:
-  1. vlan 7 loses carriage on trunk port `A:ge-0/0/1` (in the delta) → the stranded component's causes name `A:ge-0/0/1`.
+- [ ] **Step 1: Write the failing tests** — build baseline/proposed IRs via the existing factories (follow `tests/analysis/test_vlan_reachability*.py`). Cases:
+  1. `causes_for_vlan_cut`: vlan 7 stranded fragment lost its boundary trunk port `A:ge-0/0/1` (in the delta) → names `A:ge-0/0/1`.
   2. ambiguous: a partition whose lost edge is NOT in the delta → `()`.
-  3. **two independent cuts** (vlan 7 cut at `A:ge-0/0/1`, vlan 8 cut at `C:ge-0/0/9`, both in the delta) → vlan 7's stranded component names ONLY `A:ge-0/0/1`, not `C:ge-0/0/9`.
+  3. **two independent cuts** (vlan 7 cut at `A:ge-0/0/1`, vlan 8 cut at `C:ge-0/0/9`, both in delta) → vlan 7's fragment names ONLY `A:ge-0/0/1`.
+  4. **internal-edge-loss is NOT named**: an internal edge inside the stranded fragment is lost but the boundary edge is the real cut → only the boundary edge's port is named (validates the `^` boundary rule).
+  5. `causes_for_vlan_split`: a baseline component fragments into two; the separating edge's port is named (and its case where only the **link** id is in the delta, endpoint ports unchanged → the `link` cause is named).
 
 ```python
 # tests/analysis/test_delta_cause_vlan_cut.py  (fill IRs from factories)
@@ -559,29 +565,56 @@ def test_two_independent_cuts_do_not_cross_contaminate():
 
 - [ ] **Step 2: Run to verify it fails** — `uv run pytest tests/analysis/test_delta_cause_vlan_cut.py -q` → FAIL (function missing).
 
-- [ ] **Step 3: Implement** in `delta_cause.py` — a shared **node-local** lost-edge helper (reused by severance in Task 7), then the vlan-cut mapping:
+- [ ] **Step 3: Implement** in `delta_cause.py` — shared **boundary-edge** helpers (reused by severance/root in Tasks 7/8), then BOTH vlan mappings. A cut/severance cause is a *boundary* edge — exactly one endpoint inside the reported fragment — so an unrelated internal edge loss is never blamed. Each lost edge contributes its `member_ports` AND `link_ids` (a link added/removed with unchanged endpoint ports must still be attributable).
 
 ```python
-def _incident_lost_member_ports(base_g, prop_g, nodes) -> set[str]:
-    """member_ports of baseline-graph edges INCIDENT to `nodes` whose node-pair has
-    no edge in the proposed graph (the carrying edge vanished at this component's
-    boundary). Local to `nodes` — never the whole-graph delta."""
+def _boundary_lost_edges(base_g, prop_g, nodes) -> list:
+    """L2Edge payloads of baseline edges with EXACTLY ONE endpoint in `nodes`
+    that are gone in the proposed graph — the boundary cut of this fragment.
+    data['data'] is an L2Edge (graph_data.py)."""
     nodeset = set(nodes)
-    lost: set[str] = set()
+    out = []
     for u, v, data in base_g.edges(data=True):
-        if (u in nodeset or v in nodeset) and not prop_g.has_edge(u, v):
-            lost.update(data["data"].member_ports)  # data["data"] is an L2Edge
-    return lost
+        if ((u in nodeset) ^ (v in nodeset)) and not prop_g.has_edge(u, v):
+            out.append(data["data"])
+    return out
+
+
+def _edge_causes(di, edges) -> tuple[Cause, ...]:
+    """Map L2Edge payloads to delta-present port AND link causes."""
+    ports: set[str] = set()
+    links: set[str] = set()
+    for e in edges:
+        ports.update(e.member_ports)
+        links.update(e.link_ids)
+    return tuple(dict.fromkeys((*di.causes("port", sorted(ports)), *di.causes("link", sorted(links)))))
 
 
 def causes_for_vlan_cut(ctx, vid: int, component) -> tuple[Cause, ...]:
-    lost = _incident_lost_member_ports(
-        ctx.baseline.vlan_graph(vid), ctx.proposed.vlan_graph(vid), component.nodes
-    )
-    return ctx.delta_index.causes("port", sorted(lost))
+    """Blackhole exit_lost: the stranded proposed `component` lost its boundary
+    edge(s) to the rest of the vlan domain."""
+    edges = _boundary_lost_edges(ctx.baseline.vlan_graph(vid), ctx.proposed.vlan_graph(vid), component.nodes)
+    return _edge_causes(ctx.delta_index, edges)
+
+
+def causes_for_vlan_split(ctx, vid: int) -> tuple[Cause, ...]:
+    """Segmentation split: a baseline vlan component fragmented. Cause = baseline
+    edges gone in proposed whose endpoints now sit in DIFFERENT proposed fragments
+    (the edges whose loss did the splitting). Naturally local: only separating
+    edges qualify."""
+    base_g, prop_g = ctx.baseline.vlan_graph(vid), ctx.proposed.vlan_graph(vid)
+    comp_of: dict[str, int] = {}
+    for i, comp in enumerate(ctx.proposed.vlan_components(vid)):
+        for n in comp.nodes:
+            comp_of[n] = i
+    edges = [
+        data["data"] for u, v, data in base_g.edges(data=True)
+        if not prop_g.has_edge(u, v) and comp_of.get(u) != comp_of.get(v)
+    ]
+    return _edge_causes(ctx.delta_index, edges)
 ```
 
-(`component.nodes` is the `VlanComponent.nodes` frozenset the check already holds. `DeltaIndex.causes` filters to delta members and returns `tuple[Cause, ...]`.)
+(`component.nodes` is the `VlanComponent.nodes` frozenset. `DeltaIndex.causes` filters to delta members.)
 
 - [ ] **Step 4: Run + commit**
 
@@ -600,9 +633,9 @@ git commit -m "feat(cause-attribution): causes_for_vlan_cut mapping (Family-2 ru
 
 Rule (spec rule 2): the physical edge usually vanishes via `port.disabled` or port removal (l2_graph drops an edge when either endpoint port is `disabled`). Cause = delta-changed boundary **links OR their endpoint ports** that severed the island from its former domain.
 
-`island` is the newly-isolated node-set (a `VlanComponent`, or a `.nodes` frozenset) the check already computed. Cause = delta-changed ports/links whose disabled/removal dropped a physical L2 edge **incident to the island's nodes** — reusing the node-local `_incident_lost_member_ports` from Task 6 on the L2 graph. Island-local, not whole-graph.
+`island` is the newly-isolated node-set (a `VlanComponent`, or a `.nodes` frozenset) the check already computed. Cause = delta-changed ports/links whose disabled/removal dropped a physical L2 **boundary** edge of the island — reusing `_boundary_lost_edges` + `_edge_causes` from Task 6 on the L2 graph. Boundary-local (exactly one endpoint in the island), ports **and** links.
 
-- [ ] **Step 1: Write the failing tests** — baseline: island node connected to core via `core:ge-0/0/0 <-> idf:ge-0/0/0`; proposed: `idf:ge-0/0/0` set `disabled=True` → island isolated. Assert `causes_for_severance` names `idf:ge-0/0/0` (or `core:ge-0/0/0`). Also: a pre-existing island (no delta) → `()`; and a **second unrelated severance elsewhere** in the same plan does NOT appear in this island's causes.
+- [ ] **Step 1: Write the failing tests** — baseline: island node connected to core via `core:ge-0/0/0 <-> idf:ge-0/0/0`; proposed: `idf:ge-0/0/0` set `disabled=True` → island isolated. Assert `causes_for_severance` names `idf:ge-0/0/0` (or `core:ge-0/0/0`). Also: a pre-existing island (no delta) → `()`; a **second unrelated severance elsewhere** does NOT appear in this island's causes; and a **link-only removal** (endpoint ports unchanged) → the `link` cause is named.
 
 - [ ] **Step 2: Run → FAIL.**
 
@@ -611,20 +644,13 @@ Rule (spec rule 2): the physical edge usually vanishes via `port.disabled` or po
 ```python
 def causes_for_severance(ctx, island) -> tuple[Cause, ...]:
     """Cause = delta-changed ports/links whose removal/disabled state dropped a
-    physical L2 edge incident to the island's nodes."""
+    physical L2 boundary edge of the island."""
     nodes = island.nodes if hasattr(island, "nodes") else island
-    lost = _incident_lost_member_ports(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), nodes)
-    di = ctx.delta_index
-    out = list(di.causes("port", sorted(lost)))
-    # removed links incident to the island that are themselves in the delta
-    nodeset = set(nodes)
-    for u, v, data in ctx.baseline.l2_graph().edges(data=True):
-        if (u in nodeset or v in nodeset) and not ctx.proposed.l2_graph().has_edge(u, v):
-            out.extend(di.causes("link", data["data"].link_ids))
-    return tuple(dict.fromkeys(out))  # dedup, preserve order
+    edges = _boundary_lost_edges(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), nodes)
+    return _edge_causes(ctx.delta_index, edges)
 ```
 
-(`data["data"]` is the `L2Edge`; `link_ids`/`member_ports` are its real fields — confirmed against `graph_data.py`.)
+(`_edge_causes` already contributes both `member_ports` and `link_ids` from each lost `L2Edge`.)
 
 - [ ] **Step 4: Run + commit** — `git commit -m "feat(cause-attribution): causes_for_severance mapping (Family-2 rule 2)"`
 
@@ -637,27 +663,39 @@ def causes_for_severance(ctx, island) -> tuple[Cause, ...]:
 Rule 4 (loop): cause = the delta entity that armed the cycle — an added edge among `cycle.member_ports`' links, or a port in `cycle.member_ports` whose `stp_enabled` changed.
 Rule 5 (root move): dual — a device in the component whose `stp_priority` changed → device cause; else a delta-changed link/port that altered connectivity → that link/port. Union; `()` if neither.
 
-- [ ] **Step 1: Write the failing tests** — (loop) build a cycle where one member port's `stp_enabled` flipped True→? in the delta; assert that port is named. (root) build a 2-device component where `dev_b.stp_priority` changed so the elected root moves; assert `causes_for_root_move` returns device `dev_b`. Add a topology-driven root-move case asserting the changed link/port is returned.
+- [ ] **Step 1: Write the failing tests** —
+  - (loop) a cycle member port whose `stp_enabled` flipped in the delta → that port is named.
+  - (loop) **over-naming guard**: a cycle armed by an added link while a *different* cycle member has an unrelated `mtu`-only change → the mtu port is NOT named; the added link IS.
+  - (root) a 2-device component where `dev_b.stp_priority` changed → `causes_for_root_move` returns device `dev_b`.
+  - (root) topology-driven move: a boundary link/port change → that link/port is returned.
 
 - [ ] **Step 2: Run → FAIL.**
 
 - [ ] **Step 3: Implement** in `delta_cause.py`:
 
 ```python
+_LOOP_PORT_FIELDS = frozenset({"stp_enabled", "stp_edge", "bpdu_filter"})
+
+
 def causes_for_loop(ctx, cycle) -> tuple[Cause, ...]:
-    """Cause = the delta entity that armed THIS cycle: a port on the cycle whose
-    stp_enabled changed, or an added/changed link in the cycle. cycle.member_ports
-    and cycle.link_ids both exist (analysis/cycles.py:Cycle)."""
+    """Cause = the delta entity that ARMED this cycle: a cycle port whose
+    protection field flipped (stp_enabled/stp_edge/bpdu_filter) or that was newly
+    added (empty fields), OR an added/removed link in the cycle. An unrelated mtu
+    change on a cycle member is NOT loop-relevant and is filtered out."""
     di = ctx.delta_index
-    out = list(di.causes("port", sorted(cycle.member_ports)))
-    out.extend(di.causes("link", cycle.link_ids))
+    out = []
+    for p in sorted(cycle.member_ports):
+        c = di.cause("port", p)
+        if c is not None and (not c.fields or (_LOOP_PORT_FIELDS & set(c.fields))):
+            out.append(c)
+    out.extend(di.causes("link", cycle.link_ids))  # added/removed link arming the cycle
     return tuple(dict.fromkeys(out))
 
 
 def causes_for_root_move(ctx, component_nodes) -> tuple[Cause, ...]:
     """Dual, restricted to THIS component: (a) a device in the component whose
-    stp_priority changed; else (b) a delta-changed port on an edge incident to the
-    component whose change altered connectivity."""
+    stp_priority changed; else (b) delta-changed ports/links on a boundary edge of
+    the component (added OR removed connectivity)."""
     di = ctx.delta_index
     out = []
     # (a) priority change on a device in the component
@@ -665,15 +703,14 @@ def causes_for_root_move(ctx, component_nodes) -> tuple[Cause, ...]:
         c = di.cause("device", did)
         if c is not None and ("stp_priority" in c.fields or not c.fields):
             out.append(c)
-    # (b) topology change: ports on edges incident to the component that changed
-    #     (added OR removed at the component boundary), restricted to the component
-    lost = _incident_lost_member_ports(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), component_nodes)
-    gained = _incident_lost_member_ports(ctx.proposed.l2_graph(), ctx.baseline.l2_graph(), component_nodes)
-    out.extend(di.causes("port", sorted(lost | gained)))
+    # (b) topology: boundary edges lost OR gained at the component (ports + links)
+    lost = _boundary_lost_edges(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), component_nodes)
+    gained = _boundary_lost_edges(ctx.proposed.l2_graph(), ctx.baseline.l2_graph(), component_nodes)
+    out.extend(_edge_causes(di, [*lost, *gained]))
     return tuple(dict.fromkeys(out))
 ```
 
-(`cycle.member_ports` and `cycle.link_ids` both exist — confirmed in `analysis/cycles.py:Cycle`. `component_nodes` is the proposed component node-set the check already has, e.g. `comp` in `stp_root.py`. `_incident_lost_member_ports(prop, base, …)` with the graphs swapped yields the *gained* edges — added connectivity.)
+(`cycle.member_ports` and `cycle.link_ids` both exist — confirmed in `analysis/cycles.py:Cycle`. `component_nodes` is the proposed component node-set, e.g. `comp` in `stp_root.py`. `_boundary_lost_edges(prop, base, …)` with the graphs swapped yields the *gained* boundary edges — added connectivity. `_edge_causes` contributes ports and links.)
 
 - [ ] **Step 4: Run + commit** — `git commit -m "feat(cause-attribution): causes_for_loop + causes_for_root_move (Family-2 rules 4/5)"`
 
@@ -825,7 +862,7 @@ The `.gateway_unowned` (ERROR) row (`owners` broke — `vlan.gateway` moved or t
 
 ## Phase 4 — Family-2 wiring + client_impact + goldens
 
-### Task 12: `vlan_segmentation` + `blackhole.exit_lost` wiring (causes_for_vlan_cut)
+### Task 12: `vlan_segmentation` (split) + `blackhole.exit_lost` wiring
 
 **Files:** Modify `l2_vlan_segmentation.py`, `l2_blackhole.py`; extend tests.
 
@@ -833,13 +870,16 @@ The `.gateway_unowned` (ERROR) row (`owners` broke — `vlan.gateway` moved or t
 
 - [ ] **Step 2: Run → FAIL.**
 
-- [ ] **Step 3: Implement** — in `l2_vlan_segmentation.py`, on the split finding (subject `ObjectRef("vlan", str(vid))`), pass the stranded component and vid:
+- [ ] **Step 3: Implement**
+
+`l2_vlan_segmentation.py` — the check emits ONE aggregate `.split` finding per vlan from node-sets (no per-fragment `component` in scope), so use the dedicated split mapping which finds the separating edges itself. Thread `caused_by` through `_finding` (add a `caused_by: tuple[Cause, ...] = ()` param; set it on the `Finding(...)`), and on the split branch:
 ```python
-from digital_twin.analysis.delta_cause import causes_for_vlan_cut
+from digital_twin.analysis.delta_cause import causes_for_vlan_split
 ...
-                    caused_by=causes_for_vlan_cut(ctx, vid, component),
+                        caused_by=causes_for_vlan_split(ctx, vid),   # split branch only; reshape stays ()
 ```
-In `l2_blackhole.py`, the `_finding(...)` helper builds the Finding; thread `caused_by` through it. For the `exit_lost` code path pass `causes_for_vlan_cut(ctx, vid, comp)`; for `preexisting` pass `()`. Add a `caused_by: tuple[Cause, ...] = ()` parameter to `_finding` and set `caused_by=caused_by` on its `Finding(...)`.
+
+`l2_blackhole.py` — the `_finding(...)` helper builds the Finding; add a `caused_by` param and set it. For the `exit_lost` path pass `causes_for_vlan_cut(ctx, vid, comp)` (the stranded proposed component `comp` is in scope); for `preexisting` pass `()`.
 
 - [ ] **Step 4: Run + commit** — `git commit -am "feat(cause-attribution): wire vlan_segmentation + blackhole.exit_lost"`
 
@@ -995,7 +1035,9 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 
 - **Spec coverage:** Cause contract (T1) ✓; name resolution incl. nested (T2) ✓; render human+dict (T3) ✓; DeltaIndex (T4) + CheckContext (T5) ✓; five Family-2 mappings (T6–T8) ✓; Family-1 all 9 checks (T9–T11) ✓; Family-2 wiring incl. client_impact (T12–T15) ✓; goldens incl. non-load-bearing (T16) ✓; adapter parity + L0 exclusion (T17 — L0 untouched by construction) ✓; docs/live/memory (T18) ✓.
 - **Honesty rule:** every mapping returns `()` when no delta entity matches (tested in T6–T8).
-- **Component-local attribution (review P1):** the Family-2 mappings restrict to the finding's own component/island/cycle/component_nodes via `_incident_lost_member_ports(..., nodes)` — NEVER the whole-graph delta. Pinned by the two-independent-cuts test in T6 (and the analogous case in T7).
+- **Component-local + boundary attribution (review P1, rounds 1–2):** the Family-2 mappings restrict to the finding's own component/island/cycle via `_boundary_lost_edges(..., nodes)` (exactly one endpoint inside — internal edge losses are never blamed), NEVER the whole-graph delta. Segmentation `.split` has no `component`, so it uses `causes_for_vlan_split` (separating-edge geometry). Pinned by the two-cut + internal-edge tests (T6) and the analogous T7 case.
+- **Ports AND links (review P2):** `_edge_causes` maps each lost `L2Edge` to both `member_ports` and `link_ids`, so a link added/removed with unchanged endpoint ports is still attributed (T6/T7/T8). Loop also adds `cycle.link_ids`.
+- **Loop over-naming guard (review P2):** `causes_for_loop` filters cycle-member ports to loop-relevant changed fields (`stp_enabled`/`stp_edge`/`bpdu_filter`, or structural add) — an unrelated `mtu` change on a cycle member is not blamed (pinned in T8).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
 - **Type consistency:** `DeltaIndex.cause(kind, oid) -> Cause | None`, `.causes(kind, iterable) -> tuple[Cause, ...]`, `causes_for_*` all return `tuple[Cause, ...]` — used consistently in T9–T15.
 - **Confirmed payloads (no longer guesses):** graph edges store an `L2Edge` under `data["data"]` with `member_ports`/`link_ids` (T6/T7/T8); `Cycle.link_ids` exists (T8); `DhcpScope.vlan` / `L3Intf.ip` / `OspfIntf.{device_id,vlan_id}` / `Vlan.gateway` (T11).
