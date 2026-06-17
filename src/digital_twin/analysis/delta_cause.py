@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from digital_twin.contracts import Cause, ObjectRef
 from digital_twin.ir.diff import IRDiff
@@ -107,6 +107,15 @@ def causes_for_vlan_split(ctx: CheckContext, vid: int) -> tuple[Cause, ...]:
         and u in comp_of and v in comp_of
         and comp_of[u] != comp_of[v]
     ]
+    return _edge_causes(ctx.delta_index, edges)
+
+
+def causes_for_severance(ctx: CheckContext, island: object) -> tuple[Cause, ...]:
+    """Cause = delta-changed ports/links whose removal/disabled state dropped a
+    physical L2 boundary edge of the island."""
+    raw = island.nodes if hasattr(island, "nodes") else island
+    nodes = cast("frozenset[str]", raw)
+    edges = _boundary_lost_edges(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), nodes)
     return _edge_causes(ctx.delta_index, edges)
 
 
