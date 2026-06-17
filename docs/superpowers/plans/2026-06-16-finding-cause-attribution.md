@@ -894,15 +894,18 @@ The `.gateway_unowned` (ERROR) row (`owners` broke — `vlan.gateway` moved or t
 
 `ospf_withdrawal.py` — gates on `diff.touches("ospf_intf")`; attribute the changed `ospf_intf`(s) for the row. EVERY row is per-`(device, vlan)` (`egress_lost` subject device `did`; `advertised_removed`/`transit_mutation` subject vlan `vid` but `evidence={"device": did, "vlan": vid}` — `did` is in scope at each). Match BOTH the device AND the vlan, so two devices participating on the same vlan never cross-blame:
 ```python
-                    # device row (egress_lost): the device's own ospf_intf(s)
+                    # device row (egress_lost): an adjacency COLLAPSE — only the
+                    # device's baseline ACTIVE (non-passive) ospf_intf(s) can cause
+                    # it. A passive/stub row changing on the same device is NOT a
+                    # cause (it never bore an adjacency).
                     caused_by=ctx.delta_index.causes("ospf_intf",
-                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs) if oi.device_id == did]),
+                        [oi.id for oi in base_ir.ospf_intfs if oi.device_id == did and not oi.passive]),
                     # vlan rows (advertised_removed / transit_mutation): THIS (device, vlan) pair only
                     caused_by=ctx.delta_index.causes("ospf_intf",
                         [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
                          if oi.device_id == did and oi.vlan_id == vid]),
 ```
-(`OspfIntf.id` is auto-derived and appears in the diff under kind `"ospf_intf"`. Add a **two-device same-vlan regression**: devices A and B both have OSPF deltas on vlan 50 → A's `advertised_removed` names only A's intf.)
+(`OspfIntf.id` is auto-derived and appears in the diff under kind `"ospf_intf"`; `OspfIntf.passive` distinguishes active adjacencies from stub rows. Regressions: (1) **two-device same-vlan** — A and B both have OSPF deltas on vlan 50 → A's `advertised_removed` names only A's intf; (2) **egress_lost over-naming** — a device's active adjacency collapses while an unrelated **passive** row on the same device also changes → `egress_lost` names only the active intf, not the passive one.)
 
 - [ ] **Step 4: Run + commit** — `git commit -am "feat(cause-attribution): wire Family-1 symptom-subject checks (gateway_gap/dhcp_path/ospf)"`
 
@@ -1100,6 +1103,7 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 - **Split AND merge geometry (review round 5):** boundary-XOR catches splits/removals; a *merge* (added edge with both endpoints inside the proposed component) needs the different-baseline-components test — `causes_for_vlan_split` and `causes_for_root_move`'s `_gained_merging_edges` both use it. Pinned by the root-merge test (T8).
 - **Blackhole = carriage cut OR exit removal (review round 7):** `causes_for_blackhole` unions `causes_for_vlan_cut` with delta-removed exit `l3intf`s; used by both `blackhole.exit_unlocatable` (T12) and `client_impact` blackhole (T15) so a removed-IRB blackhole is attributed, not just carriage cuts. `causes_for_vlan_split` requires both endpoints to survive (a removed leaf is not a separating edge); articulation-node-removal splits are honest-empty (documented follow-up). Pinned by T6 cases 6–7.
 - **Per-(device,vlan) and per-election scoping (review round 8):** OSPF vlan rows match `oi.device_id == did AND oi.vlan_id == vid` (two devices on one vlan never cross-blame, T11); `causes_for_root_move` scopes priority causes to the elected `base_root`/`prop_root` only (a third switch's unrelated priority change is not blamed, T8). Both have over-naming regressions.
+- **`egress_lost` = active-adjacency collapse only (review round 9):** scoped to the device's baseline NON-passive ospf_intfs in the delta — a passive/stub row changing on the same device is not blamed (T11 over-naming regression).
 - **Loop over-naming guard (review P2, round 6):** `causes_for_loop` filters cycle-member ports to ONLY `stp_enabled` (the single field `L2LoopCheck._rank/_judge` reads) plus structural add — `stp_edge`/`bpdu_filter`/`mtu` changes on a cycle member are not blamed (pinned in T8).
 - **All delta-attributed blackhole codes covered (review P2, round 6):** `exit_lost` (vlan-cut), `new_member_stranded` (direct/severance), AND `exit_unlocatable` (removed exit `l3intf` + stranded-component vlan-cut) carry causes; the `preexisting*` INFO rows carry `()`. The exit-never-locatable case is pinned to `()` (T12).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
