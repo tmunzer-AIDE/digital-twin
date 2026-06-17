@@ -667,7 +667,8 @@ Rule 5 (root move): dual — a device in the component whose `stp_priority` chan
   - (loop) a cycle member port whose `stp_enabled` flipped in the delta → that port is named.
   - (loop) **over-naming guard**: a cycle armed by an added link while a *different* cycle member has an unrelated `mtu`-only change → the mtu port is NOT named; the added link IS.
   - (root) a 2-device component where `dev_b.stp_priority` changed → `causes_for_root_move` returns device `dev_b`.
-  - (root) topology-driven move: a boundary link/port change → that link/port is returned.
+  - (root) topology-driven **split/removal**: a boundary link/port change moves a fragment's root → that link/port is returned.
+  - (root) topology-driven **merge**: an added link joins two baseline components (both endpoints now inside the proposed component) and the merged root differs → the added link/ports ARE returned (the XOR boundary test alone would miss this).
 
 - [ ] **Step 2: Run → FAIL.**
 
@@ -692,25 +693,44 @@ def causes_for_loop(ctx, cycle) -> tuple[Cause, ...]:
     return tuple(dict.fromkeys(out))
 
 
+def _gained_merging_edges(base_g, prop_g, nodes) -> list:
+    """L2Edge payloads of PROPOSED edges touching `nodes`, absent in baseline, whose
+    endpoints were in DIFFERENT baseline components — the edges that MERGED
+    formerly-separate components. (A merge's added edge has BOTH endpoints inside
+    the proposed component, so the XOR boundary test would miss it.)"""
+    import networkx as nx
+    comp_of: dict[str, int] = {}
+    for i, comp in enumerate(nx.connected_components(base_g)):
+        for n in comp:
+            comp_of[n] = i
+    nodeset = set(nodes)
+    out = []
+    for u, v, data in prop_g.edges(data=True):
+        if (u in nodeset or v in nodeset) and not base_g.has_edge(u, v) and comp_of.get(u) != comp_of.get(v):
+            out.append(data["data"])
+    return out
+
+
 def causes_for_root_move(ctx, component_nodes) -> tuple[Cause, ...]:
     """Dual, restricted to THIS component: (a) a device in the component whose
-    stp_priority changed; else (b) delta-changed ports/links on a boundary edge of
-    the component (added OR removed connectivity)."""
+    stp_priority changed; (b) topology — a boundary edge LOST (split/removal) or a
+    MERGING edge GAINED (two baseline components joined). Both can move the root."""
     di = ctx.delta_index
+    base_l2, prop_l2 = ctx.baseline.l2_graph(), ctx.proposed.l2_graph()
     out = []
     # (a) priority change on a device in the component
     for did in sorted(component_nodes):
         c = di.cause("device", did)
         if c is not None and ("stp_priority" in c.fields or not c.fields):
             out.append(c)
-    # (b) topology: boundary edges lost OR gained at the component (ports + links)
-    lost = _boundary_lost_edges(ctx.baseline.l2_graph(), ctx.proposed.l2_graph(), component_nodes)
-    gained = _boundary_lost_edges(ctx.proposed.l2_graph(), ctx.baseline.l2_graph(), component_nodes)
+    # (b) topology: lost boundary edges (split/removal) + gained merging edges (merge)
+    lost = _boundary_lost_edges(base_l2, prop_l2, component_nodes)
+    gained = _gained_merging_edges(base_l2, prop_l2, component_nodes)
     out.extend(_edge_causes(di, [*lost, *gained]))
     return tuple(dict.fromkeys(out))
 ```
 
-(`cycle.member_ports` and `cycle.link_ids` both exist — confirmed in `analysis/cycles.py:Cycle`. `component_nodes` is the proposed component node-set, e.g. `comp` in `stp_root.py`. `_boundary_lost_edges(prop, base, …)` with the graphs swapped yields the *gained* boundary edges — added connectivity. `_edge_causes` contributes ports and links.)
+(`cycle.member_ports` and `cycle.link_ids` both exist — confirmed in `analysis/cycles.py:Cycle`. `component_nodes` is the proposed component node-set, e.g. `comp` in `stp_root.py`. The lost/gained split mirrors `causes_for_vlan_split`'s separating-edge geometry — a merge's added edge sits *inside* the merged component, so it needs the different-baseline-components test, not XOR. `_edge_causes` contributes ports and links.)
 
 - [ ] **Step 4: Run + commit** — `git commit -m "feat(cause-attribution): causes_for_loop + causes_for_root_move (Family-2 rules 4/5)"`
 
@@ -1037,6 +1057,7 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 - **Honesty rule:** every mapping returns `()` when no delta entity matches (tested in T6–T8).
 - **Component-local + boundary attribution (review P1, rounds 1–2):** the Family-2 mappings restrict to the finding's own component/island/cycle via `_boundary_lost_edges(..., nodes)` (exactly one endpoint inside — internal edge losses are never blamed), NEVER the whole-graph delta. Segmentation `.split` has no `component`, so it uses `causes_for_vlan_split` (separating-edge geometry). Pinned by the two-cut + internal-edge tests (T6) and the analogous T7 case.
 - **Ports AND links (review P2):** `_edge_causes` maps each lost `L2Edge` to both `member_ports` and `link_ids`, so a link added/removed with unchanged endpoint ports is still attributed (T6/T7/T8). Loop also adds `cycle.link_ids`.
+- **Split AND merge geometry (review round 5):** boundary-XOR catches splits/removals; a *merge* (added edge with both endpoints inside the proposed component) needs the different-baseline-components test — `causes_for_vlan_split` and `causes_for_root_move`'s `_gained_merging_edges` both use it. Pinned by the root-merge test (T8).
 - **Loop over-naming guard (review P2):** `causes_for_loop` filters cycle-member ports to loop-relevant changed fields (`stp_enabled`/`stp_edge`/`bpdu_filter`, or structural add) — an unrelated `mtu` change on a cycle member is not blamed (pinned in T8).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
 - **Type consistency:** `DeltaIndex.cause(kind, oid) -> Cause | None`, `.causes(kind, iterable) -> tuple[Cause, ...]`, `causes_for_*` all return `tuple[Cause, ...]` — used consistently in T9–T15.
