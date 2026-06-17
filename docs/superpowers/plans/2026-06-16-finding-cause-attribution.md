@@ -527,7 +527,9 @@ Both are component-local — two independent cuts in one plan never cross-contam
   2. ambiguous: a partition whose lost edge is NOT in the delta → `()`.
   3. **two independent cuts** (vlan 7 cut at `A:ge-0/0/1`, vlan 8 cut at `C:ge-0/0/9`, both in delta) → vlan 7's fragment names ONLY `A:ge-0/0/1`.
   4. **internal-edge-loss is NOT named**: an internal edge inside the stranded fragment is lost but the boundary edge is the real cut → only the boundary edge's port is named (validates the `^` boundary rule).
-  5. `causes_for_vlan_split`: a baseline component fragments into two; the separating edge's port is named (and its case where only the **link** id is in the delta, endpoint ports unchanged → the `link` cause is named).
+  5. `causes_for_vlan_split`: a baseline component fragments into two; the separating edge's port is named (and the case where only the **link** id is in the delta, endpoint ports unchanged → the `link` cause is named).
+  6. `causes_for_vlan_split` over-naming guard: a **real split** at edge X **plus an unrelated removed leaf node** Y in the same baseline component → only X is named, NOT Y's removed edge (the both-endpoints-survive rule).
+  7. `causes_for_blackhole`: a component blackholed by a **removed IRB `l3intf`** (carriage unchanged) → the removed `l3intf` is named; combined with a carriage cut → both named.
 
 ```python
 # tests/analysis/test_delta_cause_vlan_cut.py  (fill IRs from factories)
@@ -599,9 +601,13 @@ def causes_for_vlan_cut(ctx, vid: int, component) -> tuple[Cause, ...]:
 
 def causes_for_vlan_split(ctx, vid: int) -> tuple[Cause, ...]:
     """Segmentation split: a baseline vlan component fragmented. Cause = baseline
-    edges gone in proposed whose endpoints now sit in DIFFERENT proposed fragments
-    (the edges whose loss did the splitting). Naturally local: only separating
-    edges qualify."""
+    edges gone in proposed whose endpoints BOTH survive in proposed but now sit in
+    DIFFERENT proposed fragments (the separating edges). Requiring both endpoints
+    present in `comp_of` avoids blaming a removed *leaf* edge (whose vanished
+    endpoint has no fragment): a leaf removal is a contraction, not a split. (A
+    split caused purely by removing an articulation NODE yields no separating edge
+    here → `()`, honest-empty; that device-removal case is a documented follow-up,
+    never a wrong-cause.)"""
     base_g, prop_g = ctx.baseline.vlan_graph(vid), ctx.proposed.vlan_graph(vid)
     comp_of: dict[str, int] = {}
     for i, comp in enumerate(ctx.proposed.vlan_components(vid)):
@@ -609,9 +615,25 @@ def causes_for_vlan_split(ctx, vid: int) -> tuple[Cause, ...]:
             comp_of[n] = i
     edges = [
         data["data"] for u, v, data in base_g.edges(data=True)
-        if not prop_g.has_edge(u, v) and comp_of.get(u) != comp_of.get(v)
+        if not prop_g.has_edge(u, v)
+        and u in comp_of and v in comp_of      # both endpoints SURVIVE
+        and comp_of[u] != comp_of[v]           # ...in different fragments
     ]
     return _edge_causes(ctx.delta_index, edges)
+
+
+def causes_for_blackhole(ctx, vid: int, component) -> tuple[Cause, ...]:
+    """A component lost its path to an exit. TWO causes combine: (1) lost VLAN
+    carriage to the exit (causes_for_vlan_cut), and (2) the exit itself removed —
+    a delta-removed exit-providing l3intf for this vid. Shared by blackhole
+    exit_unlocatable (Task 12) and client_impact blackhole (Task 15)."""
+    di = ctx.delta_index
+    prop_l3_ids = {p.id for p in ctx.proposed.ir.l3intfs}
+    removed_l3 = [i.id for i in ctx.baseline.ir.l3intfs if i.vlan_id == vid and i.id not in prop_l3_ids]
+    return tuple(dict.fromkeys((
+        *causes_for_vlan_cut(ctx, vid, component),
+        *di.causes("l3intf", removed_l3),
+    )))
 ```
 
 (`component.nodes` is the `VlanComponent.nodes` frozenset. `DeltaIndex.causes` filters to delta members.)
@@ -903,16 +925,13 @@ from digital_twin.analysis.delta_cause import causes_for_vlan_split
 
 `l2_blackhole.py` — the `_finding(...)` helper builds the Finding; add a `caused_by` param and set it. Three delta-attributed codes:
 - **`exit_lost`** — pass `causes_for_vlan_cut(ctx, vid, comp)` (the stranded proposed component `comp` is in scope).
-- **`exit_unlocatable`** — delta-gated (`_vlan_changed`) and currently unattributed. The exit vanished, so name what the delta removed: the exit-providing `l3intf`(s) for this vid that are in the delta, PLUS the lost boundary carriage of each stranded component. Build:
+- **`exit_unlocatable`** — delta-gated (`_vlan_changed`) and currently unattributed. The exit vanished, so reuse the shared blackhole mapping over the stranded components:
   ```python
-  removed_l3 = [i.id for i in ctx.baseline.ir.l3intfs
-                if i.vlan_id == vid and i.id not in {p.id for p in ctx.proposed.ir.l3intfs}]
-  unlocatable_causes = tuple(dict.fromkeys((
-      *ctx.delta_index.causes("l3intf", removed_l3),
-      *(c for sc in stranded for c in causes_for_vlan_cut(ctx, vid, sc)),
-  )))
+  unlocatable_causes = tuple(dict.fromkeys(
+      c for sc in stranded for c in causes_for_blackhole(ctx, vid, sc)
+  ))
   ```
-  Pass `unlocatable_causes`. If the exit was never locatable (baseline exit also NONE → the delta did not remove it), `removed_l3` is empty and the vlan-cut boundary edges are not in the delta → `()` (honesty).
+  Pass `unlocatable_causes` (`causes_for_blackhole` = lost carriage + removed exit `l3intf`). If the exit was never locatable (baseline exit also NONE → the delta did not remove it) and carriage was not cut in the delta → `()` (honesty).
 - **`preexisting` / `preexisting_unlocatable`** (INFO context) — pass `()`.
 
 - [ ] **Add blackhole tests**: `exit_lost` names the boundary trunk port; `exit_unlocatable` caused by a removed IRB `l3intf` names that l3intf; an `exit_unlocatable` on a vlan whose exit was *already* NONE in baseline (only cosmetically touched) → `caused_by == ()`.
@@ -970,11 +989,12 @@ from digital_twin.analysis.delta_cause import causes_for_vlan_split
 
 The impact KIND determines the cause (`_impact_of` already computes it):
 - **`disconnect` / `vlan_move`** — the client's own access port changed → cause = `ctx.delta_index.cause("port", client.attach_id)`.
-- **`blackhole`** — the client is stranded because an **upstream** edge changed, NOT its access port → cause = `causes_for_vlan_cut(ctx, vlan, comp)` on the client's stranded proposed component `comp` (in scope at the blackhole return). This is the case the feature most needs — attributing only the access port would return empty here.
+- **`blackhole`** — the client is stranded because an **upstream** change cut its path to the exit, NOT its access port → cause = `causes_for_blackhole(ctx, vlan, comp)` on the client's stranded proposed component `comp` (in scope at the blackhole return). This combines the lost VLAN carriage AND a removed exit `l3intf` (the check fires for both); attributing only the access port — or only the carriage cut — would miss the exit-removal case.
 
 - [ ] **Step 1: Write failing tests** —
   1. two clients whose **own access ports** changed (vlan_move) → each `evidence["impacts"][i]["caused_by"]` names its own port; top-level `Finding.caused_by` = deduped union.
-  2. a client blackholed by an **upstream trunk** change (access port unchanged) → its nested `caused_by` names the upstream trunk port (via `causes_for_vlan_cut`), NOT empty.
+  2. a client blackholed by an **upstream trunk** change (access port unchanged) → its nested `caused_by` names the upstream trunk port, NOT empty.
+  3. a client blackholed by a **removed IRB `l3intf`** (carriage unchanged) → its nested `caused_by` names the removed `l3intf` (via `causes_for_blackhole`).
 
 - [ ] **Step 2: Run → FAIL.**
 
@@ -994,12 +1014,12 @@ In `_impact_of`, at each return:
             return self._entry(client, "disconnect", "attach port removed",
                 caused_by=ctx.delta_index.causes("port", [client.attach_id]))
         # ... vlan_move similarly with the same causes(...) call ...
-        # blackhole (upstream cut — reuse the component mapping):
+        # blackhole (upstream cut OR exit removed — reuse the shared mapping):
                                 return self._entry(client, "blackhole",
                                     f"vlan {vlan} segment loses its exit",
-                                    caused_by=causes_for_vlan_cut(ctx, vlan, comp))
+                                    caused_by=causes_for_blackhole(ctx, vlan, comp))
 ```
-Add `from digital_twin.analysis.delta_cause import causes_for_vlan_cut` to the imports.
+Add `from digital_twin.analysis.delta_cause import causes_for_blackhole` to the imports.
 
 Then in `run`, build the top-level union and pass it to the aggregate `Finding`:
 ```python
@@ -1074,6 +1094,7 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 - **Component-local + boundary attribution (review P1, rounds 1–2):** the Family-2 mappings restrict to the finding's own component/island/cycle via `_boundary_lost_edges(..., nodes)` (exactly one endpoint inside — internal edge losses are never blamed), NEVER the whole-graph delta. Segmentation `.split` has no `component`, so it uses `causes_for_vlan_split` (separating-edge geometry). Pinned by the two-cut + internal-edge tests (T6) and the analogous T7 case.
 - **Ports AND links (review P2):** `_edge_causes` maps each lost `L2Edge` to both `member_ports` and `link_ids`, so a link added/removed with unchanged endpoint ports is still attributed (T6/T7/T8). Loop also adds `cycle.link_ids`.
 - **Split AND merge geometry (review round 5):** boundary-XOR catches splits/removals; a *merge* (added edge with both endpoints inside the proposed component) needs the different-baseline-components test — `causes_for_vlan_split` and `causes_for_root_move`'s `_gained_merging_edges` both use it. Pinned by the root-merge test (T8).
+- **Blackhole = carriage cut OR exit removal (review round 7):** `causes_for_blackhole` unions `causes_for_vlan_cut` with delta-removed exit `l3intf`s; used by both `blackhole.exit_unlocatable` (T12) and `client_impact` blackhole (T15) so a removed-IRB blackhole is attributed, not just carriage cuts. `causes_for_vlan_split` requires both endpoints to survive (a removed leaf is not a separating edge); articulation-node-removal splits are honest-empty (documented follow-up). Pinned by T6 cases 6–7.
 - **Loop over-naming guard (review P2, round 6):** `causes_for_loop` filters cycle-member ports to ONLY `stp_enabled` (the single field `L2LoopCheck._rank/_judge` reads) plus structural add — `stp_edge`/`bpdu_filter`/`mtu` changes on a cycle member are not blamed (pinned in T8).
 - **All delta-attributed blackhole codes covered (review P2, round 6):** `exit_lost` (vlan-cut), `new_member_stranded` (direct/severance), AND `exit_unlocatable` (removed exit `l3intf` + stranded-component vlan-cut) carry causes; the `preexisting*` INFO rows carry `()`. The exit-never-locatable case is pinned to `()` (T12).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
