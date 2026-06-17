@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from digital_twin.checks.base import CheckContext
     from digital_twin.representations.graph_data import L2Edge
 
+    from .cycles import Cycle
     from .vlan_reachability import VlanComponent
 
 
@@ -134,3 +135,69 @@ def causes_for_blackhole(
         *causes_for_vlan_cut(ctx, vid, component),
         *di.causes("l3intf", removed_l3),
     )))
+
+
+# L2LoopCheck ranks cycles ONLY from Port.stp_enabled (l2_loop.py:_rank/_judge) —
+# stp_edge/bpdu_filter do NOT change its verdict, so they are NOT loop-arming causes.
+_LOOP_PORT_FIELDS = frozenset({"stp_enabled"})
+
+
+def causes_for_loop(ctx: CheckContext, cycle: Cycle) -> tuple[Cause, ...]:
+    """Cause = the delta entity that ARMED this cycle: a cycle port whose
+    `stp_enabled` flipped or that was newly added (structural, empty fields), OR an
+    added/removed link in the cycle. An unrelated field change on a cycle member
+    (mtu, stp_edge, …) is NOT loop-relevant and is filtered out."""
+    di = ctx.delta_index
+    out: list[Cause] = []
+    for p in sorted(cycle.member_ports):
+        c = di.cause("port", p)
+        if c is not None and (not c.fields or (_LOOP_PORT_FIELDS & set(c.fields))):
+            out.append(c)
+    out.extend(di.causes("link", cycle.link_ids))  # added/removed link arming the cycle
+    return tuple(dict.fromkeys(out))
+
+
+def _gained_merging_edges(
+    base_g: nx.MultiGraph, prop_g: nx.MultiGraph, nodes: frozenset[str]
+) -> list[L2Edge]:
+    """L2Edge payloads of PROPOSED edges touching `nodes`, absent in baseline, whose
+    endpoints were in DIFFERENT baseline components — the edges that MERGED
+    formerly-separate components. (A merge's added edge has BOTH endpoints inside
+    the proposed component, so the XOR boundary test would miss it.)"""
+    import networkx as nx
+
+    comp_of: dict[str, int] = {}
+    for i, comp in enumerate(nx.connected_components(base_g)):
+        for n in comp:
+            comp_of[n] = i
+    nodeset = set(nodes)
+    out: list[L2Edge] = []
+    for u, v, data in prop_g.edges(data=True):
+        if (
+            (u in nodeset or v in nodeset)
+            and not base_g.has_edge(u, v)
+            and comp_of.get(u) != comp_of.get(v)
+        ):
+            out.append(data["data"])
+    return out
+
+
+def causes_for_root_move(
+    ctx: CheckContext, component_nodes: frozenset[str], base_root: str, prop_root: str
+) -> tuple[Cause, ...]:
+    """Dual, restricted to THIS component: (a) a priority change on an
+    ELECTION-RELEVANT device — only the old or new root (`base_root`/`prop_root`),
+    since a non-root device changing priority cannot move the election; (b) topology
+    — a boundary edge LOST (split/removal) or a MERGING edge GAINED (two baseline
+    components joined)."""
+    di = ctx.delta_index
+    base_l2, prop_l2 = ctx.baseline.l2_graph(), ctx.proposed.l2_graph()
+    out: list[Cause] = []
+    for did in (base_root, prop_root):
+        c = di.cause("device", did)
+        if c is not None and ("stp_priority" in c.fields or not c.fields):
+            out.append(c)
+    lost = _boundary_lost_edges(base_l2, prop_l2, component_nodes)
+    gained = _gained_merging_edges(base_l2, prop_l2, component_nodes)
+    out.extend(_edge_causes(di, [*lost, *gained]))
+    return tuple(dict.fromkeys(out))
