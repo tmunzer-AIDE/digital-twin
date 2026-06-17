@@ -47,6 +47,18 @@ class ObjectRef:
 
 
 @dataclass(frozen=True)
+class Cause:
+    """A changed entity responsible for a finding. `ref` locates the changed
+    object (same ObjectRef vocabulary as Finding.subject); `fields` are the
+    NORMALIZED IR field name(s) that changed (e.g. ("native_vlan",), ("poe",),
+    ("stp_priority",)) — empty for pure add/remove deltas. Additive, evidence-only:
+    never read by the verdict layer."""
+
+    ref: ObjectRef
+    fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Finding:
     source: FindingSource
     category: FindingCategory
@@ -58,3 +70,4 @@ class Finding:
     evidence: Mapping[str, Any] = field(default_factory=dict)
     remediation: str | None = None
     subject: ObjectRef | None = None  # the headline object (which device/vlan/...)
+    caused_by: tuple[Cause, ...] = ()  # changed entities that produced this finding
