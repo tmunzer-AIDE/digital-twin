@@ -678,7 +678,7 @@ def causes_for_severance(ctx, island) -> tuple[Cause, ...]:
 
 ---
 
-### Task 8: Family-2 mapping — `causes_for_loop(ctx, cycle)` and `causes_for_root_move(ctx, component)`
+### Task 8: Family-2 mapping — `causes_for_loop(ctx, cycle)` and `causes_for_root_move(ctx, component, base_root, prop_root)`
 
 **Files:** Modify `delta_cause.py`; Test `tests/analysis/test_delta_cause_loop_root.py`.
 
@@ -688,7 +688,8 @@ Rule 5 (root move): dual — a device in the component whose `stp_priority` chan
 - [ ] **Step 1: Write the failing tests** —
   - (loop) a cycle member port whose `stp_enabled` flipped in the delta → that port is named.
   - (loop) **over-naming guard**: a cycle armed by an added link while a *different* cycle member has an unrelated `stp_edge`-only change (a field the loop check does NOT read) → the stp_edge port is NOT named; the added link IS. (Also covers `mtu`.)
-  - (root) a 2-device component where `dev_b.stp_priority` changed → `causes_for_root_move` returns device `dev_b`.
+  - (root) `dev_b` becomes the new root because its `stp_priority` changed → `causes_for_root_move(ctx, comp, base_root, prop_root)` returns `dev_b`.
+  - (root) **over-naming guard**: a THIRD switch in the same component changes its `stp_priority` but is neither old nor new root → it is NOT named.
   - (root) topology-driven **split/removal**: a boundary link/port change moves a fragment's root → that link/port is returned.
   - (root) topology-driven **merge**: an added link joins two baseline components (both endpoints now inside the proposed component) and the merged root differs → the added link/ports ARE returned (the XOR boundary test alone would miss this).
 
@@ -735,15 +736,17 @@ def _gained_merging_edges(base_g, prop_g, nodes) -> list:
     return out
 
 
-def causes_for_root_move(ctx, component_nodes) -> tuple[Cause, ...]:
-    """Dual, restricted to THIS component: (a) a device in the component whose
-    stp_priority changed; (b) topology — a boundary edge LOST (split/removal) or a
-    MERGING edge GAINED (two baseline components joined). Both can move the root."""
+def causes_for_root_move(ctx, component_nodes, base_root, prop_root) -> tuple[Cause, ...]:
+    """Dual, restricted to THIS component: (a) a priority change on an
+    ELECTION-RELEVANT device — only the old or new root (`base_root`/`prop_root`),
+    since a non-root device changing priority cannot move the election; (b) topology
+    — a boundary edge LOST (split/removal) or a MERGING edge GAINED (two baseline
+    components joined). Both can move the root."""
     di = ctx.delta_index
     base_l2, prop_l2 = ctx.baseline.l2_graph(), ctx.proposed.l2_graph()
     out = []
-    # (a) priority change on a device in the component
-    for did in sorted(component_nodes):
+    # (a) priority change on the election-relevant devices ONLY (old/new root)
+    for did in (base_root, prop_root):
         c = di.cause("device", did)
         if c is not None and ("stp_priority" in c.fields or not c.fields):
             out.append(c)
@@ -889,16 +892,17 @@ The `.gateway_unowned` (ERROR) row (`owners` broke — `vlan.gateway` moved or t
 ```
 (If nothing matches the delta, `causes(...)` yields `()` and the walrus guards drop to nothing → honesty fallback.)
 
-`ospf_withdrawal.py` — gates on `diff.touches("ospf_intf")`; attribute the changed `ospf_intf`(s) for the row. Device rows (`egress_lost`, subject device `did`) match `oi.device_id == did`; vlan rows (`advertised_removed`/`transit_mutation`, subject vlan `vid`) match `oi.vlan_id == vid`:
+`ospf_withdrawal.py` — gates on `diff.touches("ospf_intf")`; attribute the changed `ospf_intf`(s) for the row. EVERY row is per-`(device, vlan)` (`egress_lost` subject device `did`; `advertised_removed`/`transit_mutation` subject vlan `vid` but `evidence={"device": did, "vlan": vid}` — `did` is in scope at each). Match BOTH the device AND the vlan, so two devices participating on the same vlan never cross-blame:
 ```python
-                    # device row:
+                    # device row (egress_lost): the device's own ospf_intf(s)
                     caused_by=ctx.delta_index.causes("ospf_intf",
                         [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs) if oi.device_id == did]),
-                    # vlan row:
+                    # vlan rows (advertised_removed / transit_mutation): THIS (device, vlan) pair only
                     caused_by=ctx.delta_index.causes("ospf_intf",
-                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs) if oi.vlan_id == vid]),
+                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                         if oi.device_id == did and oi.vlan_id == vid]),
 ```
-(`OspfIntf.id` is auto-derived; confirm it is in the diff under kind `"ospf_intf"`. The check already gates on that kind, so a withdrawal implies a delta `ospf_intf`.)
+(`OspfIntf.id` is auto-derived and appears in the diff under kind `"ospf_intf"`. Add a **two-device same-vlan regression**: devices A and B both have OSPF deltas on vlan 50 → A's `advertised_removed` names only A's intf.)
 
 - [ ] **Step 4: Run + commit** — `git commit -am "feat(cause-attribution): wire Family-1 symptom-subject checks (gateway_gap/dhcp_path/ospf)"`
 
@@ -977,7 +981,7 @@ from digital_twin.analysis.delta_cause import causes_for_vlan_split
 - [ ] **Step 3: Implement**
 
 `l2_loop.py` (on the cycle finding): `caused_by=causes_for_loop(ctx, cycle)`.
-`stp_root.py` (on the `.moved` finding): `caused_by=causes_for_root_move(ctx, comp)` (`comp` is the proposed component node-set).
+`stp_root.py` (on the `.moved` finding): `caused_by=causes_for_root_move(ctx, comp, base_root, prop_root)` — `comp` is the proposed component node-set; `base_root`/`prop_root` are already computed at the finding site (the election result), so priority causes are scoped to the devices that actually drove the move.
 
 - [ ] **Step 4: Run + commit** — `git commit -am "feat(cause-attribution): wire l2_loop + stp_root"`
 
@@ -1095,6 +1099,7 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 - **Ports AND links (review P2):** `_edge_causes` maps each lost `L2Edge` to both `member_ports` and `link_ids`, so a link added/removed with unchanged endpoint ports is still attributed (T6/T7/T8). Loop also adds `cycle.link_ids`.
 - **Split AND merge geometry (review round 5):** boundary-XOR catches splits/removals; a *merge* (added edge with both endpoints inside the proposed component) needs the different-baseline-components test — `causes_for_vlan_split` and `causes_for_root_move`'s `_gained_merging_edges` both use it. Pinned by the root-merge test (T8).
 - **Blackhole = carriage cut OR exit removal (review round 7):** `causes_for_blackhole` unions `causes_for_vlan_cut` with delta-removed exit `l3intf`s; used by both `blackhole.exit_unlocatable` (T12) and `client_impact` blackhole (T15) so a removed-IRB blackhole is attributed, not just carriage cuts. `causes_for_vlan_split` requires both endpoints to survive (a removed leaf is not a separating edge); articulation-node-removal splits are honest-empty (documented follow-up). Pinned by T6 cases 6–7.
+- **Per-(device,vlan) and per-election scoping (review round 8):** OSPF vlan rows match `oi.device_id == did AND oi.vlan_id == vid` (two devices on one vlan never cross-blame, T11); `causes_for_root_move` scopes priority causes to the elected `base_root`/`prop_root` only (a third switch's unrelated priority change is not blamed, T8). Both have over-naming regressions.
 - **Loop over-naming guard (review P2, round 6):** `causes_for_loop` filters cycle-member ports to ONLY `stp_enabled` (the single field `L2LoopCheck._rank/_judge` reads) plus structural add — `stp_edge`/`bpdu_filter`/`mtu` changes on a cycle member are not blamed (pinned in T8).
 - **All delta-attributed blackhole codes covered (review P2, round 6):** `exit_lost` (vlan-cut), `new_member_stranded` (direct/severance), AND `exit_unlocatable` (removed exit `l3intf` + stranded-component vlan-cut) carry causes; the `preexisting*` INFO rows carry `()`. The exit-never-locatable case is pinned to `()` (T12).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
