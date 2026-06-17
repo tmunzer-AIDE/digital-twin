@@ -110,7 +110,17 @@ source of truth single and the feature bounded.
 exactly like subject names: `checks/subjects.py:name_findings` is extended to
 resolve friendly names for `caused_by` refs too (ports/vlans/links have IR names;
 devices resolve to `name=None` → renderers show the id/MAC, per the PR #3
-decision that `Device.model` is not a name).
+decision that `Device.model` is not a name). Concretely, `name_findings` (which
+today only rewrites `f.subject`) gains two more passes, reusing the same
+`resolve_subject`/`_name_for` machinery so there is one naming code path:
+
+1. every `cause.ref` in `f.caused_by` (top-level), and
+2. the **nested** per-impact causes — `evidence["impacts"][i]["caused_by"]` —
+   which `client_impact` carries (the single known nested shape; the traversal is
+   guarded so other findings' evidence is untouched).
+
+So a `Cause.ref` is named identically wherever it appears; there is no
+"named at top, id-only nested" split.
 
 ### The single source of truth: `IRDiff`
 
@@ -126,8 +136,13 @@ def delta_index(diff: IRDiff) -> DeltaIndex: ...
 # and with which changed_fields? Plus reverse lookups used by Family 2 below.
 ```
 
-The helper lives in `analysis/` (pure, memoized per run on `AnalysisContext`),
-not in any single check, so all checks share one definition of "what changed."
+The helper lives in `analysis/` (pure), not in any single check, so all checks
+share one definition of "what changed." It is built **once per run from the
+diff** and carried on `CheckContext` — which is the context that owns `baseline`,
+`proposed`, AND `diff` (`AnalysisContext` wraps a single IR and has no diff, so it
+is the wrong home). The registry/pipeline constructs the `DeltaIndex` from
+`ctx.diff` when it builds the `CheckContext`, and every check reads
+`ctx.delta_index`. (`CheckContext` gains one field: `delta_index: DeltaIndex`.)
 
 ### The honesty rule (mirrors "never false-SAFE")
 
@@ -143,12 +158,14 @@ The 16 wired checks split into two families plus one exclusion. Attribution is
 applied **only to delta-attributed findings**; every `preexisting`/context row
 carries `caused_by=()` by construction (the checks already compute that boolean).
 
-### Family 1 — leaf/port/device-local (≈11 checks): direct
+### Family 1 — leaf/port/device-local: direct
 
 These checks already iterate the changed entity and emit a finding whose subject
 is (or maps 1:1 to) that entity. The cause is the same entity + its changed IR
 field — built directly from the `DeltaIndex`, no graph analysis. `fields` below
-are **IR field names** (per the vocabulary note above):
+are **IR field names** (per the vocabulary note above). (`stp_root` is NOT here —
+its root election runs over a connected component, so a topology change can move
+the root with no priority change; it is a Family-2 hybrid rule, #5 below.)
 
 | Check | Cause `ref.kind` | IR `fields` (examples) |
 |---|---|---|
@@ -156,7 +173,6 @@ are **IR field names** (per the vocabulary note above):
 | `native_mismatch` | port / link | `native_vlan` |
 | `stp_edge` | port | `stp_edge` |
 | `poe_disconnect` | port | `poe` |
-| `stp_root` | device | `stp_priority` |
 | `ospf_withdrawal` | ospf_intf / device | ospf_intf changed fields |
 | `dhcp_path` | vlan / dhcp_scope | `dhcp_sources` |
 | `snooping` | device | `dhcp_snooping` |
@@ -164,12 +180,12 @@ are **IR field names** (per the vocabulary note above):
 | `gateway_gap` | l3intf / vlan | removed l3intf → empty `fields` |
 | `link_boundary` | link / port | link/port changed fields |
 
-### Family 2 — graph-effect, many-to-one: four mapping rules
+### Family 2 — graph-effect, many-to-one: five mapping rules
 
-`l2_blackhole`, `l2_vlan_segmentation`, `l2_isolation`, `l2_loop`,
+`l2_blackhole`, `l2_vlan_segmentation`, `l2_isolation`, `l2_loop`, `stp_root`,
 `client_impact`. The finding is about a vlan/component/cycle/client; the cause is
-a **set** of changed ports/links. There is **no single mapping** — each condition
-needs its own rule, all computed by the shared helper:
+a **set** of changed ports/links/devices. There is **no single mapping** — each
+condition needs its own rule, all computed by the shared helper:
 
 1. **VLAN-graph cut** (`l2_vlan_segmentation.split`, `l2_blackhole.exit_lost`):
    cause = delta-changed ports/links **incident to the affected component whose
@@ -187,6 +203,14 @@ needs its own rule, all computed by the shared helper:
 4. **Loop arming** (`l2_loop`): cause = the delta entity that *armed* the cycle —
    an added edge in the cycle (`added ∩ cycle.member_ports`' links), or a port
    whose `stp_enabled` flipped to unblock it (`cycle.member_ports ∩ delta`).
+5. **STP root move** (`stp_root.moved`): the check elects the root over a
+   *connected component*, so the move can be driven by **either** a priority
+   change or a topology change — it is NOT device-only. Dual rule, restricted to
+   the affected component: (a) a device in the component whose `stp_priority`
+   changed → that **device** is the cause; (b) otherwise, a delta-changed
+   **link/port** that altered the component's connectivity (added/removed edge) →
+   that link/port is the cause. Both may apply (cause = the union); if neither is
+   in the delta, `caused_by=()` (honesty rule).
 
 `client_impact` is handled separately (next section) — it aggregates clients, so
 its causes are per-impact, not a single component cut.
@@ -258,9 +282,10 @@ uniformly "here is the thing you changed that caused this."
 
 - **Human (`render_human` / `render_org_human`):** append a cause clause to the
   existing line. Today: `on <kind> "<name>" at <path>: <msg>`. With cause:
-  `… <msg> (caused by port "mge-0/0/0" [usage])`; multiple →
-  `(caused by mge-0/0/0 [usage], mge-0/0/1 [usage])`. No clause when
-  `caused_by=()` (pre-existing or unattributable).
+  `… <msg> (caused by port "mge-0/0/0" [native_vlan])`; multiple →
+  `(caused by mge-0/0/0 [native_vlan], mge-0/0/1 [native_vlan])`. The bracketed
+  names are IR fields (per the vocabulary note), not raw config leaves. No clause
+  when `caused_by=()` (pre-existing or unattributable).
 - **Dict (`verdict_to_dict`):** each finding gains a `caused_by` array of
   `{ref: {kind,id,name}, fields: [...]}`. Additive; existing keys unchanged. For
   `client_impact`, the top-level array is the union and each
@@ -270,6 +295,9 @@ uniformly "here is the thing you changed that caused this."
 
 - `Finding` gains one trailing-defaulted field → back-compatible; all existing
   construction sites compile unchanged.
+- `CheckContext` gains one field, `delta_index: DeltaIndex`, built once by the
+  registry/pipeline from `ctx.diff`. (`AnalysisContext` is unchanged — it wraps a
+  single IR and has no diff.)
 - `decide()` / coverage / confidence are untouched: `caused_by` is never read by
   the verdict layer. The non-load-bearing invariant is test-pinned (a golden
   asserting identical decision/severity/coverage with and without attribution).
@@ -293,17 +321,19 @@ uniformly "here is the thing you changed that caused this."
 
 ## Phasing (for the implementation plan)
 
-1. **Contract + plumbing:** `Cause`, `Finding.caused_by`, extend
-   `subjects.py:name_findings`, render (human + dict), the non-load-bearing
-   golden. Lands with empty `caused_by` everywhere (no behavior change yet).
-2. **Shared helper:** `analysis/delta_cause.py` (`delta_index` + the four Family-2
-   mapping rules), memoized on `AnalysisContext`, each rule unit-tested in
-   isolation against constructed graphs (incl. the "ambiguous → `()`" cases).
-3. **Family 1 wiring:** the ≈11 leaf-local checks set `caused_by` from the index
+1. **Contract + plumbing:** `Cause`, `Finding.caused_by`, the `CheckContext.delta_index`
+   field, extend `subjects.py:name_findings` (incl. nested `client_impact`
+   causes), render (human + dict), the non-load-bearing golden. Lands with empty
+   `caused_by` everywhere (no behavior change yet).
+2. **Shared helper:** `analysis/delta_cause.py` (`delta_index` + the five Family-2
+   mapping rules), built once from `ctx.diff` and carried on `CheckContext`; each
+   rule unit-tested in isolation against constructed graphs (incl. the
+   "ambiguous → `()`" cases).
+3. **Family 1 wiring:** the leaf-local checks set `caused_by` from the index
    (mechanical, near-free).
-4. **Family 2 wiring:** the 4 graph-effect checks (vlan-cut, physical severance,
-   added-member, loop) + `client_impact`'s per-impact/union shape; the motivating
-   golden.
+4. **Family 2 wiring:** the five graph-effect rules (vlan-cut, physical severance,
+   added-member, loop, stp-root) + `client_impact`'s per-impact/union shape; the
+   motivating golden.
 5. **Adapter/dynamic-gate findings** (with the delta/parity rule) + docs/roadmap/
    memory + live verify.
 
@@ -316,13 +346,20 @@ uniformly "here is the thing you changed that caused this."
   the offending value changed; an unchanged malformed baseline → `caused_by=()`.
 - **L0 schema findings are excluded** from `caused_by` in this work (P1b).
 - **`client_impact` stays one aggregate finding** (P2a): per-impact causes nested
-  in `evidence["impacts"]`, top-level `caused_by` = their deduplicated union.
-- **Family 2 has four distinct mapping rules** (P2b): vlan-graph cut, physical L2
-  severance, added-member stranding, loop arming — not one carriage rule.
+  in `evidence["impacts"]`, top-level `caused_by` = their deduplicated union;
+  `name_findings` resolves the nested refs too (review round 2).
+- **Family 2 has five distinct mapping rules** (P2b + round 2): vlan-graph cut,
+  physical L2 severance, added-member stranding, loop arming, **and STP root
+  move** — not one carriage rule.
+- **`stp_root` is a hybrid, not device-only** (round 2): its root election runs
+  over a connected component, so attribution is priority-change → device,
+  else topology-change → port/link.
+- **`DeltaIndex` lives on `CheckContext`, not `AnalysisContext`** (round 2):
+  `CheckContext` is the only context that owns the `diff`.
 
 ## Open questions / risks
 
-- **Family-2 mapping precision.** The four cut/arm mappings are the only
+- **Family-2 mapping precision.** The five cut/arm/root mappings are the only
   non-trivial pieces; the honesty rule (emit `()` when unsure) bounds the risk to
   "sometimes silent," never "wrong." The plan must TDD each mapping against
   constructed graphs before wiring the checks.
