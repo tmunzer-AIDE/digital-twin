@@ -86,12 +86,14 @@ def test_vlan_cut_empty_when_no_boundary_edge_lost():
     assert causes_for_vlan_cut(ctx, 7, comp) == ()  # but no carriage cut to attribute
 
 
-# --- 3. two independent cuts, no cross-contamination ---------------------------------
+# --- 3a. per-vid scoping: disjoint vlan domains stay attributed to their own port ----
 
 
 def _twocut_ir(cut: bool):
     """Disjoint vlan domains: vlan 7 (A--B, exit A, cut at A:p7) and vlan 8 (C--D,
-    exit C, cut at C:p8). The two cuts must stay attributed to their own port."""
+    exit C, cut at C:p8). The two cuts must stay attributed to their own port. NB: this
+    only exercises PER-VID scoping — the per-vid graphs share no nodes, so even a naive
+    whole-graph-per-vid impl would pass. Component-locality is tested in 3b below."""
     b = IRBuilder()
     for d in ("A", "B", "C", "D"):
         b.add_device(sw(d))
@@ -110,11 +112,54 @@ def _twocut_ir(cut: bool):
     return b.build()
 
 
-def test_two_independent_cuts_no_cross_contamination():
+def test_disjoint_vlan_cuts_are_per_vid():
     ctx = _ctx(_twocut_ir(cut=False), _twocut_ir(cut=True))
     s7, s8 = _stranded(ctx, 7), _stranded(ctx, 8)
     assert _ids(causes_for_vlan_cut(ctx, 7, s7)) == [("port", "A:p7")]
     assert _ids(causes_for_vlan_cut(ctx, 8, s8)) == [("port", "C:p8")]
+
+
+# --- 3b. COMPONENT-LOCALITY: two cuts on ONE vid graph, each fragment names only its --
+#         own boundary cut (NOT the other fragment's) -----------------------------------
+
+
+def _two_fragments_one_vid_ir(cut: bool):
+    """ONE vlan-7 graph: F1 -- [P1] -- CO(exit) -- [P2] -- F2. In the cut variant CO's
+    port to F1 drops vlan 7 (P1) AND CO's port to F2 drops vlan 7 (P2). Core keeps the
+    exit IRB and reaches it; F1 and F2 each become a SEPARATE stranded component. The
+    cause for F1's component must be ONLY P1 (CO:to-F1), and F2's ONLY P2 (CO:to-F2).
+    A whole-graph impl that names every lost edge in the vid graph would blame BOTH P1
+    and P2 for each fragment — so this fixture discriminates component-locality."""
+    b = IRBuilder()
+    for d in ("F1", "CO", "F2"):
+        b.add_device(sw(d))
+    b.add_vlan(Vlan(vlan_id=7, name="v7", scope="s1"))
+    b.add_l3intf(irb("CO", 7))  # the single exit lives on the core, untouched
+    # F1 -- CO, cut on the core side (P1)
+    b.add_port(trunk_port("CO", "to-F1", tagged=() if cut else (7,)))
+    b.add_port(trunk_port("F1", "to-CO", tagged=(7,)))
+    b.add_link(link("CO:to-F1", "F1:to-CO"))
+    b.add_port(access_port("F1", "acc", 7))
+    # CO -- F2, cut on the core side (P2)
+    b.add_port(trunk_port("CO", "to-F2", tagged=() if cut else (7,)))
+    b.add_port(trunk_port("F2", "to-CO", tagged=(7,)))
+    b.add_link(link("CO:to-F2", "F2:to-CO"))
+    b.add_port(access_port("F2", "acc", 7))
+    return b.build()
+
+
+def test_vlan_cut_is_component_local():
+    ctx = _ctx(_two_fragments_one_vid_ir(cut=False), _two_fragments_one_vid_ir(cut=True))
+    # After the delta there are exactly TWO non-exit-reaching components (the core, which
+    # keeps its exit, is the only reaching one); each stranded fragment is a separate one.
+    stranded = [c for c in ctx.proposed.vlan_components(7) if not c.reaches_exit]
+    by_node = {n: c for c in stranded for n in c.nodes}
+    assert len(stranded) == 2
+    assert {frozenset(c.nodes) for c in stranded} == {frozenset({"F1"}), frozenset({"F2"})}
+    frag1, frag2 = by_node["F1"], by_node["F2"]
+    # Component-local boundary: F1 names ONLY its own cut P1, F2 names ONLY its own cut P2.
+    assert _ids(causes_for_vlan_cut(ctx, 7, frag1)) == [("port", "CO:to-F1")]
+    assert _ids(causes_for_vlan_cut(ctx, 7, frag2)) == [("port", "CO:to-F2")]
 
 
 # --- 4. internal edge loss inside the stranded fragment is NOT named ------------------
