@@ -665,7 +665,7 @@ Rule 5 (root move): dual — a device in the component whose `stp_priority` chan
 
 - [ ] **Step 1: Write the failing tests** —
   - (loop) a cycle member port whose `stp_enabled` flipped in the delta → that port is named.
-  - (loop) **over-naming guard**: a cycle armed by an added link while a *different* cycle member has an unrelated `mtu`-only change → the mtu port is NOT named; the added link IS.
+  - (loop) **over-naming guard**: a cycle armed by an added link while a *different* cycle member has an unrelated `stp_edge`-only change (a field the loop check does NOT read) → the stp_edge port is NOT named; the added link IS. (Also covers `mtu`.)
   - (root) a 2-device component where `dev_b.stp_priority` changed → `causes_for_root_move` returns device `dev_b`.
   - (root) topology-driven **split/removal**: a boundary link/port change moves a fragment's root → that link/port is returned.
   - (root) topology-driven **merge**: an added link joins two baseline components (both endpoints now inside the proposed component) and the merged root differs → the added link/ports ARE returned (the XOR boundary test alone would miss this).
@@ -675,14 +675,16 @@ Rule 5 (root move): dual — a device in the component whose `stp_priority` chan
 - [ ] **Step 3: Implement** in `delta_cause.py`:
 
 ```python
-_LOOP_PORT_FIELDS = frozenset({"stp_enabled", "stp_edge", "bpdu_filter"})
+# L2LoopCheck ranks cycles ONLY from Port.stp_enabled (l2_loop.py:_rank/_judge) —
+# stp_edge/bpdu_filter do NOT change its verdict, so they are NOT loop-arming causes.
+_LOOP_PORT_FIELDS = frozenset({"stp_enabled"})
 
 
 def causes_for_loop(ctx, cycle) -> tuple[Cause, ...]:
     """Cause = the delta entity that ARMED this cycle: a cycle port whose
-    protection field flipped (stp_enabled/stp_edge/bpdu_filter) or that was newly
-    added (empty fields), OR an added/removed link in the cycle. An unrelated mtu
-    change on a cycle member is NOT loop-relevant and is filtered out."""
+    `stp_enabled` flipped or that was newly added (structural, empty fields), OR an
+    added/removed link in the cycle. An unrelated field change on a cycle member
+    (mtu, stp_edge, …) is NOT loop-relevant and is filtered out."""
     di = ctx.delta_index
     out = []
     for p in sorted(cycle.member_ports):
@@ -882,7 +884,7 @@ The `.gateway_unowned` (ERROR) row (`owners` broke — `vlan.gateway` moved or t
 
 ## Phase 4 — Family-2 wiring + client_impact + goldens
 
-### Task 12: `vlan_segmentation` (split) + `blackhole.exit_lost` wiring
+### Task 12: `vlan_segmentation` (split) + `blackhole` (exit_lost + exit_unlocatable) wiring
 
 **Files:** Modify `l2_vlan_segmentation.py`, `l2_blackhole.py`; extend tests.
 
@@ -899,7 +901,21 @@ from digital_twin.analysis.delta_cause import causes_for_vlan_split
                         caused_by=causes_for_vlan_split(ctx, vid),   # split branch only; reshape stays ()
 ```
 
-`l2_blackhole.py` — the `_finding(...)` helper builds the Finding; add a `caused_by` param and set it. For the `exit_lost` path pass `causes_for_vlan_cut(ctx, vid, comp)` (the stranded proposed component `comp` is in scope); for `preexisting` pass `()`.
+`l2_blackhole.py` — the `_finding(...)` helper builds the Finding; add a `caused_by` param and set it. Three delta-attributed codes:
+- **`exit_lost`** — pass `causes_for_vlan_cut(ctx, vid, comp)` (the stranded proposed component `comp` is in scope).
+- **`exit_unlocatable`** — delta-gated (`_vlan_changed`) and currently unattributed. The exit vanished, so name what the delta removed: the exit-providing `l3intf`(s) for this vid that are in the delta, PLUS the lost boundary carriage of each stranded component. Build:
+  ```python
+  removed_l3 = [i.id for i in ctx.baseline.ir.l3intfs
+                if i.vlan_id == vid and i.id not in {p.id for p in ctx.proposed.ir.l3intfs}]
+  unlocatable_causes = tuple(dict.fromkeys((
+      *ctx.delta_index.causes("l3intf", removed_l3),
+      *(c for sc in stranded for c in causes_for_vlan_cut(ctx, vid, sc)),
+  )))
+  ```
+  Pass `unlocatable_causes`. If the exit was never locatable (baseline exit also NONE → the delta did not remove it), `removed_l3` is empty and the vlan-cut boundary edges are not in the delta → `()` (honesty).
+- **`preexisting` / `preexisting_unlocatable`** (INFO context) — pass `()`.
+
+- [ ] **Add blackhole tests**: `exit_lost` names the boundary trunk port; `exit_unlocatable` caused by a removed IRB `l3intf` names that l3intf; an `exit_unlocatable` on a vlan whose exit was *already* NONE in baseline (only cosmetically touched) → `caused_by == ()`.
 
 - [ ] **Step 4: Run + commit** — `git commit -am "feat(cause-attribution): wire vlan_segmentation + blackhole.exit_lost"`
 
@@ -1002,7 +1018,7 @@ Then in `run`, build the top-level union and pass it to the aggregate `Finding`:
 
 - [ ] **Step 1: Write the motivating golden (failing first if the scenario is new)** — a device plan setting two trunk ports (`mge-0/0/0`, `mge-0/0/1`) to a usage that drops vlans 7/8/10/20. Assert:
   - each `vlan_segmentation.split` / `blackhole.exit_lost` finding has `caused_by` naming one of the two ports;
-  - any `blackhole.exit_unlocatable` (pre-existing) finding has `caused_by == ()`.
+  - any `blackhole.preexisting` / `blackhole.preexisting_unlocatable` (INFO context) finding has `caused_by == ()` (the delta did not cause it). NOTE: a delta-caused `blackhole.exit_unlocatable` (WARNING) MAY carry a cause now — assert `()` only on the `preexisting*` codes, not on the WARNING row.
 
 - [ ] **Step 2: Write the non-load-bearing golden** — run the SAME plan and assert `verdict.decision`, each finding's `severity`, and `coverage` are identical whether or not attribution is populated (compare against the pre-feature expected values pinned in the golden). This pins the spec's "never load-bearing" invariant.
 
@@ -1058,7 +1074,8 @@ and pass `caused_by=caused_by` to the `Finding(...)`. Do the analogous parity (c
 - **Component-local + boundary attribution (review P1, rounds 1–2):** the Family-2 mappings restrict to the finding's own component/island/cycle via `_boundary_lost_edges(..., nodes)` (exactly one endpoint inside — internal edge losses are never blamed), NEVER the whole-graph delta. Segmentation `.split` has no `component`, so it uses `causes_for_vlan_split` (separating-edge geometry). Pinned by the two-cut + internal-edge tests (T6) and the analogous T7 case.
 - **Ports AND links (review P2):** `_edge_causes` maps each lost `L2Edge` to both `member_ports` and `link_ids`, so a link added/removed with unchanged endpoint ports is still attributed (T6/T7/T8). Loop also adds `cycle.link_ids`.
 - **Split AND merge geometry (review round 5):** boundary-XOR catches splits/removals; a *merge* (added edge with both endpoints inside the proposed component) needs the different-baseline-components test — `causes_for_vlan_split` and `causes_for_root_move`'s `_gained_merging_edges` both use it. Pinned by the root-merge test (T8).
-- **Loop over-naming guard (review P2):** `causes_for_loop` filters cycle-member ports to loop-relevant changed fields (`stp_enabled`/`stp_edge`/`bpdu_filter`, or structural add) — an unrelated `mtu` change on a cycle member is not blamed (pinned in T8).
+- **Loop over-naming guard (review P2, round 6):** `causes_for_loop` filters cycle-member ports to ONLY `stp_enabled` (the single field `L2LoopCheck._rank/_judge` reads) plus structural add — `stp_edge`/`bpdu_filter`/`mtu` changes on a cycle member are not blamed (pinned in T8).
+- **All delta-attributed blackhole codes covered (review P2, round 6):** `exit_lost` (vlan-cut), `new_member_stranded` (direct/severance), AND `exit_unlocatable` (removed exit `l3intf` + stranded-component vlan-cut) carry causes; the `preexisting*` INFO rows carry `()`. The exit-never-locatable case is pinned to `()` (T12).
 - **Non-load-bearing:** `caused_by` is never read by `decide()`/coverage; pinned by T16.
 - **Type consistency:** `DeltaIndex.cause(kind, oid) -> Cause | None`, `.causes(kind, iterable) -> tuple[Cause, ...]`, `causes_for_*` all return `tuple[Cause, ...]` — used consistently in T9–T15.
 - **Confirmed payloads (no longer guesses):** graph edges store an `L2Edge` under `data["data"]` with `member_ports`/`link_ids` (T6/T7/T8); `Cycle.link_ids` exists (T8); `DhcpScope.vlan` / `L3Intf.ip` / `OspfIntf.{device_id,vlan_id}` / `Vlan.gateway` (T11).
