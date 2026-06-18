@@ -2,7 +2,14 @@
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
 from digital_twin.ir.entities import (
-    Device, DeviceRole, Link, LinkKind, Port, PortMode, Vlan, link_id,
+    Device,
+    DeviceRole,
+    Link,
+    LinkKind,
+    Port,
+    PortMode,
+    Vlan,
+    link_id,
 )
 from digital_twin.viz.mermaid import build_diagrams, safe_build_diagrams
 

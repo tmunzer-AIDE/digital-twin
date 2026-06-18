@@ -21,7 +21,7 @@ from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.representations.l2_graph import build_l2_graph
 from digital_twin.representations.vlan_graph import build_vlan_graph
 
-from .highlight import Hit, Highlight, build_highlight
+from .highlight import Highlight, Hit, build_highlight
 
 _CLASSDEFS = (
     "  classDef crit fill:#fdd,stroke:#c00,stroke-width:2px;",
