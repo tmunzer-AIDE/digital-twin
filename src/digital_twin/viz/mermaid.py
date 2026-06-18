@@ -16,6 +16,7 @@ import networkx as nx
 from digital_twin.analysis.exits import resolve_exit
 from digital_twin.contracts import Diagram, Finding, Severity
 from digital_twin.ir import IR
+from digital_twin.ir.entities import L3Intf
 from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.representations.l2_graph import build_l2_graph
 from digital_twin.representations.vlan_graph import build_vlan_graph
@@ -132,6 +133,56 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
                    mermaid="\n".join(lines), notes=tuple(captions + vlan_caps + unloc))
 
 
+def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
+    vc = vc_root_map(ir)
+    by_vlan: dict[int, list[L3Intf]] = {}
+    for intf in ir.l3intfs:
+        if intf.vlan_id is not None:
+            by_vlan.setdefault(intf.vlan_id, []).append(intf)
+    routed = sorted(set(by_vlan) | {vid for vid, v in ir.vlans.items() if v.subnet is not None})
+    ids = _Ids()
+    intf_owner: dict[str, str] = {}  # ikey -> owning device node (for highlighting)
+    lines = ["graph LR", *_CLASSDEFS]
+    for vid in routed:
+        name = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
+        lines.append(f'  {ids.get(f"vlan:{vid}")}["{_label(f"VLAN {vid}", name)}"]')
+        for intf in by_vlan.get(vid, []):
+            owner = node_for(vc, intf.device_id)
+            dev = ir.devices.get(owner)
+            ikey = f"intf:{intf.id}"
+            intf_owner[ikey] = owner
+            iname = dev.name if dev and dev.name else intf.device_id
+            lines.append(f'  {ids.get(ikey)}(["{_label(iname, intf.role.value)}"])')
+            lines.append(f'  {ids.get(f"vlan:{vid}")} -->|"served by"| {ids.get(ikey)}')
+    # highlight affected VLAN boxes AND interface nodes whose owning device is hit
+    classes: list[str] = []
+    for vid, hit in hl.vlans.items():
+        if f"vlan:{vid}" in ids._map:
+            classes.append(f"  class {ids.get(f'vlan:{vid}')} {_SEV_CLASS[hit.severity]};")
+    for ikey, owner in intf_owner.items():
+        nh = hl.nodes.get(owner)
+        if nh is not None:
+            classes.append(f"  class {ids.get(ikey)} {_SEV_CLASS[nh.severity]};")
+    lines += classes
+    owners_hit = sorted({o for o in intf_owner.values() if o in hl.nodes})
+    sev = _worst(
+        *(h.severity for vid, h in hl.vlans.items() if f"vlan:{vid}" in ids._map),
+        *(hl.nodes[o].severity for o in owners_hit),
+    )
+    vlan_caps = [
+        _safe(f"{lsev.value}: {ltext}")
+        for vid, hit in hl.vlans.items() if f"vlan:{vid}" in ids._map
+        for lsev, ltext in hit.labels
+    ]
+    intf_caps = [
+        _safe(f"{lsev.value}: {ltext}")
+        for o in owners_hit for lsev, ltext in hl.nodes[o].labels
+    ]
+    unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
+    return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
+                   mermaid="\n".join(lines), notes=tuple(vlan_caps + intf_caps + unloc))
+
+
 def _vlan_id_of(d: Diagram) -> int:
     return int(d.view.split(":", 1)[1])
 
@@ -148,6 +199,7 @@ def build_diagrams(ir: IR, findings: tuple[Finding, ...]) -> tuple[Diagram, ...]
 
     vlan_diagrams.sort(key=_order)
     out += vlan_diagrams
+    out.append(_l3_exits_diagram(ir, hl))
     return tuple(out)
 
 

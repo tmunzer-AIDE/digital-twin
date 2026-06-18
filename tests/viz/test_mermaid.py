@@ -106,3 +106,38 @@ def test_vlan_subject_label_appears_in_chart_notes():
         if d.view == "vlan:30"
     )
     assert any("t.x" in n for n in v30.notes)
+
+
+def test_l3_exits_chart_includes_gateway_role_interface():
+    from digital_twin.ir.entities import L3Intf, L3Role, Vlan
+
+    ir = (
+        IRBuilder()
+        .add_device(Device(id="gw01", role=DeviceRole.GATEWAY, site="s1", name="srx"))
+        .add_vlan(Vlan(vlan_id=2, name="mgmt"))  # subnet-less, but has an l3intf
+        .add_l3intf(L3Intf(device_id="gw01", role=L3Role.GATEWAY, vlan_id=2))
+        .build()
+    )
+    diagrams = build_diagrams(ir, ())
+    l3 = next(d for d in diagrams if d.view == "l3_exits")
+    assert "VLAN 2" in l3.mermaid
+    assert "srx" in l3.mermaid  # gateway-role interface present
+
+
+def test_l3_exits_highlights_affected_gateway_device():
+    from digital_twin.ir.entities import L3Intf, L3Role, Vlan
+
+    ir = (
+        IRBuilder()
+        .add_device(Device(id="gw01", role=DeviceRole.GATEWAY, site="s1", name="srx"))
+        .add_vlan(Vlan(vlan_id=2, name="mgmt"))
+        .add_l3intf(L3Intf(device_id="gw01", role=L3Role.GATEWAY, vlan_id=2))
+        .build()
+    )
+    l3 = next(
+        d for d in build_diagrams(ir, (_f(affected_entities=("gw01",)),))
+        if d.view == "l3_exits"
+    )
+    assert "class " in l3.mermaid  # the interface node is classed via its owning device
+    assert l3.severity is Severity.ERROR
+    assert any("t.x" in n for n in l3.notes)  # the device-finding caption shows on L3
