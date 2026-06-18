@@ -460,26 +460,27 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
 
     plan = parse_change_plan(plan_data)
     if isinstance(plan, Rejection):
-        return org_unknown((plan,))
-    rejection = check_objects(plan)
-    if rejection:
-        return org_unknown((rejection,))
+        return org_unknown((plan,))   # changes=() — no parsed ops
     is_org = bool(plan.ops) and all(op.object_type in ORG_OBJECT_TYPES for op in plan.ops) \
         and not plan.scope.site_id
+    # P2b: name EVERY op the plan touches UP FRONT — built right after a successful
+    # parse (for org-shaped plans), *before* check_objects — so an object_gate UNKNOWN
+    # (duplicate op / non-empty delete payload / unsupported action) AND every later
+    # short-circuit (resolve-fail / fatal-L0 / field-gate / apply-conflict) still report
+    # all attempted objects in OrgVerdict.changes. Names start None and hydrate as each
+    # op resolves. EVERY post-parse org_unknown(...) passes changes=tuple(changes).
+    changes = [
+        OrgChange(ref=ObjectRef(op.object_type, op.object_id, name=None), action=op.action)
+        for op in plan.ops
+    ] if is_org else []
+    rejection = check_objects(plan)
+    if rejection:
+        return org_unknown((rejection,), changes=tuple(changes))
     if not is_org:
         return org_unknown((Rejection(stage="scope.pre",
             reasons=("site-scoped plan: call simulate, not simulate_org_plan",)),))
 
     org_scope = OrgScope(org_id=plan.scope.org_id)
-    # P2b: name EVERY op the plan touches UP FRONT, so an UNKNOWN short-circuit
-    # (resolve-fail / fatal L0 / field-gate / apply-conflict) still reports all
-    # attempted objects in OrgVerdict.changes (the spec: changes names every org
-    # object the plan touches). Names start None and are hydrated as each op
-    # resolves. EVERY post-parse org_unknown(...) below passes changes=tuple(changes).
-    changes = [
-        OrgChange(ref=ObjectRef(op.object_type, op.object_id, name=None), action=op.action)
-        for op in plan.ops
-    ]
     overlays: list[OrgOverlay] = []
     template_findings: list[Finding] = []
     for i, op in enumerate(plan.ops):
@@ -588,7 +589,7 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
   - **OD-mixed**: one plan = delete networktemplate + update gatewaytemplate, shared site → combined per-site verdict.
   - **OD-equiv**: a single-template UPDATE org plan produces the same decision + per-site shape as before, differing only in the `template_id → changes` field (pins the non-regression).
   - **OD-gw-failsafe** (P2a): a combined plan with a gatewaytemplate op + a sitetemplate op on one site → assert the per-site verdict is NEVER falsely SAFE when the gatewaytemplate change is breaking (the fail-safe `gw_full=True` must still catch a gatewaytemplate networks/effective break). It is acceptable if a benign sitetemplate-only ripple reads UNKNOWN here (documented over-conservatism) — the assertion is "never false-SAFE," not "always precise."
-  - **OD-unknown-names-all** (P2b): a plan with two ops where the SECOND op's template fails to resolve → the resulting org UNKNOWN verdict's `changes` still names BOTH ops (the first hydrated with its name, the second by id), not just the first. (Unit-level in `tests/engine/test_org_plan.py` is fine.)
+  - **OD-unknown-names-all** (P2b): TWO cases, both asserting the org UNKNOWN verdict's `changes` still names every attempted op: (a) an **`object_gate` rejection** (e.g. a duplicate org op, or a delete op with a non-empty payload) → `changes` names both ops by id (built before `check_objects`); (b) the SECOND op's template **fails to resolve** → `changes` names both ops (the first hydrated with its name, the second by id). (Unit-level in `tests/engine/test_org_plan.py` is fine.)
 
 - [ ] **Step 2: Run** `uv run pytest tests/golden -q` → PASS. **Step 3: FULL gate. Step 4: Commit** `feat(org-delete): goldens (two-op collapse, single/zero/mixed, equiv)`.
 
@@ -611,7 +612,7 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
 - **`proposed=None` ⇔ layer absent** (never `{}`): `apply_overlays`/`_pin` pin `None`, pinned in T2 tests.
 - **Deletes skip L0/field-gate, keep baseline resolution**: T5 branches on `op.action == "delete"`.
 - **Resolve failure short-circuits BEFORE fan-out**: the per-op resolve loop returns org_unknown inside the loop (T5).
-- **UNKNOWN names all touched objects (review P2b):** `changes` is built from all parsed ops up front and threaded through every post-parse `org_unknown` (resolve-fail / fatal-L0 / field-gate / apply-conflict); names hydrate as ops resolve. Pinned by OD-unknown-names-all (T6).
+- **UNKNOWN names all touched objects (review P2b, incl. the gate path):** `changes` is built from all parsed org ops **right after parse, BEFORE `check_objects`**, and threaded through EVERY post-parse `org_unknown` — the `object_gate` rejection too (duplicate op / delete-payload / bad action), plus resolve-fail / fatal-L0 / field-gate / apply-conflict; names hydrate as ops resolve. Pinned by OD-unknown-names-all's two cases (T6).
 - **Gateway screening is FAIL-SAFE for combined plans (review P2a):** `gw_full = any gatewaytemplate overlay on the site` — never false-SAFE (a gatewaytemplate op always gets full screening), at the cost of a possible false-UNKNOWN on a combined gatewaytemplate+sitetemplate plan. Pinned never-false-SAFE by OD-gw-failsafe (T6). **Deferred follow-up:** per-overlay source-aware gateway screening (the derived gate carries source/root metadata) to remove the combined-plan over-conservatism — out of MVP scope.
 - **Type consistency:** `OrgOverlay(object_type,object_id,name,action,assigned_site_ids,baseline,proposed)`, `OrgChange(ref,action)`, `affected_sites(overlays)->tuple[str,...]`, `apply_overlays(fetched,site_id,overlays)->(base,prop)`, `simulate_org_plan(...)->OrgVerdict` — consistent across T1–T6.
 - **Grep-confirm-before-coding:** the per-site FetchError block to copy verbatim (T5); the exact `FakeProvider`/`OrgTemplateContext` shapes in the engine tests (T5); the existing object_gate tests that change meaning (T3); the full set of `template_id` references in tests (T4 — `tests/test_public_api.py`, `tests/drivers/test_render.py`, `tests/drivers/test_mcp_server.py`, `tests/drivers/test_cli.py`, `tests/verdict/test_org_verdict.py`).
