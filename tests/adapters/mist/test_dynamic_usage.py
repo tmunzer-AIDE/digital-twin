@@ -224,3 +224,56 @@ def test_reset_default_when_none_makes_a_down_port_unresolved():
         {"aa0000000001": eff}, {"aa0000000001": changed}, down
     )
     assert len(findings) == 1 and "ge-0/0/1" in str(findings[0].evidence)
+
+
+# -- caused_by parity tests: dynamic-ports adapter finding ----------------------
+
+
+def test_dynamic_ports_caused_by_empty_when_unresolved_set_unchanged():
+    # Both baseline AND proposed have the same unresolved port (ge-0/0/9) —
+    # the plan didn't change the unresolved situation, so caused_by must be ().
+    from digital_twin.contracts import Cause, ObjectRef  # noqa: F401 (used in assertion)
+
+    # _EFF has ge-0/0/9 with no-rules dynamic profile (unresolved both sides);
+    # changing 'aps' definition keeps definitions-changed while the unresolved
+    # port set stays the same on both sides.
+    findings = unresolved_dynamic_findings(
+        {"aa0000000001": _EFF}, {"aa0000000001": _changed_eff()}, _STATS
+    )
+    assert len(findings) == 1
+    assert findings[0].caused_by == ()
+
+
+def test_dynamic_ports_caused_by_names_device_when_unresolved_set_changed():
+    # A definition change that ADDS a new unresolved dynamic port (previously
+    # it was resolved; now it's not) changes the unresolved-port set →
+    # the device is the attributed cause.
+    from digital_twin.contracts import Cause, ObjectRef
+
+    # baseline: port ge-0/0/1 resolves (aps defined, LLDP matches)
+    # proposed: aps definition removed → ge-0/0/1 now unresolved
+    base = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "aps": {"mode": "trunk", "all_networks": True},
+            "dynamic": {
+                "mode": "dynamic",
+                "rules": [
+                    {"src": "lldp_system_name", "expression": "[0:3]", "equals": "AP_",
+                     "usage": "aps"}
+                ],
+            },
+        },
+        "port_config": {"ge-0/0/1": {"usage": "default", "dynamic_usage": "dynamic"}},
+    }
+    # proposed removes the "aps" definition so the matched usage has no definition
+    prop = {**base, "port_usages": {"dynamic": base["port_usages"]["dynamic"]}}
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": True,
+              "neighbor_system_name": "AP_1"}]
+    findings = unresolved_dynamic_findings(
+        {"aa0000000001": base}, {"aa0000000001": prop}, stats
+    )
+    assert len(findings) == 1
+    assert findings[0].subject is not None
+    assert findings[0].subject.kind == "device" and findings[0].subject.id == "aa0000000001"
+    assert findings[0].caused_by == (Cause(ref=ObjectRef("device", "aa0000000001")),)
