@@ -85,6 +85,7 @@ class Device:
     role: DeviceRole
     site: str
     model: str | None = None
+    name: str | None = None  # display name (from raw device `name`); DIFF-IGNORED (see ir/diff.py)
     vc_members: tuple[str, ...] = ()
     # CONFIG intent: STP bridge priority (root election); None = the platform
     # default (32768) — consumers must treat the default as ASSUMED, not known.

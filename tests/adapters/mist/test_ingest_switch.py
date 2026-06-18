@@ -1358,3 +1358,18 @@ def test_dhcp_range_caused_by_always_set_because_builder_skips_unchanged():
     findings = unresolved_dhcp_range_findings(tpl_a, tpl_b)
     assert len(findings) == 1
     assert findings[0].caused_by == (Cause(ref=ObjectRef("dhcp_scope", "corp")),)
+
+
+def test_device_name_populated_from_raw():
+    # device display name flows from the raw device into the IR
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "name": "core-sw-1"},)),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": {**SITE_EFFECTIVE, **SWITCH_A}},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    assert ctx.builder.build().device("aa0000000001").name == "core-sw-1"

@@ -374,6 +374,7 @@ class SwitchIngester:
                     role=role,
                     site=ctx.raw.scope.site_id,
                     model=dev.get("model"),
+                    name=dev.get("name"),
                     stp_priority=stp_priority,
                     stp_priority_invalid=stp_invalid,
                     dhcp_snooping=dhcp_snooping,
