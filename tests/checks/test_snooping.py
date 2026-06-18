@@ -195,3 +195,21 @@ def test_preexisting_info_finding_has_empty_caused_by():
     r = _run(_ir(trust=False), _ir(trust=False))
     f = next(x for x in r.findings if x.severity is Severity.INFO)
     assert f.caused_by == ()
+
+
+def test_port_trust_flip_names_port_in_caused_by():
+    # PR #5 review gap: the last trusted egress port flips dhcp_trusted True→False
+    # while device snooping config is UNCHANGED (both sides have snooping=("corp",)).
+    # Before the fix the port was missing from caused_by (only the device was
+    # returned via delta_index.cause("device", did)). The port S:ge-0/0/0 IS in
+    # the delta as a Modified entity (dhcp_trusted field changed), so the fix
+    # (*ctx.delta_index.causes("port", blocked)) must name it.
+    base = _ir(trust=True)   # snooping already on; trusted port
+    prop = _ir(trust=False)  # snooping unchanged; port flips untrusted
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.severity is Severity.WARNING)
+    assert f.code == "wired.dhcp.snooping.untrusted_path"
+    port_cause_ids = {c.ref.id for c in f.caused_by if c.ref.kind == "port"}
+    assert "S:ge-0/0/0" in port_cause_ids, (
+        f"expected port S:ge-0/0/0 in caused_by, got: {[c.ref for c in f.caused_by]}"
+    )

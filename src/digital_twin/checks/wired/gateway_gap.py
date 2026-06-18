@@ -160,8 +160,12 @@ class GatewayGapCheck:
                         "subnet": vlan.subnet,
                         "baseline_l3_interfaces": [i.id for i in base_intfs],
                     },
-                    caused_by=ctx.delta_index.causes("l3intf", [i.id for i in base_intfs])
-                    if code == "removed" else (),
+                    caused_by=(
+                        ctx.delta_index.causes("l3intf", [i.id for i in base_intfs])
+                        if code == "removed"
+                        else ctx.delta_index.causes("vlan", (str(vid),)) if code == "unserved"
+                        else ()
+                    ),
                 )
             )
         # --- .gateway_unowned: interfaces EXIST but none owns the declared
@@ -254,7 +258,7 @@ class GatewayGapCheck:
                     caused_by=tuple(dict.fromkeys((
                         *((c,) if (c := ctx.delta_index.cause("vlan", str(vid))) else ()),
                         *ctx.delta_index.causes("l3intf", [i.id for i in (*owners, *intfs)]),
-                    ))) if code == "gateway_unowned" and severity is Severity.ERROR else (),
+                    ))) if code == "gateway_unowned" and severity is not Severity.INFO else (),
                 )
             )
         worst = Status.PASS
