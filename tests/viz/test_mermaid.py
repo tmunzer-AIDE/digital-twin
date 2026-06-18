@@ -161,6 +161,11 @@ def test_per_vlan_diagram_is_deterministic_across_hash_seeds():
     import os
     import subprocess
     import sys
+    from pathlib import Path
+
+    # repo root derived from this file (.../tests/viz/test_mermaid.py -> root) so the
+    # subprocess imports the checkout under test, hermetically (no hard-coded path).
+    root = Path(__file__).resolve().parents[2]
 
     # Snippet run in each subprocess: build a 3-device VLAN graph and print the
     # vlan:30 mermaid string to stdout.
@@ -211,14 +216,14 @@ print(v30.mermaid)
         [sys.executable, "-c", SNIPPET],
         capture_output=True,
         text=True,
-        cwd="/Users/tmunzer/4_dev/digital-twin/.claude/worktrees/topology-viz",
+        cwd=str(root),
         env={**env_base, "PYTHONHASHSEED": "1"},
     )
     result2 = subprocess.run(
         [sys.executable, "-c", SNIPPET],
         capture_output=True,
         text=True,
-        cwd="/Users/tmunzer/4_dev/digital-twin/.claude/worktrees/topology-viz",
+        cwd=str(root),
         env={**env_base, "PYTHONHASHSEED": "2"},
     )
 
