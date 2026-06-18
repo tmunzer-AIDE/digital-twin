@@ -292,6 +292,78 @@ def ap_unresolved_wlan_doc() -> tuple[dict[str, Any], dict[str, Any]]:
     return doc, op
 
 
+# --- CA: cause-attribution motivating scenario (one op, two trunk ports) ----
+#
+# The spec's motivating case: ONE device op re-profiles TWO trunk ports, each
+# the sole carrier of a distinct client vlan (each with an IRB exit on HUB and a
+# member access port + observed client on EDGE). Dropping both vlans partitions
+# them (segmentation .split) AND strands their members from the exit (blackhole
+# .exit_lost) — and each resulting finding must name the ONE port that carried
+# that vlan. The fixture also already holds PRE-EXISTING (delta-untouched)
+# blackholes (vlan 2 / vlan 22 from the real captured config), so the goldens
+# can pin that those preexisting* rows carry NO cause.
+
+CA_VLAN_A = 991
+CA_VLAN_B = 992
+CA_EDGE_PORT_A = "ge-0/0/90"  # EDGE trunk carrying ONLY vlan 991 (-> HUB)
+CA_EDGE_PORT_B = "ge-0/0/91"  # EDGE trunk carrying ONLY vlan 992 (-> HUB)
+CA_HUB_PORT_A = "mge-0/0/90"
+CA_HUB_PORT_B = "mge-0/0/91"
+CA_ACCESS_PORT_A = "ge-0/0/92"  # EDGE member access port on vlan 991
+CA_ACCESS_PORT_B = "ge-0/0/93"  # EDGE member access port on vlan 992
+CA_CLIENT_A = "ddccbbaa0091"
+CA_CLIENT_B = "ddccbbaa0092"
+
+
+def multi_port_cut_doc() -> tuple[dict[str, Any], dict[str, Any]]:
+    """(doc, op): one EDGE device op flips BOTH CA_EDGE_PORT_A and
+    CA_EDGE_PORT_B (each the lone carrier of one vlan) trunk -> empty-trunk,
+    dropping vlan 991 and vlan 992. Each vlan strands its member from its HUB
+    IRB exit -> two blackhole.exit_lost (ERROR) AND two vlan_segmentation.split
+    (WARNING), each attributable to the ONE port that carried it."""
+    doc = augmented_doc(parallel_carries_gs=True, with_wireless_client=False)
+    edge, hub = _device(doc, EDGE), _device(doc, HUB)
+    doc["setting"]["networks"]["mp_a"] = {"vlan_id": CA_VLAN_A}
+    doc["setting"]["networks"]["mp_b"] = {"vlan_id": CA_VLAN_B}
+    doc["setting"]["port_usages"]["mp_trunk_a"] = {"mode": "trunk", "networks": ["mp_a"]}
+    doc["setting"]["port_usages"]["mp_trunk_b"] = {"mode": "trunk", "networks": ["mp_b"]}
+    doc["setting"]["port_usages"]["mp_access_a"] = {"mode": "access", "port_network": "mp_a"}
+    doc["setting"]["port_usages"]["mp_access_b"] = {"mode": "access", "port_network": "mp_b"}
+    edge["port_config"][CA_EDGE_PORT_A] = {"usage": "mp_trunk_a"}
+    edge["port_config"][CA_EDGE_PORT_B] = {"usage": "mp_trunk_b"}
+    edge["port_config"][CA_ACCESS_PORT_A] = {"usage": "mp_access_a"}
+    edge["port_config"][CA_ACCESS_PORT_B] = {"usage": "mp_access_b"}
+    hub["port_config"][CA_HUB_PORT_A] = {"usage": "mp_trunk_a"}
+    hub["port_config"][CA_HUB_PORT_B] = {"usage": "mp_trunk_b"}
+    hub["other_ip_configs"]["mp_a"] = {
+        "type": "static", "ip": "198.51.91.1", "netmask": "255.255.255.0"
+    }
+    hub["other_ip_configs"]["mp_b"] = {
+        "type": "static", "ip": "198.51.92.1", "netmask": "255.255.255.0"
+    }
+    # the two augmented physical links EDGE<->HUB (two-sided LLDP -> HIGH)
+    doc["port_stats"] = list(doc["port_stats"]) + [
+        {"mac": EDGE, "port_id": CA_EDGE_PORT_A, "up": True,
+         "neighbor_mac": HUB, "neighbor_port_desc": CA_HUB_PORT_A},
+        {"mac": HUB, "port_id": CA_HUB_PORT_A, "up": True,
+         "neighbor_mac": EDGE, "neighbor_port_desc": CA_EDGE_PORT_A},
+        {"mac": EDGE, "port_id": CA_EDGE_PORT_B, "up": True,
+         "neighbor_mac": HUB, "neighbor_port_desc": CA_HUB_PORT_B},
+        {"mac": HUB, "port_id": CA_HUB_PORT_B, "up": True,
+         "neighbor_mac": EDGE, "neighbor_port_desc": CA_EDGE_PORT_B},
+    ]
+    doc["wired_clients"] = list(doc["wired_clients"]) + [
+        {"mac": CA_CLIENT_A, "device_mac": EDGE, "port_id": CA_ACCESS_PORT_A, "vlan": CA_VLAN_A},
+        {"mac": CA_CLIENT_B, "device_mac": EDGE, "port_id": CA_ACCESS_PORT_B, "vlan": CA_VLAN_B},
+    ]
+    op = device_op(
+        doc, EDGE,
+        **{CA_EDGE_PORT_A.replace("/", "__"): "gs_empty_trunk",
+           CA_EDGE_PORT_B.replace("/", "__"): "gs_empty_trunk"},
+    )
+    return doc, op
+
+
 def ap_uplink_on(doc: dict[str, Any], switch_mac: str) -> tuple[str, str]:
     """(ap_mac, switch_port) of an AP whose lldp_stat names the given switch."""
     for stat in doc["device_stats"]:

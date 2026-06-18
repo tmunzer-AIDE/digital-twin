@@ -10,6 +10,7 @@ import json
 import pytest
 
 from digital_twin.checks.base import CoverageState
+from digital_twin.contracts import Severity
 from digital_twin.engine.pipeline import simulate, simulate_org_template
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
@@ -39,6 +40,7 @@ from .builders import (
     gt_edit_networks,
     gt_edit_unmodeled_field,
     gt_fetch_fail_site,
+    multi_port_cut_doc,
     multisite_add_unused_vlan,
     multisite_remove_corp,
     multisite_template_with_no_assigned_sites,
@@ -1260,3 +1262,106 @@ def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
     assert not any("device_profile_gate" in r for r in ov.decision_reasons)
     # The ip change breaks the known gateway owner -> UNSAFE
     assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+
+
+# ---------------------------------------------------------------------------
+# CA: cause-attribution goldens (the spec's motivating case + the cardinal
+# non-load-bearing invariant). ONE EDGE device op re-profiles TWO trunk ports
+# (ge-0/0/90 carries only vlan 991, ge-0/0/91 only vlan 992); both flip
+# trunk -> empty-trunk, dropping both vlans. Each vlan strands its member from
+# its HUB IRB exit -> blackhole.exit_lost (ERROR) + vlan_segmentation.split
+# (WARNING), one per vlan, each attributable to the ONE port that carried it.
+# ---------------------------------------------------------------------------
+
+
+def test_ca_motivating_two_port_cut_attributes_each_finding_to_its_port(tmp_path):
+    # Golden 1 — the motivating scenario: every delta-caused split/exit_lost
+    # finding NAMES the changed trunk port that carried its vlan, and the
+    # PRE-EXISTING (delta-untouched) blackholes carry NO cause.
+    from .builders import (
+        CA_EDGE_PORT_A,
+        CA_EDGE_PORT_B,
+        CA_VLAN_A,
+        CA_VLAN_B,
+    )
+
+    doc, op = multi_port_cut_doc()
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+
+    # which port carried which vlan (registry-resolved names, e.g. "ge-0/0/90")
+    port_for_vlan = {CA_VLAN_A: CA_EDGE_PORT_A, CA_VLAN_B: CA_EDGE_PORT_B}
+
+    # both blackhole.exit_lost AND both vlan_segmentation.split must be present
+    # and each names EXACTLY the port that carried that vlan
+    for code in ("wired.l2.blackhole.exit_lost", "wired.l2.vlan_segmentation.split"):
+        rows = [f for f in v.findings if f.code == code]
+        seen_vlans = {f.evidence.get("vlan") for f in rows}
+        assert {CA_VLAN_A, CA_VLAN_B} <= seen_vlans, (code, seen_vlans)
+        for f in rows:
+            vid = f.evidence.get("vlan")
+            if vid not in port_for_vlan:
+                continue
+            assert f.caused_by, (code, vid, "expected a non-empty cause")
+            named = {c.ref.name for c in f.caused_by}
+            # the registry routes names through name_findings -> short port name
+            assert port_for_vlan[vid] in named, (code, vid, named)
+            # the changed port is also locatable by its raw IR id
+            ids = {c.ref.id for c in f.caused_by}
+            assert any(i.endswith(port_for_vlan[vid]) for i in ids), (code, vid, ids)
+
+    # the pre-existing (delta-untouched) blackholes carry NO cause: the INFO
+    # context rows did not arise from this delta. NOTE: a delta-caused WARNING
+    # exit_unlocatable MAY carry a cause, so this pins ONLY the preexisting* codes.
+    preexisting = [
+        f
+        for f in v.findings
+        if f.code
+        in (
+            "wired.l2.blackhole.preexisting",
+            "wired.l2.blackhole.preexisting_unlocatable",
+        )
+    ]
+    assert preexisting, "expected the fixture's pre-existing blackholes to be present"
+    for f in preexisting:
+        assert f.severity is Severity.INFO, (f.code, f.severity)
+        assert f.caused_by == (), (f.code, f.caused_by)
+
+
+def test_ca_non_load_bearing_verdict_unchanged_and_causes_populated(tmp_path):
+    # Golden 2 — the cardinal property: attribution is EVIDENCE-ONLY and must
+    # never move a verdict. Pin the SAME decision + per-finding (code, severity)
+    # multiset + coverage states the pipeline produced before this feature
+    # (attribution only added the caused_by evidence field), AND prove
+    # attribution actually ran by asserting caused_by is populated.
+    from collections import Counter
+
+    doc, op = multi_port_cut_doc()
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+
+    # (a) decision unchanged
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+
+    # (b) the exact per-finding (code, severity) multiset — pinned so any future
+    # severity drift (the load-bearing axis) trips this golden
+    assert Counter((f.code, f.severity) for f in v.findings) == Counter(
+        {
+            ("wired.l2.blackhole.exit_lost", Severity.ERROR): 2,
+            ("wired.l2.vlan_segmentation.split", Severity.WARNING): 2,
+            ("wired.l2.blackhole.preexisting", Severity.INFO): 2,
+            ("wired.l2.blackhole.preexisting_unlocatable", Severity.INFO): 1,
+            ("wired.l2.loop.preexisting", Severity.INFO): 1,
+            ("wired.client.impact.active_clients", Severity.WARNING): 1,
+        }
+    )
+
+    # (c) coverage states unchanged — the blackhole/segmentation/client checks
+    # all reached a real verdict at COMPLETE coverage (no attribution-induced
+    # blindness)
+    coverage = {r.check_id: r.coverage.state for r in v.check_results}
+    assert coverage["wired.l2.blackhole"] is CoverageState.COMPLETE
+    assert coverage["wired.l2.vlan_segmentation"] is CoverageState.COMPLETE
+    assert coverage["wired.client.impact"] is CoverageState.COMPLETE
+
+    # (d) attribution DID run: at least one finding carries a populated cause
+    assert any(f.caused_by for f in v.findings), "attribution produced no causes"
