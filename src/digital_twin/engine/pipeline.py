@@ -61,7 +61,7 @@ from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
 from digital_twin.verdict.decision import Decision, DecisionInputs
-from digital_twin.verdict.org_verdict import OrgVerdict, decide_org
+from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
@@ -425,12 +425,13 @@ def simulate_org_template(
     registry = registry or CheckRegistry(ALL_WIRED_CHECKS)
 
     def org_unknown(
-        rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = ()
+        rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = (),
+        changes: tuple[OrgChange, ...] = (),
     ) -> OrgVerdict:
         return OrgVerdict(
             decision=Decision.UNKNOWN,
             decision_reasons=tuple(f"[{r.stage}] {x}" for r in rejections for x in r.reasons),
-            template_id=template_id, per_site={}, driving_sites=(), site_failures={},
+            changes=tuple(changes), per_site={}, driving_sites=(), site_failures={},
             template_findings=tuple(template_findings), org_rejections=tuple(rejections),
         )
 
@@ -499,7 +500,9 @@ def simulate_org_template(
             {}, template_findings=template_findings, org_rejections=()
         )
         return OrgVerdict(
-            decision=decision, decision_reasons=reasons, template_id=template_id,
+            decision=decision, decision_reasons=reasons,
+            changes=(OrgChange(ref=ObjectRef(object_type, template_id, name=snapshot.get("name")),
+                               action=op.action),),
             per_site={}, driving_sites=driving, site_failures={},
             template_findings=template_findings, org_rejections=(),
         )
@@ -546,7 +549,9 @@ def simulate_org_template(
         per_site, template_findings=template_findings, org_rejections=()
     )
     return OrgVerdict(
-        decision=decision, decision_reasons=reasons, template_id=template_id,
+        decision=decision, decision_reasons=reasons,
+        changes=(OrgChange(ref=ObjectRef(object_type, template_id, name=snapshot.get("name")),
+                           action=op.action),),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
         template_findings=template_findings, org_rejections=(),
     )

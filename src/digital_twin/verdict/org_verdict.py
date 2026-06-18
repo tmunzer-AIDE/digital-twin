@@ -29,7 +29,7 @@ class OrgChange:
 class OrgVerdict:
     decision: Decision
     decision_reasons: tuple[str, ...]
-    template_id: str
+    changes: tuple[OrgChange, ...]   # the org objects this plan touches (multi-object-native)
     per_site: Mapping[str, Verdict]
     driving_sites: tuple[str, ...]
     site_failures: Mapping[str, str]

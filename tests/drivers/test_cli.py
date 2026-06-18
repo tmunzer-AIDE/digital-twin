@@ -269,7 +269,7 @@ def _org_plan(payload=None):
 
 def test_org_plan_routed_to_org_path_json(tmp_path, capsys, monkeypatch):
     """An org-template plan is dispatched to simulate_org_template; exit code
-    matches the org decision (SAFE=0) and JSON output contains 'template_id'."""
+    matches the org decision (SAFE=0) and JSON output contains 'changes'."""
     tmpl = {"id": "nt1", "networks": {"corp": {"vlan_id": 10}}}
     s1 = _org_site("s1", setting={"id": "s1"}, devices=(), nt=tmpl)
     fake = _OrgFakeProvider(sites={"s1": s1}, template=tmpl)
@@ -283,7 +283,7 @@ def test_org_plan_routed_to_org_path_json(tmp_path, capsys, monkeypatch):
     out = json.loads(capsys.readouterr().out)
     assert code == 0  # SAFE
     assert out["decision"] == "safe"
-    assert out["template_id"] == "nt1"
+    assert out["changes"][0]["object_id"] == "nt1"
     assert "s1" in out["per_site"]
 
 
