@@ -9,6 +9,7 @@ from typing import Any
 from digital_twin.contracts import Finding
 from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
+from digital_twin.viz.markdown import to_markdown
 
 
 def _cause_clause(f: Finding) -> str:
@@ -51,6 +52,11 @@ def verdict_to_dict(verdict: Verdict) -> dict[str, Any]:
     return out
 
 
+def render_diagrams_markdown(verdict: Verdict) -> str:
+    """The paste-ready mermaid blob for the elicitation UI."""
+    return to_markdown(verdict.diagrams)
+
+
 def render_human(verdict: Verdict) -> str:
     lines = [
         f"decision: {verdict.decision.name}",
@@ -63,6 +69,8 @@ def render_human(verdict: Verdict) -> str:
         )
     for f in verdict.findings[:20]:
         lines.append(_finding_line(f))
+    for d in verdict.diagrams:
+        lines.append(f"  diagram: {d.title}")
     if verdict.state_meta:
         lines.append(
             f"  state: {verdict.state_meta.host} @ {verdict.state_meta.state_acquired_at}"

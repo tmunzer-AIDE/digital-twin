@@ -72,6 +72,16 @@ def test_verdict_holds_diagrams_and_serializes():
     assert verdict_to_dict(v2)["diagrams"][0]["view"] == "l2"
 
 
+def test_render_diagrams_markdown_and_titles():
+    from digital_twin.contracts import Diagram, Severity
+    from digital_twin.drivers.render import render_diagrams_markdown, render_human
+
+    d = Diagram(view="l2", title="L2 topology", severity=Severity.ERROR, mermaid="graph LR")
+    v = dataclasses.replace(_verdict(), diagrams=(d,))
+    assert "```mermaid" in render_diagrams_markdown(v)
+    assert "L2 topology" in render_human(v)  # titles listed in human output
+
+
 def test_org_verdict_to_dict_shape():
     from digital_twin.drivers.render import org_verdict_to_dict
     from digital_twin.verdict.decision import Decision
