@@ -127,7 +127,10 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
 ## `OrgVerdict` — multi-object-native
 
 - Replace the single `template_id` with `changes: tuple[OrgChange, ...]` — names every org
-  object the plan touches, each with its action.
+  object the plan touches, each with its action. **This holds even on an UNKNOWN
+  short-circuit** (resolve-fail / fatal-L0 / field-gate / apply-conflict): `changes` is built
+  from all parsed ops up front (names hydrated as each op resolves) and threaded through every
+  `org_unknown` path, so a failing op never erases the objects the plan touched (review P2b).
 - `decide_org` rollup unchanged in spirit: the org decision is the precedence-max over the
   per-site verdicts (UNKNOWN > UNSAFE > REVIEW > SAFE), `driving_sites` / `site_failures` /
   `per_site` retained.
@@ -203,8 +206,24 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
   — a delete has no proposed object, so a payload would be silently ignored otherwise
   (review P2).
 
+## Gateway derived-gate screening for combined plans (review P2a)
+
+The gateway derived-gate projection is source-aware: `full=True` screens the WHOLE gateway
+effective (so a gatewaytemplate's OWN `networks` is screened → **never false-SAFE**);
+`full=False` projects `networks` out (a sitetemplate/site_setting networks change is owned by
+the switch gate). A site under a combined plan has ONE gateway effective with changes from
+multiple overlay sources, which cannot be split by source without per-leaf source attribution.
+MVP uses the **fail-safe** rule: `gateway_screen_full = (the site has a gatewaytemplate
+overlay)`. This is never false-SAFE (a gatewaytemplate op always gets full screening); its
+only cost is a possible **false-UNKNOWN** on a combined gatewaytemplate+sitetemplate plan
+(over-screening the sitetemplate's gateway-effective ripple) — honest, never silently SAFE. A
+test pins "never false-SAFE" for the combined case.
+
 ## Out of scope (recorded, deferred)
 
+- **Per-overlay source-aware gateway screening** — carry source/root metadata into the
+  derived gate so a combined gatewaytemplate+sitetemplate plan screens each source correctly
+  (removes the MVP fail-safe over-conservatism above; review P2a).
 - org_networks and WLAN/RF template deletes/changes (need new IR/compile surface).
 - Site-level reassignment ops (would feed the proposed side of `affected_sites`).
 - The apply (write) path.

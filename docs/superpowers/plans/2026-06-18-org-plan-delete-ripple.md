@@ -471,40 +471,49 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
             reasons=("site-scoped plan: call simulate, not simulate_org_plan",)),))
 
     org_scope = OrgScope(org_id=plan.scope.org_id)
+    # P2b: name EVERY op the plan touches UP FRONT, so an UNKNOWN short-circuit
+    # (resolve-fail / fatal L0 / field-gate / apply-conflict) still reports all
+    # attempted objects in OrgVerdict.changes (the spec: changes names every org
+    # object the plan touches). Names start None and are hydrated as each op
+    # resolves. EVERY post-parse org_unknown(...) below passes changes=tuple(changes).
+    changes = [
+        OrgChange(ref=ObjectRef(op.object_type, op.object_id, name=None), action=op.action)
+        for op in plan.ops
+    ]
     overlays: list[OrgOverlay] = []
     template_findings: list[Finding] = []
-    changes: list[OrgChange] = []
-    for op in plan.ops:
+    for i, op in enumerate(plan.ops):
         resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
         if not isinstance(resolved, OrgTemplateContext):
             return org_unknown((Rejection(stage="fetch", reasons=tuple(
                 f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
-            ) or ("org-template lookup failed",)),))
+            ) or ("org-template lookup failed",)),), changes=tuple(changes))
         snapshot = dict(resolved.template)
         ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
+        changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
         if op.action == "delete":
             proposed: Mapping[str, Any] | None = None
         else:
             proposed_t = apply_template(snapshot, op.payload)
             if isinstance(proposed_t, Rejection):
-                return org_unknown((proposed_t,))
+                return org_unknown((proposed_t,), changes=tuple(changes))
             l0 = adapter.validate(replace(op, payload=proposed_t),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload))
             if l0.fatal:
                 return org_unknown((Rejection(stage="l0",
                     reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
-                             f"{op.object_id}",)),))
+                             f"{op.object_id}",)),), changes=tuple(changes))
             template_findings.extend(_stamp(l0.findings, ref))
             fg = screen_op(op.object_type, snapshot, proposed_t)
             if fg:
-                return org_unknown((fg,), template_findings=tuple(template_findings))
+                return org_unknown((fg,), template_findings=tuple(template_findings),
+                                   changes=tuple(changes))
             proposed = proposed_t
         overlays.append(OrgOverlay(
             object_type=op.object_type, object_id=op.object_id, name=snapshot.get("name"),
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
             baseline=snapshot, proposed=proposed,
         ))
-        changes.append(OrgChange(ref=ref, action=op.action))
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
@@ -530,6 +539,17 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
             continue
         base_raw, prop_raw = apply_overlays(fetched, sid, ov_tuple)
         sm = build_state_meta(fetched.meta, now=datetime.now(UTC))
+        # P2a — FAIL-SAFE gateway screening. `_gw_screen_view(full=True)` keeps the
+        # WHOLE gateway effective (so a gatewaytemplate's OWN networks IS screened →
+        # never false-SAFE); full=False projects `networks` out (the switch gate owns
+        # a sitetemplate/site_setting networks change). With ONE combined gateway
+        # effective per site we cannot split it by overlay source without per-leaf
+        # source attribution (a derived-gate refactor — deferred). So: full=True iff
+        # the site has a gatewaytemplate overlay. This is fail-safe (whenever a
+        # gatewaytemplate op is present — the case that NEEDS full — we use full; we
+        # NEVER drop to projected-when-it-should-be-full). The ONLY cost is a possible
+        # false-UNKNOWN on a combined gatewaytemplate+sitetemplate plan (over-screening
+        # the sitetemplate's gateway-effective ripple) — honest, never false-SAFE.
         gw_full = any(o.object_type == "gatewaytemplate" and sid in o.assigned_site_ids
                       for o in ov_tuple)
         per_site[sid] = _simulate_site_state(base_raw, prop_raw, adapter=adapter,
@@ -567,6 +587,8 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
   - **OD-zero**: delete a template assigned to 0 sites → SAFE with the auditable "no assigned sites" reason and the `changes` entry.
   - **OD-mixed**: one plan = delete networktemplate + update gatewaytemplate, shared site → combined per-site verdict.
   - **OD-equiv**: a single-template UPDATE org plan produces the same decision + per-site shape as before, differing only in the `template_id → changes` field (pins the non-regression).
+  - **OD-gw-failsafe** (P2a): a combined plan with a gatewaytemplate op + a sitetemplate op on one site → assert the per-site verdict is NEVER falsely SAFE when the gatewaytemplate change is breaking (the fail-safe `gw_full=True` must still catch a gatewaytemplate networks/effective break). It is acceptable if a benign sitetemplate-only ripple reads UNKNOWN here (documented over-conservatism) — the assertion is "never false-SAFE," not "always precise."
+  - **OD-unknown-names-all** (P2b): a plan with two ops where the SECOND op's template fails to resolve → the resulting org UNKNOWN verdict's `changes` still names BOTH ops (the first hydrated with its name, the second by id), not just the first. (Unit-level in `tests/engine/test_org_plan.py` is fine.)
 
 - [ ] **Step 2: Run** `uv run pytest tests/golden -q` → PASS. **Step 3: FULL gate. Step 4: Commit** `feat(org-delete): goldens (two-op collapse, single/zero/mixed, equiv)`.
 
@@ -589,5 +611,7 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
 - **`proposed=None` ⇔ layer absent** (never `{}`): `apply_overlays`/`_pin` pin `None`, pinned in T2 tests.
 - **Deletes skip L0/field-gate, keep baseline resolution**: T5 branches on `op.action == "delete"`.
 - **Resolve failure short-circuits BEFORE fan-out**: the per-op resolve loop returns org_unknown inside the loop (T5).
+- **UNKNOWN names all touched objects (review P2b):** `changes` is built from all parsed ops up front and threaded through every post-parse `org_unknown` (resolve-fail / fatal-L0 / field-gate / apply-conflict); names hydrate as ops resolve. Pinned by OD-unknown-names-all (T6).
+- **Gateway screening is FAIL-SAFE for combined plans (review P2a):** `gw_full = any gatewaytemplate overlay on the site` — never false-SAFE (a gatewaytemplate op always gets full screening), at the cost of a possible false-UNKNOWN on a combined gatewaytemplate+sitetemplate plan. Pinned never-false-SAFE by OD-gw-failsafe (T6). **Deferred follow-up:** per-overlay source-aware gateway screening (the derived gate carries source/root metadata) to remove the combined-plan over-conservatism — out of MVP scope.
 - **Type consistency:** `OrgOverlay(object_type,object_id,name,action,assigned_site_ids,baseline,proposed)`, `OrgChange(ref,action)`, `affected_sites(overlays)->tuple[str,...]`, `apply_overlays(fetched,site_id,overlays)->(base,prop)`, `simulate_org_plan(...)->OrgVerdict` — consistent across T1–T6.
 - **Grep-confirm-before-coding:** the per-site FetchError block to copy verbatim (T5); the exact `FakeProvider`/`OrgTemplateContext` shapes in the engine tests (T5); the existing object_gate tests that change meaning (T3); the full set of `template_id` references in tests (T4 — `tests/test_public_api.py`, `tests/drivers/test_render.py`, `tests/drivers/test_mcp_server.py`, `tests/drivers/test_cli.py`, `tests/verdict/test_org_verdict.py`).
