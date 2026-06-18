@@ -80,6 +80,12 @@ naming-mismatch trap).
 In ORG mode (every op is an `ORG_OBJECT_TYPE` and `scope.site_id` is absent):
 - **Allow `delete` and `update`** — but only for the three org template types. Site/device
   `delete` (and any other non-`update`) stays rejected, unchanged.
+- **Delete payload must be empty.** `ChangeOp.payload` is a required `Mapping` and the
+  envelope stays action-agnostic (its contract keeps action semantics in `object_gate`), so
+  a delete op carries `"payload": {}`. A `delete` op whose payload is **non-empty** is
+  **rejected loudly** by `object_gate` — a delete has no proposed object (it skips
+  apply/L0/field-gate), so a payload is meaningless and must never be silently ignored. The
+  empty `{}` is the canonical delete shape; an update keeps its full-object payload.
 - **Allow multiple org ops** — lift the current exactly-one-op rule (which was itself a
   prior review fix; it is now superseded by the dedup rule below).
 - **Reject duplicate `(object_type, object_id)`** ops (MVP — two ops on the same template is
@@ -161,7 +167,8 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
   sites; a 0-site delete → SAFE with the auditable `changes`/reason; a mixed delete+update
   in one plan → combined per-site verdict.
 - **Unit:** `object_gate` (delete allowed for org types; multiple ops allowed; duplicate
-  `(type,id)` rejected; site/device delete still rejected; mixed delete+update ok); the
+  `(type,id)` rejected; site/device delete still rejected; mixed delete+update ok; a
+  `delete` op with a **non-empty payload → rejected**, with `"payload": {}` accepted); the
   `affected_sites` union helper; per-site overlay pinning (only assigned overlays applied,
   unfetchable site → per-site failure); `OrgOverlay`/`OrgChange` construction;
   `OrgVerdict.changes`.
@@ -191,6 +198,10 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
 - **0-site delete is SAFE + auditable**; resolve failure is org-UNKNOWN before fan-out;
   unfetchable affected site is a per-site failure, not a whole-run failure.
 - **MVP rejects duplicate `(object_type, object_id)`** ops.
+- **Delete payload must be empty** (`{}`): the envelope stays action-agnostic (payload
+  always a required `Mapping`), and `object_gate` rejects a non-empty delete payload loudly
+  — a delete has no proposed object, so a payload would be silently ignored otherwise
+  (review P2).
 
 ## Out of scope (recorded, deferred)
 
