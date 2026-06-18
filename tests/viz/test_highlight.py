@@ -91,3 +91,11 @@ def test_unlocalized_finding_is_counted():
     f = _f(subject=ObjectRef("dhcp_scope", "site:corp"))
     hl = build_highlight((f,), _ir())
     assert hl.unlocalized == 1
+
+
+def test_same_entity_two_channels_no_duplicate_caption():
+    # subject=vlan 30 AND evidence={"vlan": 30} both reference the same entity;
+    # the caption label must appear exactly once in Hit.labels.
+    f = _f(subject=ObjectRef("vlan", "30"), evidence={"vlan": 30})
+    hl = build_highlight((f,), _ir())
+    assert len(hl.vlans[30].labels) == 1

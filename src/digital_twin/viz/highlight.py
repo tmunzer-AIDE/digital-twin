@@ -64,7 +64,8 @@ def build_highlight(findings: Iterable[Finding], ir: IR) -> Highlight:
         if cur is None:
             hl.nodes[nid] = Hit(sev, [(sev, label)])
         else:
-            cur.labels.append((sev, label))  # keep EACH label's own severity
+            if (sev, label) not in cur.labels:
+                cur.labels.append((sev, label))  # keep EACH label's own severity
             if _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
                 cur.severity = sev  # class uses the worst
         return True
@@ -74,7 +75,8 @@ def build_highlight(findings: Iterable[Finding], ir: IR) -> Highlight:
         if cur is None:
             hl.vlans[vid] = Hit(sev, [(sev, label)])
         else:
-            cur.labels.append((sev, label))
+            if (sev, label) not in cur.labels:
+                cur.labels.append((sev, label))
             if _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
                 cur.severity = sev
         return True
