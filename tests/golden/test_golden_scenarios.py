@@ -1309,6 +1309,24 @@ def test_ca_motivating_two_port_cut_attributes_each_finding_to_its_port(tmp_path
             # the changed port is also locatable by its raw IR id
             ids = {c.ref.id for c in f.caused_by}
             assert any(i.endswith(port_for_vlan[vid]) for i in ids), (code, vid, ids)
+            # EXCLUSIVITY: the OTHER vlan's port must NOT appear — over-attribution
+            # (naming both ports on a single-trunk-per-vlan cut) must fail this test
+            other_vids = [v2 for v2 in port_for_vlan if v2 != vid]
+            for other_vid in other_vids:
+                other_port = port_for_vlan[other_vid]
+                assert other_port not in named, (
+                    code, vid, f"over-attribution: other vlan {other_vid}'s port "
+                    f"{other_port!r} must not appear in caused_by; got {named}"
+                )
+                assert not any(i.endswith(other_port) for i in ids), (
+                    code, vid, f"over-attribution: other vlan {other_vid}'s port "
+                    f"{other_port!r} must not appear in caused_by ids; got {ids}"
+                )
+            # additionally pin the count: exactly one port named for a single-trunk cut
+            named_ports = {c.ref.name for c in f.caused_by if c.ref.name in port_for_vlan.values()}
+            assert len(named_ports) == 1, (
+                code, vid, f"expected exactly 1 named port, got {named_ports}"
+            )
 
     # the pre-existing (delta-untouched) blackholes carry NO cause: the INFO
     # context rows did not arise from this delta. NOTE: a delta-caused WARNING
