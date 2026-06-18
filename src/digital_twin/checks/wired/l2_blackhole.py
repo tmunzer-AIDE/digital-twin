@@ -19,7 +19,11 @@ Per VLAN (spec contract):
 
 from __future__ import annotations
 
-from digital_twin.analysis.delta_cause import causes_for_blackhole, causes_for_vlan_cut
+from digital_twin.analysis.delta_cause import (
+    causes_for_blackhole,
+    causes_for_severance,
+    causes_for_vlan_cut,
+)
 from digital_twin.analysis.exits import ExitKind
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import (
@@ -317,7 +321,11 @@ class L2BlackholeCheck:
                     f"{proposed_exit.kind} exit"
                 )
             )
-            caused_by = causes_for_vlan_cut(ctx, vid, comp) if lost_exit else ()
+            caused_by = (
+                causes_for_vlan_cut(ctx, vid, comp)
+                if lost_exit
+                else (ctx.delta_index.causes("port", new_ports) or causes_for_severance(ctx, comp))
+            )
             findings.append(
                 self._finding(
                     code=code,

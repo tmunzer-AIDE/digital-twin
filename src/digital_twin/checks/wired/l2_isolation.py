@@ -26,6 +26,7 @@ from collections import defaultdict
 
 import networkx as nx
 
+from digital_twin.analysis.delta_cause import causes_for_severance
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
@@ -127,6 +128,7 @@ class L2IsolationCheck:
                         "lost_peers": sorted(baseline_home - fragment),
                         "occupants": {n: dict(c) for n, c in occupied.items()},
                     },
+                    caused_by=causes_for_severance(ctx, fragment),
                 )
             )
             worst = Status.FAIL if high else (worst if worst is Status.FAIL else Status.WARN)
