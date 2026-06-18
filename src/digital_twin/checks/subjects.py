@@ -15,9 +15,11 @@ involved entities still rides in `Finding.affected_entities`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
+from typing import Any
 
-from digital_twin.contracts import Finding, ObjectRef
+from digital_twin.contracts import Cause, Finding, ObjectRef
 from digital_twin.ir import IR
 
 
@@ -53,9 +55,43 @@ def resolve_subject(subject: ObjectRef | None, prop_ir: IR, base_ir: IR) -> Obje
     return replace(subject, name=name) if name else subject
 
 
+def _resolve_caused_by(
+    causes: tuple[Cause, ...], prop_ir: IR, base_ir: IR
+) -> tuple[Cause, ...]:
+    return tuple(
+        replace(c, ref=resolve_subject(c.ref, prop_ir, base_ir))  # type: ignore[arg-type]
+        for c in causes
+    )
+
+
+def _resolve_nested_impacts(
+    evidence: Mapping[str, Any], prop_ir: IR, base_ir: IR
+) -> Mapping[str, Any]:
+    impacts = evidence.get("impacts")
+    if not isinstance(impacts, list):
+        return evidence
+    new_impacts = []
+    for imp in impacts:
+        if isinstance(imp, dict) and imp.get("caused_by"):
+            imp = {
+                **imp,
+                "caused_by": list(
+                    _resolve_caused_by(tuple(imp["caused_by"]), prop_ir, base_ir)
+                ),
+            }
+        new_impacts.append(imp)
+    return {**evidence, "impacts": new_impacts}
+
+
 def name_findings(
     findings: tuple[Finding, ...], prop_ir: IR, base_ir: IR
 ) -> tuple[Finding, ...]:
     return tuple(
-        replace(f, subject=resolve_subject(f.subject, prop_ir, base_ir)) for f in findings
+        replace(
+            f,
+            subject=resolve_subject(f.subject, prop_ir, base_ir),
+            caused_by=_resolve_caused_by(f.caused_by, prop_ir, base_ir),
+            evidence=_resolve_nested_impacts(f.evidence, prop_ir, base_ir),
+        )
+        for f in findings
     )

@@ -43,6 +43,36 @@ sharp UNSAFE during live testing on the Live-Demo site.
   isn't in its `port_config` (system/dynamic), so inter-switch links are
   blind-peer (MEDIUM). Resolving the *neighbor's* dynamic/system ports would
   lift those to HIGH.
+- ✅ **Finding cause attribution** (`Finding.caused_by`) — done 2026-06-17.
+  Every delta-attributed finding now names the changed entity (port/link/device/
+  l3intf/dhcp_scope) that produced it, with the IR fields that changed; pre-existing
+  context rows carry none. Spec + plan
+  (`docs/superpowers/specs/2026-06-16-finding-cause-attribution-design.md`,
+  `docs/superpowers/plans/2026-06-16-finding-cause-attribution.md`). Strictly
+  evidence-only (non-load-bearing, golden-pinned). `analysis/delta_cause.py` =
+  cached `DeltaIndex` on `CheckContext` + per-finding graph mappings (boundary/cut/
+  split/merge/loop/root). Live: `isolation.severed` on a real severed-uplink plan
+  now reads `(caused by port "ge-0/0/46" […])`. **Deferred follow-ons:** cause-first
+  rendering (group output by changed port, not by vlan); per-leaf differential
+  `--explain` mode (re-simulate each leaf in isolation); raw-config-path `fields`
+  (needs a field-gate change-path index, which the differential mode also wants);
+  articulation-node-removal split attribution (currently honest-empty).
+- 🔵 **Richer impacted-client reporting** — enrich what `wired.client.impact`
+  says about each affected client (evidence-only; never changes the verdict).
+  Builds on the **done** cause-attribution work above, which already nests
+  per-client entries in `evidence["impacts"]` (each with its own `caused_by`) —
+  these hang off the same structure:
+  - **Client identity** — report each impacted wired client's **hostname** and
+    **device type / fingerprint** (Mist client objects carry these), not just the
+    MAC. Turns "3 clients affected" into "Printer-3F, an HP printer; …".
+  - **DHCP context** — leverage the wired-client **DHCP info** (IP / subnet /
+    lease, already on the client object in the `wired_clients` fetch) to say which
+    addressing the impacted clients rely on and whether the delta touches their
+    DHCP path.
+  - **Traffic significance (optional)** — if available, pull the impacted
+    interface's **traffic pattern** (port tx/rx stats) to weight the impact: real
+    traffic → higher significance; an idle port → low. Gated on "only if there is
+    traffic" — absence is not interesting and must not floor or inflate anything.
 
 ## 2. New coverage — more checks over the existing IR
 

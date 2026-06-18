@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import networkx as nx
 
+from digital_twin.analysis.delta_cause import causes_for_root_move
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
@@ -129,6 +130,7 @@ class StpRootChangeCheck:
                             "proposed_root": prop_root,
                             "component_devices": len(comp),
                         },
+                        caused_by=causes_for_root_move(ctx, comp, base_root, prop_root),
                     )
                 )
         return CheckResult(

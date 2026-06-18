@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from digital_twin.analysis.context import AnalysisContext
+from digital_twin.analysis.delta_cause import DeltaIndex, delta_index
 from digital_twin.contracts import Finding, Severity
 from digital_twin.ir import Capability, Confidence, IRDiff
 
@@ -44,6 +45,11 @@ class CheckContext:
     baseline: AnalysisContext
     proposed: AnalysisContext
     diff: IRDiff
+    delta_index: DeltaIndex = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.delta_index is None:
+            object.__setattr__(self, "delta_index", delta_index(self.diff))
 
 
 @dataclass(frozen=True)

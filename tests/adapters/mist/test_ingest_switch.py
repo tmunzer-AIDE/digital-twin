@@ -1304,3 +1304,57 @@ def test_dhcp_predicates_skip_non_dict_enabled_flag():
     assert _dhcp_serves_scope(True) is False
     assert _dhcp_active(True) is False
     assert _dhcp_serves_scope({"type": "local"}) is True
+
+
+# -- caused_by parity tests: adapter findings -----------------------------------
+
+
+def test_bridge_priority_caused_by_empty_when_unchanged():
+    # A malformed bridge_priority that was ALREADY malformed in baseline
+    # (unchanged both sides) must not attribute a cause — the plan didn't
+    # introduce the problem.
+    from digital_twin.adapters.mist.ingest.switch import invalid_bridge_priority_findings
+
+    bad = {"stp_config": {"bridge_priority": "banana"}}
+    findings = invalid_bridge_priority_findings({"d1": bad}, {"d1": bad})
+    assert len(findings) == 1
+    assert findings[0].caused_by == ()
+
+
+def test_bridge_priority_caused_by_names_device_when_changed():
+    # A malformed value that CHANGED baseline→proposed (good→bad) attributes the
+    # device as the cause.
+    from digital_twin.adapters.mist.ingest.switch import invalid_bridge_priority_findings
+    from digital_twin.contracts import Cause, ObjectRef
+
+    good = {"stp_config": {"bridge_priority": "4096"}}
+    bad = {"stp_config": {"bridge_priority": "banana"}}
+    findings = invalid_bridge_priority_findings({"d1": good}, {"d1": bad})
+    assert len(findings) == 1
+    assert findings[0].caused_by == (Cause(ref=ObjectRef("device", "d1")),)
+
+
+def test_dhcp_range_caused_by_names_scope_when_changed():
+    # A dhcp range value INTRODUCED (changed from absent/different) attributes
+    # the dhcp_scope as the cause.
+    from digital_twin.adapters.mist.ingest.switch import unresolved_dhcp_range_findings
+    from digital_twin.contracts import Cause, ObjectRef
+
+    tpl = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "{{a}}"}}}
+    findings = unresolved_dhcp_range_findings({}, tpl)
+    assert len(findings) == 1
+    assert findings[0].caused_by == (Cause(ref=ObjectRef("dhcp_scope", "corp")),)
+
+
+def test_dhcp_range_caused_by_always_set_because_builder_skips_unchanged():
+    # The builder already skips unchanged templates (the `str(before) == str(value)`
+    # guard). Every finding that fires is a change, so caused_by is always non-empty.
+    # Verify a "changed template" case also names the scope.
+    from digital_twin.adapters.mist.ingest.switch import unresolved_dhcp_range_findings
+    from digital_twin.contracts import Cause, ObjectRef
+
+    tpl_a = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "{{a}}"}}}
+    tpl_b = {"dhcpd_config": {"corp": {"type": "local", "ip_start": "{{b}}"}}}
+    findings = unresolved_dhcp_range_findings(tpl_a, tpl_b)
+    assert len(findings) == 1
+    assert findings[0].caused_by == (Cause(ref=ObjectRef("dhcp_scope", "corp")),)

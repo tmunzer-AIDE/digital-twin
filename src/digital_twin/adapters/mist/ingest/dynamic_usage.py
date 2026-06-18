@@ -22,7 +22,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import Confidence, ConfidenceLevel, device_id
 
 # expression grammar (per the OAS): an optional `split(<delim>)` followed by
@@ -211,6 +218,8 @@ def unresolved_dynamic_findings(
         if not base_unresolved and not prop_unresolved:
             continue
         affected = sorted(set(base_unresolved) | set(prop_unresolved))
+        ports_changed = sorted(base_unresolved) != sorted(prop_unresolved)
+        caused_by = (Cause(ref=ObjectRef("device", did)),) if ports_changed else ()
         findings.append(
             Finding(
                 source=FindingSource.ADAPTER,
@@ -233,6 +242,7 @@ def unresolved_dynamic_findings(
                         "proposed": prop_unresolved,
                     },
                 },
+                caused_by=caused_by,
             )
         )
     return tuple(findings)

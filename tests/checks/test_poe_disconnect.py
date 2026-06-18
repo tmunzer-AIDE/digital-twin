@@ -141,3 +141,22 @@ def test_blind_baseline_with_nothing_observed_is_silent():
         return b.build()
 
     assert _run(ir(None), ir(False)).status is Status.PASS
+
+
+# ── caused_by attribution ──────────────────────────────────────────────────────
+
+def test_poe_cut_caused_by_is_non_empty():
+    # delta disables PoE on S:ge-0/0/1 -> it appears in caused_by
+    result = _run(_ap_uplink_ir(poe=True), _ap_uplink_ir(poe=False))
+    f = result.findings[0]
+    assert f.severity is not Severity.INFO
+    assert len(f.caused_by) > 0
+    assert f.caused_by[0].ref.kind == "port"
+    assert f.caused_by[0].ref.id == "S:ge-0/0/1"
+
+
+def test_already_disabled_poe_emits_no_finding():
+    # poe_disconnect has no INFO path — an already-disabled port emits no finding
+    # (verified here to document the absence of a preexisting INFO row)
+    result = _run(_ap_uplink_ir(poe=False), _ap_uplink_ir(poe=False))
+    assert result.findings == ()

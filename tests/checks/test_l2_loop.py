@@ -88,3 +88,58 @@ def test_applies_to_link_and_port_changes_only():
     base, prop = _ring_ir(True, False), _ring_ir(True, True)
     assert check.applies_to(diff_ir(base, prop)) is True
     assert check.applies_to(diff_ir(base, base)) is False
+
+
+# ---------- caused_by attribution tests ------------------------------------------
+
+
+def test_loop_finding_caused_by_stp_flip():
+    """A cycle whose STP was enabled in baseline becomes disabled (rank 0->2) — the
+    flip on the cycle ports is named in caused_by."""
+    # baseline: cycle (parallel) with STP enabled; proposed: same cycle, STP disabled
+    ctx = _ctx(_ring_ir(stp=True, parallel=True), _ring_ir(stp=False, parallel=True))
+    result = L2LoopCheck().run(ctx)
+    assert result.status is Status.FAIL
+    f = result.findings[0]
+    assert f.code == "wired.l2.loop.unprotected"
+    # ports with stp_enabled flipped are named; ports are "A:to-B-1", "A:to-B-2",
+    # "B:to-A-1", "B:to-A-2" (both sides in both links)
+    cause_ids = {c.ref.id for c in f.caused_by}
+    # at least one of the cycle member ports whose stp_enabled changed is named
+    assert len(f.caused_by) > 0
+    assert any(pid in cause_ids for pid in ("A:to-B-1", "A:to-B-2", "B:to-A-1", "B:to-A-2"))
+    assert all("stp_enabled" in c.fields for c in f.caused_by)
+
+
+def test_loop_finding_caused_by_added_closing_link():
+    """Adding a second link closes the cycle (baseline: tree, proposed: parallel) —
+    the added link is named in caused_by."""
+    base = _ring_ir(stp=True, parallel=False)
+    prop = _ring_ir(stp=True, parallel=True)
+    ctx = _ctx(base, prop)
+    result = L2LoopCheck().run(ctx)
+    # fully STP-protected -> PASS (protected row), but cause is still set
+    assert result.status is Status.PASS
+    # one finding: the wired.l2.loop.protected row (attributable because cycle is NEW)
+    protected = [f for f in result.findings if f.code == "wired.l2.loop.protected"]
+    assert protected, f"expected a protected finding, got {[f.code for f in result.findings]}"
+    f = protected[0]
+    cause_ids = {c.ref.id for c in f.caused_by}
+    # the closing link "A:to-B-2__B:to-A-2" is in the delta (added)
+    assert ("A:to-B-2__B:to-A-2" in cause_ids) or ("B:to-A-2__A:to-B-2" in cause_ids) or any(
+        "to-B-2" in cid or "to-A-2" in cid for cid in cause_ids
+    ), f"expected closing link in caused_by, got {cause_ids}"
+
+
+def test_preexisting_loop_finding_caused_by_empty():
+    """A pre-existing cycle (condition unchanged) must have caused_by == () — the delta
+    did not arm it, so we must not fabricate a cause."""
+    same = _ring_ir(stp=False, parallel=True)
+    ctx = _ctx(same, _ring_ir(stp=False, parallel=True))
+    result = L2LoopCheck().run(ctx)
+    assert result.status is Status.PASS
+    preexisting = [f for f in result.findings if f.code == "wired.l2.loop.preexisting"]
+    assert preexisting, "expected a preexisting finding"
+    assert preexisting[0].caused_by == (), (
+        f"preexisting loop caused_by must be () but got {preexisting[0].caused_by}"
+    )

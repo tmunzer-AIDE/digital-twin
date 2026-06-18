@@ -74,3 +74,26 @@ def test_preexisting_island_is_not_a_finding():
     ir = _ir(uplink_disabled=True)  # already severed in baseline AND proposed
     result = _run(ir, ir)
     assert result.status is Status.PASS and result.findings == ()
+
+
+# --- CA-T13: cause attribution on isolation.severed ---------------------------------
+
+
+def _ids(causes):
+    return sorted((c.ref.kind, c.ref.id) for c in causes)
+
+
+def test_isolation_finding_names_the_disabled_uplink_port():
+    # disabling A's only uplink severs {A}; the cause is the changed boundary
+    # port A:up (its `disabled` field flipped, dropping the L2 edge)
+    result = _run(_ir(uplink_disabled=False), _ir(uplink_disabled=True))
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert ("port", "A:up") in _ids(f.caused_by)
+
+
+def test_preexisting_island_has_no_cause():
+    # already severed in baseline AND proposed -> no finding emitted at all, so
+    # there is nothing carrying a (spurious) cause
+    ir = _ir(uplink_disabled=True)
+    result = _run(ir, ir)
+    assert result.findings == ()

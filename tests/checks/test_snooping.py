@@ -175,3 +175,82 @@ def test_edge_not_carrying_the_vlan_is_unreachable_not_ok():
     r = _run(ir_asym(None), ir_asym(("corp",)))
     assert not [f for f in r.findings if f.code.endswith("untrusted_path")]
     assert r.coverage.state is CoverageState.PARTIAL
+
+
+# --- caused_by attribution tests ---
+
+
+def test_conclusion_finding_caused_by_names_changed_device():
+    # Device S gains snooping in proposed (snooping=None->("corp",)) → it IS in
+    # the delta as a modified entity. The WARNING finding's caused_by must name it.
+    r = _run(_ir(snooping=None, trust=False), _ir(trust=False))
+    f = next(x for x in r.findings if x.severity is Severity.WARNING)
+    assert len(f.caused_by) == 1
+    assert f.caused_by[0].ref.kind == "device"
+    assert f.caused_by[0].ref.id == "S"
+
+
+def test_preexisting_info_finding_has_empty_caused_by():
+    # Identical snooping on both sides → severity INFO → caused_by must be ().
+    r = _run(_ir(trust=False), _ir(trust=False))
+    f = next(x for x in r.findings if x.severity is Severity.INFO)
+    assert f.caused_by == ()
+
+
+def test_port_trust_flip_names_port_in_caused_by():
+    # PR #5 review gap: the last trusted egress port flips dhcp_trusted True→False
+    # while device snooping config is UNCHANGED (both sides have snooping=("corp",)).
+    # Before the fix the port was missing from caused_by (only the device was
+    # returned via delta_index.cause("device", did)). The port S:ge-0/0/0 IS in
+    # the delta as a Modified entity (dhcp_trusted field changed), so the fix
+    # (*ctx.delta_index.causes("port", blocked)) must name it.
+    base = _ir(trust=True)   # snooping already on; trusted port
+    prop = _ir(trust=False)  # snooping unchanged; port flips untrusted
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.severity is Severity.WARNING)
+    assert f.code == "wired.dhcp.snooping.untrusted_path"
+    port_cause_ids = {c.ref.id for c in f.caused_by if c.ref.kind == "port"}
+    assert "S:ge-0/0/0" in port_cause_ids, (
+        f"expected port S:ge-0/0/0 in caused_by, got: {[c.ref for c in f.caused_by]}"
+    )
+
+
+def test_vlan_source_change_names_vlan_in_caused_by():
+    # PR #5 review gap: a snooped vlan whose dhcp_sources goes from () → ("GW",)
+    # introduces an untrusted_path (device snooping config + port trust UNCHANGED;
+    # both sides have snooping=("corp",) and trust=False). The vlan entity IS in
+    # the delta as a Modified entity (dhcp_sources field changed), so
+    # *(c for c in (ctx.delta_index.cause("vlan", str(vlan)),) if c is not None)
+    # must name vlan "10" in caused_by.
+    base = _ir(trust=False, sources=())   # snooping on; no dhcp source → no finding
+    prop = _ir(trust=False, sources=("GW",))  # source added → untrusted_path fires
+    r = _run(base, prop)
+    f = next(
+        x for x in r.findings
+        if x.code == "wired.dhcp.snooping.untrusted_path" and x.severity is Severity.WARNING
+    )
+    vlan_cause_ids = {c.ref.id for c in f.caused_by if c.ref.kind == "vlan"}
+    assert "10" in vlan_cause_ids, (
+        f"expected vlan '10' in caused_by, got: {[c.ref for c in f.caused_by]}"
+    )
+
+
+def test_added_link_names_link_in_caused_by():
+    # PR #5 review gap: a new egress path to the DHCP source is created by ADDING
+    # a link (linked=False → True). Device snooping config + port trust UNCHANGED
+    # (both sides snooping=("corp",), trust=False). The link entity IS in the delta
+    # as an Added entity; path_links collects its id ("GW:ge-0/0/0__S:ge-0/0/0"),
+    # so *ctx.delta_index.causes("link", path_links) must name it in caused_by.
+    base = _ir(trust=False, linked=False)  # no link → source unreachable → no finding
+    prop = _ir(trust=False, linked=True)   # link added → untrusted_path fires
+    r = _run(base, prop)
+    f = next(
+        x for x in r.findings
+        if x.code == "wired.dhcp.snooping.untrusted_path" and x.severity is Severity.WARNING
+    )
+    # link_id("S:ge-0/0/0", "GW:ge-0/0/0") → sorted → "GW:ge-0/0/0__S:ge-0/0/0"
+    expected_link_id = "GW:ge-0/0/0__S:ge-0/0/0"
+    link_cause_ids = {c.ref.id for c in f.caused_by if c.ref.kind == "link"}
+    assert expected_link_id in link_cause_ids, (
+        f"expected link '{expected_link_id}' in caused_by, got: {[c.ref for c in f.caused_by]}"
+    )

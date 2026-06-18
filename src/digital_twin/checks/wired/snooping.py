@@ -68,8 +68,8 @@ def _egress_trust(
     did: str,
     vlan: int,
     source: str,
-) -> tuple[str, tuple[str, ...]]:
-    """("ok" | "blocked" | "unknown" | "unreachable", untrusted port ids).
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """("ok" | "blocked" | "unknown" | "unreachable", untrusted port ids, egress link ids).
 
     Examines every vlan-graph edge at `did` that can still reach `source`
     once `did` itself is removed (its OWN ports are the snooping boundary).
@@ -78,9 +78,10 @@ def _egress_trust(
     """
     g = actx.vlan_graph(vlan)
     if source not in g or did not in g:
-        return ("unreachable", ())
+        return ("unreachable", (), ())
     pruned = nx.restricted_view(g, [did], [])
     candidates: list[tuple[bool | None, str]] = []
+    path_links: set[str] = set()  # link ids of the egress edges toward the source
     for _, neighbor, data in g.edges(did, data=True):
         edge = data["data"]
         reaches = neighbor == source or (
@@ -88,6 +89,7 @@ def _egress_trust(
         )
         if not reaches:
             continue
+        path_links.update(edge.link_ids)
         edge_certain = edge.confidence.level is ConfidenceLevel.HIGH
         for pid in edge.member_ports:
             port = ir.ports.get(pid)
@@ -97,13 +99,14 @@ def _egress_trust(
                 continue  # the peer side's trust is not this switch's boundary
             trust = port.dhcp_trusted if edge_certain else None
             candidates.append((trust, pid))
+    links = tuple(sorted(path_links))
     if not candidates:
-        return ("unreachable", ())
+        return ("unreachable", (), links)
     if any(trust is True for trust, _ in candidates):
-        return ("ok", ())
+        return ("ok", (), links)
     if any(trust is None for trust, _ in candidates):
-        return ("unknown", ())
-    return ("blocked", tuple(sorted(pid for _, pid in candidates)))
+        return ("unknown", (), links)
+    return ("blocked", tuple(sorted(pid for _, pid in candidates)), links)
 
 
 class DhcpSnoopingCheck:
@@ -142,7 +145,7 @@ class DhcpSnoopingCheck:
                     src_node = node_for(prop_root, source)
                     if src_node == node:
                         continue  # locally hosted — never crosses an egress port
-                    state, blocked = _egress_trust(
+                    state, blocked, path_links = _egress_trust(
                         ctx.proposed, prop_ir, prop_root, node, vlan, src_node
                     )
                     if state == "unknown":
@@ -218,6 +221,14 @@ class DhcpSnoopingCheck:
                                 "source": source,
                                 "untrusted_egress": list(blocked),
                             },
+                            caused_by=tuple(dict.fromkeys((
+                                *(c for c in (ctx.delta_index.cause("device", did),)
+                                  if c is not None),
+                                *ctx.delta_index.causes("port", blocked),
+                                *(c for c in (ctx.delta_index.cause("vlan", str(vlan)),)
+                                  if c is not None),
+                                *ctx.delta_index.causes("link", path_links),
+                            ))) if not pre else (),
                         )
                     )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]

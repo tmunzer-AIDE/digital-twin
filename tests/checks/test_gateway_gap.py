@@ -306,3 +306,100 @@ def test_absent_subnet_not_routed_is_silent():
                                     changed_vlan_ids={"10"})
     assert result.coverage.state is CoverageState.COMPLETE
     assert result.findings == ()
+
+
+# --- caused_by attribution (CA Task 11) ---
+
+
+def test_removed_attributes_the_removed_l3intf():
+    # the removed IRB is in the delta -> the .removed finding names it as cause
+    result = _run(_ir(with_irb=True), _ir(with_irb=False))
+    f = next(x for x in result.findings if x.code.endswith(".removed"))
+    causes = {c.ref.id for c in f.caused_by}
+    assert causes == {"S:l3:irb:10"}
+    assert all(c.ref.kind == "l3intf" for c in f.caused_by)
+
+
+def test_unserved_has_no_l3intf_cause_only_vlan_cause():
+    # newly-routed (no l3intf added/removed): the .unserved finding has a vlan
+    # cause (the subnet was newly declared → vlan is in the delta) but NO l3intf
+    # cause (none was added/removed; the l3intf branch only fires for "removed").
+    result = _run(_ir(routed=False, with_irb=False), _ir(routed=True, with_irb=False))
+    f = next(x for x in result.findings if x.code.endswith(".unserved"))
+    kinds = {c.ref.kind for c in f.caused_by}
+    assert "l3intf" not in kinds, f"unexpected l3intf cause: {f.caused_by}"
+    assert "vlan" in kinds, f"expected vlan cause, got: {f.caused_by}"
+
+
+def test_gateway_unowned_attributes_changed_vlan_when_gateway_moves():
+    # the owner breaks because vlan.gateway moved -> the vlan is the changed
+    # entity and is named as cause (gateway field changed)
+    r = _run(_routed_ir(gateway="10.0.0.1"), _routed_ir(gateway="10.0.0.9"))
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("vlan", "10") in causes
+
+
+def test_gateway_unowned_attributes_changed_owner_l3intf_when_ip_moves():
+    # G unchanged, the owning interface's ip changed -> the l3intf is named
+    base = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.1")
+    prop = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.2")
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("l3intf", "S:l3:irb:10") in causes
+
+
+def test_unserved_vlan_names_vlan_in_caused_by():
+    # PR #5 review gap: a newly-routed vlan (subnet newly declared, no L3 intf)
+    # emits .unserved (WARNING). Before the fix, caused_by was always () for this
+    # code. The fix adds:
+    #   ctx.delta_index.causes("vlan", (str(vid),)) if code == "unserved"
+    # The vlan gains a subnet in proposed → EntityRef("vlan","10") is in the diff
+    # as a Modified entity → caused_by must name ("vlan", "10").
+    result = _run(_ir(routed=False, with_irb=False), _ir(routed=True, with_irb=False))
+    f = next(x for x in result.findings if x.code.endswith(".unserved"))
+    assert f.severity is Severity.WARNING
+    vlan_cause_ids = {c.ref.id for c in f.caused_by if c.ref.kind == "vlan"}
+    assert "10" in vlan_cause_ids, (
+        f"expected vlan '10' in caused_by, got: {[c.ref for c in f.caused_by]}"
+    )
+
+
+def test_gateway_unowned_warning_never_owned_names_causes():
+    # PR #5 review gap: the never-owned WARNING row (gateway changed between two
+    # unowned values — no baseline owner known) must name the changed vlan and/or
+    # l3intf in caused_by. Before the fix, the cause gate was
+    #   `severity is Severity.ERROR`
+    # so the WARNING row got (). The fix widens it to
+    #   `severity is not Severity.INFO`
+    # so both ERROR and WARNING rows populate caused_by from the delta.
+    # Additionally, the INFO preexisting_unowned row must still carry ().
+    base = _routed_ir(gateway="10.0.0.8", intf_ip="10.0.0.250")
+    prop = _routed_ir(gateway="10.0.0.9", intf_ip="10.0.0.250")
+    r = _run(base, prop)
+    # WARNING never-owned finding
+    f_warn = next(
+        x for x in r.findings
+        if x.code.endswith("gateway_unowned") and x.severity is Severity.WARNING
+    )
+    assert f_warn.caused_by, (
+        f"expected non-empty caused_by for WARNING gateway_unowned, got: {f_warn.caused_by}"
+    )
+    causes = {(c.ref.kind, c.ref.id) for c in f_warn.caused_by}
+    # The vlan's gateway field changed → vlan "10" is in the delta
+    assert ("vlan", "10") in causes, (
+        f"expected ('vlan','10') in causes, got: {causes}"
+    )
+    # INFO preexisting_unowned row must still carry ()
+    same = _routed_ir(gateway="10.0.0.9", intf_ip="10.0.0.250")
+    r_info = _run(same, same)
+    f_info = next(
+        x for x in r_info.findings
+        if x.code.endswith("gateway_unowned") and x.severity is Severity.INFO
+    )
+    assert f_info.caused_by == (), (
+        f"INFO preexisting_unowned must have empty caused_by, got: {f_info.caused_by}"
+    )

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from digital_twin.analysis.delta_cause import causes_for_blackhole
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.contracts import Cause, Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff
 from digital_twin.ir.entities import AttachKind, Client
 from digital_twin.ir.indexes import node_for, vc_root_map
@@ -46,6 +47,7 @@ class ClientImpactCheck:
             # no single `subject`: this finding aggregates clients across many
             # attachments (ports/APs/vlans) — the macs are in affected_entities
             # and each impact carries its own attachment in evidence
+            union = tuple(dict.fromkeys(c for i in impacts for c in i.get("caused_by", ())))
             findings = (
                 Finding(
                     source=FindingSource.CHECK,
@@ -56,6 +58,7 @@ class ClientImpactCheck:
                     message=f"{len(impacts)} currently-connected client(s) affected by the delta",
                     affected_entities=tuple(i["mac"] for i in impacts),
                     evidence={"impacts": impacts},
+                    caused_by=union,
                 ),
             )
         return CheckResult(
@@ -75,12 +78,16 @@ class ClientImpactCheck:
             if base_port is None:
                 return None
             if prop_port is None:
-                return self._entry(client, "disconnect", "attach port removed")
+                return self._entry(
+                    client, "disconnect", "attach port removed",
+                    caused_by=ctx.delta_index.causes("port", [client.attach_id]),
+                )
             if base_port.native_vlan is not None and prop_port.native_vlan != base_port.native_vlan:
                 return self._entry(
                     client,
                     "vlan_move",
                     f"access vlan {base_port.native_vlan} -> {prop_port.native_vlan}",
+                    caused_by=ctx.delta_index.causes("port", [client.attach_id]),
                 )
         vlan = client.vlan
         if vlan is not None and vlan in prop_ir.vlans:
@@ -91,7 +98,8 @@ class ClientImpactCheck:
                         for base_comp in ctx.baseline.vlan_components(vlan):
                             if node in base_comp.nodes and base_comp.reaches_exit:
                                 return self._entry(
-                                    client, "blackhole", f"vlan {vlan} segment loses its exit"
+                                    client, "blackhole", f"vlan {vlan} segment loses its exit",
+                                    caused_by=causes_for_blackhole(ctx, vlan, comp),
                                 )
         return None
 
@@ -105,11 +113,14 @@ class ClientImpactCheck:
             return node_for(vc_root, client.attach_id)
         return None
 
-    def _entry(self, client: Client, impact: str, detail: str) -> dict[str, Any]:
+    def _entry(
+        self, client: Client, impact: str, detail: str, caused_by: tuple[Cause, ...] = ()
+    ) -> dict[str, Any]:
         return {
             "mac": client.mac,
             "vlan": client.vlan,
             "attachment": client.attach_id,
             "impact": impact,
             "detail": detail,
+            "caused_by": caused_by,
         }

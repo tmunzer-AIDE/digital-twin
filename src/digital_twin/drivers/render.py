@@ -11,6 +11,17 @@ from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
 
 
+def _cause_clause(f: Finding) -> str:
+    if not f.caused_by:
+        return ""
+    parts = []
+    for c in f.caused_by:
+        who = f'"{c.ref.name}"' if c.ref.name else c.ref.id
+        flds = f" [{', '.join(c.fields)}]" if c.fields else ""
+        parts.append(f"{c.ref.kind} {who}{flds}")
+    return f" (caused by {', '.join(parts)})"
+
+
 def _finding_line(f: Finding, label: str = "finding") -> str:
     """One human line: severity, code, WHICH object (subject), WHICH attribute
     (evidence path when present), then the message."""
@@ -20,7 +31,7 @@ def _finding_line(f: Finding, label: str = "finding") -> str:
         where = f" on {f.subject.kind} {who}"
     path = f.evidence.get("path")
     at = f" at {path}" if path else ""
-    return f"  {label} [{f.severity.value}] {f.code}{where}{at}: {f.message}"
+    return f"  {label} [{f.severity.value}] {f.code}{where}{at}: {f.message}{_cause_clause(f)}"
 
 
 def _plain(obj: Any) -> Any:

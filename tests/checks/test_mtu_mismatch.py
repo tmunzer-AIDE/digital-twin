@@ -149,3 +149,24 @@ def test_ap_uplink_mtu_change_is_unverifiable():
 def test_ap_uplink_with_unchanged_mtu_is_silent():
     # same uncertainty already live in the baseline -> not the delta's doing
     assert _run(_ap_uplink_ir(9200), _ap_uplink_ir(9200)).findings == ()
+
+
+# ── caused_by attribution ──────────────────────────────────────────────────────
+
+def test_introduced_mtu_mismatch_caused_by_is_non_empty():
+    # delta changes T:ge-0/0/1 mtu -> it appears in caused_by
+    result = _run(_ir(9200, 9200), _ir(9200, 1500))
+    f = result.findings[0]
+    assert f.severity is not Severity.INFO
+    assert len(f.caused_by) > 0
+    ids = {c.ref.id for c in f.caused_by}
+    assert "T:ge-0/0/1" in ids
+    assert all(c.ref.kind == "port" for c in f.caused_by)
+
+
+def test_preexisting_mtu_mismatch_caused_by_is_empty():
+    # same mismatch in baseline and proposed -> INFO row -> caused_by must be ()
+    result = _run(_ir(9200, 1500), _ir(9200, 1500))
+    f = result.findings[0]
+    assert f.severity is Severity.INFO
+    assert f.caused_by == ()

@@ -199,3 +199,86 @@ def test_advertised_removed_is_per_device_not_global_vlan():
     assert len(ar) == 1
     assert ar[0].evidence["device"] == "S1" and ar[0].evidence["vlan"] == 20
     assert r.status is Status.WARN  # REVIEW, never a silent PASS
+
+
+# --- caused_by attribution (CA Task 11) ---
+
+
+def test_egress_lost_attributes_the_collapsed_devices_active_ospf_intf():
+    base = _ir([ospf("S", 10, name="transit")], clients=[("aa:bb", 10)])
+    prop = _ir([])
+    r = _run(base, prop)
+    f = next(f for f in r.findings if f.code.endswith(".egress_lost"))
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert causes == {("ospf_intf", "S:ospf:0:transit")}
+
+
+def test_advertised_removed_attributes_the_changed_ospf_intf():
+    base = _ir([ospf("S", 10, name="transit"), ospf("S", 20, name="corp", passive=True)])
+    prop = _ir([ospf("S", 10, name="transit")])
+    r = _run(base, prop)
+    f = next(f for f in r.findings if f.code.endswith(".advertised_removed"))
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert causes == {("ospf_intf", "S:ospf:0:corp")}
+
+
+def test_transit_mutation_attributes_the_changed_ospf_intf():
+    base = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])
+    prop = _ir([ospf("S", 10, name="a", passive=True), ospf("S", 20, name="b")])
+    r = _run(base, prop)
+    f = next(f for f in r.findings if f.code.endswith(".transit_mutation"))
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    # the passive flip on vlan 10 reuses the same id (name unchanged) -> modified
+    assert causes == {("ospf_intf", "S:ospf:0:a")}
+
+
+def test_two_devices_same_vlan_advertised_removed_names_only_its_own_intf():
+    # REGRESSION (round 8): A and B both have OSPF deltas on vlan 50. A's
+    # advertised_removed must name ONLY A's ospf_intf, never B's. Without the
+    # `oi.device_id == did` match the (*base,*prop) ospf_intfs on vlan 50 would
+    # include B's row and cross-blame it.
+    def build(*, a_has_50, b_passive_50):
+        b = IRBuilder().add_device(sw("A")).add_device(sw("B"))
+        for vid in (50, 60):
+            b.add_vlan(Vlan(vlan_id=vid, subnet=f"198.51.{vid}.0/24"))
+        b.add_l3intf(irb("A", 50, subnet="198.51.50.0/24"))
+        b.add_l3intf(irb("A", 60, subnet="198.51.60.0/24"))
+        b.add_l3intf(irb("B", 50, subnet="198.51.50.0/24"))
+        if a_has_50:
+            b.add_ospf_intf(ospf("A", 50, name="a50"))
+        b.add_ospf_intf(ospf("A", 60, name="a60"))  # A keeps an adjacency (no collapse)
+        # B independently flips its own vlan-50 row active->passive (a delta on
+        # B's vlan-50 ospf_intf id, same vlan as A's withdrawal)
+        b.add_ospf_intf(ospf("B", 50, name="b50", passive=b_passive_50))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        b.with_capability(IRCapability.CLIENTS_ACTIVE)
+        return b.build()
+
+    base = build(a_has_50=True, b_passive_50=False)
+    prop = build(a_has_50=False, b_passive_50=True)
+    r = _run(base, prop)
+    ar = next(f for f in r.findings if f.code.endswith(".advertised_removed")
+              and f.evidence["device"] == "A")
+    causes = {c.ref.id for c in ar.caused_by}
+    assert causes == {"A:ospf:0:a50"}
+    assert "B:ospf:0:b50" not in causes  # B's changed intf must NOT be cross-blamed
+
+
+def test_egress_lost_names_only_active_intf_not_an_unrelated_passive_one():
+    # REGRESSION (round 9): a device's ACTIVE adjacency collapses while an
+    # unrelated PASSIVE ospf row on the SAME device also changes (a passive row
+    # withdrawn). egress_lost must name ONLY the active intf, never the passive
+    # one (the `not oi.passive` filter). Without it, the removed passive row
+    # would be cross-blamed for the adjacency collapse.
+    base = _ir(
+        [ospf("S", 10, name="transit"), ospf("S", 20, name="stub", passive=True)],
+        clients=[("aa:bb", 10)],
+    )
+    # both rows removed: the active collapse is egress_lost; the passive row's
+    # removal is a separate event that must NOT be attributed to the collapse
+    prop = _ir([], clients=[("aa:bb", 10)])
+    r = _run(base, prop)
+    f = next(f for f in r.findings if f.code.endswith(".egress_lost"))
+    causes = {c.ref.id for c in f.caused_by}
+    assert causes == {"S:ospf:0:transit"}
+    assert "S:ospf:0:stub" not in causes  # the passive row is not the adjacency cause

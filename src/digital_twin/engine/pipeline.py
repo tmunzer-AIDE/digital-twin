@@ -38,6 +38,7 @@ from digital_twin.adapters.mist.ingest.switch import (
     unresolved_dhcp_range_findings,
 )
 from digital_twin.analysis.context import AnalysisContext
+from digital_twin.analysis.delta_cause import delta_index
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
@@ -227,6 +228,7 @@ def _simulate_site_state(
                 baseline=AnalysisContext(baseline.ir),
                 proposed=AnalysisContext(proposed.ir),
                 diff=diff,
+                delta_index=delta_index(diff),
             )
         )
     profile_outcome = profile_proposed if profile_proposed is not None else proposed

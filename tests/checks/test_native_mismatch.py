@@ -255,3 +255,24 @@ def test_ap_uplinks_are_vlan_transparent_and_never_fire():
         return b.build()
 
     assert _run(ir(10), ir(30)).findings == ()
+
+
+# ── caused_by attribution ──────────────────────────────────────────────────────
+
+def test_introduced_mismatch_caused_by_is_non_empty():
+    # delta changes T:ge-0/0/1 native_vlan -> it appears in caused_by
+    result = _run(_two_switch_ir(10, 10), _two_switch_ir(10, 30))
+    f = result.findings[0]
+    assert f.severity is not Severity.INFO
+    assert len(f.caused_by) > 0
+    ids = {c.ref.id for c in f.caused_by}
+    assert "T:ge-0/0/1" in ids
+    assert all(c.ref.kind == "port" for c in f.caused_by)
+
+
+def test_preexisting_mismatch_caused_by_is_empty():
+    # same mismatch in baseline and proposed -> INFO row -> caused_by must be ()
+    result = _run(_two_switch_ir(10, 30), _two_switch_ir(10, 30))
+    f = result.findings[0]
+    assert f.severity is Severity.INFO
+    assert f.caused_by == ()

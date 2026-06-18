@@ -10,7 +10,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import (
     Confidence,
     ConfidenceLevel,
@@ -232,6 +239,8 @@ def invalid_bridge_priority_findings(
                 invalid = True
         if not invalid:
             continue
+        changed = sides["baseline"] != sides["proposed"]
+        caused_by = (Cause(ref=ObjectRef("device", did)),) if changed else ()
         findings.append(
             Finding(
                 source=FindingSource.ADAPTER,
@@ -252,6 +261,7 @@ def invalid_bridge_priority_findings(
                 ),
                 affected_entities=(did,),
                 evidence={"device": did, **sides},
+                caused_by=caused_by,
             )
         )
     return findings
@@ -281,6 +291,7 @@ def unresolved_dhcp_range_findings(
             before = (base_cfg.get(name) or {}).get(field)
             if str(before) == str(value):
                 continue  # pre-existing and unchanged
+            caused_by = (Cause(ref=ObjectRef("dhcp_scope", str(name))),)
             findings.append(
                 Finding(
                     source=FindingSource.ADAPTER,
@@ -300,6 +311,7 @@ def unresolved_dhcp_range_findings(
                         "value": str(value),
                         "before": None if before is None else str(before),
                     },
+                    caused_by=caused_by,
                 )
             )
     return findings
