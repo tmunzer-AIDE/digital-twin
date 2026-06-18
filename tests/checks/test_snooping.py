@@ -175,3 +175,23 @@ def test_edge_not_carrying_the_vlan_is_unreachable_not_ok():
     r = _run(ir_asym(None), ir_asym(("corp",)))
     assert not [f for f in r.findings if f.code.endswith("untrusted_path")]
     assert r.coverage.state is CoverageState.PARTIAL
+
+
+# --- caused_by attribution tests ---
+
+
+def test_conclusion_finding_caused_by_names_changed_device():
+    # Device S gains snooping in proposed (snooping=None->("corp",)) → it IS in
+    # the delta as a modified entity. The WARNING finding's caused_by must name it.
+    r = _run(_ir(snooping=None, trust=False), _ir(trust=False))
+    f = next(x for x in r.findings if x.severity is Severity.WARNING)
+    assert len(f.caused_by) == 1
+    assert f.caused_by[0].ref.kind == "device"
+    assert f.caused_by[0].ref.id == "S"
+
+
+def test_preexisting_info_finding_has_empty_caused_by():
+    # Identical snooping on both sides → severity INFO → caused_by must be ().
+    r = _run(_ir(trust=False), _ir(trust=False))
+    f = next(x for x in r.findings if x.severity is Severity.INFO)
+    assert f.caused_by == ()

@@ -225,3 +225,51 @@ def test_unparseable_present_values_abstain_with_note():
     r = _run(_ir(), _ir(s))
     assert not [f for f in r.findings if f.code.endswith("gateway_mismatch")]
     assert r.coverage.state is CoverageState.PARTIAL
+
+
+# --- caused_by attribution tests ---
+
+
+def test_overlap_conclusion_caused_by_names_added_scope():
+    # B_OVERLAP (site:b) is ADDED in proposed → it IS in the delta.
+    # The overlap WARNING's caused_by must name at least one dhcp_scope cause.
+    r = _run(_ir(A), _ir(A, B_OVERLAP))
+    f = next(x for x in r.findings if x.code.endswith("overlap") and x.severity is Severity.WARNING)
+    assert len(f.caused_by) >= 1
+    assert all(c.ref.kind == "dhcp_scope" for c in f.caused_by)
+    ids = {c.ref.id for c in f.caused_by}
+    assert "site:b" in ids  # the newly added scope is the delta entity
+
+
+def test_overlap_preexisting_info_finding_has_empty_caused_by():
+    # Same overlap on both sides → INFO → caused_by must be ().
+    r = _run(_ir(A, B_OVERLAP), _ir(A, B_OVERLAP))
+    f = next(x for x in r.findings if x.code.endswith("overlap") and x.severity is Severity.INFO)
+    assert f.caused_by == ()
+
+
+def test_out_of_subnet_conclusion_caused_by_names_modified_scope():
+    # scope site:a changes from A (no subnet) to bad (has subnet + bad gateway)
+    # → site:a is MODIFIED in the delta. The WARNING finding's caused_by names it.
+    bad = DhcpScope(provider="site", network="a", vlan=10, subnet="10.0.0.0/24",
+                    ip_start="10.0.0.10", ip_end="10.0.0.99", gateway="10.9.9.1")
+    r = _run(_ir(A), _ir(bad))
+    f = next(
+        x for x in r.findings
+        if x.code.endswith("out_of_subnet") and x.severity is Severity.WARNING
+    )
+    assert len(f.caused_by) == 1
+    assert f.caused_by[0].ref.kind == "dhcp_scope"
+    assert f.caused_by[0].ref.id == "site:a"
+
+
+def test_out_of_subnet_preexisting_info_finding_has_empty_caused_by():
+    # Same out-of-subnet violation on both sides → INFO → caused_by must be ().
+    bad = DhcpScope(provider="site", network="a", vlan=10, subnet="10.0.0.0/24",
+                    ip_start="10.0.0.10", ip_end="10.0.0.99", gateway="10.9.9.1")
+    r = _run(_ir(bad), _ir(bad))
+    f = next(
+        x for x in r.findings
+        if x.code.endswith("out_of_subnet") and x.severity is Severity.INFO
+    )
+    assert f.caused_by == ()

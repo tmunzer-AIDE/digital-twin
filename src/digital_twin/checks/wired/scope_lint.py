@@ -155,6 +155,10 @@ class DhcpScopeLintCheck:
                     ),
                     affected_entities=(a.id, b.id),
                     evidence={"scopes": [a.id, b.id]},
+                    caused_by=(
+                        ctx.delta_index.causes("dhcp_scope", (a.id, b.id))
+                        if severity is not Severity.INFO else ()
+                    ),
                 )
             )
 
@@ -181,6 +185,10 @@ class DhcpScopeLintCheck:
                     ),
                     affected_entities=(s.id,),
                     evidence={"scope": s.id, "subnet": s.subnet, "violations": list(violations)},
+                    caused_by=(
+                        ctx.delta_index.causes("dhcp_scope", (s.id,))
+                        if severity is not Severity.INFO else ()
+                    ),
                 )
             )
 

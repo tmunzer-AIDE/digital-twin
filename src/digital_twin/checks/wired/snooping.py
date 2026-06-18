@@ -218,6 +218,9 @@ class DhcpSnoopingCheck:
                                 "source": source,
                                 "untrusted_egress": list(blocked),
                             },
+                            caused_by=tuple(
+                                c for c in (ctx.delta_index.cause("device", did),) if c is not None
+                            ) if not pre else (),
                         )
                     )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]
