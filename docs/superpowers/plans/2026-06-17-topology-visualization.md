@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Emit mermaid charts (L2, per-VLAN, Routed VLAN exits) on every verdict, with the blast radius severity-highlighted and `caused_by` in captions, exposed as `Verdict.diagrams` + a markdown helper for the elicitation UI.
+**Goal:** Emit mermaid charts (L2, per-VLAN, Routed VLAN exits) on every normal check/verdict path, with the blast radius severity-highlighted and `caused_by` in captions, exposed as `Verdict.diagrams` + a markdown helper for the elicitation UI. (All `_unknown(...)` short-circuits keep `diagrams=()`.)
 
 **Architecture:** A new pure `viz/` package consumes the existing graph builders (`build_l2_graph`/`build_vlan_graph`) + a `Highlight` index built from findings. The pipeline calls `safe_build_diagrams(proposed.ir, verdict.findings)` after `assemble()` and attaches the result to the `Verdict`. `Diagram` is a dumb DTO in `contracts/`; mermaid styling lives only in `viz/mermaid.py`.
 
@@ -333,7 +333,9 @@ git commit -m "feat(viz): device-subject names resolve via Device.name"
 
 ```python
 # tests/viz/test_highlight.py
-from digital_twin.contracts import Cause, Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause, Finding, FindingCategory, FindingSource, ObjectRef, Severity,
+)
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
 from digital_twin.ir.entities import Device, DeviceRole, Port, PortMode, Vlan
 from digital_twin.viz.highlight import build_highlight
@@ -386,6 +388,13 @@ def test_mist_device_id_is_normalized_to_mac():
     assert "aabb01" in hl.nodes
 
 
+def test_gateway_mist_id_2000_normalized():
+    # gateway Mist ids use the 2000 type tag — normalize generically, not just 1000
+    f = _f(subject=ObjectRef("device", "00000000-0000-0000-2000-aabb01"))
+    hl = build_highlight((f,), _ir())
+    assert "aabb01" in hl.nodes
+
+
 def test_caused_by_is_a_cause_line_not_a_highlight():
     f = _f(affected_entities=("aabb01",), caused_by=(Cause(ref=ObjectRef("link", "aabb02:p__aabb01:q"), fields=("native_vlan",)),))
     hl = build_highlight((f,), _ir())
@@ -432,7 +441,7 @@ from digital_twin.ir import IR
 from digital_twin.ir.indexes import node_for, vc_root_map
 
 _SEV_RANK = {Severity.INFO: 0, Severity.WARNING: 1, Severity.ERROR: 2, Severity.CRITICAL: 3}
-_MIST_DEV_PREFIX = "00000000-0000-0000-1000-"
+_MIST_DEV_HEAD = "00000000-0000-0000-"
 
 
 @dataclass
@@ -450,7 +459,12 @@ class Highlight:
 
 
 def _mac(device_id: str) -> str:
-    return device_id[len(_MIST_DEV_PREFIX):] if device_id.startswith(_MIST_DEV_PREFIX) else device_id
+    # Mist device ids are 00000000-0000-0000-XXXX-<mac>, XXXX a type tag (1000
+    # switch/ap, 2000 gateway, ...). Normalize to the trailing segment generally.
+    parts = device_id.split("-")
+    if len(parts) == 5 and device_id.startswith(_MIST_DEV_HEAD):
+        return parts[-1]
+    return device_id
 
 
 def build_highlight(findings: Iterable[Finding], ir: IR) -> Highlight:
@@ -504,7 +518,9 @@ def build_highlight(findings: Iterable[Finding], ir: IR) -> Highlight:
         ev: Any = f.evidence
         for vid in _ints(ev.get("vlan")) + _ints(ev.get("affected_vlans")):
             hit_any |= add_vlan(vid, f.severity, label)
-        for did in _strs(ev.get("device")) + _strs(ev.get("component_nodes")) + _strs(ev.get("fragment_nodes")) + _strs(ev.get("baseline_root")) + _strs(ev.get("proposed_root")):
+        _node_keys = ("device", "component_nodes", "fragment_nodes",
+                      "baseline_root", "proposed_root")
+        for did in [d for k in _node_keys for d in _strs(ev.get(k))]:
             hit_any |= add_node(node(did), f.severity, label)
         for pid in _strs(ev.get("port")) + _strs(ev.get("new_member_ports")):
             hit_any |= add_node(port_node(pid), f.severity, label)
@@ -585,7 +601,9 @@ git commit -m "feat(viz): build_highlight — additive finding->entity index"
 # tests/viz/test_mermaid.py
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
-from digital_twin.ir.entities import Device, DeviceRole, Link, LinkKind, Port, PortMode, Vlan, link_id
+from digital_twin.ir.entities import (
+    Device, DeviceRole, Link, LinkKind, Port, PortMode, Vlan, link_id,
+)
 from digital_twin.viz.mermaid import build_diagrams, safe_build_diagrams
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -741,7 +759,8 @@ def _l2_diagram(ir: IR, hl: Highlight) -> Diagram:
     lines = ["graph LR", *_CLASSDEFS]
     for node in g.nodes:
         dev = ir.devices.get(node)
-        lines.append(f'  {ids.get(node)}["{_label(dev.name or node if dev else node, dev.role.value if dev else "?")}"]')
+        label = _label(dev.name or node if dev else node, dev.role.value if dev else "?")
+        lines.append(f'  {ids.get(node)}["{label}"]')
     for u, v, data in g.edges(data=True):
         edge = data["data"]
         lbl = ",".join(str(x) for x in sorted(edge.vlans)) or edge.kind
@@ -813,6 +832,7 @@ First add these imports to the top of `mermaid.py` (used by this task and Task 8
 ```python
 import networkx as nx
 
+from digital_twin.analysis.exits import resolve_exit
 from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.representations.vlan_graph import build_vlan_graph
 ```
@@ -824,8 +844,11 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
     vc = vc_root_map(ir)
     g = build_vlan_graph(ir, l2, vid)
     ids = _Ids()
-    exit_nodes = {n for n, d in g.nodes(data=True) if d["data"].is_exit}
-    for intf in ir.l3intfs:  # all roles incl GATEWAY
+    # resolve_exit covers IRB/SVI (is_exit) AND boundary-uplink GATEWAY nodes on a
+    # carrying edge; union the owners of any l3intf for the vlan (incl GATEWAY-role
+    # interfaces, which resolve_exit rule 1 — IRB/SVI only — does not see).
+    exit_nodes = set(resolve_exit(ir, g).nodes)
+    for intf in ir.l3intfs:
         if intf.vlan_id == vid:
             exit_nodes.add(node_for(vc, intf.device_id))
     lines = ["graph LR", *_CLASSDEFS]
@@ -845,8 +868,9 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
     title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
     sev = _worst(vhit.severity if vhit else None,
                  *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
+    unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view=f"vlan:{vid}", title=title, severity=sev,
-                   mermaid="\n".join(lines), notes=tuple(captions))
+                   mermaid="\n".join(lines), notes=tuple(captions + unloc))
 ```
 
 Replace `build_diagrams` body (numeric VLAN ordering — `vlan:100` must NOT sort before `vlan:30`):
@@ -943,7 +967,8 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
         for intf in by_vlan.get(vid, []):
             dev = ir.devices.get(node_for(vc, intf.device_id))
             ikey = f"intf:{intf.id}"
-            lines.append(f'  {ids.get(ikey)}(["{_label(dev.name if dev and dev.name else intf.device_id, intf.role.value)}"])')
+            iname = dev.name if dev and dev.name else intf.device_id
+            lines.append(f'  {ids.get(ikey)}(["{_label(iname, intf.role.value)}"])')
             lines.append(f'  {ids.get(f"vlan:{vid}")} -->|"served by"| {ids.get(ikey)}')
     # highlight affected VLAN boxes
     classes: list[str] = []
@@ -952,7 +977,9 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
             classes.append(f"  class {ids.get(f'vlan:{vid}')} {_SEV_CLASS[hit.severity]};")
     lines += classes
     sev = _worst(*(h.severity for vid, h in hl.vlans.items() if f"vlan:{vid}" in ids._map))
-    return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev, mermaid="\n".join(lines))
+    unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
+    return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
+                   mermaid="\n".join(lines), notes=tuple(unloc))
 ```
 
 In `build_diagrams`, append before `return tuple(out)`:
@@ -1242,4 +1269,8 @@ git commit -m "feat(viz): render_diagrams_markdown + diagram titles in human out
 - **Org path:** `simulate_org_template` builds per-site verdicts through `_simulate_site_state`, so per-site diagrams come for free — no extra task. Org-level aggregate is roadmap.
 - **`add_l3intf` API (Task 8):** verified — `IRBuilder.add_l3intf(L3Intf(...))` at `src/digital_twin/ir/model.py:115`.
 - **VC folding:** `build_highlight` maps device/port ids through `node_for(vc_root_map(ir), mac)` so highlighted ids match graph node ids.
+- **Notes placement (deliberate):** per-node finding-label captions are per-chart
+  (only the nodes on that chart); the `unlocalized` count rides EVERY chart's
+  notes; cause lines are centralized on the **L2 overview** only (repeating them
+  across ~20 VLAN charts would be noise). Per-chart cause scoping is roadmap.
 - **No silent caps:** v1 emits the full VLAN set; the payload guard is roadmap (`docs/ROADMAP.md` §6).
