@@ -11,9 +11,14 @@ and never as `%%` comments (mermaid does not render those).
 
 from __future__ import annotations
 
+import networkx as nx
+
+from digital_twin.analysis.exits import resolve_exit
 from digital_twin.contracts import Diagram, Finding, Severity
 from digital_twin.ir import IR
+from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.representations.l2_graph import build_l2_graph
+from digital_twin.representations.vlan_graph import build_vlan_graph
 
 from .highlight import Hit, Highlight, build_highlight
 
@@ -93,9 +98,57 @@ def _l2_diagram(ir: IR, hl: Highlight) -> Diagram:
                    mermaid="\n".join(lines), notes=tuple(captions + causes + unloc))
 
 
+def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram:
+    vc = vc_root_map(ir)
+    g = build_vlan_graph(ir, l2, vid)
+    ids = _Ids()
+    # resolve_exit covers IRB/SVI (is_exit) AND boundary-uplink GATEWAY nodes on a
+    # carrying edge; union the owners of any l3intf for the vlan (incl GATEWAY-role
+    # interfaces, which resolve_exit rule 1 — IRB/SVI only — does not see).
+    exit_nodes = set(resolve_exit(ir, g).nodes)
+    for intf in ir.l3intfs:
+        if intf.vlan_id == vid:
+            exit_nodes.add(node_for(vc, intf.device_id))
+    lines = ["graph LR", *_CLASSDEFS]
+    for node in set(g.nodes) | exit_nodes:  # add exit devices absent from the subgraph
+        dev = ir.devices.get(node)
+        name = (dev.name or node) if dev else node
+        if node in exit_nodes:
+            lines.append(f'  {ids.get(node)}(["{_label(name, "exit")}"])')
+        else:
+            lines.append(f'  {ids.get(node)}["{_label(name, dev.role.value if dev else "?")}"]')
+    for u, v, _data in g.edges(data=True):
+        lines.append(f'  {ids.get(u)} ---|"{_safe(vid)}"| {ids.get(v)}')
+    cls, captions = _class_lines(ids, hl.nodes)
+    lines += cls
+    vhit = hl.vlans.get(vid)
+    vname = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
+    title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
+    sev = _worst(vhit.severity if vhit else None,
+                 *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
+    vlan_caps = [_safe(f"{lsev.value}: {ltext}") for lsev, ltext in vhit.labels] if vhit else []
+    unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
+    return Diagram(view=f"vlan:{vid}", title=title, severity=sev,
+                   mermaid="\n".join(lines), notes=tuple(captions + vlan_caps + unloc))
+
+
+def _vlan_id_of(d: Diagram) -> int:
+    return int(d.view.split(":", 1)[1])
+
+
 def build_diagrams(ir: IR, findings: tuple[Finding, ...]) -> tuple[Diagram, ...]:
     hl = build_highlight(findings, ir)
-    return (_l2_diagram(ir, hl),)  # per-VLAN + L3 added in Tasks 7-8
+    l2 = build_l2_graph(ir)
+    out: list[Diagram] = [_l2_diagram(ir, hl)]
+    vlan_diagrams = [_vlan_diagram(ir, l2, vid, hl) for vid in sorted(ir.vlans)]
+
+    def _order(d: Diagram) -> tuple[bool, int, int]:
+        rank = _SEV_RANK[d.severity] if d.severity is not None else -1
+        return (d.severity is None, -rank, _vlan_id_of(d))  # affected first, then numeric id
+
+    vlan_diagrams.sort(key=_order)
+    out += vlan_diagrams
+    return tuple(out)
 
 
 def safe_build_diagrams(ir: IR, findings: tuple[Finding, ...]) -> tuple[Diagram, ...]:

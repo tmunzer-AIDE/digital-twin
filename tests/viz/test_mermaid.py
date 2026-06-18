@@ -86,3 +86,23 @@ def test_mixed_severity_labels_render_with_own_severity():
     l2 = next(d for d in build_diagrams(_ir(), (warn, err)) if d.view == "l2")
     assert any(n.startswith("warning: w.x") for n in l2.notes)  # warn label kept as warning
     assert any(n.startswith("error: e.x") for n in l2.notes)
+
+
+def test_per_vlan_chart_emitted_and_affected_first():
+    diagrams = build_diagrams(_ir(), (_f(evidence={"vlan": 30, "component_nodes": ["aabb01"]}),))
+    vlan_order = [d.view for d in diagrams if d.view.startswith("vlan:")]
+    assert {"vlan:20", "vlan:30", "vlan:100"} <= set(vlan_order)
+    assert vlan_order[0] == "vlan:30"  # the affected VLAN sorts before ALL unaffected
+    # unaffected VLANs follow in NUMERIC order (vlan:100 must NOT precede vlan:20)
+    assert vlan_order.index("vlan:20") < vlan_order.index("vlan:100")
+    v30 = next(d for d in diagrams if d.view == "vlan:30")
+    assert v30.severity is Severity.ERROR
+
+
+def test_vlan_subject_label_appears_in_chart_notes():
+    # a pure vlan-subject finding (no node) must still show its code+reason caption
+    v30 = next(
+        d for d in build_diagrams(_ir(), (_f(subject=ObjectRef("vlan", "30")),))
+        if d.view == "vlan:30"
+    )
+    assert any("t.x" in n for n in v30.notes)
