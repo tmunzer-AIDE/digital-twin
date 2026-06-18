@@ -1,6 +1,6 @@
 # Org-plan DELETE-ripple + multiple templates per plan
 
-**Status:** design — pending user review
+**Status:** Implemented — live-verified 2026-06-17
 **Date:** 2026-06-18
 **Author:** brainstormed with the repo owner
 
