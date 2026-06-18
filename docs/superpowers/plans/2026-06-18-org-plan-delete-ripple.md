@@ -227,9 +227,18 @@ git commit -m "$(printf 'feat(org-delete): apply_overlays pins assigned overlays
 
 ---
 
-## Phase 2 — gate + verdict shape
+## Phase 2 — verdict shape
 
-### Task 3: `object_gate` — allow delete + multiple org ops
+> **EXECUTION ORDER (review P1 — false-SAFE window).** The naturally-numbered order is
+> NOT the execution order. The `object_gate` relaxation (Task 3) and `simulate_org_plan`
+> (Task 5) **MUST land in ONE commit** — relaxing the gate to allow `delete`/multi-op while
+> the engine still takes `plan.ops[0]` and runs it as an update is a FALSE-SAFE window (an
+> empty-payload delete simulates as a no-op update → SAFE; a multi-op plan silently drops
+> later ops). **Execute: T1 → T2 → Task 4 (shape) → Tasks 3 + 5 TOGETHER as a single unit
+> (one subagent, one commit) → Task 6 → Task 7.** The subagent-driven controller MUST dispatch
+> Tasks 3 and 5 as one combined task; never commit Task 3 alone.
+
+### Task 3: `object_gate` — allow delete + multiple org ops  ⚠️ ATOMIC WITH TASK 5 (do not commit alone)
 
 **Files:**
 - Modify: `src/digital_twin/scope/object_gate.py`
@@ -341,11 +350,11 @@ NOTE: the previous "exactly one org op" tests (`test_org_mode_rejects_mixed_type
 
 - [ ] **Step 4: Run → PASS** (new + adjusted existing), then FULL gate.
 
-- [ ] **Step 5: Commit:**
-```
-git add src/digital_twin/scope/object_gate.py tests/scope/test_object_gate.py
-git commit -m "$(printf 'feat(org-delete): object_gate allows delete + multiple org ops, rejects dup/payload\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>')"
-```
+- [ ] **Step 5: DO NOT COMMIT YET.** The `object_gate` change is committed *together with*
+  `simulate_org_plan` in Task 5's single commit (see the EXECUTION ORDER banner above) — gate
+  + engine land atomically so there is never a commit where the gate is relaxed but the engine
+  still does `plan.ops[0]`. Run the object_gate unit tests green here, then proceed to Task 5
+  in the SAME working unit.
 
 ---
 
@@ -415,12 +424,18 @@ git commit -m "$(printf 'feat(org-delete): OrgVerdict.template_id -> changes (mu
 
 ## Phase 3 — the fan-out + goldens + wrap
 
-### Task 5: `simulate_org_plan` — multi-op + delete fan-out
+### Task 5: `simulate_org_plan` — multi-op + delete fan-out  ⚠️ ATOMIC WITH TASK 3
+
+> **⚠️ This task INCLUDES Task 3's `object_gate` relaxation in its SINGLE commit** (review P1).
+> Implement/keep Task 3's gate change in the working tree, implement `simulate_org_plan` here,
+> and commit `object_gate.py` + `pipeline.py` + `org_template.py` + both test files together —
+> so the gate is never relaxed in a commit that doesn't also land the multi-op/delete engine.
 
 **Files:**
+- Modify: `src/digital_twin/scope/object_gate.py` (the Task 3 relaxation — committed here)
 - Modify: `src/digital_twin/engine/pipeline.py`
 - Modify: `src/digital_twin/engine/org_template.py` (remove now-dead `override_template`/`_pin`; keep `apply_template`)
-- Test: `tests/engine/test_org_plan.py` (create)
+- Test: `tests/scope/test_object_gate.py` (the Task 3 tests), `tests/engine/test_org_plan.py` (create)
 
 Generalize the resolved-op handling of `simulate_org_template` into a multi-op loop building `OrgOverlay`s, then fan out over `affected_sites` with `apply_overlays`. Keep `simulate_org_template = simulate_org_plan` as a thin alias (same signature) so all existing callers/tests keep working.
 
@@ -554,12 +569,14 @@ simulate_org_template = simulate_org_plan  # back-compat alias (single-op is a 1
 
 Copy the per-site FetchError block VERBATIM from the current `simulate_org_template` (the `_unknown(... baseline_unavailable=True ...)` construction with the preserved `acquired_at`). Add imports: `OrgOverlay, affected_sites, apply_overlays` from `engine.org_overlay`; `OrgChange` from `verdict.org_verdict`. Then DELETE the old single-op body of `simulate_org_template` (now the alias) and remove `override_template`/`_pin` from `engine/org_template.py` (keep `apply_template`); fix that import in pipeline.
 
-- [ ] **Step 4: Run → PASS** (incl. the two-op-collapse proof), then FULL gate (the alias keeps every existing org test green).
+- [ ] **Step 4: Run → PASS** (incl. the two-op-collapse proof + the Task 3 object_gate tests), then FULL gate (the alias keeps every existing org test green).
 
-- [ ] **Step 5: Commit:**
+- [ ] **Step 5: Commit (the ATOMIC gate+engine landing — includes Task 3):**
 ```
-git add -A
-git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete fan-out (overlays)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>')"
+git add src/digital_twin/scope/object_gate.py tests/scope/test_object_gate.py \
+        src/digital_twin/engine/pipeline.py src/digital_twin/engine/org_template.py \
+        tests/engine/test_org_plan.py
+git commit -m "$(printf 'feat(org-delete): object_gate delete+multi-op (rejects nonempty delete payload) + simulate_org_plan fan-out\n\nGate relaxation and the multi-op/delete engine land together so the gate is never\nrelaxed without the engine that handles it (no false-SAFE window).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -594,6 +611,7 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
 ---
 
 ## Self-review checklist
+- **No false-SAFE window (review P1) — ATOMIC gate+engine:** Task 3 (`object_gate` relaxation) and Task 5 (`simulate_org_plan`) land in ONE commit; the gate is never relaxed in a commit where the engine still does `plan.ops[0]` (which would simulate an empty-payload delete as a no-op update → SAFE, and drop later multi-op ops). Execution order: T1, T2, T4 (shape), then T3+T5 as one unit, then T6, T7. The subagent-driven controller dispatches T3+T5 as a single combined task.
 - **Spec coverage:** OrgOverlay/OrgChange (T1) ✓; apply_overlays + assigned-site filter (T2) ✓; object_gate delete+multi-op+empty-payload (T3; dup `(type,id)` is envelope-level, not re-checked) ✓; OrgVerdict.changes multi-object (T4) ✓; simulate_org_plan delete + combined-per-site + per-site failure + 0-site auditable + resolve-fail-before-fan-out + gateway_screen_full (T5) ✓; the two-op-collapse golden + equivalence (T6) ✓; docs/live/memory (T7) ✓.
 - **`proposed=None` ⇔ layer absent** (never `{}`): `apply_overlays`/`_pin` pin `None`, pinned in T2 tests.
 - **Deletes skip L0/field-gate, keep baseline resolution**: T5 branches on `op.action == "delete"`.
