@@ -148,3 +148,83 @@ def test_l3_exits_highlights_affected_gateway_device():
     assert "class " in l3.mermaid  # the interface node is classed via its owning device
     assert l3.severity is Severity.ERROR
     assert any("t.x" in n for n in l3.notes)  # the device-finding caption shows on L3
+
+
+def test_per_vlan_diagram_is_deterministic_across_hash_seeds():
+    """_vlan_diagram must produce byte-identical output for PYTHONHASHSEED=1 vs =2.
+
+    The test builds the mermaid string for vlan:30 in two subprocesses that each
+    have a different PYTHONHASHSEED, then asserts the outputs are identical.  A
+    graph with 3 devices on the VLAN (plus cross-links) makes node-ordering
+    observable when iteration is over a raw Python ``set``.
+    """
+    import os
+    import subprocess
+    import sys
+
+    # Snippet run in each subprocess: build a 3-device VLAN graph and print the
+    # vlan:30 mermaid string to stdout.
+    SNIPPET = """
+import sys
+sys.path.insert(0, "src")
+from digital_twin.ir import IRBuilder
+from digital_twin.ir.entities import (
+    Device, DeviceRole, Link, LinkKind,
+    Port, PortMode, Vlan, link_id,
+)
+from digital_twin.viz.mermaid import build_diagrams
+
+b = IRBuilder()
+b.add_device(Device(id="sw01", role=DeviceRole.SWITCH, site="s1", name="core-sw01"))
+b.add_device(Device(id="sw02", role=DeviceRole.SWITCH, site="s1", name="idf-sw02"))
+b.add_device(Device(id="sw03", role=DeviceRole.SWITCH, site="s1", name="idf-sw03"))
+# VLAN 30 trunked on all three pairs of links — explicit ids keep lines short
+links = [
+    ("sw01:ge-0/0/1", "sw02:ge-0/0/1"),
+    ("sw01:ge-0/0/2", "sw03:ge-0/0/1"),
+    ("sw02:ge-0/0/2", "sw03:ge-0/0/2"),
+]
+for pa, pb in links:
+    dev_a = pa.split(":")[0]
+    dev_b = pb.split(":")[0]
+    b.add_port(Port(
+        id=pa, device_id=dev_a, name=pa.split(":")[1],
+        mode=PortMode.TRUNK, tagged_vlans=(30,),
+    ))
+    b.add_port(Port(
+        id=pb, device_id=dev_b, name=pb.split(":")[1],
+        mode=PortMode.TRUNK, tagged_vlans=(30,),
+    ))
+    b.add_link(Link(
+        id=link_id(pa, pb), a_port=pa, b_port=pb, kind=LinkKind.PHYSICAL,
+    ))
+b.add_vlan(Vlan(vlan_id=30, name="voice"))
+ir = b.build()
+diagrams = build_diagrams(ir, ())
+v30 = next(d for d in diagrams if d.view == "vlan:30")
+print(v30.mermaid)
+"""
+
+    env_base = {k: v for k, v in os.environ.items() if k != "PYTHONHASHSEED"}
+
+    result1 = subprocess.run(
+        [sys.executable, "-c", SNIPPET],
+        capture_output=True,
+        text=True,
+        cwd="/Users/tmunzer/4_dev/digital-twin/.claude/worktrees/topology-viz",
+        env={**env_base, "PYTHONHASHSEED": "1"},
+    )
+    result2 = subprocess.run(
+        [sys.executable, "-c", SNIPPET],
+        capture_output=True,
+        text=True,
+        cwd="/Users/tmunzer/4_dev/digital-twin/.claude/worktrees/topology-viz",
+        env={**env_base, "PYTHONHASHSEED": "2"},
+    )
+
+    assert result1.returncode == 0, f"seed=1 subprocess failed:\n{result1.stderr}"
+    assert result2.returncode == 0, f"seed=2 subprocess failed:\n{result2.stderr}"
+    assert result1.stdout == result2.stdout, (
+        "vlan:30 mermaid differs between PYTHONHASHSEED=1 and PYTHONHASHSEED=2\n"
+        f"--- seed=1 ---\n{result1.stdout}\n--- seed=2 ---\n{result2.stdout}"
+    )

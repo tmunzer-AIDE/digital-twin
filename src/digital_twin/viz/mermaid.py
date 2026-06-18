@@ -111,15 +111,16 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
         if intf.vlan_id == vid:
             exit_nodes.add(node_for(vc, intf.device_id))
     lines = ["graph LR", *_CLASSDEFS]
-    for node in set(g.nodes) | exit_nodes:  # add exit devices absent from the subgraph
+    for node in sorted(set(g.nodes) | exit_nodes):  # add exit devices absent from the subgraph
         dev = ir.devices.get(node)
         name = (dev.name or node) if dev else node
         if node in exit_nodes:
             lines.append(f'  {ids.get(node)}(["{_label(name, "exit")}"])')
         else:
             lines.append(f'  {ids.get(node)}["{_label(name, dev.role.value if dev else "?")}"]')
-    for u, v, _data in g.edges(data=True):
-        lines.append(f'  {ids.get(u)} ---|"{_safe(vid)}"| {ids.get(v)}')
+    for u, v, _data in sorted(g.edges(data=True), key=lambda e: (min(e[0], e[1]), max(e[0], e[1]))):
+        a, b = (u, v) if u <= v else (v, u)
+        lines.append(f'  {ids.get(a)} ---|"{_safe(vid)}"| {ids.get(b)}')
     cls, captions = _class_lines(ids, hl.nodes)
     lines += cls
     vhit = hl.vlans.get(vid)
