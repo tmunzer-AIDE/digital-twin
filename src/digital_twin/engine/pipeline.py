@@ -64,6 +64,7 @@ from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
+from digital_twin.viz.mermaid import safe_build_diagrams
 
 _EMPTY_DIFF = IRDiff((), (), ())
 
@@ -238,7 +239,7 @@ def _simulate_site_state(
         {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
     )
     with trace.stage("verdict"):
-        return assemble(
+        verdict = assemble(
             inputs=DecisionInputs(
                 rejections=(dp_rej,) if dp_rej else (),
                 l0_fatal=False,
@@ -250,6 +251,7 @@ def _simulate_site_state(
             state_meta=state_meta,
             trace_ref=run.run_id,
         )
+        return replace(verdict, diagrams=safe_build_diagrams(proposed.ir, verdict.findings))
 
 
 def simulate(

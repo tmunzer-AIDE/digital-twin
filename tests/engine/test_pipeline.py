@@ -243,6 +243,21 @@ def test_partial_device_payload_passes_l0_required():
     assert v.decision is not Decision.UNKNOWN
 
 
+def test_normal_verdict_carries_diagrams():
+    payload = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    v = simulate(_plan([_op(payload=payload)]), provider=FakeProvider())
+    assert v.diagrams  # non-empty: at least the L2 chart
+    assert any(d.view == "l2" for d in v.diagrams)
+
+
+def test_unknown_short_circuit_has_no_diagrams():
+    # an out-of-scope raw path returns via _unknown() -> no diagrams
+    bad = {**SETTING, "dhcpd_config": {"corp": {"ip": "9.9.9.9"}}}
+    v = simulate(_plan([_op(payload=bad)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    assert v.diagrams == ()
+
+
 def test_simulate_rejects_org_plan_with_unknown_not_crash():
     from digital_twin.engine.pipeline import simulate
     from digital_twin.verdict.decision import Decision
