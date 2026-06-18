@@ -414,13 +414,25 @@ def simulate(
         profile_proposed = None
     else:
         below_raw = adapter.apply(raw, non_device_ops)
-        if isinstance(below_raw, Rejection):
-            # If the non-device apply fails (e.g. missing target), fall back to
-            # baseline so the gate sees no below-profile change (conservative:
-            # the apply failure was already caught for the full op set above).
-            profile_proposed = adapter.ingest(raw)
-        else:
-            profile_proposed = adapter.ingest(below_raw)
+        # This ingest runs BEFORE _simulate_site_state's crash guard, so it needs
+        # its own: a compile/ingest CRASH (e.g. an unresolvable gateway {{var}} in
+        # the baseline) is UNKNOWN by the cardinal rule, never a hard crash. Both
+        # inputs are baseline-derived (raw / baseline+non-device ops), so the
+        # baseline is what failed -> baseline_unavailable, mirroring the guard below.
+        try:
+            if isinstance(below_raw, Rejection):
+                # If the non-device apply fails (e.g. missing target), fall back to
+                # baseline so the gate sees no below-profile change (conservative:
+                # the apply failure was already caught for the full op set above).
+                profile_proposed = adapter.ingest(raw)
+            else:
+                profile_proposed = adapter.ingest(below_raw)
+        except Exception as e:  # noqa: BLE001 — any ingest crash is UNKNOWN
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"baseline ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run,
+                state_meta=state_meta, baseline_unavailable=True,
+            )
 
     return _simulate_site_state(
         raw, proposed_raw,
