@@ -585,7 +585,7 @@ git commit -m "feat(viz): build_highlight — additive finding->entity index"
 # tests/viz/test_mermaid.py
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
-from digital_twin.ir.entities import Device, DeviceRole, Link, LinkKind, Port, PortMode, link_id
+from digital_twin.ir.entities import Device, DeviceRole, Link, LinkKind, Port, PortMode, Vlan, link_id
 from digital_twin.viz.mermaid import build_diagrams, safe_build_diagrams
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -601,6 +601,7 @@ def _ir():
                     mode=PortMode.TRUNK, tagged_vlans=(30,)))
     b.add_link(Link(id=link_id("aabb01:ge-0/0/1", "aabb02:ge-0/0/1"),
                     a_port="aabb01:ge-0/0/1", b_port="aabb02:ge-0/0/1", kind=LinkKind.PHYSICAL))
+    b.add_vlan(Vlan(vlan_id=30, name="voice"))  # so build_diagrams emits a vlan:30 chart
     return b.build()
 
 
@@ -629,10 +630,12 @@ def test_every_class_target_node_is_declared():
     # structural invariant: no `class nX` line references an undeclared node id
     diagrams = build_diagrams(_ir(), (_f(affected_entities=("aabb01",)),))
     for d in diagrams:
-        declared = {ln.split("[")[0].strip() for ln in d.mermaid.splitlines() if "[" in ln}
+        declared = {ln.split("[")[0].strip().rstrip("(") for ln in d.mermaid.splitlines() if "[" in ln}
         for ln in d.mermaid.splitlines():
             if ln.strip().startswith("class "):
-                for nid in ln.strip()[len("class "):].rstrip(";").split(","):
+                body = ln.strip()[len("class "):].rstrip(";")  # "n0,n1 crit"
+                targets, _cls = body.rsplit(" ", 1)
+                for nid in targets.split(","):
                     assert nid.strip() in declared, f"{nid} not declared in {d.view}"
 
 
@@ -640,6 +643,14 @@ def test_safe_build_diagrams_swallows_errors(monkeypatch):
     import digital_twin.viz.mermaid as m
     monkeypatch.setattr(m, "build_diagrams", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert safe_build_diagrams(_ir(), ()) == ()
+
+
+def test_causes_appear_in_l2_notes():
+    from digital_twin.contracts import Cause, ObjectRef
+    f = _f(affected_entities=("aabb01",),
+           caused_by=(Cause(ref=ObjectRef("link", "aabb02:p__aabb01:q"), fields=("native_vlan",)),))
+    l2 = next(d for d in build_diagrams(_ir(), (f,)) if d.view == "l2")
+    assert any("native_vlan" in n for n in l2.notes)  # cause is a visible caption, not %%
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -656,18 +667,16 @@ Expected: FAIL — `ModuleNotFoundError: digital_twin.viz.mermaid`.
 `build_diagrams` is PURE and may raise (tests catch render bugs). The pipeline
 calls `safe_build_diagrams`, the ONLY place that swallows exceptions (-> ()), so
 a render bug never sinks a verdict. v1 highlights NODES only (link/port findings
-already mapped to endpoint device nodes by build_highlight); cause attribution is
-emitted as `%% caused by ...` comments + Diagram.notes, never as a class.
+already mapped to endpoint device nodes by build_highlight); finding labels and
+cause attribution go in Diagram.notes (VISIBLE via to_markdown), never as a class
+and never as `%%` comments (mermaid does not render those).
 """
 
 from __future__ import annotations
 
 from digital_twin.contracts import Diagram, Finding, Severity
 from digital_twin.ir import IR
-from digital_twin.ir.entities import L3Role
-from digital_twin.ir.indexes import node_for, vc_root_map
 from digital_twin.representations.l2_graph import build_l2_graph
-from digital_twin.representations.vlan_graph import build_vlan_graph
 
 from .highlight import Hit, Highlight, build_highlight
 
@@ -707,23 +716,23 @@ class _Ids:
         return self._map[key]
 
 
-def _worst(*sevs: Severity) -> Severity | None:
+def _worst(*sevs: Severity | None) -> Severity | None:
     present = [s for s in sevs if s is not None]
     return max(present, key=lambda s: _SEV_RANK[s]) if present else None
 
 
 def _class_lines(ids: _Ids, node_hits: dict[str, Hit]) -> tuple[list[str], list[str]]:
-    """(`class nX cls;` lines, `%% nX — label` comment lines) for declared nodes only."""
+    """(`class nX cls;` lines, human caption strings) for nodes declared on THIS
+    chart. Captions go into Diagram.notes (VISIBLE via to_markdown)."""
     classes: list[str] = []
-    comments: list[str] = []
+    captions: list[str] = []
     for raw_id, hit in node_hits.items():
         if raw_id not in ids._map:  # node not on this chart
             continue
-        nid = ids.get(raw_id)
-        classes.append(f"  class {nid} {_SEV_CLASS[hit.severity]};")
+        classes.append(f"  class {ids.get(raw_id)} {_SEV_CLASS[hit.severity]};")
         for lbl in hit.labels:
-            comments.append(f"  %% {nid} — {_safe(lbl)}")
-    return classes, comments
+            captions.append(_safe(f"{hit.severity.value}: {lbl}"))
+    return classes, captions
 
 
 def _l2_diagram(ir: IR, hl: Highlight) -> Diagram:
@@ -737,11 +746,13 @@ def _l2_diagram(ir: IR, hl: Highlight) -> Diagram:
         edge = data["data"]
         lbl = ",".join(str(x) for x in sorted(edge.vlans)) or edge.kind
         lines.append(f'  {ids.get(u)} ---|"{_safe(lbl)}"| {ids.get(v)}')
-    cls, comments = _class_lines(ids, hl.nodes)
-    lines += cls + comments + [f"  %% {c}" for c in hl.causes]
+    cls, captions = _class_lines(ids, hl.nodes)
+    lines += cls
+    causes = [_safe(c) for c in hl.causes]
+    unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     sev = _worst(*(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
-    notes = (f"{hl.unlocalized} finding(s) not localized",) if hl.unlocalized else ()
-    return Diagram(view="l2", title="L2 topology", severity=sev, mermaid="\n".join(lines), notes=notes)
+    return Diagram(view="l2", title="L2 topology", severity=sev,
+                   mermaid="\n".join(lines), notes=tuple(captions + causes + unloc))
 
 
 def build_diagrams(ir: IR, findings: tuple[Finding, ...]) -> tuple[Diagram, ...]:
@@ -797,10 +808,19 @@ Expected: FAIL — only the L2 diagram is returned.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add a per-VLAN builder and wire it into `build_diagrams`:
+First add these imports to the top of `mermaid.py` (used by this task and Task 8):
 
 ```python
-def _vlan_diagram(ir: IR, l2, vid: int, hl: Highlight) -> Diagram:
+import networkx as nx
+
+from digital_twin.ir.indexes import node_for, vc_root_map
+from digital_twin.representations.vlan_graph import build_vlan_graph
+```
+
+Add a per-VLAN builder:
+
+```python
+def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram:
     vc = vc_root_map(ir)
     g = build_vlan_graph(ir, l2, vid)
     ids = _Ids()
@@ -811,32 +831,42 @@ def _vlan_diagram(ir: IR, l2, vid: int, hl: Highlight) -> Diagram:
     lines = ["graph LR", *_CLASSDEFS]
     for node in set(g.nodes) | exit_nodes:  # add exit devices absent from the subgraph
         dev = ir.devices.get(node)
-        name = dev.name or node if dev else node
+        name = (dev.name or node) if dev else node
         if node in exit_nodes:
             lines.append(f'  {ids.get(node)}(["{_label(name, "exit")}"])')
         else:
             lines.append(f'  {ids.get(node)}["{_label(name, dev.role.value if dev else "?")}"]')
-    for u, v, data in g.edges(data=True):
+    for u, v, _data in g.edges(data=True):
         lines.append(f'  {ids.get(u)} ---|"{_safe(vid)}"| {ids.get(v)}')
-    cls, comments = _class_lines(ids, hl.nodes)
-    lines += cls + comments
+    cls, captions = _class_lines(ids, hl.nodes)
+    lines += cls
     vhit = hl.vlans.get(vid)
-    name = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
-    title = f'VLAN {vid}' + (f' "{name}"' if name else "")
-    sev = _worst(vhit.severity if vhit else None, *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
-    return Diagram(view=f"vlan:{vid}", title=title, severity=sev, mermaid="\n".join(lines))
+    vname = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
+    title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
+    sev = _worst(vhit.severity if vhit else None,
+                 *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
+    return Diagram(view=f"vlan:{vid}", title=title, severity=sev,
+                   mermaid="\n".join(lines), notes=tuple(captions))
 ```
 
-Replace `build_diagrams` body:
+Replace `build_diagrams` body (numeric VLAN ordering — `vlan:100` must NOT sort before `vlan:30`):
 
 ```python
+def _vlan_id_of(d: Diagram) -> int:
+    return int(d.view.split(":", 1)[1])
+
+
 def build_diagrams(ir: IR, findings: tuple[Finding, ...]) -> tuple[Diagram, ...]:
     hl = build_highlight(findings, ir)
     l2 = build_l2_graph(ir)
     out: list[Diagram] = [_l2_diagram(ir, hl)]
     vlan_diagrams = [_vlan_diagram(ir, l2, vid, hl) for vid in sorted(ir.vlans)]
-    # affected VLANs first (worst severity desc), then the rest by vlan id
-    vlan_diagrams.sort(key=lambda d: (d.severity is None, -_SEV_RANK.get(d.severity, -1), d.view))
+
+    def _order(d: Diagram) -> tuple[bool, int, int]:
+        rank = _SEV_RANK[d.severity] if d.severity is not None else -1
+        return (d.severity is None, -rank, _vlan_id_of(d))  # affected first, then numeric id
+
+    vlan_diagrams.sort(key=_order)
     out += vlan_diagrams
     return tuple(out)
 ```
@@ -889,12 +919,18 @@ Expected: FAIL — no `l3_exits` diagram yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
+First add the `L3Intf` import to `mermaid.py`:
+
+```python
+from digital_twin.ir.entities import L3Intf
+```
+
 Add the L3 builder and append it last in `build_diagrams`:
 
 ```python
 def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
     vc = vc_root_map(ir)
-    by_vlan: dict[int, list] = {}
+    by_vlan: dict[int, list[L3Intf]] = {}
     for intf in ir.l3intfs:
         if intf.vlan_id is not None:
             by_vlan.setdefault(intf.vlan_id, []).append(intf)
@@ -910,7 +946,7 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
             lines.append(f'  {ids.get(ikey)}(["{_label(dev.name if dev and dev.name else intf.device_id, intf.role.value)}"])')
             lines.append(f'  {ids.get(f"vlan:{vid}")} -->|"served by"| {ids.get(ikey)}')
     # highlight affected VLAN boxes
-    classes = []
+    classes: list[str] = []
     for vid, hit in hl.vlans.items():
         if f"vlan:{vid}" in ids._map:
             classes.append(f"  class {ids.get(f'vlan:{vid}')} {_SEV_CLASS[hit.severity]};")
