@@ -173,6 +173,11 @@ class OspfWithdrawalCheck:
                         "affected_vlans": affected,
                         "observed_clients": n_clients if clients_known else None,
                     },
+                    caused_by=ctx.delta_index.causes(
+                        "ospf_intf",
+                        [oi.id for oi in base_ir.ospf_intfs
+                         if oi.device_id == did and not oi.passive],
+                    ),
                 )
             )
 
@@ -198,6 +203,11 @@ class OspfWithdrawalCheck:
                     ),
                     affected_entities=(str(vid),),
                     evidence={"device": did, "vlan": vid},
+                    caused_by=ctx.delta_index.causes(
+                        "ospf_intf",
+                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                         if oi.device_id == did and oi.vlan_id == vid],
+                    ),
                 )
             )
 
@@ -224,6 +234,11 @@ class OspfWithdrawalCheck:
                     ),
                     affected_entities=(str(vid),),
                     evidence={"device": did, "vlan": vid},
+                    caused_by=ctx.delta_index.causes(
+                        "ospf_intf",
+                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                         if oi.device_id == did and oi.vlan_id == vid],
+                    ),
                 )
             )
 

@@ -127,3 +127,52 @@ def test_unknown_client_data_does_not_silently_downgrade():
     assert result.status is Status.WARN
     assert result.coverage.state is CoverageState.PARTIAL
     assert any("client" in n for n in result.coverage.notes)
+
+
+# --- caused_by attribution (CA Task 11) ---
+
+
+def _gw_scope_ir(*, served, scope_present, gw_present=True):
+    """vlan 10 served (in baseline) by gateway GW's own dhcpd_config; the
+    serving DhcpScope (provider=GW) is present iff scope_present. When
+    served=False the vlan loses dhcp_sources AND the scope is dropped. When
+    gw_present=False the GW device itself is gone (an add/remove delta)."""
+    from digital_twin.ir.entities import Device, DeviceRole, DhcpScope
+
+    b = IRBuilder().add_device(sw("S"))
+    if gw_present:
+        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1"))
+    b.add_port(access_port("S", "ge-0/0/1", vlan=10))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("GW",) if served else ()))
+    if scope_present:
+        b.add_dhcp_scope(DhcpScope(provider="GW", network="corp", vlan=10))
+    b.add_client(wired_client("aa:00", "S:ge-0/0/1", vlan=10))
+    b.with_capability(IRCapability.WIRED_L2)
+    b.with_capability(IRCapability.CLIENTS_ACTIVE)
+    return b.build()
+
+
+def test_removed_attributes_the_removed_gateway_source_and_scope():
+    # baseline serves vlan 10 via gateway GW (+ its DhcpScope); proposed drops
+    # the GW device itself (and with it the source + scope) -> the removed
+    # finding names the gateway device AND the removed dhcp_scope as causes
+    result = _run(
+        _gw_scope_ir(served=True, scope_present=True, gw_present=True),
+        _gw_scope_ir(served=False, scope_present=False, gw_present=False),
+    )
+    f = next(x for x in result.findings if x.code.endswith(".removed"))
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("device", "GW") in causes
+    assert ("dhcp_scope", "GW:corp") in causes
+
+
+def test_removed_attributes_the_vlan_when_only_dhcp_sources_changed():
+    # the scope stays put; only the vlan's dhcp_sources tuple emptied -> the
+    # vlan itself is the changed entity and is named
+    result = _run(
+        _gw_scope_ir(served=True, scope_present=True),
+        _gw_scope_ir(served=False, scope_present=True),
+    )
+    f = next(x for x in result.findings if x.code.endswith(".removed"))
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("vlan", "10") in causes

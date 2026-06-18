@@ -306,3 +306,44 @@ def test_absent_subnet_not_routed_is_silent():
                                     changed_vlan_ids={"10"})
     assert result.coverage.state is CoverageState.COMPLETE
     assert result.findings == ()
+
+
+# --- caused_by attribution (CA Task 11) ---
+
+
+def test_removed_attributes_the_removed_l3intf():
+    # the removed IRB is in the delta -> the .removed finding names it as cause
+    result = _run(_ir(with_irb=True), _ir(with_irb=False))
+    f = next(x for x in result.findings if x.code.endswith(".removed"))
+    causes = {c.ref.id for c in f.caused_by}
+    assert causes == {"S:l3:irb:10"}
+    assert all(c.ref.kind == "l3intf" for c in f.caused_by)
+
+
+def test_unserved_has_no_cause_when_nothing_in_delta_is_an_l3intf():
+    # newly-routed (no l3intf added/removed): the .unserved finding has no
+    # l3intf cause (its snippet only fires for code == "removed")
+    result = _run(_ir(routed=False, with_irb=False), _ir(routed=True, with_irb=False))
+    f = next(x for x in result.findings if x.code.endswith(".unserved"))
+    assert f.caused_by == ()
+
+
+def test_gateway_unowned_attributes_changed_vlan_when_gateway_moves():
+    # the owner breaks because vlan.gateway moved -> the vlan is the changed
+    # entity and is named as cause (gateway field changed)
+    r = _run(_routed_ir(gateway="10.0.0.1"), _routed_ir(gateway="10.0.0.9"))
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("vlan", "10") in causes
+
+
+def test_gateway_unowned_attributes_changed_owner_l3intf_when_ip_moves():
+    # G unchanged, the owning interface's ip changed -> the l3intf is named
+    base = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.1")
+    prop = _routed_ir(gateway="10.0.0.1", intf_ip="10.0.0.2")
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.severity is Severity.ERROR
+    causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
+    assert ("l3intf", "S:l3:irb:10") in causes
