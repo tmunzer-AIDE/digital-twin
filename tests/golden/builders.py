@@ -1131,6 +1131,244 @@ def dp_only_ap_profiled_not_tainted() -> tuple[dict[str, Any], dict[str, Any]]:
     return doc, plan
 
 
+# ---------------------------------------------------------------------------
+# OD: org-plan DELETE-ripple goldens
+#
+# Three scenarios exercise the delete path through the FixtureProvider harness:
+#
+# OD-delete-end-to-end: a MINIMAL sitetemplate (no id/name — only in-scope
+#   networks + port_usages) assigned to two sites. Site A has a switch whose
+#   ports reference the template's usages; deleting the template collapses the
+#   corp domain -> vlan_segmentation (REVIEW). Site B has no devices -> SAFE.
+#   Uses a minimal template so the derived gate never trips on out-of-scope id/
+#   name leaves that real templates carry.
+#
+# OD-zero-site-delete: a networktemplate assigned to 0 sites (both sites detached
+#   to a different template) -> deleting it is SAFE with "no assigned sites".
+#
+# OD-gw-failsafe: a combined plan — a BREAKING gatewaytemplate op (ip_configs
+#   change) + a COSMETIC sitetemplate op on the same site. The gw op fires
+#   gateway_gap.gateway_unowned -> UNSAFE. The assertion is "not SAFE" (the
+#   never-false-SAFE pin); UNSAFE or UNKNOWN are both valid green outcomes.
+# ---------------------------------------------------------------------------
+
+OD_ORG_ID = "org-od-tests"
+OD_ST_ID = "od-st1"
+OD_ST_NET = "od_corp"
+OD_ST_VLAN = 945
+OD_SITE_A = "odSiteA"
+OD_SITE_B = "odSiteB"
+
+# An AP-free, id/name-free minimal sitetemplate: ONLY in-scope roots
+# (networks + port_usages). Having no `id` or `name` means the delete
+# ripple never flags those fields as out-of-scope derived-gate changes.
+_OD_MINIMAL_ST: dict[str, Any] = {
+    "networks": {OD_ST_NET: {"vlan_id": OD_ST_VLAN}},
+    "port_usages": {
+        "od_trunk": {"mode": "trunk", "networks": [OD_ST_NET]},
+        "od_access": {"mode": "access", "port_network": OD_ST_NET},
+    },
+}
+
+_OD_SW_EDGE = "aa0d000001"
+_OD_SW_HUB = "aa0d000002"
+_OD_SW_EDGE_ID = "sw-od-edge"
+_OD_SW_HUB_ID = "sw-od-hub"
+OD_WIRED_CLIENT = "dd0d000001"
+
+
+def _od_site_a_doc() -> dict[str, Any]:
+    """Site A: two switches. The template owns corp; EDGE has an access port +
+    uplink trunk; HUB has the corp IRB exit + the downlink trunk. A wired client
+    sits on the EDGE access port. Deleting the template collapses corp -> the
+    access port's usage vanishes + the client's vlan reshapes -> REVIEW finding."""
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": OD_ORG_ID, "site_id": OD_SITE_A},
+        "meta": {
+            "acquired_at": "2026-06-17T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "devices", "device_stats", "port_stats",
+                "wireless_clients", "wired_clients",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": OD_SITE_A, "org_id": OD_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": OD_ST_ID,
+        },
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": _OD_MINIMAL_ST,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": _OD_SW_EDGE, "id": _OD_SW_EDGE_ID,
+                "type": "switch", "model": "EX2300-24P",
+                "port_config": {
+                    "ge-0/0/0": {"usage": "od_access"},
+                    "ge-0/0/1": {"usage": "od_trunk"},
+                },
+            },
+            {
+                "mac": _OD_SW_HUB, "id": _OD_SW_HUB_ID,
+                "type": "switch", "model": "EX2300-24P",
+                "port_config": {"ge-0/0/1": {"usage": "od_trunk"}},
+                "other_ip_configs": {
+                    OD_ST_NET: {
+                        "type": "static", "ip": "198.51.100.1", "netmask": "255.255.255.0",
+                    }
+                },
+            },
+        ],
+        "device_stats": [],
+        "port_stats": [
+            {"mac": _OD_SW_EDGE, "port_id": "ge-0/0/1", "up": True,
+             "neighbor_mac": _OD_SW_HUB, "neighbor_port_desc": "ge-0/0/1"},
+            {"mac": _OD_SW_HUB, "port_id": "ge-0/0/1", "up": True,
+             "neighbor_mac": _OD_SW_EDGE, "neighbor_port_desc": "ge-0/0/1"},
+        ],
+        "wireless_clients": [],
+        "wired_clients": [
+            {"mac": OD_WIRED_CLIENT, "device_mac": _OD_SW_EDGE,
+             "port_id": "ge-0/0/0", "vlan": OD_ST_VLAN},
+        ],
+        "wlans": [],
+        "org_networks": [],
+    }
+
+
+def _od_site_b_doc() -> dict[str, Any]:
+    """Site B: minimal site with no devices — the sitetemplate delete collapses
+    nothing here -> SAFE (nothing to break)."""
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": OD_ORG_ID, "site_id": OD_SITE_B},
+        "meta": {
+            "acquired_at": "2026-06-17T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "devices", "device_stats", "port_stats",
+                "wireless_clients", "wired_clients",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": OD_SITE_B, "org_id": OD_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": OD_ST_ID,
+        },
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": _OD_MINIMAL_ST,
+        "derived_setting": None,
+        "devices": [],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+
+
+def od_delete_sitetemplate() -> tuple[dict[str, Any], dict[str, Any]]:
+    """OD-delete-end-to-end: a MINIMAL sitetemplate (no id/name) assigned to
+    ≥1 site; the plan deletes it. Site A (with devices) collapses -> non-SAFE
+    with a vlan_segmentation or blackhole finding. Site B (no devices) -> SAFE.
+    Uses a minimal template so the derived gate never trips on out-of-scope
+    id/name leaves, giving an honest collapse finding rather than UNKNOWN."""
+    doc: dict[str, Any] = {
+        "templates": {"sitetemplate": {OD_ST_ID: _OD_MINIMAL_ST}},
+        "sites": {OD_SITE_A: _od_site_a_doc(), OD_SITE_B: _od_site_b_doc()},
+        "fetch_failures": [],
+    }
+    plan: dict[str, Any] = {
+        "source": "mist",
+        "scope": {"org_id": OD_ORG_ID},
+        "ops": [{
+            "action": "delete", "order": 0, "object_type": "sitetemplate",
+            "object_id": OD_ST_ID, "payload": {},
+        }],
+    }
+    return doc, plan
+
+
+def od_delete_zero_sites() -> tuple[dict[str, Any], dict[str, Any]]:
+    """OD-zero: delete a networktemplate whose assigned sites are both detached
+    (both point to 'nt_other') -> 0 assigned sites -> SAFE with 'no assigned
+    sites' in the decision reasons. The existing MS fixture is reused (with both
+    sites pointing to a different template) so the template exists in the
+    registry but has 0 assigned sites."""
+    doc = multisite_doc(site_a_template_id="nt_other", site_b_template_id="nt_other")
+    org_id: str = doc["template"].get("org_id") or "o1"
+    plan: dict[str, Any] = {
+        "source": "mist",
+        "scope": {"org_id": org_id},
+        "ops": [{
+            "action": "delete", "order": 0, "object_type": "networktemplate",
+            "object_id": MS_TEMPLATE_ID, "payload": {},
+        }],
+    }
+    return doc, plan
+
+
+# OD-gw-failsafe uses the GT fixture plus a sitetemplate dimension.
+# A minimal, id/name-free sitetemplate is added to gtSiteA; the combined plan
+# runs a BREAKING gw op (ip_configs change -> gateway_unowned -> UNSAFE) and
+# a COSMETIC st op (add an unused vlan) together on that site. The assertion
+# is "not SAFE" — the P2a never-false-SAFE pin.
+
+OD_GW_FS_ST_ID = "od-gw-fs-st1"
+
+
+def od_gw_failsafe_combined_plan() -> tuple[dict[str, Any], dict[str, Any]]:
+    """OD-gw-failsafe: a combined org plan — a breaking gatewaytemplate op
+    (ip_configs.gt_corp.ip -> an unowned address) AND a cosmetic sitetemplate
+    op (add an unused vlan) — both affecting gtSiteA. The breaking gw op fires
+    gateway_gap.gateway_unowned -> UNSAFE. The combined plan MUST never produce
+    a false SAFE; the assertion is `decision is not SAFE`."""
+    doc = gt_multisite_doc()
+    # Inject a minimal sitetemplate for gtSiteA. No id/name -> no out-of-scope
+    # derived-gate trips from the cosmetic edit.
+    minimal_st: dict[str, Any] = {
+        "networks": {"gw_mgmt": {"vlan_id": 940}},
+        "port_usages": {},
+    }
+    doc["templates"]["sitetemplate"] = {OD_GW_FS_ST_ID: minimal_st}
+    doc["sites"][GT_SITE_A]["site"]["sitetemplate_id"] = OD_GW_FS_ST_ID
+    doc["sites"][GT_SITE_A]["sitetemplate"] = minimal_st
+    doc["sites"][GT_SITE_B]["site"]["sitetemplate_id"] = None
+    doc["sites"][GT_SITE_B]["sitetemplate"] = None
+
+    plan: dict[str, Any] = {
+        "source": "mist",
+        "scope": {"org_id": _GT_ORG_ID},
+        "ops": [
+            {
+                "action": "update", "order": 0, "object_type": "gatewaytemplate",
+                "object_id": GT_TEMPLATE_ID,
+                # moving the IP away from the declared vlan gateway -> no modeled
+                # L3 interface owns it -> gateway_gap.gateway_unowned (ERROR)
+                "payload": {"ip_configs": {GT_NET: {"ip": GT_GW_IP_ALT}}},
+            },
+            {
+                "action": "update", "order": 1, "object_type": "sitetemplate",
+                "object_id": OD_GW_FS_ST_ID,
+                # cosmetic: add an unused vlan; no connectivity impact on its own
+                "payload": {
+                    "networks": {"gw_mgmt": {"vlan_id": 940}, "gw_extra": {"vlan_id": 941}}
+                },
+            },
+        ],
+    }
+    return doc, plan
+
+
 def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
             disable: bool = False, order: int = 0) -> dict[str, Any]:
     """A HUB device op whose payload sets ospf to the given state. `entries=None`
