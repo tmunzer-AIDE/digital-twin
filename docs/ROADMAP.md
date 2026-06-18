@@ -340,8 +340,9 @@ modeling" below.
 ## 6. Visualization — topology charts of the findings
 
 Spec: `docs/superpowers/specs/2026-06-17-topology-visualization-design.md`. v1
-emits **mermaid** charts (L2, per-VLAN, Routed VLAN exits) on every verdict, with
-the blast radius severity-highlighted and `caused_by` in captions; exposed as
+emits **mermaid** charts (L2, per-VLAN, Routed VLAN exits) on every verdict with a
+proposed IR, with the blast radius severity-highlighted and `caused_by` in
+captions; exposed as
 `Verdict.diagrams` + a markdown helper for the elicitation UI.
 
 - 🔵 **v1 — single annotated proposed-state charts** (the spec above). New

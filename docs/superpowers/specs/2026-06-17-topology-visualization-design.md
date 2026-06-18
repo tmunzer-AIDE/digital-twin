@@ -94,9 +94,11 @@ All are `graph LR`. Device node ids are **synthetic** (`n0`, `n1`, …) — IR i
 contain `:` `/` `-` `.` which are invalid in mermaid node ids — with the real
 label carrying the name. A per-chart `classDef` legend defines the severity
 classes. **All emitted text is made mermaid-safe** — node labels, device names,
-finding labels, and `%%` cause comments/captions: escape mermaid-special chars
-(`"` `[` `]` `|` `<` `>`), replace newlines with spaces (esp. in `%%` comments,
-which are single-line), and cap long messages (≈120 chars).
+finding labels, and `%%` cause comments/captions: escape each label **component**
+first (mermaid-special chars `"` `[` `]` `|` `<` `>`), THEN join components with
+the trusted literal `<br/>` (so `<`/`>` escaping never breaks the line-break
+separator); replace newlines with spaces (esp. in `%%` comments, which are
+single-line); and cap long messages (≈120 chars).
 
 1. **L2 topology** (`view="l2"`) — every device (VC-folded), label
    `name<br/>role`; edges = L2 links, label = carried-VLAN count or
@@ -108,16 +110,20 @@ which are single-line), and cap long messages (≈120 chars).
    `resolve_exit(ir, vlan_graph).nodes` (IRB/SVI nodes, *or* boundary-uplink
    GATEWAY nodes) ∪ any device owning an `l3intf` for the VLAN (all roles incl
    `GATEWAY`). `VlanNode.is_exit` alone is **not** used — it sees only IRB/SVI,
-   so a gateway exit would be mis-drawn as an ordinary node. This keeps per-VLAN
-   exits consistent with the Routed-VLAN-exits chart and the blackhole exit
-   contract.
+   so a gateway exit would be mis-drawn as an ordinary node. Any such exit device
+   **not already in `build_vlan_graph`** is added as a chart node, so shape/class
+   lines never target an undeclared node. This keeps per-VLAN exits consistent
+   with the Routed-VLAN-exits chart and the blackhole exit contract.
 
 3. **Routed VLAN exits** (`view="l3_exits"`) — a routed-VLAN ↔ serving-L3-
    interface view. Built from **all `ir.l3intfs` grouped by `vlan_id`**
    (including `L3Role.GATEWAY`, which `exits_by_vlan` excludes but `gateway_gap`
-   treats as serving) — NOT `exits_by_vlan`. Left = routed VLANs (those with a
-   subnet); right = their L3 interfaces (`role` + owning device); edge = "served
-   by". Highlight VLANs whose exit is lost (`gateway_gap`, `ospf_withdrawal`).
+   treats as serving) — NOT `exits_by_vlan`. Left = routed VLANs — those with a
+   subnet **OR any `l3intf`** (matching the `_routed` predicate `vlan.subnet is
+   not None or vid in l3_vids`, so a subnet-less VLAN that still has an L3
+   interface is not omitted); right = their L3 interfaces (`role` + owning
+   device); edge = "served by". Highlight VLANs whose exit is lost
+   (`gateway_gap`, `ospf_withdrawal`).
 
 Example (L2, one stranded node):
 
@@ -197,12 +203,15 @@ This also **re-enables device-subject finding names**: `checks/subjects.py`
 non-identity) returns `Device.name`, so device-subject findings render the real
 name instead of the MAC. (Closes the deferred item from the subject PR review.)
 
-**Display-only — excluded from `diff_ir`.** `diff_ir` compares every dataclass
-field except a global ignore set (today `{"meta", "stp_meta"}`). `name` MUST join
-that set, else a rename-only change registers as a `device` modification —
-waking device/link/port checks and polluting `ir_diff`. Safe globally: `Vlan`/
-`Port` names are key-derived identity (not modified in place) and `Device.name`
-is cosmetic; the plan verifies no golden depends on a name diff.
+**Display-only — excluded from `diff_ir` (DEVICE-ONLY).** `diff_ir` compares
+every dataclass field except an ignore set (today the global `{"meta",
+"stp_meta"}`). A `Device.name` rename must not register as a `device`
+modification (it would wake device/link/port checks and pollute `ir_diff`). But
+`name` must **not** be ignored globally — `Vlan.name` is a real, *tested* diff
+field (`tests/ir/test_diff.py` pins a vlan rename) that `wired.dhcp.snooping`
+relies on. So make the ignore **per-kind**: add `("device", "name")` only.
+Implementation: `_changed_fields` gains the entity kind and consults a per-kind
+map (global `meta`/`stp_meta` + `device → name`).
 
 ## Output / integration
 
@@ -229,9 +238,11 @@ verdict.
 
 ## Testing (TDD)
 
-- `build_highlight`: resolver precedence (subject > evidence > affected_entities),
-  ID normalization (Mist id → MAC), worst-severity-wins, cause lines collected
-  but not in the highlight set, non-localized counting.
+- `build_highlight`: additive resolution (subject + evidence + affected_entities
+  all contribute; a vlan-subject finding ALSO highlights its device/port nodes;
+  ordering only disambiguates an entity's type), ID normalization (Mist id →
+  MAC), worst-severity-wins, cause lines collected but not in the highlight set,
+  non-localized counting.
 - `build_diagrams`: a finding's blast-radius node carries the right severity
   class + label; `caused_by` appears as a comment/caption, NOT a class; link/port
   findings color endpoint nodes; the routed-exits chart includes a GATEWAY-role
