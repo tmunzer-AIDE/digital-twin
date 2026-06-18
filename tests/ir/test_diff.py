@@ -116,3 +116,27 @@ def test_diff_output_order_is_deterministic():
     ]
     # and repeated runs agree
     assert d == diff_ir(base, proposed)
+
+
+def test_device_name_change_is_not_a_diff():
+    from digital_twin.ir import IRBuilder
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    base = IRBuilder().add_device(
+        Device(id="d1", role=DeviceRole.SWITCH, site="s1", name="old")
+    ).build()
+    prop = IRBuilder().add_device(
+        Device(id="d1", role=DeviceRole.SWITCH, site="s1", name="new")
+    ).build()
+    assert diff_ir(base, prop).is_empty()  # rename is display-only, not a config change
+
+
+def test_vlan_name_change_is_still_a_diff():
+    # regression guard: name ignore is DEVICE-ONLY (Vlan.name stays a real field)
+    from digital_twin.ir import IRBuilder
+    from digital_twin.ir.entities import Vlan
+
+    base = IRBuilder().add_vlan(Vlan(vlan_id=30, name="old")).build()
+    prop = IRBuilder().add_vlan(Vlan(vlan_id=30, name="new")).build()
+    mods = {(m.ref.kind, m.ref.id): m.changed_fields for m in diff_ir(base, prop).modified}
+    assert "name" in mods[("vlan", "30")]

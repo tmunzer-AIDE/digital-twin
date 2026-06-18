@@ -15,6 +15,9 @@ from .model import IR
 # Provenance/confidence wrappers are not config changes; the underlying facts
 # (stp_enabled/stp_state/...) ARE compared, so a real STP change is still detected.
 _IGNORED_FIELDS = {"meta", "stp_meta"}
+# Per-kind display-only fields: never a config change. Device.name is a label
+# (Vlan.name/Port.name are key-derived identity and STAY compared).
+_IGNORED_BY_KIND: dict[str, frozenset[str]] = {"device": frozenset({"name"})}
 
 # Entity kinds the diff walks. Adding a domain (WAN/NAC/routing) = append ONE line
 # here (every entity exposes a stable `.id`); the diff then extends automatically.
@@ -68,13 +71,13 @@ def _index(ir: IR) -> dict[tuple[str, str], Any]:
     return out
 
 
-def _changed_fields(a: Any, b: Any) -> tuple[str, ...]:
-    changed: list[str] = []
-    for f in fields(a):
-        if f.name in _IGNORED_FIELDS:
-            continue
-        if getattr(a, f.name) != getattr(b, f.name):
-            changed.append(f.name)
+def _changed_fields(kind: str, a: Any, b: Any) -> tuple[str, ...]:
+    ignored = _IGNORED_FIELDS | _IGNORED_BY_KIND.get(kind, frozenset())
+    changed = [
+        f.name
+        for f in fields(a)
+        if f.name not in ignored and getattr(a, f.name) != getattr(b, f.name)
+    ]
     return tuple(sorted(changed))  # field-order independent -> stable fixtures
 
 
@@ -87,7 +90,7 @@ def diff_ir(baseline: IR, proposed: IR) -> IRDiff:
     removed = [EntityRef(*k) for k in sorted(base.keys() - prop.keys())]
     modified: list[Modified] = []
     for key in sorted(base.keys() & prop.keys()):
-        changed = _changed_fields(base[key], prop[key])
+        changed = _changed_fields(key[0], base[key], prop[key])
         if changed:
             modified.append(Modified(EntityRef(*key), changed))
     return IRDiff(tuple(added), tuple(removed), tuple(modified))
