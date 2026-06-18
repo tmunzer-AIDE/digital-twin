@@ -955,6 +955,25 @@ def test_l3_exits_chart_includes_gateway_role_interface():
     l3 = next(d for d in diagrams if d.view == "l3_exits")
     assert "VLAN 2" in l3.mermaid
     assert "srx" in l3.mermaid  # gateway-role interface present
+
+
+def test_l3_exits_highlights_affected_gateway_device():
+    from digital_twin.ir.entities import L3Intf, L3Role, Vlan
+
+    ir = (
+        IRBuilder()
+        .add_device(Device(id="gw01", role=DeviceRole.GATEWAY, site="s1", name="srx"))
+        .add_vlan(Vlan(vlan_id=2, name="mgmt"))
+        .add_l3intf(L3Intf(device_id="gw01", role=L3Role.GATEWAY, vlan_id=2))
+        .build()
+    )
+    l3 = next(
+        d for d in build_diagrams(ir, (_f(affected_entities=("gw01",)),))
+        if d.view == "l3_exits"
+    )
+    assert "class " in l3.mermaid  # the interface node is classed via its owning device
+    assert l3.severity is Severity.ERROR
+    assert any("t.x" in n for n in l3.notes)  # the device-finding caption shows on L3
 ```
 
 (`IRBuilder.add_l3intf(L3Intf(...))` is the real builder API — verified in `src/digital_twin/ir/model.py:115`.)
@@ -983,31 +1002,46 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
             by_vlan.setdefault(intf.vlan_id, []).append(intf)
     routed = sorted(set(by_vlan) | {vid for vid, v in ir.vlans.items() if v.subnet is not None})
     ids = _Ids()
+    intf_owner: dict[str, str] = {}  # ikey -> owning device node (for highlighting)
     lines = ["graph LR", *_CLASSDEFS]
     for vid in routed:
         name = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
         lines.append(f'  {ids.get(f"vlan:{vid}")}["{_label(f"VLAN {vid}", name)}"]')
         for intf in by_vlan.get(vid, []):
-            dev = ir.devices.get(node_for(vc, intf.device_id))
+            owner = node_for(vc, intf.device_id)
+            dev = ir.devices.get(owner)
             ikey = f"intf:{intf.id}"
+            intf_owner[ikey] = owner
             iname = dev.name if dev and dev.name else intf.device_id
             lines.append(f'  {ids.get(ikey)}(["{_label(iname, intf.role.value)}"])')
             lines.append(f'  {ids.get(f"vlan:{vid}")} -->|"served by"| {ids.get(ikey)}')
-    # highlight affected VLAN boxes
+    # highlight affected VLAN boxes AND interface nodes whose owning device is hit
     classes: list[str] = []
     for vid, hit in hl.vlans.items():
         if f"vlan:{vid}" in ids._map:
             classes.append(f"  class {ids.get(f'vlan:{vid}')} {_SEV_CLASS[hit.severity]};")
+    for ikey, owner in intf_owner.items():
+        nh = hl.nodes.get(owner)
+        if nh is not None:
+            classes.append(f"  class {ids.get(ikey)} {_SEV_CLASS[nh.severity]};")
     lines += classes
-    sev = _worst(*(h.severity for vid, h in hl.vlans.items() if f"vlan:{vid}" in ids._map))
+    owners_hit = sorted({o for o in intf_owner.values() if o in hl.nodes})
+    sev = _worst(
+        *(h.severity for vid, h in hl.vlans.items() if f"vlan:{vid}" in ids._map),
+        *(hl.nodes[o].severity for o in owners_hit),
+    )
     vlan_caps = [
         _safe(f"{hit.severity.value}: {lbl}")
         for vid, hit in hl.vlans.items() if f"vlan:{vid}" in ids._map
         for lbl in hit.labels
     ]
+    intf_caps = [
+        _safe(f"{hl.nodes[o].severity.value}: {lbl}")
+        for o in owners_hit for lbl in hl.nodes[o].labels
+    ]
     unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
-                   mermaid="\n".join(lines), notes=tuple(vlan_caps + unloc))
+                   mermaid="\n".join(lines), notes=tuple(vlan_caps + intf_caps + unloc))
 ```
 
 In `build_diagrams`, append before `return tuple(out)`:
