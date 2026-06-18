@@ -18,8 +18,16 @@ from __future__ import annotations
 
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.cycles import Cycle
+from digital_twin.analysis.delta_cause import causes_for_loop
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -96,9 +104,11 @@ class L2LoopCheck:
                     ),
                     cycle=cycle,
                     vid=vid,
+                    caused_by=(),  # pre-existing: not attributed to the delta
                 ),
                 Status.PASS,
             )
+        caused_by = causes_for_loop(ctx, cycle)
         if disabled:
             return (
                 self._finding(
@@ -114,6 +124,7 @@ class L2LoopCheck:
                     cycle=cycle,
                     vid=vid,
                     extra={"stp_disabled_ports": disabled},
+                    caused_by=caused_by,
                 ),
                 Status.FAIL,
             )
@@ -130,6 +141,7 @@ class L2LoopCheck:
                     cycle=cycle,
                     vid=vid,
                     extra={"stp_unknown_ports": unknown},
+                    caused_by=caused_by,
                 ),
                 Status.WARN,
             )
@@ -141,6 +153,7 @@ class L2LoopCheck:
                 message=f"new cycle on vlan {vid} fully STP-protected (redundancy, not a loop)",
                 cycle=cycle,
                 vid=vid,
+                caused_by=caused_by,
             ),
             Status.PASS,
         )
@@ -155,6 +168,7 @@ class L2LoopCheck:
         cycle: Cycle,
         vid: int,
         extra: dict[str, object] | None = None,
+        caused_by: tuple[Cause, ...] = (),
     ) -> Finding:
         return Finding(
             source=FindingSource.CHECK,
@@ -171,6 +185,7 @@ class L2LoopCheck:
                 "link_ids": list(cycle.link_ids),
                 **(extra or {}),
             },
+            caused_by=caused_by,
         )
 
 
