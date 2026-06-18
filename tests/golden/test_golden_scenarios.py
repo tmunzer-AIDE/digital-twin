@@ -22,6 +22,9 @@ from .builders import (
     EDGE_UPLINK_PORT,
     GT_SITE_A,
     GT_SITE_B,
+    OD_SITE_A,
+    OD_SITE_B,
+    OD_ST_ID,
     OSPF_NETS,
     ST_SITE_B,
     WIRED_CLIENT_MAC,
@@ -45,6 +48,9 @@ from .builders import (
     multisite_remove_corp,
     multisite_template_with_no_assigned_sites,
     multisite_with_failed_site,
+    od_delete_sitetemplate,
+    od_delete_zero_sites,
+    od_gw_failsafe_combined_plan,
     ospf_doc,
     ospf_op,
     plan_for,
@@ -1383,3 +1389,108 @@ def test_ca_non_load_bearing_verdict_unchanged_and_causes_populated(tmp_path):
 
     # (d) attribution DID run: at least one finding carries a populated cause
     assert any(f.caused_by for f in v.findings), "attribution produced no causes"
+
+
+# ---------------------------------------------------------------------------
+# OD: org-plan DELETE-ripple golden scenarios (Task 6)
+#
+# These three goldens exercise the delete path through the FixtureProvider
+# end-to-end harness — the same path the MS/GT/ST UPDATE goldens use.
+#
+# OD-delete: a MINIMAL sitetemplate (no id/name) assigned to ≥1 site.
+#   Site A has devices referencing the template's usages; deleting the template
+#   collapses the corp domain -> vlan_segmentation or blackhole (non-SAFE).
+#   Site B has no devices -> SAFE. Org rollup: non-SAFE.
+#   Uses a MINIMAL template (no id/name, no radius/syslog) so the derived gate
+#   never trips on out-of-scope leaves; the verdict is an honest collapse finding
+#   rather than UNKNOWN.
+#
+# OD-zero: delete a networktemplate that is assigned to 0 sites -> SAFE,
+#   `changes` names the delete, and a decision reason contains "no assigned sites".
+#
+# OD-gw-failsafe: a combined plan (breaking gatewaytemplate op + cosmetic
+#   sitetemplate op) on the same site -> gateway_gap.gateway_unowned fires ->
+#   UNSAFE. The assertion is `decision is not SAFE` (the P2a never-false-SAFE pin
+#   — the gatewaytemplate's full derived-gate screen must catch the break even when
+#   combined with an unrelated sitetemplate op).
+# ---------------------------------------------------------------------------
+
+
+def test_od_delete_sitetemplate_collapses_corp_on_site_a(tmp_path):
+    # OD-delete: a MINIMAL sitetemplate deleted -> site A's corp domain collapses
+    # (vlan_segmentation finding + client impact). Site B (no devices) stays SAFE.
+    # The org rollup is non-SAFE because site A is non-SAFE. The `changes` tuple
+    # names the delete with action="delete".
+    doc, plan = od_delete_sitetemplate()
+    ov = _simulate_org(doc, plan, tmp_path)
+
+    # (a) the delete is named in changes
+    assert len(ov.changes) == 1
+    c = ov.changes[0]
+    assert c.action == "delete"
+    assert c.ref.kind == "sitetemplate"
+    assert c.ref.id == OD_ST_ID
+
+    # (b) site B (no devices) is unaffected
+    assert ov.per_site[OD_SITE_B].decision is Decision.SAFE
+
+    # (c) site A's corp domain collapses: the template's networks/usages vanish ->
+    # at minimum a vlan_segmentation or blackhole finding (the member port loses
+    # its defined usage) and a client-impact finding (the wired client is affected)
+    v_a = ov.per_site[OD_SITE_A]
+    assert v_a.decision is not Decision.SAFE, v_a.decision_reasons
+    finding_codes = {f.code for f in v_a.findings}
+    assert any(
+        "vlan_segmentation" in code or "blackhole" in code for code in finding_codes
+    ), f"expected a segmentation or blackhole finding; got {finding_codes}"
+    assert any("client.impact" in code for code in finding_codes), (
+        f"expected a client-impact finding; got {finding_codes}"
+    )
+
+    # (d) org rollup reflects site A's non-SAFE verdict
+    assert ov.decision is not Decision.SAFE, ov.decision_reasons
+
+
+def test_od_delete_zero_assigned_sites_is_safe(tmp_path):
+    # OD-zero: template exists in the registry but has 0 assigned sites -> SAFE
+    # with "no assigned sites" in the decision reasons. The plan names the delete.
+    doc, plan = od_delete_zero_sites()
+    ov = _simulate_org(doc, plan, tmp_path)
+
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+    assert ov.per_site == {}
+
+    # the delete is named in changes
+    assert len(ov.changes) == 1
+    assert ov.changes[0].action == "delete"
+
+    # the engine emits a "no assigned sites" reason so callers can see WHY
+    assert any("no assigned sites" in r for r in ov.decision_reasons), ov.decision_reasons
+
+
+def test_od_gw_failsafe_combined_plan_never_safe(tmp_path):
+    # OD-gw-failsafe: combined plan — a BREAKING gatewaytemplate op (ip_configs
+    # change -> gateway_unowned) + a cosmetic sitetemplate op (add unused vlan).
+    # The P2a fail-safe: full gateway screening (gw_full=True) is activated
+    # whenever the site has a gatewaytemplate overlay -> the break is caught even
+    # in a combined plan. The verdict MUST NOT be SAFE. UNSAFE is the expected
+    # result here; UNKNOWN is also an acceptable fail-safe outcome (documented
+    # over-conservatism is OK, false-SAFE is NOT).
+    doc, plan = od_gw_failsafe_combined_plan()
+    ov = _simulate_org(doc, plan, tmp_path)
+
+    # the plan names both ops in changes
+    actions = {(c.ref.kind, c.ref.id, c.action) for c in ov.changes}
+    assert ("gatewaytemplate", "g1", "update") in actions
+    assert any(c.action == "update" and c.ref.kind == "sitetemplate" for c in ov.changes)
+
+    # the breaking gw op MUST NOT slip through as SAFE
+    assert ov.decision is not Decision.SAFE, (
+        f"combined gw-failsafe plan produced a false-SAFE verdict: {ov.decision_reasons}"
+    )
+
+    # the site with the gateway (GT_SITE_A) must also not be SAFE
+    assert ov.per_site[GT_SITE_A].decision is not Decision.SAFE, (
+        f"gtSiteA yielded false-SAFE in a combined plan: "
+        f"{ov.per_site[GT_SITE_A].decision_reasons}"
+    )

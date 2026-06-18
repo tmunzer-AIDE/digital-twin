@@ -114,7 +114,7 @@ def test_org_tool_returns_dict_with_decision_and_never_raises(monkeypatch):
     }
     out = simulate_change(org_plan)
     assert "decision" in out
-    assert out["template_id"] == "nt1"
+    assert out["changes"][0]["object_id"] == "nt1"
     assert "per_site" in out
     assert out["decision"] in ("safe", "review", "unsafe", "unknown")
 
@@ -138,4 +138,4 @@ def test_org_tool_never_raises_on_internal_error(monkeypatch):
     # must not raise
     out = simulate_change(org_plan)
     assert out["decision"] == "unknown"
-    assert "template_id" in out  # org-shaped error envelope
+    assert "changes" in out  # org-shaped error envelope

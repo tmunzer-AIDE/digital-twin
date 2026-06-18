@@ -43,7 +43,8 @@ from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.contracts import Finding, ObjectRef, Rejection
-from digital_twin.engine.org_template import apply_template, override_template
+from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
+from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
 from digital_twin.ir import IRDiff, diff_ir
 from digital_twin.providers.base import (
@@ -61,7 +62,7 @@ from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
 from digital_twin.verdict.decision import Decision, DecisionInputs
-from digital_twin.verdict.org_verdict import OrgVerdict, decide_org
+from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 
@@ -163,14 +164,32 @@ def _simulate_site_state(
     assert trace is not None  # RunContext.__post_init__ guarantees it
 
     with trace.stage("ingest.baseline"):
-        baseline = adapter.ingest(baseline_raw)
+        # A compile/ingest CRASH (e.g. an unresolvable {{var}} on a gateway) is an
+        # UNKNOWN, never a hard crash — and never a false-SAFE. Critical for the org
+        # fan-out, which simulates many assigned sites: one site whose baseline does
+        # not compile must not take down the whole org run (it becomes that site's
+        # per-site UNKNOWN). Mirrors the `ir is None` path below.
+        try:
+            baseline = adapter.ingest(baseline_raw)
+        except Exception as e:  # noqa: BLE001 — any ingest failure is UNKNOWN by the cardinal rule
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"baseline ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run,
+                state_meta=state_meta, baseline_unavailable=True,
+            )
         if baseline.ir is None:
             return _unknown(
                 None, adapter_findings=adapter_findings, run=run,
                 state_meta=state_meta, baseline_unavailable=True,
             )
     with trace.stage("ingest.proposed"):
-        proposed = adapter.ingest(proposed_raw)
+        try:
+            proposed = adapter.ingest(proposed_raw)
+        except Exception as e:  # noqa: BLE001
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"proposed ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run, state_meta=state_meta,
+            )
         if proposed.ir is None:
             return _unknown(
                 Rejection(
@@ -395,13 +414,25 @@ def simulate(
         profile_proposed = None
     else:
         below_raw = adapter.apply(raw, non_device_ops)
-        if isinstance(below_raw, Rejection):
-            # If the non-device apply fails (e.g. missing target), fall back to
-            # baseline so the gate sees no below-profile change (conservative:
-            # the apply failure was already caught for the full op set above).
-            profile_proposed = adapter.ingest(raw)
-        else:
-            profile_proposed = adapter.ingest(below_raw)
+        # This ingest runs BEFORE _simulate_site_state's crash guard, so it needs
+        # its own: a compile/ingest CRASH (e.g. an unresolvable gateway {{var}} in
+        # the baseline) is UNKNOWN by the cardinal rule, never a hard crash. Both
+        # inputs are baseline-derived (raw / baseline+non-device ops), so the
+        # baseline is what failed -> baseline_unavailable, mirroring the guard below.
+        try:
+            if isinstance(below_raw, Rejection):
+                # If the non-device apply fails (e.g. missing target), fall back to
+                # baseline so the gate sees no below-profile change (conservative:
+                # the apply failure was already caught for the full op set above).
+                profile_proposed = adapter.ingest(raw)
+            else:
+                profile_proposed = adapter.ingest(below_raw)
+        except Exception as e:  # noqa: BLE001 — any ingest crash is UNKNOWN
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"baseline ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run,
+                state_meta=state_meta, baseline_unavailable=True,
+            )
 
     return _simulate_site_state(
         raw, proposed_raw,
@@ -411,7 +442,7 @@ def simulate(
     )
 
 
-def simulate_org_template(
+def simulate_org_plan(
     plan_data: Mapping[str, Any],
     *,
     provider: StateProvider,
@@ -425,91 +456,98 @@ def simulate_org_template(
     registry = registry or CheckRegistry(ALL_WIRED_CHECKS)
 
     def org_unknown(
-        rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = ()
+        rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = (),
+        changes: tuple[OrgChange, ...] = (),
     ) -> OrgVerdict:
         return OrgVerdict(
             decision=Decision.UNKNOWN,
             decision_reasons=tuple(f"[{r.stage}] {x}" for r in rejections for x in r.reasons),
-            template_id=template_id, per_site={}, driving_sites=(), site_failures={},
+            changes=tuple(changes), per_site={}, driving_sites=(), site_failures={},
             template_findings=tuple(template_findings), org_rejections=tuple(rejections),
         )
 
     plan = parse_change_plan(plan_data)
-    # resolved after the ORG guard below; org_unknown() calls before that point
-    # correctly surface "" (the template id is genuinely unknown that early)
-    template_id = ""
     if isinstance(plan, Rejection):
-        return org_unknown((plan,))
-    rejection = check_objects(plan)
-    if rejection:
-        return org_unknown((rejection,))
-    # ORG-mode guard (symmetric with simulate's SITE guard): a valid SITE plan
-    # also passes check_objects — it must NOT be fanned out as a template.
+        return org_unknown((plan,))  # changes=() — no parsed ops
     is_org = (
         bool(plan.ops)
         and all(op.object_type in ORG_OBJECT_TYPES for op in plan.ops)
         and not plan.scope.site_id
     )
+    # P2b: name EVERY op the plan touches UP FRONT (org-shaped plans), BEFORE
+    # check_objects, so an object_gate UNKNOWN (non-empty delete payload /
+    # unsupported action) AND every later short-circuit still names all attempted
+    # objects. Names hydrate as ops resolve.
+    changes = [
+        OrgChange(ref=ObjectRef(op.object_type, op.object_id, name=None), action=op.action)
+        for op in plan.ops
+    ] if is_org else []
+    rejection = check_objects(plan)
+    if rejection:
+        return org_unknown((rejection,), changes=tuple(changes))
     if not is_org:
         return org_unknown((Rejection(
             stage="scope.pre",
-            reasons=("site-scoped plan: call simulate, not simulate_org_template",),
+            reasons=("site-scoped plan: call simulate, not simulate_org_plan",),
         ),))
-    op = plan.ops[0]  # check_objects enforces exactly one ORG-type op in ORG mode
-    object_type = op.object_type
-    template_id = op.object_id
 
-    resolved = provider.resolve_org_template(
-        OrgScope(org_id=plan.scope.org_id), template_id, object_type
-    )
-    if not isinstance(resolved, OrgTemplateContext):
-        return org_unknown((Rejection(
-            stage="fetch",
-            reasons=tuple(
+    org_scope = OrgScope(org_id=plan.scope.org_id)
+    overlays: list[OrgOverlay] = []
+    template_findings: list[Finding] = []
+    for i, op in enumerate(plan.ops):
+        resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
+        # P3: thread template_findings through EVERY short-circuit so earlier ops'
+        # non-fatal L0 findings stay auditable even if a LATER op fails.
+        if not isinstance(resolved, OrgTemplateContext):
+            return org_unknown((Rejection(stage="fetch", reasons=tuple(
                 f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
-            )
-            or ("org-template lookup failed",),
-        ),))
+            ) or ("org-template lookup failed",)),),
+                template_findings=tuple(template_findings), changes=tuple(changes))
+        snapshot = dict(resolved.template)
+        ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
+        changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
+        if op.action == "delete":
+            proposed: Mapping[str, Any] | None = None
+        else:
+            proposed_t = apply_template(snapshot, op.payload)
+            if isinstance(proposed_t, Rejection):
+                return org_unknown((proposed_t,),
+                    template_findings=tuple(template_findings), changes=tuple(changes))
+            l0 = adapter.validate(replace(op, payload=proposed_t),
+                scope_roots=None if l0_full_object else _changed_roots(op.payload))
+            if l0.fatal:
+                return org_unknown((Rejection(stage="l0",
+                    reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
+                             f"{op.object_id}",)),),
+                    template_findings=tuple(template_findings), changes=tuple(changes))
+            template_findings.extend(_stamp(l0.findings, ref))
+            fg = screen_op(op.object_type, snapshot, proposed_t)
+            if fg:
+                return org_unknown((fg,), template_findings=tuple(template_findings),
+                                   changes=tuple(changes))
+            proposed = proposed_t
+        overlays.append(OrgOverlay(
+            object_type=op.object_type, object_id=op.object_id, name=snapshot.get("name"),
+            action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
+            baseline=snapshot, proposed=proposed,
+        ))
 
-    snapshot = dict(resolved.template)
-    proposed_template = apply_template(snapshot, op.payload)
-    if isinstance(proposed_template, Rejection):
-        return org_unknown((proposed_template,))
-
-    # org-level L0 — a FATAL violation short-circuits to org_rejections ONLY
-    # (template_findings holds NON-fatal L0 only, per the spec's fatal-L0 rule)
-    l0 = adapter.validate(
-        replace(op, payload=proposed_template),
-        scope_roots=None if l0_full_object else _changed_roots(op.payload),
-    )
-    if l0.fatal:
-        return org_unknown(
-            (Rejection(stage="l0", reasons=("structurally-fatal L0 on the proposed template",)),)
+    ov_tuple = tuple(overlays)
+    sites = affected_sites(ov_tuple)
+    tf = tuple(template_findings)
+    if not sites:
+        decision, reasons, driving = decide_org({}, template_findings=tf, org_rejections=())
+        reasons = reasons + tuple(
+            f"{c.ref.kind} {c.ref.id}: no assigned sites — nothing ripples" for c in changes
         )
-    template_findings = _stamp(
-        l0.findings, ObjectRef(object_type, template_id, name=snapshot.get("name"))
-    )
-    # org-level field gate (no role check — org-template branch)
-    fg = screen_op(object_type, snapshot, proposed_template)
-    if fg:
-        return org_unknown((fg,), template_findings=template_findings)
-
-    if not resolved.assigned_site_ids:  # valid template, 0 sites
-        decision, reasons, driving = decide_org(
-            {}, template_findings=template_findings, org_rejections=()
-        )
-        return OrgVerdict(
-            decision=decision, decision_reasons=reasons, template_id=template_id,
+        return OrgVerdict(decision=decision, decision_reasons=reasons, changes=tuple(changes),
             per_site={}, driving_sites=driving, site_failures={},
-            template_findings=template_findings, org_rejections=(),
-        )
+            template_findings=tf, org_rejections=())
 
-    raw_map = provider.fetch_sites(
-        OrgScope(org_id=plan.scope.org_id), site_ids=resolved.assigned_site_ids
-    )
+    raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
     site_failures: dict[str, str] = {}
-    for sid in resolved.assigned_site_ids:
+    for sid in sites:
         fetched = raw_map.get(sid)
         if not isinstance(fetched, RawSiteState):
             failures = fetched.failures if fetched is not None else ()
@@ -529,24 +567,26 @@ def simulate_org_template(
                 ),
             )
             continue
-        base_raw, prop_raw = override_template(object_type, fetched, snapshot, proposed_template)
+        base_raw, prop_raw = apply_overlays(fetched, sid, ov_tuple)
         sm = build_state_meta(fetched.meta, now=datetime.now(UTC))
-        # adapter_findings=() — template L0 findings live ONLY on OrgVerdict
-        # .template_findings (the rollup floors REVIEW on them via decide_org);
-        # do NOT echo them into every per-site Verdict.
-        # All ops are template edits (below-profile) -> profile_proposed=None
-        # means the full proposed is used as the below-profile reference.
+        # P2a FAIL-SAFE: full gateway screening iff the site has a gatewaytemplate
+        # overlay (full=True keeps the whole gateway effective -> a gatewaytemplate's
+        # own networks IS screened -> never false-SAFE; cost is a possible
+        # false-UNKNOWN on combined plans).
+        gw_full = any(o.object_type == "gatewaytemplate" and sid in o.assigned_site_ids
+                      for o in ov_tuple)
         per_site[sid] = _simulate_site_state(
             base_raw, prop_raw, adapter=adapter, registry=registry, run=run,
             state_meta=sm, adapter_findings=(), profile_proposed=None,
-            gateway_screen_full=(object_type == "gatewaytemplate"),
+            gateway_screen_full=gw_full,
         )
 
-    decision, reasons, driving = decide_org(
-        per_site, template_findings=template_findings, org_rejections=()
-    )
+    decision, reasons, driving = decide_org(per_site, template_findings=tf, org_rejections=())
     return OrgVerdict(
-        decision=decision, decision_reasons=reasons, template_id=template_id,
+        decision=decision, decision_reasons=reasons, changes=tuple(changes),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
-        template_findings=template_findings, org_rejections=(),
+        template_findings=tf, org_rejections=(),
     )
+
+
+simulate_org_template = simulate_org_plan  # back-compat alias (single-op is a 1-op plan)

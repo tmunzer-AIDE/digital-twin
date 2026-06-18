@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 from datetime import UTC, datetime
 
+from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.engine.pipeline import simulate
 from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta
 from digital_twin.verdict.decision import Decision
@@ -240,6 +241,31 @@ def test_mixed_plan_site_setting_does_not_touch_profiled_device_effective():
         f"mixed plan whose below-profile op leaves the profiled device's modeled "
         f"effective unchanged must not taint; got: {verdict.decision_reasons}"
     )
+
+
+class _CrashOnIngestAdapter(MistAdapter):
+    """A real adapter whose ingest raises (e.g. an unresolvable gateway {{var}})."""
+
+    def ingest(self, raw):  # type: ignore[override]
+        raise RuntimeError("unresolved vars: guest_end at dhcpd_config.guest.ip_end")
+
+
+def test_profile_proposed_ingest_crash_is_unknown_not_a_hard_crash():
+    """REGRESSION (review P2): the below-profile `profile_proposed` ingest in
+    simulate() runs BEFORE _simulate_site_state's crash guard, and ONLY for plans
+    carrying a device op. A device-op plan against a baseline that crashes on ingest
+    (the live unresolvable-gateway-{{var}} case) must still become UNKNOWN, never a
+    hard crash. The _simulate_site_state-only regression in test_pipeline_ingest_crash
+    misses this path because it never builds profile_proposed."""
+    dev = copy.deepcopy(PROFILED_SWITCH)
+    dev["port_config"]["ge-0/0/0"] = {"usage": "uplink"}
+    op = _device_op("dev-p1", dev)
+    provider = FakeProvider(_raw())
+
+    verdict = simulate(_plan([op]), provider=provider, adapter=_CrashOnIngestAdapter())
+
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+    assert any("ingest crashed" in r for r in verdict.decision_reasons), verdict.decision_reasons
 
 
 def test_below_profile_stp_edit_on_profiled_switch_is_unknown():

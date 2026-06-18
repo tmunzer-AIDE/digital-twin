@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from digital_twin.contracts import Finding, FindingCategory, Rejection, Severity
+from digital_twin.contracts import Finding, FindingCategory, ObjectRef, Rejection, Severity
 from digital_twin.verdict.decision import Decision
 from digital_twin.verdict.verdict import Verdict
 
@@ -19,10 +19,17 @@ _PRECEDENCE = {Decision.SAFE: 0, Decision.REVIEW: 1, Decision.UNSAFE: 2, Decisio
 
 
 @dataclass(frozen=True)
+class OrgChange:
+    """One org object a plan touches, for the multi-object OrgVerdict."""
+    ref: ObjectRef                  # kind=object_type, id, name
+    action: str                     # "update" | "delete"
+
+
+@dataclass(frozen=True)
 class OrgVerdict:
     decision: Decision
     decision_reasons: tuple[str, ...]
-    template_id: str
+    changes: tuple[OrgChange, ...]   # the org objects this plan touches (multi-object-native)
     per_site: Mapping[str, Verdict]
     driving_sites: tuple[str, ...]
     site_failures: Mapping[str, str]

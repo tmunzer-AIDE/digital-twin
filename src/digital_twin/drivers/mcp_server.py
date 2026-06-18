@@ -35,12 +35,12 @@ def _provider(replay_fixture: str | None) -> StateProvider:
     return MistApiProvider()
 
 
-def _unknown_org_dict(reason: str, template_id: str = "") -> dict[str, Any]:
+def _unknown_org_dict(reason: str) -> dict[str, Any]:
     """Build a well-formed UNKNOWN OrgVerdict dict for the MCP error envelope."""
     ov = OrgVerdict(
         decision=Decision.UNKNOWN,
         decision_reasons=(reason,),
-        template_id=template_id,
+        changes=(),
         per_site={},
         driving_sites=(),
         site_failures={},

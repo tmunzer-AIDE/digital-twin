@@ -112,11 +112,54 @@ def test_networktemplate_with_site_id_is_out_of_scope_single_site():
     assert any("networktemplate" in reason for reason in r.reasons)
 
 
-def test_org_mode_rejects_multiple_template_ids():
-    r = check_objects(_org_plan([_nt_op(object_id="ntA"), ChangeOp(
-        action="update", order=1, object_type="networktemplate", object_id="ntB", payload={})]))
-    assert isinstance(r, Rejection)
-    assert any("one template" in reason for reason in r.reasons)
+def _del(object_type, object_id, order=0, payload=None):
+    return ChangeOp(action="delete", order=order, object_type=object_type,
+                    object_id=object_id, payload=payload if payload is not None else {})
+
+
+def test_org_mode_delete_allowed():
+    # a single networktemplate DELETE (empty payload, no site_id) is now ORG-mode
+    # and accepted — the delete-ripple engine handles it (no false-SAFE window).
+    assert check_objects(_org_plan([_del("networktemplate", "nt1")])) is None
+
+
+def test_org_mode_multiple_distinct_ops_allowed():
+    # multiple DISTINCT org ops (two different networktemplates) now fan out as a
+    # multi-op plan — the single-template-per-plan rule is gone.
+    assert check_objects(_org_plan([
+        _nt_op(object_id="ntA"),
+        ChangeOp(action="update", order=1, object_type="networktemplate",
+                 object_id="ntB", payload={}),
+    ])) is None
+
+
+def test_org_mode_delete_with_nonempty_payload_rejected():
+    r = check_objects(_org_plan([_del("networktemplate", "nt1", payload={"networks": {}})]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete payload must be empty" in reason for reason in r.reasons)
+
+
+def test_org_mode_mixed_delete_and_update_allowed():
+    # delete one template + update another (distinct ids) is a valid multi-op plan.
+    assert check_objects(_org_plan([
+        _del("networktemplate", "ntA", order=0),
+        ChangeOp(action="update", order=1, object_type="gatewaytemplate",
+                 object_id="gtB", payload={"port_config": {}}),
+    ])) is None
+
+
+def test_site_delete_still_rejected():
+    # a site_setting delete is SITE-mode (site_id present) -> still rejected.
+    r = check_objects(_plan([_op(action="delete")]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete" in reason for reason in r.reasons)
+
+
+def test_device_delete_still_rejected():
+    # a device delete is SITE-mode -> still rejected (unsupported action).
+    r = check_objects(_plan([_op(object_type="device", object_id="d1", action="delete")]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete" in reason for reason in r.reasons)
 
 
 def test_mixing_site_and_org_object_types_rejects():
@@ -145,26 +188,24 @@ def test_sitetemplate_plan_classified_org():
     assert check_objects(_org_plan([_gt_op("sitetemplate")])) is None
 
 
-def test_org_mode_rejects_mixed_types_same_id():
-    """REGRESSION (PR #4 review P2): two org ops sharing one object_id but different
-    object_types (gatewaytemplate + sitetemplate, both id="same") must be rejected.
-    They pass the distinct-id check but the org path only simulates ops[0], silently
-    dropping the second op (false-SAFE). The one-org-op rule closes it."""
-    r = check_objects(_org_plan([
+def test_org_mode_mixed_types_same_id_now_allowed():
+    """The multi-op delete-ripple engine simulates EVERY op (not just ops[0]), so two
+    DISTINCT org ops sharing an object_id but with different object_types
+    (gatewaytemplate + sitetemplate, both id="same") are now a valid multi-op plan.
+    They are distinct objects; object_gate no longer enforces one-template-per-plan,
+    and the envelope's duplicate-(type,id) guard does not fire (types differ)."""
+    assert check_objects(_org_plan([
         _gt_op("gatewaytemplate", object_id="same"),
         ChangeOp(action="update", order=1, object_type="sitetemplate",
                  object_id="same", payload={}),
-    ]))
-    assert isinstance(r, Rejection) and r.stage == "object_gate"
-    assert any("one template" in reason for reason in r.reasons)
+    ])) is None
 
 
-def test_org_mode_rejects_multiple_template_ids_gatewaytemplate():
-    # Single-template-id invariant applies to gatewaytemplate too.
-    r = check_objects(_org_plan([
+def test_org_mode_multiple_gatewaytemplate_ids_now_allowed():
+    # Multiple distinct gatewaytemplate ops fan out as a multi-op plan (no longer
+    # the single-template-per-plan rejection).
+    assert check_objects(_org_plan([
         _gt_op("gatewaytemplate", object_id="gtA"),
         ChangeOp(action="update", order=1, object_type="gatewaytemplate",
                  object_id="gtB", payload={}),
-    ]))
-    assert isinstance(r, Rejection)
-    assert any("one template" in reason for reason in r.reasons)
+    ])) is None

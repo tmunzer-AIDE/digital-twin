@@ -14,6 +14,7 @@ from digital_twin.scope.allowlist import ORG_OBJECT_TYPES, SUPPORTED_OBJECT_TYPE
 _STAGE = "object_gate"
 _M1_SOURCE = "mist"
 _M1_ACTION = "update"
+_ORG_ACTIONS = ("update", "delete")
 
 
 def check_objects(plan: ChangePlan) -> Rejection | None:
@@ -30,24 +31,27 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
         and all(op.object_type in ORG_OBJECT_TYPES for op in ops)
         and not plan.scope.site_id
     )
-    for op in ops:
-        if op.action != _M1_ACTION:
-            reasons.append(
-                f"ops[order={op.order}]: unsupported action {op.action!r} "
-                "(M1 supports only 'update')"
-            )
     if is_org:
-        # The org path simulates a SINGLE template edit (it fetches one template and
-        # applies ops[0]'s payload). Enforce exactly one org op — not just one
-        # object_id — or a plan mixing two org types under the same id
-        # (gatewaytemplate + sitetemplate, both id="x") would pass the id check yet
-        # have its second op silently dropped (false-SAFE).
-        if len(ops) > 1:
-            reasons.append(
-                "one template per plan in M1 "
-                f"({len(ops)} org ops; the org path simulates a single template edit)"
-            )
+        for op in ops:
+            if op.action not in _ORG_ACTIONS:
+                reasons.append(
+                    f"ops[order={op.order}]: unsupported action {op.action!r} "
+                    "(org ops support 'update' | 'delete')"
+                )
+            if op.action == "delete" and op.payload:
+                reasons.append(
+                    f"ops[order={op.order}]: delete payload must be empty "
+                    "(a delete has no proposed object)"
+                )
+        # duplicate (object_type, object_id) is NOT checked here — the envelope
+        # (parse_change_plan) already rejects "two ops target the same object".
     else:  # SITE mode + everything else — UNCHANGED from today
+        for op in ops:
+            if op.action != _M1_ACTION:
+                reasons.append(
+                    f"ops[order={op.order}]: unsupported action {op.action!r} "
+                    "(M1 supports only 'update')"
+                )
         if not plan.scope.site_id:
             reasons.append("scope.site_id is required (M1 simulates exactly one site)")
         for op in ops:

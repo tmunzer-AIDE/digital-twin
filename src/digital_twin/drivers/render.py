@@ -78,7 +78,11 @@ def org_verdict_to_dict(ov: OrgVerdict) -> dict[str, Any]:
     return {
         "decision": ov.decision.value,
         "decision_reasons": list(ov.decision_reasons),
-        "template_id": ov.template_id,
+        "changes": [
+            {"object_type": c.ref.kind, "object_id": c.ref.id, "name": c.ref.name,
+             "action": c.action}
+            for c in ov.changes
+        ],
         "driving_sites": list(ov.driving_sites),
         "site_failures": dict(ov.site_failures),
         "template_findings": [_plain(f) for f in ov.template_findings],
@@ -91,8 +95,9 @@ def org_verdict_to_dict(ov: OrgVerdict) -> dict[str, Any]:
 
 def render_org_human(ov: OrgVerdict) -> str:
     """Render an OrgVerdict as readable plain text."""
+    changed = ", ".join(f"{c.action} {c.ref.kind} {c.ref.id}" for c in ov.changes) or "(none)"
     lines = [
-        f"org decision: {ov.decision.name}  template: {ov.template_id}",
+        f"org decision: {ov.decision.name}  changes: {changed}",
     ]
     lines += [f"  reason: {r}" for r in ov.decision_reasons[:10]]
     for f in ov.template_findings:

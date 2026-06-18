@@ -280,16 +280,25 @@ modeling" below.
   device-profile layer for real (fetch + fold it into `fold_layers` as the
   highest-precedence non-device layer) so those edits can resolve
   SAFE/REVIEW/UNSAFE instead of UNKNOWN.
-- 🔵 **template / org-object changes — DELETE + the wider ripple.** A template
-  `delete` (object deletion) and a non-`update` action are still rejected
-  pre-fetch → UNKNOWN (`object_gate`; fails safe, test-pinned). Modify-ripple is
-  now DONE for networktemplate (above); delete-ripple, gateway/site templates,
-  multiple templates per plan, and other org objects (org_networks, WLAN/RF
-  templates) remain. **Gateway templates are a wider gap — gateways aren't a
-  compile target, so there is no template-merge path on that side at all.**
-  Distinct from Mist's attribute-delete (`{"-attr": ""}`) inside an `update`,
-  which IS modeled (`effective_update` / `update_conflicts`, field gate
-  "deleted vs changed").
+- ✅ **template / org-object changes — DELETE-ripple + multiple templates per
+  plan** — done 2026-06-17, live-verified. An org template `delete`
+  (networktemplate / gatewaytemplate / sitetemplate) now fans out to its
+  baseline-assigned sites: each loses that inherited layer (config collapse,
+  `proposed is None` ⇔ layer absent) and is simulated through the existing
+  per-site engine. A plan may carry MULTIPLE distinct org ops; a site assigned
+  to more than one is simulated atomically with ALL applicable overlays pinned
+  (Approach A "org overlays" → `OrgOverlay` / `apply_overlays`; `OrgVerdict`
+  names the SET of changed objects via `OrgChange`). The gate relaxation +
+  `simulate_org_plan` landed in ONE commit (no empty-payload-delete → false-SAFE
+  window). A per-site ingest crash (e.g. an unresolvable gateway `{{var}}`) is
+  contained as that site's UNKNOWN, never a hard crash. Distinct from Mist's
+  attribute-delete (`{"-attr": ""}`) inside an `update`, which IS modeled
+  (`effective_update` / `update_conflicts`, field gate "deleted vs changed").
+  **Deferred:** other org objects (`org_networks`, WLAN/RF templates);
+  site-reassignment (changing which template a site points at); the apply path;
+  per-overlay source-aware gateway screening (a combined plan touching a
+  gatewaytemplate currently fail-safes the whole site to UNKNOWN via
+  `gw_full`).
 
 ## 4. Product / infrastructure (spec-deferred behind seams)
 
