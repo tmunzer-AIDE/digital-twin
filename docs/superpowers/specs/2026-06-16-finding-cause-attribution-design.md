@@ -1,8 +1,21 @@
 # Finding cause attribution (`Finding.caused_by`)
 
-**Status:** design — pending user review
+**Status:** IMPLEMENTED 2026-06-17 (18 TDD tasks, subagent-driven; live-verified)
 **Date:** 2026-06-16
 **Author:** brainstormed with the repo owner
+
+**As-built:** `Cause(ref: ObjectRef, fields: tuple[str,...])` + trailing `Finding.caused_by`
+(`contracts/finding.py`); names resolved centrally by `checks/subjects.py:name_findings`
+(top-level + nested `evidence["impacts"][i]["caused_by"]`); human render appends
+`(caused by <kind> "<name>" [ir_fields])`, dict via the generic `_plain` walker.
+`analysis/delta_cause.py` holds the cached `DeltaIndex` (carried on `CheckContext`,
+built from `ctx.diff`) + the per-finding mapping FUNCTIONS `causes_for_vlan_cut` /
+`_vlan_split` / `_blackhole` / `_severance` / `_loop` / `_root_move` (boundary-XOR for
+cuts, different-baseline-components for merges/splits, ports AND links). All 15 wired
+checks + the 3 adapter/dynamic-gate findings attribute delta-only; pre-existing/INFO rows
+and L0 carry `()`. Non-load-bearing invariant golden + the motivating two-port-cut golden.
+Live: 8 single-site plans unchanged; `isolation.severed` on a real severed-uplink plan now
+names the responsible port.
 
 ## Problem
 
