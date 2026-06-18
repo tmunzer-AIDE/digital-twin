@@ -15,7 +15,7 @@
 ## File structure
 - `src/digital_twin/engine/org_overlay.py` (NEW) — `OrgOverlay`, `affected_sites`, `apply_overlays`, `_pin`. Pure.
 - `src/digital_twin/verdict/org_verdict.py` (MODIFY) — `OrgChange` dataclass; `OrgVerdict.template_id` → `changes`.
-- `src/digital_twin/scope/object_gate.py` (MODIFY) — relax ORG mode (delete + multi-op + dedup + empty-delete-payload).
+- `src/digital_twin/scope/object_gate.py` (MODIFY) — relax ORG mode (delete + multi-op + empty-delete-payload; duplicate `(type,id)` is already the envelope's job).
 - `src/digital_twin/engine/pipeline.py` (MODIFY) — `simulate_org_plan` (generalize `simulate_org_template` → thin alias).
 - `src/digital_twin/engine/org_template.py` (MODIFY) — remove the now-dead single-op `override_template`/`_pin`; keep `apply_template`.
 - `src/digital_twin/drivers/render.py`, `mcp_server.py`, `cli.py` (MODIFY) — `template_id` → `changes` in the org dict/human render + the MCP unknown-org helper.
@@ -255,14 +255,6 @@ def test_org_multiple_ops_allowed():
     assert r is None
 
 
-def test_org_duplicate_type_id_rejected():
-    r = check_objects(_org_plan([
-        _del("networktemplate", "nt1", order=0),
-        _del("networktemplate", "nt1", order=1),
-    ]))
-    assert isinstance(r, Rejection) and any("duplicate" in x for x in r.reasons)
-
-
 def test_org_delete_with_nonempty_payload_rejected():
     r = check_objects(_org_plan([_del("networktemplate", "nt1", payload={"x": 1})]))
     assert isinstance(r, Rejection) and any("delete payload" in x for x in r.reasons)
@@ -286,7 +278,7 @@ def test_site_delete_still_rejected():
 
 - [ ] **Step 2: Run → FAIL** (delete rejected; multi-op rejected with the old "one template" message).
 
-- [ ] **Step 3: Implement.** In `src/digital_twin/scope/object_gate.py`, add `_ORG_ACTIONS = ("update", "delete")`. Replace the action loop + the `is_org` single-op block with action handling that is org-aware, and add the dedup + delete-payload checks. The new `check_objects` body:
+- [ ] **Step 3: Implement.** In `src/digital_twin/scope/object_gate.py`, add `_ORG_ACTIONS = ("update", "delete")`. Replace the action loop + the `is_org` single-op block with org-aware action handling + the delete-payload check (duplicate `(type,id)` is NOT checked here — the envelope already rejects it). The new `check_objects` body:
 
 ```python
 _M1_ACTION = "update"
@@ -315,15 +307,9 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
                     f"ops[order={op.order}]: delete payload must be empty "
                     "(a delete has no proposed object)"
                 )
-        seen: set[tuple[str, str]] = set()
-        for op in ops:
-            key = (op.object_type, op.object_id)
-            if key in seen:
-                reasons.append(
-                    f"duplicate org op for {op.object_type} {op.object_id!r} "
-                    "(one op per object in M1)"
-                )
-            seen.add(key)
+        # NOTE: duplicate (object_type, object_id) is NOT checked here — the envelope
+        # (`parse_change_plan`) already rejects "two ops target the same object" before
+        # object_gate runs (scope/envelope.py), so a dup plan never reaches this gate.
     else:  # SITE mode + everything else — UNCHANGED from today
         for op in ops:
             if op.action != _M1_ACTION:
@@ -351,7 +337,7 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
     return Rejection(stage=_STAGE, reasons=tuple(reasons)) if reasons else None
 ```
 
-NOTE: the previous "exactly one org op" test (`test_org_mode_rejects_mixed_types_same_id`, `test_org_mode_rejects_multiple_template_ids*`) asserted the OLD single-op rule. Those now change meaning: multiple DISTINCT `(type,id)` org ops are allowed; only DUPLICATE `(type,id)` is rejected. UPDATE those existing tests: the multiple-distinct-ids cases now expect `None` (allowed); keep a duplicate-`(type,id)` case expecting rejection. Read `tests/scope/test_object_gate.py` and adjust the 2-3 affected tests accordingly (the mixed-types-same-id case = duplicate-ish? No — different types, same id is NOT a `(type,id)` duplicate, so it is now ALLOWED; update that test to expect None).
+NOTE: the previous "exactly one org op" tests (`test_org_mode_rejects_mixed_types_same_id`, `test_org_mode_rejects_multiple_template_ids*`) asserted the OLD single-op rule and now change meaning — multiple DISTINCT `(type,id)` org ops are ALLOWED. UPDATE those existing tests in `tests/scope/test_object_gate.py`: the multiple-distinct-ids and mixed-types-same-id cases now expect `None` (allowed). Do NOT add an object_gate duplicate-`(type,id)` test — that case is rejected EARLIER by the envelope (`parse_change_plan`: "two ops target the same object", scope/envelope.py) and never reaches object_gate; it is already covered by the envelope tests. (`_del`'s default `payload={}` keeps the canonical empty-delete shape.)
 
 - [ ] **Step 4: Run → PASS** (new + adjusted existing), then FULL gate.
 
@@ -465,7 +451,7 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
         and not plan.scope.site_id
     # P2b: name EVERY op the plan touches UP FRONT — built right after a successful
     # parse (for org-shaped plans), *before* check_objects — so an object_gate UNKNOWN
-    # (duplicate op / non-empty delete payload / unsupported action) AND every later
+    # (non-empty delete payload / unsupported action) AND every later
     # short-circuit (resolve-fail / fatal-L0 / field-gate / apply-conflict) still report
     # all attempted objects in OrgVerdict.changes. Names start None and hydrate as each
     # op resolves. EVERY post-parse org_unknown(...) passes changes=tuple(changes).
@@ -589,7 +575,7 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
   - **OD-mixed**: one plan = delete networktemplate + update gatewaytemplate, shared site → combined per-site verdict.
   - **OD-equiv**: a single-template UPDATE org plan produces the same decision + per-site shape as before, differing only in the `template_id → changes` field (pins the non-regression).
   - **OD-gw-failsafe** (P2a): a combined plan with a gatewaytemplate op + a sitetemplate op on one site → assert the per-site verdict is NEVER falsely SAFE when the gatewaytemplate change is breaking (the fail-safe `gw_full=True` must still catch a gatewaytemplate networks/effective break). It is acceptable if a benign sitetemplate-only ripple reads UNKNOWN here (documented over-conservatism) — the assertion is "never false-SAFE," not "always precise."
-  - **OD-unknown-names-all** (P2b): TWO cases, both asserting the org UNKNOWN verdict's `changes` still names every attempted op: (a) an **`object_gate` rejection** (e.g. a duplicate org op, or a delete op with a non-empty payload) → `changes` names both ops by id (built before `check_objects`); (b) the SECOND op's template **fails to resolve** → `changes` names both ops (the first hydrated with its name, the second by id). (Unit-level in `tests/engine/test_org_plan.py` is fine.)
+  - **OD-unknown-names-all** (P2b): TWO cases, both asserting the org UNKNOWN verdict's `changes` still names every attempted op: (a) an **`object_gate` rejection** — a two-op plan where one op is a delete with a **non-empty payload** (a gate rejection that is reachable AFTER a valid parse; NOT a duplicate `(type,id)`, which the envelope rejects before object_gate) → `changes` names both ops by id (built before `check_objects`); (b) the SECOND op's template **fails to resolve** → `changes` names both ops (the first hydrated with its name, the second by id). (Unit-level in `tests/engine/test_org_plan.py` is fine.)
 
 - [ ] **Step 2: Run** `uv run pytest tests/golden -q` → PASS. **Step 3: FULL gate. Step 4: Commit** `feat(org-delete): goldens (two-op collapse, single/zero/mixed, equiv)`.
 
@@ -602,17 +588,17 @@ git commit -m "$(printf 'feat(org-delete): simulate_org_plan multi-op + delete f
 - [ ] **Step 1: FULL gate** green.
 - [ ] **Step 2: Live verify (read-only)** — with `.env` loaded, pick a real template assigned to sites and simulate its delete (`digital-twin --plan <a delete plan json>`); confirm the honest collapse verdict (UNSAFE naming the affected sites, per-site findings naming the stranded vlans). Re-run the 8 single-site plans → verdicts unchanged. `.env` MUST NOT be committed; runs are read-only/simulate-only.
 - [ ] **Step 3: Docs** — spec status → Implemented; in `docs/ROADMAP.md` flip the DELETE-ripple bullet to reflect "delete + multiple templates per plan DONE" and note the still-deferred pieces (org_networks, WLAN/RF; site-reassignment; apply path).
-- [ ] **Step 4: Memory** — add the as-built note to `~/.claude/projects/-Users-tmunzer-4-dev-digital-twin/memory/digital-twin-project.md` (OrgOverlay/`proposed=None`==absent; `apply_overlays`; `object_gate` delete+multi-op+dedup+empty-payload; `simulate_org_plan`; `OrgVerdict.changes`).
+- [ ] **Step 4: Memory** — add the as-built note to `~/.claude/projects/-Users-tmunzer-4-dev-digital-twin/memory/digital-twin-project.md` (OrgOverlay/`proposed=None`==absent; `apply_overlays`; `object_gate` delete+multi-op+empty-payload, dup `(type,id)` is envelope-level; `simulate_org_plan`; `OrgVerdict.changes`).
 - [ ] **Step 5: Commit** `docs(org-delete): roadmap + spec Implemented + live-verified`.
 
 ---
 
 ## Self-review checklist
-- **Spec coverage:** OrgOverlay/OrgChange (T1) ✓; apply_overlays + assigned-site filter (T2) ✓; object_gate delete+multi-op+dedup+empty-payload (T3) ✓; OrgVerdict.changes multi-object (T4) ✓; simulate_org_plan delete + combined-per-site + per-site failure + 0-site auditable + resolve-fail-before-fan-out + gateway_screen_full (T5) ✓; the two-op-collapse golden + equivalence (T6) ✓; docs/live/memory (T7) ✓.
+- **Spec coverage:** OrgOverlay/OrgChange (T1) ✓; apply_overlays + assigned-site filter (T2) ✓; object_gate delete+multi-op+empty-payload (T3; dup `(type,id)` is envelope-level, not re-checked) ✓; OrgVerdict.changes multi-object (T4) ✓; simulate_org_plan delete + combined-per-site + per-site failure + 0-site auditable + resolve-fail-before-fan-out + gateway_screen_full (T5) ✓; the two-op-collapse golden + equivalence (T6) ✓; docs/live/memory (T7) ✓.
 - **`proposed=None` ⇔ layer absent** (never `{}`): `apply_overlays`/`_pin` pin `None`, pinned in T2 tests.
 - **Deletes skip L0/field-gate, keep baseline resolution**: T5 branches on `op.action == "delete"`.
 - **Resolve failure short-circuits BEFORE fan-out**: the per-op resolve loop returns org_unknown inside the loop (T5).
-- **UNKNOWN names all touched objects (review P2b, incl. the gate path):** `changes` is built from all parsed org ops **right after parse, BEFORE `check_objects`**, and threaded through EVERY post-parse `org_unknown` — the `object_gate` rejection too (duplicate op / delete-payload / bad action), plus resolve-fail / fatal-L0 / field-gate / apply-conflict; names hydrate as ops resolve. Pinned by OD-unknown-names-all's two cases (T6).
+- **UNKNOWN names all touched objects (review P2b, incl. the gate path):** `changes` is built from all parsed org ops **right after parse, BEFORE `check_objects`**, and threaded through EVERY post-parse `org_unknown` — the `object_gate` rejection too (non-empty delete-payload / bad action — NOT duplicate-op, which the envelope rejects before object_gate), plus resolve-fail / fatal-L0 / field-gate / apply-conflict; names hydrate as ops resolve. Pinned by OD-unknown-names-all's two cases (T6).
 - **Gateway screening is FAIL-SAFE for combined plans (review P2a):** `gw_full = any gatewaytemplate overlay on the site` — never false-SAFE (a gatewaytemplate op always gets full screening), at the cost of a possible false-UNKNOWN on a combined gatewaytemplate+sitetemplate plan. Pinned never-false-SAFE by OD-gw-failsafe (T6). **Deferred follow-up:** per-overlay source-aware gateway screening (the derived gate carries source/root metadata) to remove the combined-plan over-conservatism — out of MVP scope.
 - **Type consistency:** `OrgOverlay(object_type,object_id,name,action,assigned_site_ids,baseline,proposed)`, `OrgChange(ref,action)`, `affected_sites(overlays)->tuple[str,...]`, `apply_overlays(fetched,site_id,overlays)->(base,prop)`, `simulate_org_plan(...)->OrgVerdict` — consistent across T1–T6.
 - **Grep-confirm-before-coding:** the per-site FetchError block to copy verbatim (T5); the exact `FakeProvider`/`OrgTemplateContext` shapes in the engine tests (T5); the existing object_gate tests that change meaning (T3); the full set of `template_id` references in tests (T4 — `tests/test_public_api.py`, `tests/drivers/test_render.py`, `tests/drivers/test_mcp_server.py`, `tests/drivers/test_cli.py`, `tests/verdict/test_org_verdict.py`).

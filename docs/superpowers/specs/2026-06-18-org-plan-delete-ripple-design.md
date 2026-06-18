@@ -86,10 +86,12 @@ In ORG mode (every op is an `ORG_OBJECT_TYPE` and `scope.site_id` is absent):
   **rejected loudly** by `object_gate` — a delete has no proposed object (it skips
   apply/L0/field-gate), so a payload is meaningless and must never be silently ignored. The
   empty `{}` is the canonical delete shape; an update keeps its full-object payload.
-- **Allow multiple org ops** — lift the current exactly-one-op rule (which was itself a
-  prior review fix; it is now superseded by the dedup rule below).
-- **Reject duplicate `(object_type, object_id)`** ops (MVP — two ops on the same template is
-  an authoring ambiguity → loud rejection).
+- **Allow multiple org ops** — lift the current exactly-one-op rule (itself a prior review
+  fix), so a plan can carry several distinct org ops.
+- **Duplicate `(object_type, object_id)` ops are already rejected by the ENVELOPE**
+  (`parse_change_plan`: "two ops target the same object", `scope/envelope.py`), before
+  `object_gate` runs — so `object_gate` does NOT re-check it (a dup plan never reaches it).
+  No new dedup is added here.
 - Mixed delete + update of *different* templates in one plan is allowed.
 - The SITE-mode branch and all its existing per-op diagnostics are unchanged.
 
@@ -169,9 +171,11 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
 - **Goldens:** a single delete per template type → collapse UNSAFE naming the affected
   sites; a 0-site delete → SAFE with the auditable `changes`/reason; a mixed delete+update
   in one plan → combined per-site verdict.
-- **Unit:** `object_gate` (delete allowed for org types; multiple ops allowed; duplicate
-  `(type,id)` rejected; site/device delete still rejected; mixed delete+update ok; a
-  `delete` op with a **non-empty payload → rejected**, with `"payload": {}` accepted); the
+- **Unit:** `object_gate` (delete allowed for org types; multiple distinct ops allowed;
+  site/device delete still rejected; mixed delete+update ok; a `delete` op with a
+  **non-empty payload → rejected**, with `"payload": {}` accepted). Duplicate `(type,id)` is
+  rejected by the ENVELOPE (`parse_change_plan`), already covered by envelope tests — not an
+  `object_gate` test. The
   `affected_sites` union helper; per-site overlay pinning (only assigned overlays applied,
   unfetchable site → per-site failure); `OrgOverlay`/`OrgChange` construction;
   `OrgVerdict.changes`.
@@ -200,7 +204,9 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
   them.
 - **0-site delete is SAFE + auditable**; resolve failure is org-UNKNOWN before fan-out;
   unfetchable affected site is a per-site failure, not a whole-run failure.
-- **MVP rejects duplicate `(object_type, object_id)`** ops.
+- **Duplicate `(object_type, object_id)` ops are rejected by the ENVELOPE**
+  (`parse_change_plan`), already, before `object_gate` — so `object_gate` adds no dedup
+  (review: a dup plan is a parse Rejection and never reaches the org fan-out).
 - **Delete payload must be empty** (`{}`): the envelope stays action-agnostic (payload
   always a required `Mapping`), and `object_gate` rejects a non-empty delete payload loudly
   — a delete has no proposed object, so a payload would be silently ignored otherwise
