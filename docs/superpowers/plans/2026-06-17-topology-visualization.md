@@ -347,7 +347,8 @@ def _ir():
     b = IRBuilder()
     b.add_device(Device(id="aabb01", role=DeviceRole.SWITCH, site="s1"))
     b.add_device(Device(id="aabb02", role=DeviceRole.SWITCH, site="s1"))
-    b.add_port(Port(id="aabb01:ge-0/0/1", device_id="aabb01", name="ge-0/0/1", mode=PortMode.ACCESS))
+    b.add_port(Port(id="aabb01:ge-0/0/1", device_id="aabb01", name="ge-0/0/1",
+                    mode=PortMode.ACCESS))
     b.add_vlan(Vlan(vlan_id=30, name="voice"))
     return b.build()
 
@@ -396,7 +397,10 @@ def test_gateway_mist_id_2000_normalized():
 
 
 def test_caused_by_is_a_cause_line_not_a_highlight():
-    f = _f(affected_entities=("aabb01",), caused_by=(Cause(ref=ObjectRef("link", "aabb02:p__aabb01:q"), fields=("native_vlan",)),))
+    f = _f(
+        affected_entities=("aabb01",),
+        caused_by=(Cause(ref=ObjectRef("link", "aabb02:p__aabb01:q"), fields=("native_vlan",)),),
+    )
     hl = build_highlight((f,), _ir())
     assert "aabb02" not in hl.nodes  # cause is NOT highlighted
     assert any("native_vlan" in c for c in hl.causes)
@@ -619,7 +623,9 @@ def _ir():
                     mode=PortMode.TRUNK, tagged_vlans=(30,)))
     b.add_link(Link(id=link_id("aabb01:ge-0/0/1", "aabb02:ge-0/0/1"),
                     a_port="aabb01:ge-0/0/1", b_port="aabb02:ge-0/0/1", kind=LinkKind.PHYSICAL))
-    b.add_vlan(Vlan(vlan_id=30, name="voice"))  # so build_diagrams emits a vlan:30 chart
+    b.add_vlan(Vlan(vlan_id=20, name="data"))   # unaffected
+    b.add_vlan(Vlan(vlan_id=30, name="voice"))  # affected by the test finding
+    b.add_vlan(Vlan(vlan_id=100, name="iot"))   # unaffected; numeric-sort guard
     return b.build()
 
 
@@ -648,7 +654,10 @@ def test_every_class_target_node_is_declared():
     # structural invariant: no `class nX` line references an undeclared node id
     diagrams = build_diagrams(_ir(), (_f(affected_entities=("aabb01",)),))
     for d in diagrams:
-        declared = {ln.split("[")[0].strip().rstrip("(") for ln in d.mermaid.splitlines() if "[" in ln}
+        declared = {
+            ln.split("[")[0].strip().rstrip("(")
+            for ln in d.mermaid.splitlines() if "[" in ln
+        }
         for ln in d.mermaid.splitlines():
             if ln.strip().startswith("class "):
                 body = ln.strip()[len("class "):].rstrip(";")  # "n0,n1 crit"
@@ -659,7 +668,11 @@ def test_every_class_target_node_is_declared():
 
 def test_safe_build_diagrams_swallows_errors(monkeypatch):
     import digital_twin.viz.mermaid as m
-    monkeypatch.setattr(m, "build_diagrams", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    def _boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(m, "build_diagrams", _boom)
     assert safe_build_diagrams(_ir(), ()) == ()
 
 
@@ -811,13 +824,22 @@ git commit -m "feat(viz): mermaid L2 chart + build_diagrams/safe_build_diagrams"
 ```python
 def test_per_vlan_chart_emitted_and_affected_first():
     diagrams = build_diagrams(_ir(), (_f(evidence={"vlan": 30, "component_nodes": ["aabb01"]}),))
-    vlan_views = [d.view for d in diagrams if d.view.startswith("vlan:")]
-    assert "vlan:30" in vlan_views
+    vlan_order = [d.view for d in diagrams if d.view.startswith("vlan:")]
+    assert {"vlan:20", "vlan:30", "vlan:100"} <= set(vlan_order)
+    assert vlan_order[0] == "vlan:30"  # the affected VLAN sorts before ALL unaffected
+    # unaffected VLANs follow in NUMERIC order (vlan:100 must NOT precede vlan:20)
+    assert vlan_order.index("vlan:20") < vlan_order.index("vlan:100")
     v30 = next(d for d in diagrams if d.view == "vlan:30")
     assert v30.severity is Severity.ERROR
-    # affected VLAN chart ordered before any unaffected one
-    order = [d.view for d in diagrams]
-    assert order.index("vlan:30") < order.index("l3_exits") if "l3_exits" in order else True
+
+
+def test_vlan_subject_label_appears_in_chart_notes():
+    # a pure vlan-subject finding (no node) must still show its code+reason caption
+    v30 = next(
+        d for d in build_diagrams(_ir(), (_f(subject=ObjectRef("vlan", "30")),))
+        if d.view == "vlan:30"
+    )
+    assert any("t.x" in n for n in v30.notes)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -868,9 +890,10 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
     title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
     sev = _worst(vhit.severity if vhit else None,
                  *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
+    vlan_caps = [_safe(f"{vhit.severity.value}: {lbl}") for lbl in vhit.labels] if vhit else []
     unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view=f"vlan:{vid}", title=title, severity=sev,
-                   mermaid="\n".join(lines), notes=tuple(captions + unloc))
+                   mermaid="\n".join(lines), notes=tuple(captions + vlan_caps + unloc))
 ```
 
 Replace `build_diagrams` body (numeric VLAN ordering — `vlan:100` must NOT sort before `vlan:30`):
@@ -977,9 +1000,14 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
             classes.append(f"  class {ids.get(f'vlan:{vid}')} {_SEV_CLASS[hit.severity]};")
     lines += classes
     sev = _worst(*(h.severity for vid, h in hl.vlans.items() if f"vlan:{vid}" in ids._map))
+    vlan_caps = [
+        _safe(f"{hit.severity.value}: {lbl}")
+        for vid, hit in hl.vlans.items() if f"vlan:{vid}" in ids._map
+        for lbl in hit.labels
+    ]
     unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
-                   mermaid="\n".join(lines), notes=tuple(unloc))
+                   mermaid="\n".join(lines), notes=tuple(vlan_caps + unloc))
 ```
 
 In `build_diagrams`, append before `return tuple(out)`:
@@ -1084,7 +1112,8 @@ def test_verdict_holds_diagrams_and_serializes():
     from digital_twin.drivers.render import verdict_to_dict
 
     v = _verdict()
-    v2 = dataclasses.replace(v, diagrams=(Diagram(view="l2", title="L2", severity=Severity.ERROR, mermaid="graph LR"),))
+    d = Diagram(view="l2", title="L2", severity=Severity.ERROR, mermaid="graph LR")
+    v2 = dataclasses.replace(v, diagrams=(d,))
     assert verdict_to_dict(v2)["diagrams"][0]["view"] == "l2"
 ```
 
@@ -1133,8 +1162,8 @@ git commit -m "feat(viz): Verdict.diagrams field"
 
 ```python
 def test_normal_verdict_carries_diagrams():
-    v = simulate(_plan([_op(payload={**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}})]),
-                 provider=FakeProvider())
+    payload = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    v = simulate(_plan([_op(payload=payload)]), provider=FakeProvider())
     assert v.diagrams  # non-empty: at least the L2 chart
     assert any(d.view == "l2" for d in v.diagrams)
 
@@ -1208,10 +1237,8 @@ def test_render_diagrams_markdown_and_titles():
     from digital_twin.contracts import Diagram, Severity
     from digital_twin.drivers.render import render_diagrams_markdown, render_human
 
-    v = dataclasses.replace(
-        _verdict(),
-        diagrams=(Diagram(view="l2", title="L2 topology", severity=Severity.ERROR, mermaid="graph LR"),),
-    )
+    d = Diagram(view="l2", title="L2 topology", severity=Severity.ERROR, mermaid="graph LR")
+    v = dataclasses.replace(_verdict(), diagrams=(d,))
     assert "```mermaid" in render_diagrams_markdown(v)
     assert "L2 topology" in render_human(v)  # titles listed in human output
 ```
