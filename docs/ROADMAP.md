@@ -345,3 +345,33 @@ modeling" below.
   Shannon entropy ≥4.0 bits/char AND mixed case+digits. Applied LAST in
   `_sub_embedded`; own tokens (`redacted-*`/`uuid-*`/`name-*`) never re-trip
   (backstop idempotent); prose, port ranges, model names spared.
+
+## 6. Visualization — topology charts of the findings
+
+Spec: `docs/superpowers/specs/2026-06-17-topology-visualization-design.md`. v1
+emits **mermaid** charts (L2, per-VLAN, Routed VLAN exits) on every verdict with a
+proposed IR, with the blast radius severity-highlighted and `caused_by` in
+captions; exposed as
+`Verdict.diagrams` + a markdown helper for the elicitation UI.
+
+- 🔵 **v1 — single annotated proposed-state charts** (the spec above). New
+  `viz/` package; `Diagram` DTO in `contracts/`; `Device.name` added to the IR
+  (also re-enables device-subject finding names). Node-only highlighting.
+- 🔵 **Device display name in the IR** — `Device.name` from raw `name` at ingest
+  (prerequisite of v1; standalone value: device-subject findings render the real
+  name, not the MAC).
+- 🟡 **Before/after & diff-overlay charts** — baseline-vs-proposed pairs, and a
+  single diff chart (added=green / removed=red-dashed / affected=highlighted).
+  Needs the baseline IR alongside the proposed.
+- 🟡 **Visual cut-link rendering of `caused_by`** + edge/`linkStyle` coloring —
+  draw the removed/changed link that caused a severance (needs baseline overlay;
+  v1 only captions the cause and colors endpoint nodes).
+- 🔴 **Image rendering (SVG/PNG)** — only if an elicitation surface can't render
+  mermaid markdown; adds a headless-render dependency (breaks pure-Python).
+- 🔵 **Org-level aggregate topology** — one cross-site view for org/template runs
+  (v1 produces per-site diagrams only).
+- 🟡 **Payload guard for very large sites** — configurable cap on per-VLAN charts
+  (or lazy/on-demand generation) with a `notes` line for omitted charts; v1 emits
+  the full set, affected-first.
+- 🟡 **OSPF adjacency / routing-area view** — once the IR models that topology
+  (today the L3 view is routed-VLAN ↔ serving-interface only).

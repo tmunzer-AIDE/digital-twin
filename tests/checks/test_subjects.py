@@ -29,12 +29,20 @@ def test_resolve_fills_names_from_ir():
     assert resolve_subject(ObjectRef("port", _PID), ir, ir).name == "ge-0/0/0"
 
 
-def test_resolve_device_does_not_use_model_as_name():
-    # Device.model is NOT an identity (many devices share a model) — using it as
-    # the name would hide the unique id. Until the IR has a true device name,
-    # device subjects resolve to None and render as the id.
-    ir = _ir()  # device has model "EX4100-48P"
-    assert resolve_subject(ObjectRef("device", _DID), ir, ir).name is None
+def test_resolve_device_uses_device_name():
+    # now that the IR has Device.name, device subjects resolve to it (not model)
+    ir = _ir()  # _ir()'s device has model "EX4100-48P" and NO name yet
+    assert resolve_subject(ObjectRef("device", _DID), ir, ir).name is None  # no name set
+
+
+def test_resolve_device_name_when_present():
+    from digital_twin.ir import IRBuilder
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    ir = IRBuilder().add_device(
+        Device(id=_DID, role=DeviceRole.SWITCH, site="s1", model="EX4100-48P", name="core-1")
+    ).build()
+    assert resolve_subject(ObjectRef("device", _DID), ir, ir).name == "core-1"
 
 
 def test_resolve_unknown_or_nameless_stays_none():

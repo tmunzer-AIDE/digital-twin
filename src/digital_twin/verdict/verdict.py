@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from digital_twin.checks.base import CheckResult
-from digital_twin.contracts import Finding, Severity
+from digital_twin.contracts import Diagram, Finding, Severity
 from digital_twin.ir import IRDiff
 
 from .confidence_summary import ConfidenceSummary, summarize
@@ -30,6 +30,7 @@ class Verdict:
     ir_diff: IRDiff
     state_meta: StateMetaView | None = None  # freshness (None pre-fetch)
     trace_ref: str | None = None  # run id of the trace record
+    diagrams: tuple[Diagram, ...] = ()  # topology charts (mermaid); () when no proposed IR
 
 
 def assemble(
