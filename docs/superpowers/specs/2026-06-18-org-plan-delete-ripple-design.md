@@ -137,7 +137,9 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
   per-site verdicts (UNKNOWN > UNSAFE > REVIEW > SAFE), `driving_sites` / `site_failures` /
   `per_site` retained.
 - `template_findings` (non-fatal L0 on a proposed) → a flat tuple across the **update** ops,
-  each already stamped with its object subject; deletes contribute none.
+  each already stamped with its object subject; deletes contribute none. Like `changes`, it
+  is threaded through every post-parse `org_unknown` path, so an earlier update op's non-fatal
+  L0 findings stay auditable even if a LATER op short-circuits to UNKNOWN (review P3).
 - **0-site delete:** SAFE, but the verdict still includes the `changes` entry and a
   decision reason like `"<object_type> <id>: no assigned sites — nothing ripples"`, so it is
   auditable (not a silent empty SAFE).
@@ -159,7 +161,8 @@ Generalizes `simulate_org_template` (which becomes a thin single-op alias):
 - **The collapse is deliberately dramatic where real:** deleting a networktemplate that
   defines the VLANs strands them across every assigned site → segmentation / blackhole /
   client_impact fire → UNSAFE naming the sites.
-- **Duplicate `(object_type, object_id)`** → loud `object_gate` rejection (MVP).
+- **Duplicate `(object_type, object_id)`** → loud rejection by the **envelope**
+  (`parse_change_plan`), before `object_gate` (it never reaches the org fan-out).
 
 ## Testing
 

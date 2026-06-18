@@ -486,10 +486,13 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
     template_findings: list[Finding] = []
     for i, op in enumerate(plan.ops):
         resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
+        # P3: thread template_findings through EVERY short-circuit so earlier ops'
+        # non-fatal L0 findings stay auditable even if a LATER op fails.
         if not isinstance(resolved, OrgTemplateContext):
             return org_unknown((Rejection(stage="fetch", reasons=tuple(
                 f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
-            ) or ("org-template lookup failed",)),), changes=tuple(changes))
+            ) or ("org-template lookup failed",)),),
+                template_findings=tuple(template_findings), changes=tuple(changes))
         snapshot = dict(resolved.template)
         ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
         changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
@@ -498,13 +501,15 @@ def simulate_org_plan(plan_data, *, provider, adapter=None, registry=None, run=N
         else:
             proposed_t = apply_template(snapshot, op.payload)
             if isinstance(proposed_t, Rejection):
-                return org_unknown((proposed_t,), changes=tuple(changes))
+                return org_unknown((proposed_t,),
+                    template_findings=tuple(template_findings), changes=tuple(changes))
             l0 = adapter.validate(replace(op, payload=proposed_t),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload))
             if l0.fatal:
                 return org_unknown((Rejection(stage="l0",
                     reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
-                             f"{op.object_id}",)),), changes=tuple(changes))
+                             f"{op.object_id}",)),),
+                    template_findings=tuple(template_findings), changes=tuple(changes))
             template_findings.extend(_stamp(l0.findings, ref))
             fg = screen_op(op.object_type, snapshot, proposed_t)
             if fg:
