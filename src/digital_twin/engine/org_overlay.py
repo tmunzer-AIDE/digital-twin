@@ -43,3 +43,21 @@ def _pin(raw: RawSiteState, object_type: str, value: Mapping[str, Any] | None) -
     if object_type == "sitetemplate":
         return dc_replace(raw, sitetemplate=v)
     return dc_replace(raw, networktemplate=v)  # networktemplate default
+
+
+def apply_overlays(
+    fetched: RawSiteState, site_id: str, overlays: tuple[OrgOverlay, ...]
+) -> tuple[RawSiteState, RawSiteState]:
+    """(baseline_raw, proposed_raw) for one site: pin every overlay the site is
+    assigned to (site_id in overlay.assigned_site_ids) onto its layer slot —
+    baseline=overlay.baseline, proposed=overlay.proposed (None == layer absent).
+    A site not assigned to a given overlay is NOT pinned for it. Untouched layers
+    keep the fetched copy (fetch-race guard). Order-independent: a site has ≤1
+    overlay per layer slot."""
+    base_raw, prop_raw = fetched, fetched
+    for o in overlays:
+        if site_id not in o.assigned_site_ids:
+            continue
+        base_raw = _pin(base_raw, o.object_type, o.baseline)
+        prop_raw = _pin(prop_raw, o.object_type, o.proposed)
+    return base_raw, prop_raw
