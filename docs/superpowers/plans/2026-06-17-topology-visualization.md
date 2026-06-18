@@ -376,6 +376,16 @@ def test_worst_severity_wins_per_node():
     assert hl.nodes["aabb01"].severity is Severity.ERROR
 
 
+def test_mixed_severity_keeps_per_label_severity():
+    # the node's CLASS uses the worst severity, but each label keeps ITS OWN
+    # severity (so a WARNING caption is not relabelled error)
+    warn = _f(severity=Severity.WARNING, code="w.x", affected_entities=("aabb01",))
+    err = _f(severity=Severity.ERROR, code="e.x", affected_entities=("aabb01",))
+    hit = build_highlight((warn, err), _ir()).nodes["aabb01"]
+    assert hit.severity is Severity.ERROR
+    assert {sev for sev, _ in hit.labels} == {Severity.WARNING, Severity.ERROR}
+
+
 def test_port_and_link_resolve_to_device_nodes():
     port_f = _f(affected_entities=("aabb01:ge-0/0/1",))
     link_f = _f(affected_entities=("aabb01:ge-0/0/1__aabb02:ge-0/0/2",))
@@ -450,8 +460,8 @@ _MIST_DEV_HEAD = "00000000-0000-0000-"
 
 @dataclass
 class Hit:
-    severity: Severity
-    labels: list[str] = field(default_factory=list)
+    severity: Severity  # WORST severity touching the entity -> drives its class/color
+    labels: list[tuple[Severity, str]] = field(default_factory=list)  # (own severity, text)
 
 
 @dataclass
@@ -487,18 +497,22 @@ def build_highlight(findings: Iterable[Finding], ir: IR) -> Highlight:
         if nid is None:
             return False
         cur = hl.nodes.get(nid)
-        if cur is None or _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
-            hl.nodes[nid] = Hit(sev, (cur.labels if cur else []) + [label])
+        if cur is None:
+            hl.nodes[nid] = Hit(sev, [(sev, label)])
         else:
-            cur.labels.append(label)
+            cur.labels.append((sev, label))  # keep EACH label's own severity
+            if _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
+                cur.severity = sev  # class uses the worst
         return True
 
     def add_vlan(vid: int, sev: Severity, label: str) -> bool:
         cur = hl.vlans.get(vid)
-        if cur is None or _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
-            hl.vlans[vid] = Hit(sev, (cur.labels if cur else []) + [label])
+        if cur is None:
+            hl.vlans[vid] = Hit(sev, [(sev, label)])
         else:
-            cur.labels.append(label)
+            cur.labels.append((sev, label))
+            if _SEV_RANK[sev] > _SEV_RANK[cur.severity]:
+                cur.severity = sev
         return True
 
     for f in findings:
@@ -682,6 +696,14 @@ def test_causes_appear_in_l2_notes():
            caused_by=(Cause(ref=ObjectRef("link", "aabb02:p__aabb01:q"), fields=("native_vlan",)),))
     l2 = next(d for d in build_diagrams(_ir(), (f,)) if d.view == "l2")
     assert any("native_vlan" in n for n in l2.notes)  # cause is a visible caption, not %%
+
+
+def test_mixed_severity_labels_render_with_own_severity():
+    warn = _f(severity=Severity.WARNING, code="w.x", affected_entities=("aabb01",))
+    err = _f(severity=Severity.ERROR, code="e.x", affected_entities=("aabb01",))
+    l2 = next(d for d in build_diagrams(_ir(), (warn, err)) if d.view == "l2")
+    assert any(n.startswith("warning: w.x") for n in l2.notes)  # warn label kept as warning
+    assert any(n.startswith("error: e.x") for n in l2.notes)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -761,8 +783,8 @@ def _class_lines(ids: _Ids, node_hits: dict[str, Hit]) -> tuple[list[str], list[
         if raw_id not in ids._map:  # node not on this chart
             continue
         classes.append(f"  class {ids.get(raw_id)} {_SEV_CLASS[hit.severity]};")
-        for lbl in hit.labels:
-            captions.append(_safe(f"{hit.severity.value}: {lbl}"))
+        for lsev, ltext in hit.labels:
+            captions.append(_safe(f"{lsev.value}: {ltext}"))
     return classes, captions
 
 
@@ -890,7 +912,7 @@ def _vlan_diagram(ir: IR, l2: nx.MultiGraph, vid: int, hl: Highlight) -> Diagram
     title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
     sev = _worst(vhit.severity if vhit else None,
                  *(h.severity for raw, h in hl.nodes.items() if raw in ids._map))
-    vlan_caps = [_safe(f"{vhit.severity.value}: {lbl}") for lbl in vhit.labels] if vhit else []
+    vlan_caps = [_safe(f"{lsev.value}: {ltext}") for lsev, ltext in vhit.labels] if vhit else []
     unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view=f"vlan:{vid}", title=title, severity=sev,
                    mermaid="\n".join(lines), notes=tuple(captions + vlan_caps + unloc))
@@ -1031,13 +1053,13 @@ def _l3_exits_diagram(ir: IR, hl: Highlight) -> Diagram:
         *(hl.nodes[o].severity for o in owners_hit),
     )
     vlan_caps = [
-        _safe(f"{hit.severity.value}: {lbl}")
+        _safe(f"{lsev.value}: {ltext}")
         for vid, hit in hl.vlans.items() if f"vlan:{vid}" in ids._map
-        for lbl in hit.labels
+        for lsev, ltext in hit.labels
     ]
     intf_caps = [
-        _safe(f"{hl.nodes[o].severity.value}: {lbl}")
-        for o in owners_hit for lbl in hl.nodes[o].labels
+        _safe(f"{lsev.value}: {ltext}")
+        for o in owners_hit for lsev, ltext in hl.nodes[o].labels
     ]
     unloc = [f"{hl.unlocalized} finding(s) not localized"] if hl.unlocalized else []
     return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
