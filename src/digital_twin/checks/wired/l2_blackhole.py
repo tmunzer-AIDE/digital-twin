@@ -19,9 +19,17 @@ Per VLAN (spec contract):
 
 from __future__ import annotations
 
+from digital_twin.analysis.delta_cause import causes_for_blackhole, causes_for_vlan_cut
 from digital_twin.analysis.exits import ExitKind
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -230,6 +238,11 @@ class L2BlackholeCheck:
                     message=f"vlan {vid} has members but its exit cannot be located",
                     vid=vid,
                     nodes=sorted(n for c in stranded for n in c.nodes),
+                    caused_by=tuple(
+                        dict.fromkeys(
+                            c for sc in stranded for c in causes_for_blackhole(ctx, vid, sc)
+                        )
+                    ),
                 )
             )
             return Status.INSUFFICIENT_DATA
@@ -304,6 +317,7 @@ class L2BlackholeCheck:
                     f"{proposed_exit.kind} exit"
                 )
             )
+            caused_by = causes_for_vlan_cut(ctx, vid, comp) if lost_exit else ()
             findings.append(
                 self._finding(
                     code=code,
@@ -314,6 +328,7 @@ class L2BlackholeCheck:
                     vid=vid,
                     nodes=sorted(comp.nodes),
                     new_member_ports=new_ports,
+                    caused_by=caused_by,
                 )
             )
             worst = _aggregate([worst, Status.FAIL if high else Status.WARN])
@@ -330,6 +345,7 @@ class L2BlackholeCheck:
         vid: int,
         nodes: list[str],
         new_member_ports: list[str] | None = None,
+        caused_by: tuple[Cause, ...] = (),
     ) -> Finding:
         evidence: dict[str, object] = {"vlan": vid, "component_nodes": nodes}
         if new_member_ports:
@@ -344,6 +360,7 @@ class L2BlackholeCheck:
             affected_entities=tuple(nodes),
             subject=ObjectRef("vlan", str(vid)),
             evidence=evidence,
+            caused_by=caused_by,
         )
 
 

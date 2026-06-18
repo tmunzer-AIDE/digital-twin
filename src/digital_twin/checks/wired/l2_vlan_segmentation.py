@@ -11,8 +11,16 @@ Distinct from blackhole: segmentation = shape changed; blackhole = lost exit.
 
 from __future__ import annotations
 
+from digital_twin.analysis.delta_cause import causes_for_vlan_split
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -47,6 +55,7 @@ class L2VlanSegmentationCheck:
                         vid=vid,
                         base=base_comps,
                         prop=prop_comps,
+                        caused_by=causes_for_vlan_split(ctx, vid),
                     )
                 )
                 continue
@@ -87,6 +96,7 @@ class L2VlanSegmentationCheck:
         vid: int,
         base: list[set[str]],
         prop: list[set[str]],
+        caused_by: tuple[Cause, ...] = (),
     ) -> Finding:
         return Finding(
             source=FindingSource.CHECK,
@@ -101,4 +111,5 @@ class L2VlanSegmentationCheck:
                 "baseline_components": [sorted(c) for c in base],
                 "proposed_components": [sorted(c) for c in prop],
             },
+            caused_by=caused_by,
         )

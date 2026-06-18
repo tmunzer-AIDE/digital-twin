@@ -5,7 +5,7 @@ INSUFFICIENT_DATA for that vlan (never PASS); pre-existing strands = context."""
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.l2_blackhole import L2BlackholeCheck
-from digital_twin.contracts import Severity
+from digital_twin.contracts import ObjectRef, Severity
 from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
 from tests.factories import access_port, irb, link, sw, trunk_port
 
@@ -225,3 +225,95 @@ def test_preexisting_strand_is_context_not_failure():
     result = L2BlackholeCheck().run(_ctx(base, prop))
     assert result.status is Status.PASS
     assert any(f.severity is Severity.INFO for f in result.findings)
+
+
+# --- CA-T12: cause attribution on exit_lost / exit_unlocatable -----------------------
+
+
+def _ids(causes):
+    return sorted((c.ref.kind, c.ref.id) for c in causes)
+
+
+def _exit_lost_ir(cut: bool):
+    """A -- B -- C on vlan 10, exit IRB on A. C holds a member access port. The
+    delta drops vlan 10 from B's trunk port toward C, stranding {C} -> exit_lost,
+    attributed to the changed boundary trunk port B:to-C."""
+    b = IRBuilder()
+    for d in ("A", "B", "C"):
+        b.add_device(sw(d))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_l3intf(irb("A", 10))
+    b.add_port(trunk_port("A", "to-B", tagged=(10,)))
+    b.add_port(trunk_port("B", "to-A", tagged=(10,)))
+    b.add_link(link("A:to-B", "B:to-A"))
+    b.add_port(trunk_port("B", "to-C", tagged=() if cut else (10,)))
+    b.add_port(trunk_port("C", "to-B", tagged=(10,)))
+    b.add_link(link("B:to-C", "C:to-B"))
+    b.add_port(access_port("C", "acc", 10))
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def test_exit_lost_names_boundary_trunk_port():
+    result = L2BlackholeCheck().run(_ctx(_exit_lost_ir(cut=False), _exit_lost_ir(cut=True)))
+    f = next(f for f in result.findings if f.code == "wired.l2.blackhole.exit_lost")
+    assert _ids(f.caused_by) == [("port", "B:to-C")]
+
+
+def _unlocatable_ir(rm_irb: bool):
+    """A -- B on vlan 10, B holds a member. The ONLY exit is the IRB on A; the
+    delta removes it, so the vlan has members but NO locatable exit ->
+    exit_unlocatable, attributed to the removed l3intf A:l3:irb:10."""
+    b = IRBuilder()
+    b.add_device(sw("A")).add_device(sw("B"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_port(trunk_port("A", "to-B", tagged=(10,)))
+    b.add_port(trunk_port("B", "to-A", tagged=(10,)))
+    b.add_link(link("A:to-B", "B:to-A"))
+    b.add_port(access_port("B", "acc", 10))
+    if not rm_irb:
+        b.add_l3intf(irb("A", 10))
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def test_exit_unlocatable_names_removed_irb():
+    base, prop = _unlocatable_ir(rm_irb=False), _unlocatable_ir(rm_irb=True)
+    result = L2BlackholeCheck().run(_ctx(base, prop))
+    f = next(f for f in result.findings if f.code == "wired.l2.blackhole.exit_unlocatable")
+    assert _ids(f.caused_by) == [("l3intf", "A:l3:irb:10")]
+
+
+def _never_had_exit_ir(extra_acc: bool):
+    """vlan 10 NEVER had a locatable exit (no IRB, no uplink boundary). A -- B
+    carry it; B holds a member, so it is stranded in BOTH baseline and proposed.
+    The delta only cosmetically adds an UNRELATED vlan-99 access port (changing
+    the vlan-10 component node-set membership is avoided) so the vlan-10 strand
+    is honest-empty: nothing in the delta caused the (pre-existing) unlocatable
+    exit."""
+    b = IRBuilder()
+    b.add_device(sw("A")).add_device(sw("B"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_port(trunk_port("A", "to-B", tagged=(10,)))
+    b.add_port(trunk_port("B", "to-A", tagged=(10,)))
+    b.add_link(link("A:to-B", "B:to-A"))
+    b.add_port(access_port("B", "acc", 10))
+    # an unrelated vlan-99 member added in proposed forces _vlan_changed via a
+    # NEW component on a different vid, never touching vlan 10's exit/carriage
+    b.add_vlan(Vlan(vlan_id=99, name="x", scope="s1"))
+    b.add_port(trunk_port("A", "to-B-99", tagged=(99,) if extra_acc else ()))
+    b.add_port(access_port("A", "acc99", 99))
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def test_exit_unlocatable_honest_empty_when_exit_already_none():
+    # vlan 10's exit was already None in baseline; the proposed only touches an
+    # unrelated vlan. The exit_unlocatable row, if emitted, must carry no cause.
+    base = _never_had_exit_ir(extra_acc=False)
+    prop = _never_had_exit_ir(extra_acc=True)
+    result = L2BlackholeCheck().run(_ctx(base, prop))
+    rows = [f for f in result.findings if f.code == "wired.l2.blackhole.exit_unlocatable"]
+    for f in rows:
+        if f.subject == ObjectRef("vlan", "10"):
+            assert f.caused_by == ()
