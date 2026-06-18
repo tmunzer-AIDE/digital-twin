@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 from digital_twin.drivers.render import render_human, verdict_to_dict
@@ -59,6 +60,16 @@ def test_render_human_names_object_and_path_in_findings():
     text = render_human(v)
     assert "DNT-NTR-SWB-3" in text  # the object name
     assert "extra_routes.1.2.3.4/32.via" in text  # the attribute path
+
+
+def test_verdict_holds_diagrams_and_serializes():
+    from digital_twin.contracts import Diagram, Severity
+    from digital_twin.drivers.render import verdict_to_dict
+
+    v = _verdict()
+    d = Diagram(view="l2", title="L2", severity=Severity.ERROR, mermaid="graph LR")
+    v2 = dataclasses.replace(v, diagrams=(d,))
+    assert verdict_to_dict(v2)["diagrams"][0]["view"] == "l2"
 
 
 def test_org_verdict_to_dict_shape():
