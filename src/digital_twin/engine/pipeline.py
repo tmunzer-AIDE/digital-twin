@@ -164,14 +164,32 @@ def _simulate_site_state(
     assert trace is not None  # RunContext.__post_init__ guarantees it
 
     with trace.stage("ingest.baseline"):
-        baseline = adapter.ingest(baseline_raw)
+        # A compile/ingest CRASH (e.g. an unresolvable {{var}} on a gateway) is an
+        # UNKNOWN, never a hard crash — and never a false-SAFE. Critical for the org
+        # fan-out, which simulates many assigned sites: one site whose baseline does
+        # not compile must not take down the whole org run (it becomes that site's
+        # per-site UNKNOWN). Mirrors the `ir is None` path below.
+        try:
+            baseline = adapter.ingest(baseline_raw)
+        except Exception as e:  # noqa: BLE001 — any ingest failure is UNKNOWN by the cardinal rule
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"baseline ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run,
+                state_meta=state_meta, baseline_unavailable=True,
+            )
         if baseline.ir is None:
             return _unknown(
                 None, adapter_findings=adapter_findings, run=run,
                 state_meta=state_meta, baseline_unavailable=True,
             )
     with trace.stage("ingest.proposed"):
-        proposed = adapter.ingest(proposed_raw)
+        try:
+            proposed = adapter.ingest(proposed_raw)
+        except Exception as e:  # noqa: BLE001
+            return _unknown(
+                Rejection(stage="ingest", reasons=(f"proposed ingest crashed: {e}",)),
+                adapter_findings=adapter_findings, run=run, state_meta=state_meta,
+            )
         if proposed.ir is None:
             return _unknown(
                 Rejection(
