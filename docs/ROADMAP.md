@@ -360,5 +360,8 @@ the blast radius severity-highlighted and `caused_by` in captions; exposed as
   mermaid markdown; adds a headless-render dependency (breaks pure-Python).
 - 🔵 **Org-level aggregate topology** — one cross-site view for org/template runs
   (v1 produces per-site diagrams only).
+- 🟡 **Payload guard for very large sites** — configurable cap on per-VLAN charts
+  (or lazy/on-demand generation) with a `notes` line for omitted charts; v1 emits
+  the full set, affected-first.
 - 🟡 **OSPF adjacency / routing-area view** — once the IR models that topology
   (today the L3 view is routed-VLAN ↔ serving-interface only).

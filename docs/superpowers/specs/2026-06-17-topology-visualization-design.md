@@ -18,8 +18,10 @@ already carry `subject` (blast radius) and `caused_by` (the changed cause).
 ## Goals / non-goals
 
 **Goals (v1)**
-- One **annotated proposed-state** chart per view, generated on **every** run
-  (even a clean SAFE — consistent topology context).
+- One **annotated proposed-state** chart per view, generated on **every run that
+  has a proposed IR** (even a clean SAFE — consistent topology context). UNKNOWN
+  paths that short-circuit before proposed ingest (`_unknown(...)`) carry
+  `diagrams=()`.
 - Three views: **L2 topology**, **one chart per VLAN**, **Routed VLAN exits**.
 - Highlight the **blast radius** (what breaks) severity-colored, with inline
   finding labels; surface the **cause** (`caused_by`) in captions/comments.
@@ -39,7 +41,7 @@ already carry `subject` (blast radius) and `caused_by` (the changed cause).
 | # | Decision |
 |---|---|
 | Render target | Mermaid **source** in markdown; UI renders. |
-| Chart scope | **Full set, every run**: L2 + per-VLAN (each) + Routed VLAN exits. |
+| Chart scope | **Full set, every run with a proposed IR**: L2 + per-VLAN (each) + Routed VLAN exits. |
 | Change depiction | v1 = **single annotated proposed-state** chart per view. |
 | Highlight | Severity-colored + inline finding labels; **blast radius only**. Cause goes in captions. |
 | Output | Structured `Verdict.diagrams` list + a markdown assembly helper. |
@@ -90,16 +92,25 @@ viz/
 
 All are `graph LR`. Device node ids are **synthetic** (`n0`, `n1`, …) — IR ids
 contain `:` `/` `-` `.` which are invalid in mermaid node ids — with the real
-(escaped) label carrying the name. A per-chart `classDef` legend defines the
-severity classes.
+label carrying the name. A per-chart `classDef` legend defines the severity
+classes. **All emitted text is made mermaid-safe** — node labels, device names,
+finding labels, and `%%` cause comments/captions: escape mermaid-special chars
+(`"` `[` `]` `|` `<` `>`), replace newlines with spaces (esp. in `%%` comments,
+which are single-line), and cap long messages (≈120 chars).
 
 1. **L2 topology** (`view="l2"`) — every device (VC-folded), label
    `name<br/>role`; edges = L2 links, label = carried-VLAN count or
    `trunk`/`LAG`. Highlighted nodes get the severity class.
 
-2. **Per-VLAN** (`view="vlan:<id>"`) — the `build_vlan_graph(vid)` subgraph:
-   member devices, **exits** as a distinct shape `([gateway])`, edges carrying
-   that VLAN. One chart per VLAN in the IR.
+2. **Per-VLAN** (`view="vlan:<id>"`) — the `build_vlan_graph(ir, l2, vid)`
+   subgraph: member devices and edges carrying that VLAN; one chart per VLAN in
+   the IR. **Exit nodes** (drawn with the `([gateway])` shape) =
+   `resolve_exit(ir, vlan_graph).nodes` (IRB/SVI nodes, *or* boundary-uplink
+   GATEWAY nodes) ∪ any device owning an `l3intf` for the VLAN (all roles incl
+   `GATEWAY`). `VlanNode.is_exit` alone is **not** used — it sees only IRB/SVI,
+   so a gateway exit would be mis-drawn as an ordinary node. This keeps per-VLAN
+   exits consistent with the Routed-VLAN-exits chart and the blackhole exit
+   contract.
 
 3. **Routed VLAN exits** (`view="l3_exits"`) — a routed-VLAN ↔ serving-L3-
    interface view. Built from **all `ir.l3intfs` grouped by `vlan_id`**
@@ -138,17 +149,25 @@ confuse cause with effect — it is rendered as a `%%` mermaid comment / `notes`
 caption ("caused by: <ref label> (changed: <fields>)"). Visual cut-link
 rendering of the cause is Roadmap.
 
-**Resolver precedence (refinement #3 — typed/evidence-aware).** `affected_entities`
-is untyped strings (a `"10"` could be a VLAN; `cycle.member_ports` are port ids).
-Resolve each finding to graph entities in this order, first hit wins per entity:
+**Resolution is ADDITIVE, typed/evidence-aware (refinement #3).** A finding
+contributes **all** the graph entities it references — `subject` does NOT
+short-stop the others. (Many findings carry `subject=ObjectRef("vlan", …)` PLUS
+affected device/port entities; an early stop would mark the VLAN chart but miss
+the broken nodes.) Collect from all three sources and union per entity; ordering
+only disambiguates the *type* of an ambiguous id, never which sources are read:
 
-1. **`subject`** (`ObjectRef`, typed `kind`+`id`) — authoritative.
-2. **Structured `evidence` keys** — known typed keys per check: `vlan`,
-   `device`, `link`, `port`, `component_nodes`, `fragment_nodes`,
-   `new_member_ports`, `affected_vlans`, `baseline_root`/`proposed_root`.
+1. **`subject`** (`ObjectRef`, typed `kind`+`id`).
+2. **Structured `evidence` keys** (typed, per check): `vlan`, `device`, `link`,
+   `port`, `component_nodes`, `fragment_nodes`, `new_member_ports`,
+   `affected_vlans`, `baseline_root`/`proposed_root`, and — for
+   `wired.client.impact` (no `subject`, only client MACs in `affected_entities`)
+   — `impacts[].attachment` (a port id → its device node, or an AP device id →
+   that node) and `impacts[].vlan` (→ that VLAN chart).
 3. **`affected_entities`** strings, disambiguated against IR indexes: in
-   `ir.devices` → device node; an int in `ir.vlans` → vlan; matches a port id /
-   in `ir.ports` → its device node; contains `__` → link → endpoint nodes.
+   `ir.devices` → device node; an int in `ir.vlans` → vlan; a port id / in
+   `ir.ports` → its device node; contains `__` → link → endpoint nodes.
+
+Worst severity wins per resolved entity.
 
 **ID normalization.** Graph nodes are IR device ids (MAC, VC-folded). Check
 findings already use IR ids. L0/adapter device `subject`s use the Mist id
@@ -177,6 +196,13 @@ This also **re-enables device-subject finding names**: `checks/subjects.py`
 `_name_for("device")` (which today returns None — `model` was rejected as a
 non-identity) returns `Device.name`, so device-subject findings render the real
 name instead of the MAC. (Closes the deferred item from the subject PR review.)
+
+**Display-only — excluded from `diff_ir`.** `diff_ir` compares every dataclass
+field except a global ignore set (today `{"meta", "stp_meta"}`). `name` MUST join
+that set, else a rename-only change registers as a `device` modification —
+waking device/link/port checks and polluting `ir_diff`. Safe globally: `Vlan`/
+`Port` names are key-derived identity (not modified in place) and `Device.name`
+is cosmetic; the plan verifies no golden depends on a name diff.
 
 ## Output / integration
 
@@ -235,4 +261,7 @@ verdict.
   edge/`linkStyle` coloring.
 - Image rendering (SVG/PNG) for UIs that can't run mermaid.
 - Org-level aggregate topology across sites.
+- Payload guard for very large sites — a configurable cap on per-VLAN charts
+  (or lazy/on-demand per-VLAN generation) with a `notes` line for omitted
+  charts. v1 emits the full set (affected-first ordering).
 - OSPF adjacency / routing-area views (once the IR models them).
