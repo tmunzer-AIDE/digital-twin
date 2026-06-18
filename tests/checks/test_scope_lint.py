@@ -273,3 +273,26 @@ def test_out_of_subnet_preexisting_info_finding_has_empty_caused_by():
         if x.code.endswith("out_of_subnet") and x.severity is Severity.INFO
     )
     assert f.caused_by == ()
+
+
+def test_gateway_mismatch_conclusion_caused_by_names_delta_scope():
+    # M_BAD is ADDED to proposed (not in baseline) → it IS in the delta.
+    # The gateway_mismatch WARNING's caused_by must name the dhcp_scope.
+    r = _run(_ir(), _ir(M_BAD))
+    f = next(
+        x for x in r.findings
+        if x.code.endswith("gateway_mismatch") and x.severity is Severity.WARNING
+    )
+    assert len(f.caused_by) == 1
+    assert f.caused_by[0].ref.kind == "dhcp_scope"
+    assert f.caused_by[0].ref.id == "site:m"
+
+
+def test_gateway_mismatch_preexisting_info_finding_has_empty_caused_by():
+    # Same mismatch on both sides (preexisting=True) → INFO → caused_by must be ().
+    r = _run(_ir(M_BAD), _ir(M_BAD))
+    f = next(
+        x for x in r.findings
+        if x.code.endswith("gateway_mismatch") and x.severity is Severity.INFO
+    )
+    assert f.caused_by == ()

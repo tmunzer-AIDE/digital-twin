@@ -223,6 +223,10 @@ class DhcpScopeLintCheck:
                         "handed": s.gateway,
                         "declared": s.network_gateway,
                     },
+                    caused_by=(
+                        ctx.delta_index.causes("dhcp_scope", (s.id,))
+                        if not preexisting else ()
+                    ),
                 )
             )
 
