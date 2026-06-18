@@ -284,13 +284,16 @@ def test_exit_unlocatable_names_removed_irb():
     assert _ids(f.caused_by) == [("l3intf", "A:l3:irb:10")]
 
 
-def _never_had_exit_ir(extra_acc: bool):
-    """vlan 10 NEVER had a locatable exit (no IRB, no uplink boundary). A -- B
-    carry it; B holds a member, so it is stranded in BOTH baseline and proposed.
-    The delta only cosmetically adds an UNRELATED vlan-99 access port (changing
-    the vlan-10 component node-set membership is avoided) so the vlan-10 strand
-    is honest-empty: nothing in the delta caused the (pre-existing) unlocatable
-    exit."""
+def _never_had_exit_ir(extra_member: bool):
+    """vlan 10 NEVER had a locatable exit (no IRB, no uplink boundary) in EITHER
+    baseline or proposed. A -- B carry it; B holds a member, so it is stranded in
+    both sides. The delta ADDS a fresh stranded vlan-10 access port on an ISOLATED
+    switch C (no link to anyone). This genuinely changes vlan 10's structure
+    (`_vlan_changed` True via the new {C} component) so the `exit_unlocatable`
+    branch fires — yet it is honest-empty: causes_for_blackhole = boundary edges
+    LOST (none — nothing was removed, only added) ∪ removed exit l3intf (none —
+    there never was one) = (). The new member is in the delta but it is an ADD,
+    not a cut, so nothing attributable caused the unlocatable exit."""
     b = IRBuilder()
     b.add_device(sw("A")).add_device(sw("B"))
     b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
@@ -298,22 +301,29 @@ def _never_had_exit_ir(extra_acc: bool):
     b.add_port(trunk_port("B", "to-A", tagged=(10,)))
     b.add_link(link("A:to-B", "B:to-A"))
     b.add_port(access_port("B", "acc", 10))
-    # an unrelated vlan-99 member added in proposed forces _vlan_changed via a
-    # NEW component on a different vid, never touching vlan 10's exit/carriage
-    b.add_vlan(Vlan(vlan_id=99, name="x", scope="s1"))
-    b.add_port(trunk_port("A", "to-B-99", tagged=(99,) if extra_acc else ()))
-    b.add_port(access_port("A", "acc99", 99))
+    if extra_member:
+        # a NEW stranded vlan-10 access port on an isolated switch: changes vlan
+        # 10's own structure (so the row fires) WITHOUT removing carriage or an
+        # exit l3intf (so causes_for_blackhole stays honest-empty)
+        b.add_device(sw("C"))
+        b.add_port(access_port("C", "acc", 10))
     b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
     return b.build()
 
 
 def test_exit_unlocatable_honest_empty_when_exit_already_none():
-    # vlan 10's exit was already None in baseline; the proposed only touches an
-    # unrelated vlan. The exit_unlocatable row, if emitted, must carry no cause.
-    base = _never_had_exit_ir(extra_acc=False)
-    prop = _never_had_exit_ir(extra_acc=True)
+    # vlan 10's exit is None in BOTH sides; the delta only ADDS a fresh stranded
+    # vlan-10 member (no carriage cut, no removed exit). The exit_unlocatable row
+    # IS emitted (vlan 10's structure changed) and must carry no cause.
+    base = _never_had_exit_ir(extra_member=False)
+    prop = _never_had_exit_ir(extra_member=True)
     result = L2BlackholeCheck().run(_ctx(base, prop))
-    rows = [f for f in result.findings if f.code == "wired.l2.blackhole.exit_unlocatable"]
-    for f in rows:
-        if f.subject == ObjectRef("vlan", "10"):
-            assert f.caused_by == ()
+    # non-vacuous: this MUST find an emitted exit_unlocatable row for vlan 10 —
+    # a StopIteration here means the fixture is wrong, not a silent pass
+    row = next(
+        f
+        for f in result.findings
+        if f.code == "wired.l2.blackhole.exit_unlocatable"
+        and f.subject == ObjectRef("vlan", "10")
+    )
+    assert row.caused_by == ()
