@@ -18,10 +18,11 @@ already carry `subject` (blast radius) and `caused_by` (the changed cause).
 ## Goals / non-goals
 
 **Goals (v1)**
-- One **annotated proposed-state** chart per view, generated on **every run that
-  has a proposed IR** (even a clean SAFE — consistent topology context). UNKNOWN
-  paths that short-circuit before proposed ingest (`_unknown(...)`) carry
-  `diagrams=()`.
+- One **annotated proposed-state** chart per view on **every normal
+  check/verdict path** (even a clean SAFE — consistent topology context). v1 has
+  a single hook (post-`assemble`), so **all `_unknown(...)` short-circuits carry
+  `diagrams=()`** — including a derived-gate UNKNOWN that *does* have a proposed
+  IR (attaching diagrams there is a Roadmap item).
 - Three views: **L2 topology**, **one chart per VLAN**, **Routed VLAN exits**.
 - Highlight the **blast radius** (what breaks) severity-colored, with inline
   finding labels; surface the **cause** (`caused_by`) in captions/comments.
@@ -83,7 +84,10 @@ viz/
 
   Diagrams reflect the **proposed** (resulting) IR. The pipeline stays
   orchestration-only; `assemble()` stays IR-light (it never sees the graph);
-  per-site org verdicts get diagrams for free (each is a `Verdict`).
+  per-site org verdicts get diagrams for free (each is a `Verdict`). This is the
+  ONLY hook: every `_unknown(...)` short-circuit — bad fetch, scope/apply reject,
+  AND the derived-gate UNKNOWN that runs *after* proposed ingest — returns
+  `diagrams=()`.
 
 - **Ordering** of the list: L2 first, then VLAN charts (affected first, by worst
   severity desc), then unaffected VLANs (vlan-id asc), then Routed VLAN exits.
@@ -250,8 +254,10 @@ verdict.
   `classDef`s present; synthetic ids only).
 - `to_markdown`: fenced ```mermaid blocks, titles, notes captions.
 - pipeline: a non-SAFE verdict carries highlighted diagrams; a clean SAFE
-  carries the full set with nothing classed; `safe_build_diagrams` swallows a
-  forced builder error → `diagrams=()`, decision unchanged.
+  carries the full set with nothing classed; an UNKNOWN short-circuit (incl. a
+  derived-gate UNKNOWN that has a proposed IR) carries `diagrams=()`;
+  `safe_build_diagrams` swallows a forced builder error → `diagrams=()`, decision
+  unchanged.
 - `Device.name` ingest + `_name_for("device")` returns the name.
 
 ## Dependencies & sequencing
@@ -272,6 +278,8 @@ verdict.
   edge/`linkStyle` coloring.
 - Image rendering (SVG/PNG) for UIs that can't run mermaid.
 - Org-level aggregate topology across sites.
+- Diagrams on a **derived-gate UNKNOWN** (proposed IR exists, but the run
+  short-circuited before the post-`assemble` hook) — v1 returns `diagrams=()`.
 - Payload guard for very large sites — a configurable cap on per-VLAN charts
   (or lazy/on-demand per-VLAN generation) with a `notes` line for omitted
   charts. v1 emits the full set (affected-first ordering).
