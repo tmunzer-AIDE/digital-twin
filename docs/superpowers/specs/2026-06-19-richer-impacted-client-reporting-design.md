@@ -67,13 +67,19 @@ model and **no** DHCP lease/subnet on the object.
 Client identity is valuable evidence but must never become verdict-bearing. So it lives
 **outside** the load-bearing `Client` entity and **outside** `diff_ir`'s entity kinds, in
 a dedicated `ir.client_enrichment` map. The `client_impact` check reads it *only after*
-it has already decided an impact, purely to annotate. Three independent properties make
+it has already decided an impact, purely to annotate. Four independent properties make
 the non-load-bearing guarantee hard to violate by accident:
 
-1. **No capability / `requires()`** — absent data yields an empty map; never UNKNOWN/REVIEW.
-2. **Not in `diff_ir`** — an enrichment-only change produces an empty `IRDiff`, so it can
+1. **Self-isolating best-effort ingester (the verdict-path guarantee)** — `IngesterRegistry.run`
+   records ANY ingester exception into `IngestReport.failures`; `report.ok = not failures`;
+   `MistAdapter.ingest` sets `ir = None` when `report.ok` is False; the pipeline maps a `None`
+   baseline/proposed `ir` to UNKNOWN. So a registered ingester that raises IS verdict-bearing
+   through the error path. The enrichment ingester therefore MUST swallow all its own errors
+   and never append to `IngestReport.failures` — see Component 2.
+2. **No capability / `requires()`** — absent data yields an empty map; never UNKNOWN/REVIEW.
+3. **Not in `diff_ir`** — an enrichment-only change produces an empty `IRDiff`, so it can
    never wake a check or move the verdict.
-3. **Annotation-only in the check** — enrichment is read after impact detection; it never
+4. **Annotation-only in the check** — enrichment is read after impact detection; it never
    participates in detection conditions, severity, confidence, coverage, or `applies_to`.
 
 ## Components
@@ -121,6 +127,19 @@ ClientEnrichment]`:
 - **`"Unknown"` / empty normalization:** any field whose value `.strip().lower()` is
   `"unknown"` or empty collapses to `None` (so a NAC `mfg="Unknown"` never overwrites a
   base `mfg="HP"`).
+
+**Best-effort isolation (mandatory — the verdict-path guarantee from the architecture).**
+The ingester MUST be non-fatal: it never lets an exception reach `IngesterRegistry.run`
+(which would record an `IngestReport.failures` entry → `report.ok` False → `ir=None` →
+UNKNOWN). Two layers:
+- **Per-row:** each `wired_clients` / `wireless_clients` / `nac_clients` row is parsed in
+  its own `try/except`; a malformed row is skipped (omitted from the map), the rest survive.
+- **Whole-ingester:** the entire `ingest()` body is additionally wrapped so any unexpected
+  error degrades to "no enrichment" (return `frozenset()`, empty map) rather than raising.
+- It MUST NOT append to `IngestReport.failures` and earns **no** capability.
+- Transparency is best-effort and lives **outside** the verdict path — e.g. a `bound_logger`
+  line (the existing observability seam); never `IngestReport.failures`, never
+  `CheckResult.coverage`.
 
 **Join invariants (pinned by tests):**
 - Every map key is a normalized `client_id(mac)` key.
@@ -177,13 +196,16 @@ dhcp_vlan_touched, identity:{…}}`.
   Capped at **20** clients per finding with a "… and N more (see JSON)" note for large
   blast radii; the JSON retains the full list.
 
-## The enrichment absent/present equivalence invariant
+## The enrichment absent / present / broken equivalence invariant
 
-The headline acceptance test (named so future readers know what it pins): two runs of the
-same plan, identical except `nac_clients` (and the rest of the enrichment data) present vs
-absent, must produce an **identical decision, severity multiset, and coverage** — only the
-`evidence["impacts"][i].identity` / `subnet` / `dhcp_vlan_touched` annotations differ. This
-is the cause-attribution non-load-bearing pattern, applied here.
+The headline acceptance test (named so future readers know what it pins): runs of the same
+plan that differ ONLY in enrichment input — **present**, **absent**, and **broken**
+(malformed `nac_clients`/`wired_clients` rows, or an enrichment parser that would otherwise
+raise) — must all produce an **identical decision, severity multiset, and coverage**. Only
+the `evidence["impacts"][i].identity` / `subnet` / `dhcp_vlan_touched` annotations may
+differ (richer when present, absent/MAC-only otherwise). The **broken** arm is what proves
+the self-isolating-ingester guarantee: a cosmetic-data defect can never flip the verdict to
+UNKNOWN. This extends the cause-attribution non-load-bearing pattern.
 
 ## Testing
 
@@ -196,8 +218,11 @@ is the cause-attribution non-load-bearing pattern, applied here.
 3. **Check enrichment tests** — `identity` sourced from **baseline**; evidence shape;
    `subnet` present/absent; `dhcp_vlan_touched` true (each of the four triggers) / false;
    graceful MAC-only degradation when enrichment absent.
-4. **Enrichment absent/present equivalence golden** — identical decision / severity-multiset
-   / coverage with and without enrichment.
+4. **Enrichment absent / present / broken equivalence golden** — identical decision /
+   severity-multiset / coverage across all three arms, including a **broken-input** arm
+   (a malformed `nac_clients` row / a row that would make a naive parser raise) that must
+   behave exactly like the absent arm — never UNKNOWN, no `IngestReport.failures`. This is
+   the direct regression for the self-isolating-ingester guarantee.
 5. **Render tests** — human per-client expansion lines; the 20-cap truncation note; dict
    carries the full identity.
 6. **Real fixture + live verify** — add redacted `nac_clients` to the committed fixture
@@ -209,7 +234,8 @@ is the cause-attribution non-load-bearing pattern, applied here.
 - **P1** — `RawSiteState.nac_clients` + provider `_nac_clients()` fetch + non-fatal
   `StateMeta.failures` handling; resolve the `wired_clients` field-surfacing feasibility item.
 - **P2** — `ClientEnrichment` record + `ClientEnrichmentIngester` join (base ∪ overlay,
-  `"Unknown"`/empty normalization, key + omission invariants) + IR field + diff isolation.
+  `"Unknown"`/empty normalization, key + omission invariants, **best-effort per-row +
+  whole-ingester isolation**) + IR field + diff isolation.
 - **P3** — `client_impact` enrichment (`identity` from baseline, `subnet`,
   `dhcp_vlan_touched`) + evidence shape.
 - **P4** — render: human per-client expansion (capped) + dict.
