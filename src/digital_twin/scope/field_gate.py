@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
 from digital_twin.scope.paths import allowed, changed_leaf_paths
@@ -40,9 +41,7 @@ def screen_op(
                 "(switch config only — AP/gateway devices are out of scope)",
             ),
         )
-    if object_type == "wlan" and not (
-        current.get("for_site") is True and not current.get("template_id")
-    ):
+    if object_type == "wlan" and wlan_is_inherited(current):
         return Rejection(
             stage=_STAGE,
             reasons=(

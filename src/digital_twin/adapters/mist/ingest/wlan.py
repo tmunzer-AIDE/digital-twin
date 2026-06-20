@@ -20,6 +20,14 @@ from .base import IngestContext
 from .wlan_vlans import ap_required_vlans
 
 
+def wlan_is_inherited(row: Mapping[str, Any]) -> bool:
+    """FAIL-CLOSED WLAN ownership: a derived WLAN row is site-writable ONLY when it is
+    positively site-owned (for_site True AND no template_id); anything else (org-template
+    owned, or ambiguous metadata) is inherited. The single source of truth for the IR's
+    `Wlan.inherited` AND the field-gate's inherited-WLAN rejection (scope/field_gate.py)."""
+    return not (row.get("for_site") is True and not row.get("template_id"))
+
+
 def _mint_wlan(row: Mapping[str, Any]) -> Wlan:
     auth = row.get("auth") or {}
     auth_type = auth.get("type")
@@ -32,8 +40,7 @@ def _mint_wlan(row: Mapping[str, Any]) -> Wlan:
         apply_to=str(av) if (av := row.get("apply_to")) is not None else None,
         ap_ids=tuple(sorted({str(x) for x in (row.get("ap_ids") or [])})),
         wxtag_ids=tuple(sorted({str(x) for x in (row.get("wxtag_ids") or [])})),
-        # fail-closed: site-writable ONLY when positively site-owned
-        inherited=not (row.get("for_site") is True and not row.get("template_id")),
+        inherited=wlan_is_inherited(row),
     )
 
 
