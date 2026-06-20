@@ -247,7 +247,13 @@ class ClientEnrichment:
     assigned_vlan: str | None = None
     vlan_source: str | None = None
     username: str | None = None
+    # OBSERVED provenance, mirroring every other IR entity. NOT part of the
+    # identity projection — the check allowlists identity fields (Task 5), so meta
+    # never leaks into evidence["impacts"][i].identity.
+    meta: FactMeta = OBSERVED_META
 ```
+
+> `FactMeta` and `OBSERVED_META` are already imported in `entities.py` (line 14: `from .provenance import CONFIG_META, OBSERVED_META, FactMeta`) — no new import needed.
 
 - [ ] **Step 4: Export it**
 
@@ -619,26 +625,27 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.wired.client_impact import ClientImpactCheck
 from digital_twin.ir import (
-    AttachKind, Client, ClientEnrichment, ClientKind, Device, DeviceRole, IRCapability,
-    Port, PortMode, Vlan,
+    AttachKind, Client, ClientEnrichment, ClientKind, Device, DeviceRole, DhcpScope,
+    IRCapability, Port, PortMode, Vlan,
 )
 from digital_twin.ir.diff import diff_ir
 from digital_twin.ir.model import IRBuilder
 
 
-def _sw() -> Device:
-    return Device(id="sw1", role=DeviceRole.SWITCH, site="s1")
-
-
-def _build(*, native: int, subnet=None, enrich=None, dhcp_trusted=None) -> object:
+def _build(*, native: int, subnet=None, enrich=None, dhcp_trusted=None,
+           dhcp_sources=(), snooping=None, scope=False) -> object:
+    """vlan 10 ('corp'). Optional dhcp dimensions exercise _dhcp_vlan_touched's
+    four triggers: dhcp_sources, a serving DhcpScope, device.dhcp_snooping, port trust."""
     b = IRBuilder()
     b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.CLIENTS_ACTIVE)
-    b.add_device(_sw())
+    b.add_device(Device(id="sw1", role=DeviceRole.SWITCH, site="s1", dhcp_snooping=snooping))
     # Port.mode is REQUIRED (entities.py:116) — set it explicitly
     p = Port(id="sw1:ge-0/0/1", device_id="sw1", name="ge-0/0/1", mode=PortMode.ACCESS,
              native_vlan=native, dhcp_trusted=dhcp_trusted)
     b.add_port(p)
-    b.add_vlan(Vlan(vlan_id=10, subnet=subnet))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", subnet=subnet, dhcp_sources=tuple(dhcp_sources)))
+    if scope:  # provider="site" needs no gateway device (build validation skips it)
+        b.add_dhcp_scope(DhcpScope(provider="site", network="corp", vlan=10))
     b.add_client(Client(mac="aabbcc000001", kind=ClientKind.WIRED,
                         attach_kind=AttachKind.PORT, attach_id="sw1:ge-0/0/1", vlan=10))
     b.set_client_enrichment(enrich or {})  # atomic publish (see Task 3)
@@ -669,11 +676,37 @@ def test_identity_omitted_when_no_enrichment():
     assert "identity" not in entry and entry["subnet"] is None
 
 
-def test_dhcp_vlan_touched_on_port_trust_flip():
-    base = _build(native=10, dhcp_trusted=True)
-    prop = _build(native=20, dhcp_trusted=False)  # client's own attach port trust changed
+def _touched(base, prop) -> bool:
+    # every arm moves native 10->20 so client.impact emits a vlan_move entry to annotate
     entry = ClientImpactCheck().run(_ctx(base, prop)).findings[0].evidence["impacts"][0]
-    assert entry["dhcp_vlan_touched"] is True
+    return entry["dhcp_vlan_touched"]
+
+
+def test_dhcp_vlan_touched_on_port_trust_flip():  # (d)
+    assert _touched(_build(native=10, dhcp_trusted=True),
+                    _build(native=20, dhcp_trusted=False)) is True
+
+
+def test_dhcp_vlan_touched_on_dhcp_sources_change():  # (a)
+    assert _touched(_build(native=10, dhcp_sources=()),
+                    _build(native=20, dhcp_sources=("site",))) is True
+
+
+def test_dhcp_vlan_touched_on_serving_scope_change():  # (b)
+    assert _touched(_build(native=10, scope=False),
+                    _build(native=20, scope=True)) is True
+
+
+def test_dhcp_vlan_touched_on_applicable_snooping_change():  # (c) snooping now covers corp
+    # corp has a modeled dhcp source, and snooping flips None -> all ('*') -> corp snooped
+    assert _touched(_build(native=10, dhcp_sources=("site",), snooping=None),
+                    _build(native=20, dhcp_sources=("site",), snooping=("*",))) is True
+
+
+def test_dhcp_vlan_NOT_touched_when_snooping_change_misses_client_vlan():  # (c) negative
+    # snooping changes, but never includes the client's vlan name 'corp' -> not touched
+    assert _touched(_build(native=10, dhcp_sources=("site",), snooping=("other",)),
+                    _build(native=20, dhcp_sources=("site",), snooping=("other", "extra"))) is False
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -685,11 +718,16 @@ Expected: FAIL (`KeyError: 'identity'` / `'subnet'`).
 
 In `src/digital_twin/checks/wired/client_impact.py`:
 
-(a) extend the entities import (line 20):
+(a) extend the entities import (line 20) and reuse snooping's canonical vlan helper:
 
 ```python
 from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
+from digital_twin.checks.wired.snooping import _snooped_vlans  # "vlans this device snoops"
 ```
+
+> No import cycle: `snooping.py` does not import `client_impact`. Reusing `_snooped_vlans`
+> keeps the "snooping applies to this vlan" semantics in ONE place (`("*",)` = all
+> dhcp-source vlans; named snooping via `Vlan.name`).
 
 (b) thread enrichment facts through `_entry`. Replace `_impact_of`'s three `self._entry(...)` calls so each passes `ctx` (so `_entry` can compute facts). Simplest: change `_entry` to accept `ctx` and the client, and compute identity/subnet/dhcp there. Replace the whole `_entry` method (lines 116-126) with:
 
@@ -714,14 +752,16 @@ from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
         return entry
 
     def _identity(self, ctx: CheckContext, client: Client) -> dict[str, str]:
-        # BASELINE enrichment: the finding describes clients connected BEFORE the change
+        # BASELINE enrichment: the finding describes clients connected BEFORE the change.
+        # Project an EXPLICIT allowlist (_IDENTITY_FIELDS) so the record's `meta` (and any
+        # future non-identity field) never leaks into evidence["impacts"][i].identity.
         ce: ClientEnrichment | None = ctx.baseline.ir.client_enrichment.get(client.id)
         if ce is None:
             return {}
         return {
-            f.name: getattr(ce, f.name)
-            for f in dataclasses.fields(ce)
-            if getattr(ce, f.name) is not None
+            name: getattr(ce, name)
+            for name in _IDENTITY_FIELDS
+            if getattr(ce, name) is not None
         }
 
     def _subnet(self, ctx: CheckContext, client: Client) -> str | None:
@@ -744,23 +784,32 @@ from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
                 return {s.id: s for s in ir.dhcp_scopes if s.vlan == vid}
             if serving(base_ir) != serving(prop_ir):
                 return True
-        # (c)/(d) the client's own attach port: dhcp_trusted flip, or its switch's snooping
+        # (d) the client's own attach port: dhcp_trusted flip
         if client.attach_kind is AttachKind.PORT:
             bp, pp = base_ir.ports.get(client.attach_id), prop_ir.ports.get(client.attach_id)
             if bp is not None and pp is not None and bp.dhcp_trusted != pp.dhcp_trusted:
                 return True
-            if bp is not None:
-                bd, pd = base_ir.devices.get(bp.device_id), prop_ir.devices.get(bp.device_id)
-                if bd is not None and pd is not None and bd.dhcp_snooping != pd.dhcp_snooping:
-                    return True
+            # (c) snooping on the client's switch — counts ONLY if it flips whether the
+            # CLIENT's vlan is snooped (not any snooping change). Reuses _snooped_vlans.
+            if bp is not None and vid is not None and (
+                (vid in _snooped_vlans(base_ir, bp.device_id))
+                != (vid in _snooped_vlans(prop_ir, bp.device_id))
+            ):
+                return True
         return False
 ```
 
-(c) add `import dataclasses` at the top (after `from __future__ import annotations`):
+(c) add the identity-field allowlist as a module constant (near `_CAVEAT`, after the
+imports). `Any` is already imported (`from typing import Any`, line 14) — no `dataclasses`
+import is needed:
 
 ```python
-import dataclasses
-from typing import Any
+# the ONLY ClientEnrichment fields projected into evidence — excludes `meta` so
+# observational provenance never leaks into the report.
+_IDENTITY_FIELDS = (
+    "hostname", "family", "mfg", "model", "os", "auth_type", "auth_method",
+    "auth_state", "nacrule", "status", "assigned_vlan", "vlan_source", "username",
+)
 ```
 
 (d) update the three call sites in `_impact_of` (lines 81, 86, 100) to pass `ctx` first:
