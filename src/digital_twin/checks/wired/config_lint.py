@@ -3,7 +3,10 @@
 Each lint check computes a list of `Violation`s on baseline and on proposed; this
 core emits INTRODUCED violations (key not in baseline) as WARNING and PRE-EXISTING
 ones (key in baseline) as INFO context. The violation KEY carries the violation
-facts, so a *changed* violation reads as introduced, not pre-existing."""
+facts, so a *changed* violation reads as introduced, not pre-existing.
+
+Every lint fact is config-derived and deterministic, so the tier is HIGH-confidence
+by design (no sub-HIGH path)."""
 
 from __future__ import annotations
 
