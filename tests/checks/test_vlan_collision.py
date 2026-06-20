@@ -47,3 +47,11 @@ def test_changed_collision_set_reads_as_introduced():
     prop = _ir(Vlan(vlan_id=10, collisions=("guest", "lab")))
     res = VlanCollisionCheck().run(_ctx(base, prop))
     assert res.status is Status.WARN and res.findings[0].code.endswith(".introduced")
+
+
+def test_reordered_collision_set_is_not_introduced():
+    # the key is a frozenset -> a reordered-only set is the SAME violation (pre-existing INFO)
+    base = _ir(Vlan(vlan_id=10, collisions=("guest", "lab")))
+    prop = _ir(Vlan(vlan_id=10, collisions=("lab", "guest")))
+    res = VlanCollisionCheck().run(_ctx(base, prop))
+    assert res.status is Status.PASS and res.findings[0].code.endswith(".preexisting")
