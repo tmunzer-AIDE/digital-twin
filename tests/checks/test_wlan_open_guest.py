@@ -35,6 +35,13 @@ def test_isolated_open_guest_is_clean():
     assert WlanOpenGuestCheck().run(_ctx(ir, ir)).status is Status.PASS
 
 
+def test_preexisting_open_no_isolation_is_info_not_warn():
+    # present identically in baseline + proposed -> pre-existing INFO context, PASS
+    ir = _ir(Wlan(id="w1", isolation=False, **_OPEN))
+    f = WlanOpenGuestCheck().run(_ctx(ir, ir)).findings[0]
+    assert f.severity is Severity.INFO and f.code.endswith(".preexisting")
+
+
 def test_empty_explicit_scope_is_silent():
     ir = _ir(Wlan(id="w1", ssid="g", enabled=True, auth_type="open", apply_to="aps"))
     res = WlanOpenGuestCheck().run(_ctx(ir, ir))

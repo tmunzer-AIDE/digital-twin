@@ -15,6 +15,12 @@ from digital_twin.ir import Capability, IRCapability, IRDiff, Wlan
 from digital_twin.ir.model import IR
 
 
+def _open_no_isolation(w: Wlan) -> bool:
+    """The risky shape: an ENABLED open-auth WLAN with no client isolation. Unknown/
+    unparsed auth (auth_type != 'open') is never assumed open."""
+    return w.enabled and w.auth_type == "open" and not w.isolation
+
+
 def _active_scope(w: Wlan) -> str:
     """'active' | 'nowhere' | 'unresolved' — does this WLAN apply to any AP?"""
     if w.apply_to == "site":
@@ -37,13 +43,12 @@ class WlanOpenGuestCheck:
     def applies_to(self, diff: IRDiff) -> bool:
         return diff.touches("wlan")
 
-    def _violations(self, ir: IR) -> list[Violation]:
+    def _violations(self, ctx: CheckContext, ir: IR) -> list[Violation]:
         viols: list[Violation] = []
         for w in ir.wlans:
-            if not w.enabled or w.auth_type != "open" or w.isolation:
-                continue
-            if _active_scope(w) != "active":  # nowhere -> silent; unresolved -> note in run()
-                continue
+            if not _open_no_isolation(w) or _active_scope(w) != "active":
+                continue  # nowhere -> silent; unresolved -> note in run()
+            cause = ctx.delta_index.cause("wlan", w.id)
             viols.append(
                 Violation(
                     key=w.id,
@@ -53,21 +58,18 @@ class WlanOpenGuestCheck:
                         f"open guest WLAN '{w.ssid}' has no client isolation — "
                         "joined clients can reach each other (lateral traffic)"
                     ),
-                    evidence={"ssid": w.ssid, "auth_type": w.auth_type, "isolation": w.isolation},
+                    evidence={"ssid": w.ssid, "auth_type": w.auth_type},
+                    caused_by=(cause,) if cause is not None else (),
                 )
             )
         return viols
 
     def _unresolved(self, ir: IR) -> list[Wlan]:
-        return [
-            w for w in ir.wlans
-            if w.enabled and w.auth_type == "open" and not w.isolation
-            and _active_scope(w) == "unresolved"
-        ]
+        return [w for w in ir.wlans if _open_no_isolation(w) and _active_scope(w) == "unresolved"]
 
     def run(self, ctx: CheckContext) -> CheckResult:
-        base = self._violations(ctx.baseline.ir)
-        prop = self._violations(ctx.proposed.ir)
+        base = self._violations(ctx, ctx.baseline.ir)
+        prop = self._violations(ctx, ctx.proposed.ir)
         # RELEVANCE-SCOPED: note an unresolved open WLAN only when it is delta-touched,
         # so an unrelated old wxtag WLAN never floors an unrelated change to REVIEW.
         touched = touched_ids(ctx.diff, "wlan")
