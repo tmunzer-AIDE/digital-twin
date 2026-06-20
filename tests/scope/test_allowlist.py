@@ -10,7 +10,7 @@ from digital_twin.scope.paths import allowed
 
 
 def test_supported_object_types_are_the_m1_pair():
-    assert SUPPORTED_OBJECT_TYPES == ("site_setting", "device")
+    assert SUPPORTED_OBJECT_TYPES == ("site_setting", "device", "wlan")
 
 
 def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():

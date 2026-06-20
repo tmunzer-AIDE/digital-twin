@@ -11,7 +11,7 @@ scope.paths.matches: '*' = one key segment, trailing
 
 from __future__ import annotations
 
-SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device")
+SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 
 # Org-level object types simulated by fan-out (NOT single-site). networktemplate
 # carries the SAME modeled config layer as a site_setting, so its raw field gate
@@ -158,6 +158,14 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "notes",
     ),
 }
+
+# Modeled WLAN leaves (exactly what _mint_wlan consumes). ap_ids/wxtag_ids are
+# atomic list leaves (NOT ap_ids.* — the path flattener treats lists atomically).
+_WLAN_LEAVES: tuple[str, ...] = (
+    "ssid", "enabled", "auth.type", "isolation", "l2_isolation",
+    "apply_to", "ap_ids", "wxtag_ids",
+)
+RAW_ALLOWLIST["wlan"] = _WLAN_LEAVES
 
 RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
 # vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate

@@ -40,6 +40,16 @@ def screen_op(
                 "(switch config only — AP/gateway devices are out of scope)",
             ),
         )
+    if object_type == "wlan" and not (
+        current.get("for_site") is True and not current.get("template_id")
+    ):
+        return Rejection(
+            stage=_STAGE,
+            reasons=(
+                f"WLAN {current.get('id')!r} is inherited from an org wlantemplate "
+                "(not a site-writable object) — simulate the change at the org/template level",
+            ),
+        )
     allowlist = RAW_ALLOWLIST.get(object_type, ())
     offending = [p for p in changed_paths(current, payload) if not allowed(p, allowlist)]
     if offending:
