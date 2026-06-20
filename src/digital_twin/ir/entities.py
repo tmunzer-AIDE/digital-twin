@@ -315,3 +315,21 @@ class ClientEnrichment:
     # identity projection — the check allowlists identity fields (Task 5), so meta
     # never leaks into evidence["impacts"][i].identity.
     meta: FactMeta = OBSERVED_META
+
+
+@dataclass(frozen=True)
+class Wlan:
+    """A site's effective WLAN (from the derived WLAN list), modeled for the
+    config-lint checks. Secret-free by construction. `inherited` = org-template
+    owned (NOT site-writable); it is observational ownership, not a lint fact."""
+
+    id: str            # provider WLAN id (pragmatic identity: rename => modify)
+    ssid: str
+    enabled: bool = False
+    auth_type: str | None = None     # auth.type ("open"|"psk"|"eap"|…); None = unparsed
+    isolation: bool = False          # isolation OR l2_isolation
+    apply_to: str | None = None      # "site" | "aps" | "wxtags" | None
+    ap_ids: tuple[str, ...] = ()     # sorted+deduped explicit AP scope
+    wxtag_ids: tuple[str, ...] = ()  # sorted+deduped
+    inherited: bool = False          # True = org-template-owned (fail-closed at ingest)
+    meta: FactMeta = CONFIG_META
