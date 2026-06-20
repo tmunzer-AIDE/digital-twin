@@ -11,10 +11,30 @@ failed/absent fetch leaves AP VLAN needs to the observation-based fallback.
 
 from __future__ import annotations
 
-from digital_twin.ir import IRCapability, Vlan
+from collections.abc import Mapping
+from typing import Any
+
+from digital_twin.ir import IRCapability, Vlan, Wlan
 
 from .base import IngestContext
 from .wlan_vlans import ap_required_vlans
+
+
+def _mint_wlan(row: Mapping[str, Any]) -> Wlan:
+    auth = row.get("auth") or {}
+    auth_type = auth.get("type")
+    return Wlan(
+        id=str(row.get("id", "")),
+        ssid=str(row.get("ssid", "")),
+        enabled=bool(row.get("enabled")),
+        auth_type=str(auth_type) if auth_type is not None else None,
+        isolation=bool(row.get("isolation")) or bool(row.get("l2_isolation")),
+        apply_to=str(row["apply_to"]) if row.get("apply_to") is not None else None,
+        ap_ids=tuple(sorted({str(x) for x in (row.get("ap_ids") or [])})),
+        wxtag_ids=tuple(sorted({str(x) for x in (row.get("wxtag_ids") or [])})),
+        # fail-closed: site-writable ONLY when positively site-owned
+        inherited=not (row.get("for_site") is True and not row.get("template_id")),
+    )
 
 
 class WlanIngester:
@@ -38,4 +58,7 @@ class WlanIngester:
         for ap_id, reasons in unresolved.items():
             if ctx.builder.has_device(ap_id):
                 ctx.builder.mark_ap_wlan_unresolved(ap_id, tuple(reasons))
+        for row in ctx.raw.wlans:
+            if row.get("id"):
+                ctx.builder.add_wlan(_mint_wlan(row))
         return frozenset({IRCapability.WLAN_CONFIG})
