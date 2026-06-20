@@ -29,3 +29,11 @@ def test_two_names_same_vlan_id_records_collision():
 def test_repeated_same_name_is_not_a_collision():
     ir = MistAdapter().ingest(_raw({"corp": {"vlan_id": 10}})).ir
     assert _vlan(ir, 10).collisions == ()
+
+
+def test_three_claimants_sorted_distinct_others():
+    ir = MistAdapter().ingest(_raw({
+        "corp": {"vlan_id": 10}, "lab": {"vlan_id": 10}, "guest": {"vlan_id": 10},
+    })).ir
+    # winner=corp (first); the other two, distinct + sorted
+    assert _vlan(ir, 10).collisions == ("guest", "lab")

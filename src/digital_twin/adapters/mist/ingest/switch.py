@@ -425,8 +425,10 @@ class SwitchIngester:
         # explicit "gateway": null is ABSENT (null==absent canon).
         gw_rows_by_vid: dict[int, list[Any]] = {}
         subnet_rows_by_vid: dict[int, list[Any]] = {}
+        # every network NAME per vid (GS30 collision evidence) — same single pass
+        names_by_vid: dict[int, list[str]] = {}
         for eff in sources:
-            for net in (eff.get("networks") or {}).values():
+            for name, net in (eff.get("networks") or {}).items():
                 vid = _vlan_int(net.get("vlan_id"))
                 if vid is not None:
                     gw_rows_by_vid.setdefault(vid, []).append(net.get("gateway"))
@@ -434,16 +436,11 @@ class SwitchIngester:
                     # is declared-unreadable — normalize empty to None here so
                     # the shared core's "declared = not None" stays uniform
                     subnet_rows_by_vid.setdefault(vid, []).append(net.get("subnet") or None)
+                    names_by_vid.setdefault(vid, []).append(name)
         org_vlan_by_name = _org_vlan_map(ctx)
         dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
         # same org map as _dhcp_sources — the two layers must not disagree
         self._mint_dhcp_scopes(ctx, org_vlan_by_name)
-        names_by_vid: dict[int, list[str]] = {}
-        for eff in sources:
-            for name, net in (eff.get("networks") or {}).items():
-                vid = _vlan_int(net.get("vlan_id"))
-                if vid is not None:
-                    names_by_vid.setdefault(vid, []).append(name)
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
                 vid = _vlan_int(net.get("vlan_id"))
