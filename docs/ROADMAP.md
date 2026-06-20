@@ -57,22 +57,27 @@ sharp UNSAFE during live testing on the Live-Demo site.
   `--explain` mode (re-simulate each leaf in isolation); raw-config-path `fields`
   (needs a field-gate change-path index, which the differential mode also wants);
   articulation-node-removal split attribution (currently honest-empty).
-- 🔵 **Richer impacted-client reporting** — enrich what `wired.client.impact`
-  says about each affected client (evidence-only; never changes the verdict).
-  Builds on the **done** cause-attribution work above, which already nests
-  per-client entries in `evidence["impacts"]` (each with its own `caused_by`) —
-  these hang off the same structure:
-  - **Client identity** — report each impacted wired client's **hostname** and
-    **device type / fingerprint** (Mist client objects carry these), not just the
-    MAC. Turns "3 clients affected" into "Printer-3F, an HP printer; …".
-  - **DHCP context** — leverage the wired-client **DHCP info** (IP / subnet /
-    lease, already on the client object in the `wired_clients` fetch) to say which
-    addressing the impacted clients rely on and whether the delta touches their
-    DHCP path.
-  - **Traffic significance (optional)** — if available, pull the impacted
-    interface's **traffic pattern** (port tx/rx stats) to weight the impact: real
-    traffic → higher significance; an idle port → low. Gated on "only if there is
-    traffic" — absence is not interesting and must not floor or inflate anything.
+- ✅ **Richer impacted-client reporting** — done 2026-06-20, live-verified (284
+  enriched clients on the Live-Demo site). `wired.client.impact` now annotates each
+  affected client (evidence-only; **never** changes decision/severity/coverage). A
+  separate observational `ir.client_enrichment` map (Approach B) joins
+  `wired_clients ∪ wireless_clients` (base) + `nac_clients` (overlay) by normalized MAC,
+  built by a **self-isolating best-effort** ingester (no capability, not in `diff_ir`,
+  swallows all its own errors so a malformed row can never flip the verdict to UNKNOWN —
+  pinned by the absent/present/**broken** equivalence golden). Each `evidence["impacts"]`
+  entry gains: **`identity`** (hostname / family / mfg / model / os / auth_type / nacrule /
+  status / …, from BASELINE enrichment, allowlisted so observational `meta` never leaks);
+  **`subnet`** (derived from `Vlan.subnet`); **`dhcp_vlan_touched`** (a narrow 4-trigger
+  signal: the vlan's `dhcp_sources` / a serving `DhcpScope` / the client's port
+  `dhcp_trusted` / vlan-scoped `dhcp_snooping` via `snooped_vlans`). Human CLI expands each
+  client (capped 20 + "… and N more"); JSON carries the full blast radius. Spec
+  `docs/superpowers/specs/2026-06-19-richer-impacted-client-reporting-design.md`; plan
+  `docs/superpowers/plans/2026-06-19-richer-impacted-client-reporting.md`. Redaction v7
+  closes a `last_hostname`/`username` PII gap surfaced by serializing `nac_clients`.
+  - **Deferred:** **traffic significance** — no data source exists (neither `wired_clients`
+    nor `port_stats` carry tx/rx bytes), so the optional "weight impact by real traffic"
+    sub-item is dropped until a stats fetch is added. DHCP **lease** detail is likewise
+    absent from the client object (only IP + derived subnet are modeled).
 
 ## 2. New coverage — more checks over the existing IR
 

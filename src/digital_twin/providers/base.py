@@ -71,6 +71,11 @@ class RawSiteState:
     # Trailing + defaulted so every existing constructor/fixture stays valid.
     sitetemplate: JsonObj | None = None
     gatewaytemplate: JsonObj | None = None
+    # observed NAC clients (GET /orgs/{org}/nac_clients/search, site-filtered) —
+    # OBSERVATIONAL enrichment only (fingerprint + auth/NAC identity for the
+    # client.impact report). Trailing + defaulted: absence is "not fetched" and
+    # is NON-FATAL (best-effort enrichment, never earns/loses a capability).
+    nac_clients: tuple[JsonObj, ...] = ()
 
 
 @dataclass(frozen=True)

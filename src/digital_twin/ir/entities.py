@@ -290,3 +290,28 @@ class Client:
     @property
     def id(self) -> str:
         return client_id(self.mac)
+
+
+@dataclass(frozen=True)
+class ClientEnrichment:
+    """OBSERVATIONAL per-client identity for the client.impact report. Evidence
+    ONLY — never read by verdict logic, never in diff_ir. All fields optional;
+    an instance is created only when at least one field is non-empty."""
+
+    hostname: str | None = None
+    family: str | None = None
+    mfg: str | None = None
+    model: str | None = None
+    os: str | None = None
+    auth_type: str | None = None
+    auth_method: str | None = None
+    auth_state: str | None = None
+    nacrule: str | None = None
+    status: str | None = None
+    assigned_vlan: str | None = None
+    vlan_source: str | None = None
+    username: str | None = None
+    # OBSERVED provenance, mirroring every other IR entity. NOT part of the
+    # identity projection — the check allowlists identity fields (Task 5), so meta
+    # never leaks into evidence["impacts"][i].identity.
+    meta: FactMeta = OBSERVED_META

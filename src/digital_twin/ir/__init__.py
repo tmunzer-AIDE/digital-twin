@@ -6,6 +6,7 @@ from .diff import EntityRef, IRDiff, Modified, diff_ir
 from .entities import (
     AttachKind,
     Client,
+    ClientEnrichment,
     ClientKind,
     Device,
     DeviceRole,
@@ -65,6 +66,7 @@ __all__ = [
     "L3Role",
     "OspfIntf",
     "Client",
+    "ClientEnrichment",
     "ClientKind",
     "AttachKind",
     "StpMode",

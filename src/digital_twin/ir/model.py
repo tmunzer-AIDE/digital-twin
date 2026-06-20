@@ -16,6 +16,7 @@ from .capabilities import Capability
 from .entities import (
     AttachKind,
     Client,
+    ClientEnrichment,
     ClientKind,
     Device,
     DeviceRole,
@@ -58,6 +59,10 @@ class IR:
     ap_wlan_vlans: Mapping[str, frozenset[int]] = _EMPTY_MAP  # type: ignore[assignment]
     ap_wlan_unresolved: Mapping[str, tuple[str, ...]] = _EMPTY_MAP  # type: ignore[assignment]
     ospf_intfs: tuple[OspfIntf, ...] = ()
+    # OBSERVATIONAL per-client identity for the client.impact report (mac ->
+    # ClientEnrichment). Evidence only: NOT walked by diff_ir, earns no
+    # capability, never read by verdict logic. Defaulted: absence = no enrichment.
+    client_enrichment: Mapping[str, ClientEnrichment] = _EMPTY_MAP  # type: ignore[assignment]
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -86,6 +91,7 @@ class IRBuilder:
         self._capabilities: set[Capability] = set()
         self._ap_wlan_vlans: dict[str, set[int]] = {}
         self._ap_wlan_unresolved: dict[str, list[str]] = {}
+        self._client_enrichment: dict[str, ClientEnrichment] = {}
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -150,6 +156,14 @@ class IRBuilder:
 
     def mark_ap_wlan_unresolved(self, ap_id: str, reasons: tuple[str, ...]) -> IRBuilder:
         self._ap_wlan_unresolved.setdefault(ap_id, []).extend(reasons)
+        return self
+
+    def set_client_enrichment(self, enrichment: Mapping[str, ClientEnrichment]) -> IRBuilder:
+        """Publish the COMPLETE observational enrichment map atomically. NOT validated
+        in build() — a bad entry must never fail the IR (non-load-bearing). Replacing
+        (not merging) keeps 'broken enrichment == no enrichment': a partial map is never
+        observed."""
+        self._client_enrichment = dict(enrichment)
         return self
 
     # -- lookups / mutation used by ingesters (pre-build) ----------------------
@@ -332,4 +346,5 @@ class IRBuilder:
             ap_wlan_unresolved=MappingProxyType(
                 {ap: tuple(r) for ap, r in self._ap_wlan_unresolved.items()}
             ),
+            client_enrichment=MappingProxyType(dict(self._client_enrichment)),
         )

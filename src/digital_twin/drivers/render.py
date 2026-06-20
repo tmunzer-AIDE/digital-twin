@@ -35,6 +35,44 @@ def _finding_line(f: Finding, label: str = "finding") -> str:
     return f"  {label} [{f.severity.value}] {f.code}{where}{at}: {f.message}{_cause_clause(f)}"
 
 
+_MAX_IMPACT_LINES = 20
+
+
+def _impact_lines(f: Finding) -> list[str]:
+    """Expand wired.client.impact per-client entries into indented human lines."""
+    impacts = f.evidence.get("impacts")
+    if not isinstance(impacts, list):
+        return []
+    lines: list[str] = []
+    for i in impacts[:_MAX_IMPACT_LINES]:
+        ident = i.get("identity") or {}
+        who = ident.get("hostname") or i.get("mac", "?")
+        kind = " · ".join(
+            str(ident[k]) for k in ("family", "model", "mfg", "os") if ident.get(k)
+        )
+        kind = f" ({kind})" if kind else ""
+        detail = f": {i['detail']}" if i.get("detail") else ""
+        tags = []
+        # guard so an entry with no auth/NAC fields produces no bare "auth " tag
+        if ident.get("auth_type") or ident.get("status") or ident.get("nacrule"):
+            auth = "/".join(str(ident[k]) for k in ("auth_type", "status") if ident.get(k))
+            via = f" via {ident['nacrule']}" if ident.get("nacrule") else ""
+            tags.append(f"auth {auth}{via}")
+        if i.get("subnet"):
+            tags.append(f"subnet {i['subnet']}")
+        if i.get("dhcp_vlan_touched"):
+            tags.append("dhcp config changed")
+        tagstr = "".join(f"  [{t}]" for t in tags)
+        lines.append(
+            f"    - {who}{kind} vlan {i.get('vlan')} on {i.get('attachment')}"
+            f" — {i.get('impact')}{detail}{tagstr}"
+        )
+    extra = len(impacts) - _MAX_IMPACT_LINES
+    if extra > 0:
+        lines.append(f"    … and {extra} more (see JSON)")
+    return lines
+
+
 def _plain(obj: Any) -> Any:
     if isinstance(obj, Enum):
         return obj.value
@@ -69,6 +107,7 @@ def render_human(verdict: Verdict) -> str:
         )
     for f in verdict.findings[:20]:
         lines.append(_finding_line(f))
+        lines.extend(_impact_lines(f))
     for d in verdict.diagrams:
         lines.append(f"  diagram: {d.title}")
     if verdict.state_meta:
