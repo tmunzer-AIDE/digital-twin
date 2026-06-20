@@ -29,7 +29,7 @@ def _mint_wlan(row: Mapping[str, Any]) -> Wlan:
         enabled=bool(row.get("enabled")),
         auth_type=str(auth_type) if auth_type is not None else None,
         isolation=bool(row.get("isolation")) or bool(row.get("l2_isolation")),
-        apply_to=str(row["apply_to"]) if row.get("apply_to") is not None else None,
+        apply_to=str(av) if (av := row.get("apply_to")) is not None else None,
         ap_ids=tuple(sorted({str(x) for x in (row.get("ap_ids") or [])})),
         wxtag_ids=tuple(sorted({str(x) for x in (row.get("wxtag_ids") or [])})),
         # fail-closed: site-writable ONLY when positively site-owned
