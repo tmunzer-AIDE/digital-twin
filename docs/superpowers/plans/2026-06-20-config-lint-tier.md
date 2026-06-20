@@ -464,14 +464,33 @@ Run: `uv run pytest tests/scope/test_wlan_object.py -v` — FAIL (object_gate re
         )
 ```
 
-- [ ] **Step 6: Run + gate**
+- [ ] **Step 6: Update existing tests that pinned `wlan` as unsupported.** Adding `"wlan"` to `SUPPORTED_OBJECT_TYPES` breaks two pre-existing assertions:
+  - `tests/scope/test_allowlist.py` — update the M1-pair assertion:
+    ```python
+    def test_supported_object_types_are_the_m1_pair():
+        assert SUPPORTED_OBJECT_TYPES == ("site_setting", "device", "wlan")
+    ```
+  - `tests/scope/test_object_gate.py::test_all_offending_ops_reported` — `wlan` is now supported, so swap it for another genuinely-unsupported type to keep two offending ops:
+    ```python
+    def test_all_offending_ops_reported():
+        plan = _plan(
+            [
+                _op(object_type="wxtag", object_id="x1", order=0),
+                _op(object_type="rftemplate", object_id="r1", order=1),
+            ]
+        )
+        r = check_objects(plan)
+        assert isinstance(r, Rejection) and len(r.reasons) == 2
+    ```
 
-Run: `uv run pytest tests/scope/test_wlan_object.py -v && uv run pytest tests -q && uv run mypy src && uv run ruff check .` — all green.
+- [ ] **Step 7: Run + gate**
 
-- [ ] **Step 7: Commit**
+Run: `uv run pytest tests/scope/test_wlan_object.py tests/scope/test_allowlist.py tests/scope/test_object_gate.py -v && uv run pytest tests -q && uv run mypy src && uv run ruff check .` — all green.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/digital_twin/scope/allowlist.py src/digital_twin/adapters/mist/apply/objects.py src/digital_twin/scope/field_gate.py tests/scope/test_wlan_object.py
+git add src/digital_twin/scope/allowlist.py src/digital_twin/adapters/mist/apply/objects.py src/digital_twin/scope/field_gate.py tests/scope/test_wlan_object.py tests/scope/test_allowlist.py tests/scope/test_object_gate.py
 git commit -m "feat(lint): wlan as a simulable site object (gate+allowlist+apply+inherited screen)"
 ```
 
