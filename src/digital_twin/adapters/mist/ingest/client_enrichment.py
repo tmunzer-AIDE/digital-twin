@@ -8,12 +8,14 @@ good base value (e.g. a real OUI manufacturer)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from digital_twin.ir import ClientEnrichment, client_id
 
-_Json = dict[str, Any]
+from .base import IngestContext
+
+_Json = Mapping[str, Any]
 _Extract = Callable[[_Json], dict[str, Any]]  # one source row -> its candidate fields
 
 
@@ -96,3 +98,29 @@ def build_client_enrichment(
     for row in nac:  # last -> NAC wins per useful field
         _apply(acc, row, _nac_vals)
     return {mac: ClientEnrichment(**vals) for mac, vals in acc.items() if vals}
+
+
+class ClientEnrichmentIngester:
+    """Best-effort observational enrichment. SELF-ISOLATING: it never lets an
+    exception reach IngesterRegistry.run (which would record an IngestReport
+    failure -> report.ok False -> ir=None -> UNKNOWN). Earns NO capability."""
+
+    name = "client_enrichment"
+
+    def produces(self) -> frozenset[str]:
+        return frozenset()  # purely additive; nothing requires() it
+
+    def ingest(self, ctx: IngestContext) -> frozenset[str]:
+        try:
+            # Build the COMPLETE map first, then publish in ONE atomic call. If
+            # anything here raises, nothing is published — so a partial map is never
+            # observed and "broken enrichment == no enrichment" holds exactly.
+            enrich = build_client_enrichment(
+                wired=ctx.raw.wired_clients,
+                wireless=ctx.raw.wireless_clients,
+                nac=ctx.raw.nac_clients,
+            )
+            ctx.builder.set_client_enrichment(enrich)
+        except Exception:  # noqa: BLE001 — best-effort: degrade to "no enrichment", never fatal
+            pass
+        return frozenset()
