@@ -182,7 +182,7 @@ def test_plan4_public_api():
     from digital_twin.verdict.decision import Decision, DecisionInputs, decide
     from digital_twin.verdict.verdict import Verdict, assemble
 
-    assert len(ALL_WIRED_CHECKS) == 15
+    assert len(ALL_WIRED_CHECKS) == 16
     assert all(callable(f) for f in (find_cycles, resolve_exit, decide, assemble))
     assert all(
         x is not None
