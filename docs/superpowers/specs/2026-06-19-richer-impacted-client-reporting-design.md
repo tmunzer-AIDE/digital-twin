@@ -1,6 +1,6 @@
 # Richer impacted-client reporting
 
-**Status:** design — pending user review
+**Status:** Implemented — live-verified 2026-06-20
 **Date:** 2026-06-19
 **Author:** brainstormed with the repo owner
 
@@ -242,9 +242,26 @@ UNKNOWN. This extends the cause-attribution non-load-bearing pattern.
 - **P5** — enrichment absent/present equivalence golden + redacted-`nac_clients` fixture +
   live verify + roadmap/memory.
 
-## Open feasibility items (resolve during implementation)
+## Feasibility items — RESOLVED (live read-only verify, 2026-06-20)
 
-1. Whether the site `wired_clients` fetch surfaces `last_hostname`/`manufacture`/
-   `auth_method`, or needs a call adjustment (Component 1).
-2. The exact `nac_clients` provider endpoint/params (org search scoped to site) and its
-   redaction profile for the committed fixture.
+1. **The site `wired_clients` fetch DOES surface `last_hostname` / `manufacture` /
+   `auth_method` / `username`** (and the `last_*` rollups) — the "reduced enrichment for
+   non-NAC wired clients" worry was unfounded; no call adjustment was needed.
+2. **`mistapi.api.v1.orgs.nac_clients.searchOrgNacClients(session, org_id, site_id=,
+   duration="1d")` is the correct call** (verified by signature + a live fetch returning 15
+   NAC clients, no failures). **Redaction:** `nac_clients` rides `_RAW_FIELDS` through the
+   `redact()` pass, but `NAME_KEYS` matched keys EXACTLY and MISSED `last_hostname` /
+   `dhcp_hostname` / `username` / `last_username` (a pre-existing wired-client gap too) — so
+   a `--replay-store` run would have leaked client PII. Fixed by a `NAME_KEY_PARTS`
+   substring rule (REDACTION_VERSION 6 → 7), live-verified. The committed fixture was NOT
+   given `nac_clients` (no existing golden needs it; the equivalence golden injects its own
+   into an augmented doc), so no fixture re-capture was required.
+
+**Live end-to-end result (org `9777c1a0-…`, Live-Demo site):** fetch+ingest produced **284
+enriched clients** (e.g. a NAC-fingerprinted `Zebra ET65 / Android 13` scanner; hostname +
+OUI vendor for the rest), `ingest ok=True`, verdict path unaffected.
+
+**Deferred follow-up (non-blocking, from code review):** the self-isolating ingester
+swallows unexpected errors silently; no sibling ingester logs today and `bound_logger` isn't
+in ingest scope, so a module-level debug log on the swallow path is a reasonable future
+tidy-up, not a gap.
