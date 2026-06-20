@@ -91,7 +91,7 @@ class IRBuilder:
         self._capabilities: set[Capability] = set()
         self._ap_wlan_vlans: dict[str, set[int]] = {}
         self._ap_wlan_unresolved: dict[str, list[str]] = {}
-        self._client_enrichment: Mapping[str, ClientEnrichment] = {}
+        self._client_enrichment: dict[str, ClientEnrichment] = {}
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
