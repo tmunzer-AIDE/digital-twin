@@ -15,7 +15,7 @@ from typing import Any
 
 from digital_twin.analysis.delta_cause import causes_for_blackhole
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.checks.wired.snooping import _snooped_vlans  # "vlans this device snoops"
+from digital_twin.checks.wired.snooping import snooped_vlans  # "vlans this device snoops"
 from digital_twin.contracts import Cause, Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff
 from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
@@ -158,6 +158,9 @@ class ClientImpactCheck:
         return vlan.subnet if vlan is not None else None
 
     def _dhcp_vlan_touched(self, ctx: CheckContext, client: Client) -> bool:
+        # Four triggers, grouped by what they key on (so the code runs a,b,d,c, NOT
+        # a,b,c,d): a+b are vid-scoped (DHCP providers / serving scopes for the vlan);
+        # d+c are attach-port-scoped (this port's trust / its switch's snooping).
         vid = client.vlan
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         # (a) the vlan's modeled DHCP providers changed
@@ -177,10 +180,10 @@ class ClientImpactCheck:
             if bp is not None and pp is not None and bp.dhcp_trusted != pp.dhcp_trusted:
                 return True
             # (c) snooping on the client's switch — counts ONLY if it flips whether the
-            # CLIENT's vlan is snooped (not any snooping change). Reuses _snooped_vlans.
+            # CLIENT's vlan is snooped (not any snooping change). Reuses snooped_vlans.
             if bp is not None and vid is not None and (
-                (vid in _snooped_vlans(base_ir, bp.device_id))
-                != (vid in _snooped_vlans(prop_ir, bp.device_id))
+                (vid in snooped_vlans(base_ir, bp.device_id))
+                != (vid in snooped_vlans(prop_ir, bp.device_id))
             ):
                 return True
         return False

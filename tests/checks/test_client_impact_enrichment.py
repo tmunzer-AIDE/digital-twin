@@ -1,8 +1,10 @@
 """Enrichment is annotation-only: identity from BASELINE, subnet from baseline
 Vlan.subnet, dhcp_vlan_touched from the delta. None of it changes the verdict."""
+from dataclasses import fields
+
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
-from digital_twin.checks.wired.client_impact import ClientImpactCheck
+from digital_twin.checks.wired.client_impact import _IDENTITY_FIELDS, ClientImpactCheck
 from digital_twin.ir import (
     AttachKind,
     Client,
@@ -43,6 +45,12 @@ def _build(*, native: int, subnet=None, enrich=None, dhcp_trusted=None,
 def _ctx(base, prop) -> CheckContext:
     return CheckContext(baseline=AnalysisContext(base), proposed=AnalysisContext(prop),
                         diff=diff_ir(base, prop))
+
+
+def test_identity_fields_stay_in_sync_with_the_record():
+    # adding a NEW ClientEnrichment field forces a conscious choice here, so a fresh
+    # identity field can never silently drop out of evidence, and `meta` can never leak in.
+    assert set(_IDENTITY_FIELDS) | {"meta"} == {f.name for f in fields(ClientEnrichment)}
 
 
 def test_identity_from_baseline_and_subnet():

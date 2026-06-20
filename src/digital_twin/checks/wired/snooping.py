@@ -45,7 +45,7 @@ _BLIND_SOURCE = Confidence(
 )
 
 
-def _snooped_vlans(ir: IR, did: str) -> tuple[int, ...]:
+def snooped_vlans(ir: IR, did: str) -> tuple[int, ...]:
     """The vlan ids the device snoops: only vlans WITH a modeled DHCP source
     matter (without one there is no path to verify)."""
     dev = ir.devices.get(did)
@@ -130,7 +130,7 @@ class DhcpSnoopingCheck:
             if prop_ir.devices[did].role is not DeviceRole.SWITCH:
                 continue
             node = node_for(prop_root, did)
-            for vlan in _snooped_vlans(prop_ir, did):
+            for vlan in snooped_vlans(prop_ir, did):
                 sources = prop_ir.vlans[vlan].dhcp_sources
                 has_site = "site" in sources
                 if has_site:
@@ -164,7 +164,7 @@ class DhcpSnoopingCheck:
                     if state == "ok":
                         continue
                     pre = (
-                        vlan in _snooped_vlans(base_ir, did)
+                        vlan in snooped_vlans(base_ir, did)
                         and (bv := base_ir.vlans.get(vlan)) is not None
                         and source in bv.dhcp_sources
                         and _egress_trust(
