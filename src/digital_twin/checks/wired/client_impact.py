@@ -15,13 +15,20 @@ from typing import Any
 
 from digital_twin.analysis.delta_cause import causes_for_blackhole
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.wired.snooping import _snooped_vlans  # "vlans this device snoops"
 from digital_twin.contracts import Cause, Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff
-from digital_twin.ir.entities import AttachKind, Client
+from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
 from digital_twin.ir.indexes import node_for, vc_root_map
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _CAVEAT = "currently-connected clients only (not-yet-connected clients are unobservable)"
+# the ONLY ClientEnrichment fields projected into evidence — excludes `meta` so
+# observational provenance never leaks into the report.
+_IDENTITY_FIELDS = (
+    "hostname", "family", "mfg", "model", "os", "auth_type", "auth_method",
+    "auth_state", "nacrule", "status", "assigned_vlan", "vlan_source", "username",
+)
 
 
 class ClientImpactCheck:
@@ -78,13 +85,11 @@ class ClientImpactCheck:
             if base_port is None:
                 return None
             if prop_port is None:
-                return self._entry(
-                    client, "disconnect", "attach port removed",
-                    caused_by=ctx.delta_index.causes("port", [client.attach_id]),
-                )
+                return self._entry(ctx, client, "disconnect", "attach port removed",
+                                   caused_by=ctx.delta_index.causes("port", [client.attach_id]))
             if base_port.native_vlan is not None and prop_port.native_vlan != base_port.native_vlan:
                 return self._entry(
-                    client,
+                    ctx, client,
                     "vlan_move",
                     f"access vlan {base_port.native_vlan} -> {prop_port.native_vlan}",
                     caused_by=ctx.delta_index.causes("port", [client.attach_id]),
@@ -98,7 +103,8 @@ class ClientImpactCheck:
                         for base_comp in ctx.baseline.vlan_components(vlan):
                             if node in base_comp.nodes and base_comp.reaches_exit:
                                 return self._entry(
-                                    client, "blackhole", f"vlan {vlan} segment loses its exit",
+                                    ctx, client, "blackhole",
+                                    f"vlan {vlan} segment loses its exit",
                                     caused_by=causes_for_blackhole(ctx, vlan, comp),
                                 )
         return None
@@ -114,13 +120,67 @@ class ClientImpactCheck:
         return None
 
     def _entry(
-        self, client: Client, impact: str, detail: str, caused_by: tuple[Cause, ...] = ()
+        self, ctx: CheckContext, client: Client, impact: str, detail: str,
+        caused_by: tuple[Cause, ...] = (),
     ) -> dict[str, Any]:
-        return {
+        entry: dict[str, Any] = {
             "mac": client.mac,
             "vlan": client.vlan,
             "attachment": client.attach_id,
             "impact": impact,
             "detail": detail,
             "caused_by": caused_by,
+            "subnet": self._subnet(ctx, client),
+            "dhcp_vlan_touched": self._dhcp_vlan_touched(ctx, client),
         }
+        identity = self._identity(ctx, client)
+        if identity:
+            entry["identity"] = identity
+        return entry
+
+    def _identity(self, ctx: CheckContext, client: Client) -> dict[str, str]:
+        # BASELINE enrichment: the finding describes clients connected BEFORE the change.
+        # Project an EXPLICIT allowlist (_IDENTITY_FIELDS) so the record's `meta` (and any
+        # future non-identity field) never leaks into evidence["impacts"][i].identity.
+        ce: ClientEnrichment | None = ctx.baseline.ir.client_enrichment.get(client.id)
+        if ce is None:
+            return {}
+        return {
+            name: getattr(ce, name)
+            for name in _IDENTITY_FIELDS
+            if getattr(ce, name) is not None
+        }
+
+    def _subnet(self, ctx: CheckContext, client: Client) -> str | None:
+        if client.vlan is None:
+            return None
+        vlan = ctx.baseline.ir.vlans.get(client.vlan)
+        return vlan.subnet if vlan is not None else None
+
+    def _dhcp_vlan_touched(self, ctx: CheckContext, client: Client) -> bool:
+        vid = client.vlan
+        base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
+        # (a) the vlan's modeled DHCP providers changed
+        if vid is not None:
+            bv, pv = base_ir.vlans.get(vid), prop_ir.vlans.get(vid)
+            if bv is not None and pv is not None and bv.dhcp_sources != pv.dhcp_sources:
+                return True
+            # (b) a DHCP scope SERVING this vlan was added/removed/changed
+            # (DhcpScope exposes `vlan`, NOT `vlan_id` — entities.py:208)
+            def serving(ir: Any) -> dict[str, Any]:
+                return {s.id: s for s in ir.dhcp_scopes if s.vlan == vid}
+            if serving(base_ir) != serving(prop_ir):
+                return True
+        # (d) the client's own attach port: dhcp_trusted flip
+        if client.attach_kind is AttachKind.PORT:
+            bp, pp = base_ir.ports.get(client.attach_id), prop_ir.ports.get(client.attach_id)
+            if bp is not None and pp is not None and bp.dhcp_trusted != pp.dhcp_trusted:
+                return True
+            # (c) snooping on the client's switch — counts ONLY if it flips whether the
+            # CLIENT's vlan is snooped (not any snooping change). Reuses _snooped_vlans.
+            if bp is not None and vid is not None and (
+                (vid in _snooped_vlans(base_ir, bp.device_id))
+                != (vid in _snooped_vlans(prop_ir, bp.device_id))
+            ):
+                return True
+        return False
