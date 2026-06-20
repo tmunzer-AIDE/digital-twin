@@ -348,7 +348,7 @@ git commit -m "feat(lint): record Vlan.collisions (distinct other names) at the 
 # tests/scope/test_wlan_object.py
 from datetime import UTC, datetime
 
-from digital_twin.adapters.mist.apply.objects import get_object, replace_object
+from digital_twin.adapters.mist.apply.objects import effective_update, get_object, replace_object
 from digital_twin.contracts import ChangeOp, ChangePlan, ChangeScope, Rejection
 from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta
 from digital_twin.scope.field_gate import screen_op
@@ -387,13 +387,15 @@ def test_get_and_replace_target_raw_wlans_by_id():
 
 
 def test_field_gate_modeled_leaf_passes_unmodeled_rejects():
-    assert screen_op("wlan", _SITE, {"isolation": True}) is None       # modeled
-    r = screen_op("wlan", _SITE, {"hide_ssid": True})                  # unmodeled
+    # the engine passes the EFFECTIVE object (effective_update) to screen_op, not the
+    # partial payload — a partial dict would read every other root as a deletion.
+    assert screen_op("wlan", _SITE, effective_update(_SITE, {"isolation": True})) is None
+    r = screen_op("wlan", _SITE, effective_update(_SITE, {"hide_ssid": True}))   # unmodeled
     assert isinstance(r, Rejection)
 
 
 def test_inherited_wlan_op_rejected_post_fetch():
-    r = screen_op("wlan", _INHERITED, {"isolation": True})
+    r = screen_op("wlan", _INHERITED, effective_update(_INHERITED, {"isolation": True}))
     assert isinstance(r, Rejection) and any("inherited" in x for x in r.reasons)
 ```
 
@@ -553,8 +555,16 @@ git commit -m "feat(lint): L0 wlan schema (thin/permissive) so wlan ops validate
 ```python
 # tests/checks/test_config_lint_helper.py
 from digital_twin.checks.base import Coverage, CoverageState, Status
-from digital_twin.checks.wired.config_lint import Violation, run_delta_lint
+from digital_twin.checks.wired.config_lint import Violation, run_delta_lint, touched_ids
 from digital_twin.contracts import ObjectRef, Severity
+from digital_twin.ir.diff import EntityRef, IRDiff, Modified
+
+
+def test_touched_ids_filters_by_kind():
+    diff = IRDiff(added=(EntityRef("wlan", "w2"),), removed=(),
+                  modified=(Modified(EntityRef("vlan", "10"), ("subnet",)),))
+    assert touched_ids(diff, "wlan") == {"w2"}
+    assert touched_ids(diff, "vlan") == {"10"}
 
 
 def _v(key, summary):
@@ -606,9 +616,18 @@ from typing import Any
 
 from digital_twin.checks.base import CheckResult, Coverage, Status
 from digital_twin.contracts import Cause, Finding, FindingCategory, FindingSource, ObjectRef, Severity
-from digital_twin.ir import Confidence, ConfidenceLevel
+from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
+
+
+def touched_ids(diff: IRDiff, kind: str) -> set[str]:
+    """Entity ids of `kind` the delta added/removed/modified. Used to RELEVANCE-SCOPE
+    coverage notes: a lint check emits a PARTIAL note only when the unverifiable item is
+    itself delta-touched (PARTIAL floors to REVIEW, so an unrelated old wxtag/unparseable
+    item must never taint an unrelated change)."""
+    refs = (*diff.added, *diff.removed, *(m.ref for m in diff.modified))
+    return {r.id for r in refs if r.kind == kind}
 
 
 @dataclass(frozen=True)
@@ -722,12 +741,24 @@ def test_empty_explicit_scope_is_silent():
     assert res.findings == () and res.coverage.state is CoverageState.COMPLETE
 
 
-def test_wxtag_scope_is_partial_note_not_finding():
-    ir = _ir(Wlan(id="w1", ssid="g", enabled=True, auth_type="open", isolation=False,
-                  apply_to="wxtags", wxtag_ids=("t1",)))
-    res = WlanOpenGuestCheck().run(_ctx(ir, ir))
+def test_wxtag_scope_INTRODUCED_is_partial_note_not_finding():
+    # the wxtag WLAN is delta-touched (added) -> PARTIAL note, no WARNING
+    wx = Wlan(id="w1", ssid="g", enabled=True, auth_type="open", isolation=False,
+              apply_to="wxtags", wxtag_ids=("t1",))
+    res = WlanOpenGuestCheck().run(_ctx(_ir(), _ir(wx)))
     assert all(f.severity is not Severity.WARNING for f in res.findings)
     assert res.coverage.state is CoverageState.PARTIAL
+
+
+def test_unrelated_diff_leaves_old_wxtag_wlan_complete():
+    # relevance-scoping: a pre-existing wxtag WLAN (untouched) + an UNRELATED wlan change
+    # must NOT floor to PARTIAL/REVIEW.
+    wx = Wlan(id="w1", ssid="g", enabled=True, auth_type="open", isolation=False,
+              apply_to="wxtags", wxtag_ids=("t1",))
+    base = _ir(wx, Wlan(id="w2", ssid="corp", enabled=True, apply_to="site"))
+    prop = _ir(wx, Wlan(id="w2", ssid="corp2", enabled=True, apply_to="site"))  # only w2 changed
+    res = WlanOpenGuestCheck().run(_ctx(base, prop))
+    assert res.coverage.state is CoverageState.COMPLETE
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -748,7 +779,7 @@ Scope-aware and never-false-positive: an explicit EMPTY AP scope applies nowhere
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState
-from digital_twin.checks.wired.config_lint import Violation, run_delta_lint
+from digital_twin.checks.wired.config_lint import Violation, run_delta_lint, touched_ids
 from digital_twin.contracts import ObjectRef, Severity
 from digital_twin.ir import Capability, IRCapability, IRDiff, Wlan
 from digital_twin.ir.model import IR
@@ -776,20 +807,12 @@ class WlanOpenGuestCheck:
     def applies_to(self, diff: IRDiff) -> bool:
         return diff.touches("wlan")
 
-    def _violations_and_notes(self, ir: IR) -> tuple[list[Violation], list[str]]:
+    def _violations(self, ir: IR) -> list[Violation]:
         viols: list[Violation] = []
-        notes: list[str] = []
         for w in ir.wlans:
             if not w.enabled or w.auth_type != "open" or w.isolation:
                 continue
-            scope = _active_scope(w)
-            if scope == "nowhere":
-                continue  # applies to no AP -> silent
-            if scope == "unresolved":
-                notes.append(
-                    f"WLAN '{w.ssid}' is open without isolation but its AP scope "
-                    f"({w.apply_to}) is unresolved — potentially active"
-                )
+            if _active_scope(w) != "active":  # nowhere -> silent; unresolved -> note in run()
                 continue
             viols.append(
                 Violation(
@@ -803,14 +826,28 @@ class WlanOpenGuestCheck:
                     evidence={"ssid": w.ssid, "auth_type": w.auth_type, "isolation": w.isolation},
                 )
             )
-        return viols, notes
+        return viols
+
+    def _unresolved(self, ir: IR) -> list[Wlan]:
+        return [
+            w for w in ir.wlans
+            if w.enabled and w.auth_type == "open" and not w.isolation
+            and _active_scope(w) == "unresolved"
+        ]
 
     def run(self, ctx: CheckContext) -> CheckResult:
-        base, _ = self._violations_and_notes(ctx.baseline.ir)
-        prop, notes = self._violations_and_notes(ctx.proposed.ir)
+        base = self._violations(ctx.baseline.ir)
+        prop = self._violations(ctx.proposed.ir)
+        # RELEVANCE-SCOPED: note an unresolved open WLAN only when it is delta-touched,
+        # so an unrelated old wxtag WLAN never floors an unrelated change to REVIEW.
+        touched = touched_ids(ctx.diff, "wlan")
+        notes = tuple(
+            f"WLAN '{w.ssid}' is open without isolation but its AP scope "
+            f"({w.apply_to}) is unresolved — potentially active"
+            for w in self._unresolved(ctx.proposed.ir) if w.id in touched
+        )
         coverage = Coverage(
-            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
-            notes=tuple(notes),
+            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE, notes=notes,
         )
         return run_delta_lint(check_id=self.id, base=base, proposed=prop, coverage=coverage)
 ```
@@ -874,12 +911,21 @@ def test_disabled_duplicate_not_flagged():
     assert WlanDuplicateSsidCheck().run(_ctx(ir, ir)).status is Status.PASS
 
 
-def test_wxtag_scoped_duplicate_is_note_not_finding():
-    ir = _ir(Wlan(id="w1", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t1",)),
-             Wlan(id="w2", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t2",)))
-    res = WlanDuplicateSsidCheck().run(_ctx(ir, ir))
+def test_wxtag_scoped_duplicate_INTRODUCED_is_note_not_finding():
+    # introducing the second wxtag WLAN touches it -> PARTIAL note, no WARNING
+    w1 = Wlan(id="w1", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t1",))
+    w2 = Wlan(id="w2", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t2",))
+    res = WlanDuplicateSsidCheck().run(_ctx(_ir(w1), _ir(w1, w2)))
     assert all(f.severity is not Severity.WARNING for f in res.findings)
     assert res.coverage.state is CoverageState.PARTIAL
+
+
+def test_unrelated_diff_leaves_old_wxtag_duplicate_complete():
+    w1 = Wlan(id="w1", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t1",))
+    w2 = Wlan(id="w2", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t2",))
+    base = _ir(w1, w2, Wlan(id="w3", ssid="iot", enabled=True, apply_to="site"))
+    prop = _ir(w1, w2, Wlan(id="w3", ssid="iot2", enabled=True, apply_to="site"))  # only w3
+    assert WlanDuplicateSsidCheck().run(_ctx(base, prop)).coverage.state is CoverageState.COMPLETE
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -900,7 +946,7 @@ from __future__ import annotations
 from itertools import combinations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState
-from digital_twin.checks.wired.config_lint import Violation, run_delta_lint
+from digital_twin.checks.wired.config_lint import Violation, run_delta_lint, touched_ids
 from digital_twin.contracts import ObjectRef, Severity
 from digital_twin.ir import Capability, IRCapability, IRDiff, Wlan
 from digital_twin.ir.model import IR
@@ -934,19 +980,18 @@ class WlanDuplicateSsidCheck:
     def applies_to(self, diff: IRDiff) -> bool:
         return diff.touches("wlan")
 
-    def _violations_and_notes(self, ir: IR) -> tuple[list[Violation], list[str]]:
+    def _groups(self, ir: IR) -> dict[str, list[Wlan]]:
         by_ssid: dict[str, list[Wlan]] = {}
         for w in ir.wlans:
             if w.enabled and w.ssid:
                 by_ssid.setdefault(w.ssid, []).append(w)
+        return {s: g for s, g in by_ssid.items() if len(g) >= 2}
+
+    def _violations(self, ir: IR) -> list[Violation]:
         viols: list[Violation] = []
-        notes: list[str] = []
-        for ssid, group in by_ssid.items():
-            if len(group) < 2:
-                continue
+        for ssid, group in self._groups(ir).items():
             for a, b in combinations(sorted(group, key=lambda w: w.id), 2):
-                ov = _overlap(a, b)
-                if ov == "yes":
+                if _overlap(a, b) == "yes":
                     pair = (a.id, b.id)
                     viols.append(
                         Violation(
@@ -960,19 +1005,30 @@ class WlanDuplicateSsidCheck:
                             evidence={"ssid": ssid, "wlans": list(pair)},
                         )
                     )
-                elif ov == "unknown":
-                    notes.append(
-                        f"SSID '{ssid}' duplicated across WLANs with wxtag/unknown scope — "
-                        "overlap unverifiable"
-                    )
-        return viols, notes
+        return viols
+
+    def _unverifiable(self, ir: IR) -> list[tuple[str, str, str]]:
+        """(ssid, a.id, b.id) for each pair whose overlap can't be verified."""
+        out: list[tuple[str, str, str]] = []
+        for ssid, group in self._groups(ir).items():
+            for a, b in combinations(sorted(group, key=lambda w: w.id), 2):
+                if _overlap(a, b) == "unknown":
+                    out.append((ssid, a.id, b.id))
+        return out
 
     def run(self, ctx: CheckContext) -> CheckResult:
-        base, _ = self._violations_and_notes(ctx.baseline.ir)
-        prop, notes = self._violations_and_notes(ctx.proposed.ir)
+        base = self._violations(ctx.baseline.ir)
+        prop = self._violations(ctx.proposed.ir)
+        # RELEVANCE-SCOPED: note an unverifiable duplicate only when one of its WLANs is
+        # delta-touched, so a pre-existing wxtag duplicate never floors an unrelated change.
+        touched = touched_ids(ctx.diff, "wlan")
+        notes = tuple(dict.fromkeys(
+            f"SSID '{ssid}' duplicated across WLANs with wxtag/unknown scope — overlap unverifiable"
+            for ssid, a_id, b_id in self._unverifiable(ctx.proposed.ir)
+            if a_id in touched or b_id in touched
+        ))
         coverage = Coverage(
-            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
-            notes=tuple(notes),
+            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE, notes=notes,
         )
         return run_delta_lint(check_id=self.id, base=base, proposed=prop, coverage=coverage)
 ```
@@ -1042,6 +1098,14 @@ def test_unresolved_subnet_skipped_relevance_scoped():
              Vlan(vlan_id=20, subnet="{{var}}", subnet_unresolved=True))
     res = SubnetOverlapCheck().run(_ctx(ir, ir))
     assert res.status is Status.PASS and res.coverage.state is CoverageState.COMPLETE
+
+
+def test_touched_unparseable_subnet_is_partial_note():
+    # a present-but-unparseable CIDR on a DELTA-TOUCHED vlan -> PARTIAL note (not silent PASS)
+    base = _ir(Vlan(vlan_id=10, subnet="10.0.0.0/24"))
+    prop = _ir(Vlan(vlan_id=10, subnet="10.0.0.0/24"), Vlan(vlan_id=20, subnet="not-a-cidr"))
+    res = SubnetOverlapCheck().run(_ctx(base, prop))
+    assert res.coverage.state is CoverageState.PARTIAL and any("20" in n for n in res.coverage.notes)
 ```
 
 - [ ] **Step 2: Run to verify it fails** — `uv run pytest tests/checks/test_subnet_overlap.py -v` (module missing).
@@ -1060,9 +1124,10 @@ import ipaddress
 from itertools import combinations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState
-from digital_twin.checks.wired.config_lint import Violation, run_delta_lint
+from digital_twin.checks.wired.config_lint import Violation, run_delta_lint, touched_ids
 from digital_twin.contracts import ObjectRef, Severity
 from digital_twin.ir import Capability, IRCapability, IRDiff
+from digital_twin.ir.entities import Vlan
 from digital_twin.ir.model import IR
 
 _Net = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -1075,6 +1140,12 @@ def _net(subnet: str | None) -> _Net | None:
         return ipaddress.ip_network(subnet, strict=False)
     except ValueError:
         return None
+
+
+def _unusable(v: Vlan) -> bool:
+    """The vlan declares a subnet we could NOT compare: templated/unresolved, OR a
+    present-but-unparseable CIDR (both must be skipped AND can warrant a note)."""
+    return v.subnet_unresolved or (bool(v.subnet) and _net(v.subnet) is None)
 
 
 class SubnetOverlapCheck:
@@ -1120,13 +1191,13 @@ class SubnetOverlapCheck:
     def run(self, ctx: CheckContext) -> CheckResult:
         base = self._violations(ctx.baseline.ir)
         prop = self._violations(ctx.proposed.ir)
-        # relevance-scoped note: only when a delta-touched vlan is itself unresolved
-        touched = {r.id for r in (*ctx.diff.added, *ctx.diff.removed,
-                                  *(m.ref for m in ctx.diff.modified)) if r.kind == "vlan"}
+        # RELEVANCE-SCOPED note: only when a DELTA-TOUCHED vlan has an unusable subnet
+        # (unresolved OR unparseable) — an untouched bad subnet never floors to REVIEW.
+        touched = touched_ids(ctx.diff, "vlan")
         notes = tuple(
-            f"vlan {v.vlan_id} subnet is unresolved — not compared"
+            f"vlan {v.vlan_id} subnet {v.subnet!r} could not be compared (unresolved/unparseable)"
             for v in ctx.proposed.ir.vlans.values()
-            if v.subnet_unresolved and str(v.vlan_id) in touched
+            if str(v.vlan_id) in touched and _unusable(v)
         )
         coverage = Coverage(
             state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE, notes=notes
