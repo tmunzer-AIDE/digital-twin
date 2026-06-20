@@ -134,6 +134,18 @@ unrelated change) and rest on the new `Wlan` IR entity (secret-free) + WLAN as
 a simulable site object. Live-verified 2026-06-20: `mist-guest` (open WITH
 isolation) correctly NOT flagged; ingest clean.
 
+- 🔵 **WLAN auth-type transition (psk/eap → open) → sharp GS33** — the twin
+  models only `auth.type`, but Mist replaces the whole `auth` ROOT, so a
+  psk/eap→open edit drops companion `auth.{psk,…}` leaves. The field gate
+  rejects those deletions as out-of-scope → the op floors to UNKNOWN before
+  `wireless.wlan.open_guest` (GS33) can fire — exactly the transition it targets.
+  Never false-SAFE (UNKNOWN is conservative), just blunt. Pinned by
+  `tests/scope/test_wlan_object.py::test_auth_root_replace_currently_out_of_scope`.
+  Fix = a deliberate auth-leaf policy in the field gate: when `auth.type` is
+  among the changed leaves on a `wlan` op, ignore companion `auth.*` secret/
+  unmodeled churn so GS33 runs; a pure auth change with no type change stays
+  UNKNOWN. (Decide the psk→eap-reads-SAFE edge before building.)
+
 ### Routing & services tier (needs the L3/routing IR extension)
 
 Today every plan touching these resolves to UNKNOWN by default-deny (test

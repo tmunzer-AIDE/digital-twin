@@ -49,3 +49,16 @@ def test_field_gate_modeled_leaf_passes_unmodeled_rejects():
 def test_inherited_wlan_op_rejected_post_fetch():
     r = screen_op("wlan", _INHERITED, effective_update(_INHERITED, {"isolation": True}))
     assert isinstance(r, Rejection) and any("inherited" in x for x in r.reasons)
+
+
+def test_auth_root_replace_currently_out_of_scope():
+    # PINS CURRENT (conservative) BEHAVIOR — see ROADMAP "WLAN auth-type transition".
+    # The twin models only auth.type, but Mist replaces the whole `auth` ROOT, so a
+    # psk->open transition drops the companion auth.psk leaf. The field gate rejects
+    # that deletion as out-of-scope -> the op floors to UNKNOWN before GS33 can warn.
+    # This is never false-SAFE (UNKNOWN is conservative); the deferred follow-up would
+    # make this transition a sharp GS33 REVIEW instead.
+    psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
+           "isolation": False, "auth": {"type": "psk", "psk": "secret"}}
+    r = screen_op("wlan", psk, effective_update(psk, {"auth": {"type": "open"}}))
+    assert isinstance(r, Rejection) and any("auth.psk" in x for x in r.reasons)
