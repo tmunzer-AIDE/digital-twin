@@ -1369,6 +1369,177 @@ def od_gw_failsafe_combined_plan() -> tuple[dict[str, Any], dict[str, Any]]:
     return doc, plan
 
 
+# ---------------------------------------------------------------------------
+# CL: config-lint tier goldens (GS30-GS33, Task 11)
+#
+# Five scenarios exercise the four lint checks end-to-end through simulate().
+# Each uses a MINIMAL doc (not the real fixture) so the setting diff is clean:
+# only the test networks/wlans are present, no unmodelled fixture leaves that
+# would taint the field gate.
+#
+# Wired lint (site_setting op):
+#   CL-vlan_collision_introduce  — GS30 REVIEW / .introduced
+#   CL-subnet_overlap_introduce  — GS31 REVIEW / .introduced
+#   CL-vlan_collision_preexisting — GS30 SAFE / .preexisting (benign in-domain edit)
+#
+# Wireless lint (wlan op):
+#   CL-open_guest_introduce      — GS33 REVIEW / .introduced
+#   CL-duplicate_ssid_introduce  — GS32 REVIEW / .introduced
+# ---------------------------------------------------------------------------
+
+# Org-id / site-id borrowed from the real fixture so the FixtureProvider strict
+# scope guard accepts plan_for's site_id without complaint.
+CL_ORG_ID = "28f07d4d-f229-ae8c-d0c3-8cdb32cb4a15"
+CL_SITE_ID = "d60700f1-76fd-096b-f6d5-1d34b817f5a3"
+
+
+def _cl_base_doc(*, with_wlans: bool = False) -> dict[str, Any]:
+    """A MINIMAL single-site doc: only the fields the lint pipeline needs.
+    `with_wlans=True` adds `wlans` to meta.fetched and an empty wlans list so
+    that WLAN_CONFIG is earnable (the lint checks that need it run only then)."""
+    fetched = [
+        "site", "setting", "devices", "device_stats", "port_stats",
+        "wireless_clients", "wired_clients",
+    ]
+    if with_wlans:
+        fetched.append("wlans")
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": CL_ORG_ID, "site_id": CL_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-20T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": fetched,
+            "failures": [],
+        },
+        "site": {"id": CL_SITE_ID, "org_id": CL_ORG_ID,
+                 "networktemplate_id": None, "gatewaytemplate_id": None,
+                 "sitetemplate_id": None},
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+
+
+def _cl_setting_op(doc: dict[str, Any], proposed_networks: dict[str, Any]) -> dict[str, Any]:
+    """A site_setting update op whose payload replaces only the `networks` root.
+    The baseline doc must have a MINIMAL setting (only networks + port_usages) so
+    that the changed_leaf_paths diff is clean (no unmodelled setting leaves)."""
+    site_id = doc["scope"]["site_id"]
+    return {
+        "action": "update",
+        "order": 0,
+        "object_type": "site_setting",
+        "object_id": site_id,
+        "payload": {"networks": proposed_networks},
+    }
+
+
+def _cl_wlan_op(wlan_id: str, changed_leaves: dict[str, Any], order: int = 0) -> dict[str, Any]:
+    """A wlan update op with a PARTIAL payload (only the allowed leaves that change).
+    Since Mist does root-level updates, omitted roots persist — the field gate
+    sees only the changed leaves, all of which are in _WLAN_LEAVES."""
+    return {
+        "action": "update",
+        "order": order,
+        "object_type": "wlan",
+        "object_id": wlan_id,
+        "payload": changed_leaves,
+    }
+
+
+def config_lint_base_doc(*, kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return (doc, plan) for one of the five config-lint golden scenarios.
+
+    kind:
+      "vlan_collision_introduce"  — GS30: add a second network on vid 10 (REVIEW)
+      "subnet_overlap_introduce"  — GS31: add a network whose subnet overlaps corp (REVIEW)
+      "open_guest_introduce"      — GS33: remove isolation from an open guest WLAN (REVIEW)
+      "duplicate_ssid_introduce"  — GS32: enable a second corp-SSID WLAN (REVIEW)
+      "vlan_collision_preexisting" — GS30: collision already in baseline; benign edit (SAFE)
+    """
+    if kind == "vlan_collision_introduce":
+        # Baseline: single network corp on vid 10 (no collision).
+        # Op: add guest on vid 10 -> introduces the vid-10 collision.
+        doc = _cl_base_doc()
+        doc["setting"]["networks"] = {"corp": {"vlan_id": 10}}
+        proposed = {"corp": {"vlan_id": 10}, "guest": {"vlan_id": 10}}
+        op = _cl_setting_op(doc, proposed)
+        return doc, plan_for(doc, [op])
+
+    if kind == "subnet_overlap_introduce":
+        # Baseline: corp (vid 10) with subnet 10.0.0.0/24 (no overlap).
+        # Op: add iot (vid 20) with subnet 10.0.0.0/25 which overlaps corp.
+        doc = _cl_base_doc()
+        doc["setting"]["networks"] = {"corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"}}
+        proposed = {
+            "corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"},
+            "iot": {"vlan_id": 20, "subnet": "10.0.0.0/25"},
+        }
+        op = _cl_setting_op(doc, proposed)
+        return doc, plan_for(doc, [op])
+
+    if kind == "open_guest_introduce":
+        # Baseline: one open WLAN WITH isolation=True (safe — isolation is on).
+        # Op: set isolation=False -> introduces the open-no-isolation violation.
+        doc = _cl_base_doc(with_wlans=True)
+        guest_wlan = {
+            "id": "w1",
+            "ssid": "guest",
+            "enabled": True,
+            "for_site": True,
+            "auth": {"type": "open"},
+            "isolation": True,
+            "apply_to": "site",
+        }
+        doc["wlans"] = [guest_wlan]
+        op = _cl_wlan_op("w1", {"isolation": False})
+        return doc, plan_for(doc, [op])
+
+    if kind == "duplicate_ssid_introduce":
+        # Baseline: two site-owned site-scoped WLANs with SSID "corp";
+        # w2 is DISABLED so no duplicate yet.
+        # Op: enable w2 -> introduces the duplicate-SSID violation.
+        doc = _cl_base_doc(with_wlans=True)
+        doc["wlans"] = [
+            {"id": "w1", "ssid": "corp", "enabled": True,
+             "for_site": True, "apply_to": "site"},
+            {"id": "w2", "ssid": "corp", "enabled": False,
+             "for_site": True, "apply_to": "site"},
+        ]
+        op = _cl_wlan_op("w2", {"enabled": True})
+        return doc, plan_for(doc, [op])
+
+    if kind == "vlan_collision_preexisting":
+        # Baseline: BOTH corp and guest already on vid 10 (collision in baseline).
+        # Op: add a benign unrelated network mgmt on vid 99.
+        # -> The vlan diff fires applies_to; the vid-10 collision key is UNCHANGED
+        #    -> run_delta_lint emits .preexisting (INFO) -> SAFE.
+        doc = _cl_base_doc()
+        doc["setting"]["networks"] = {
+            "corp": {"vlan_id": 10},
+            "guest": {"vlan_id": 10},
+        }
+        proposed = {
+            "corp": {"vlan_id": 10},
+            "guest": {"vlan_id": 10},
+            "mgmt": {"vlan_id": 99},
+        }
+        op = _cl_setting_op(doc, proposed)
+        return doc, plan_for(doc, [op])
+
+    raise ValueError(f"unknown config_lint kind: {kind!r}")
+
+
 def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
             disable: bool = False, order: int = 0) -> dict[str, Any]:
     """A HUB device op whose payload sets ospf to the given state. `entries=None`
