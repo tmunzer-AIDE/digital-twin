@@ -438,6 +438,12 @@ class SwitchIngester:
         dhcp_sources = self._dhcp_sources(ctx, org_vlan_by_name)
         # same org map as _dhcp_sources — the two layers must not disagree
         self._mint_dhcp_scopes(ctx, org_vlan_by_name)
+        names_by_vid: dict[int, list[str]] = {}
+        for eff in sources:
+            for name, net in (eff.get("networks") or {}).items():
+                vid = _vlan_int(net.get("vlan_id"))
+                if vid is not None:
+                    names_by_vid.setdefault(vid, []).append(name)
         for eff in sources:
             for name, net in (eff.get("networks") or {}).items():
                 vid = _vlan_int(net.get("vlan_id"))
@@ -448,6 +454,7 @@ class SwitchIngester:
                         vid, subnet_rows_by_vid, org_subnet_raw,
                         parse=_literal_subnet, same=same_subnet,
                     )
+                    collisions = tuple(sorted(set(names_by_vid.get(vid, [])) - {name}))
                     ctx.builder.add_vlan(
                         Vlan(
                             vlan_id=vid,
@@ -458,6 +465,7 @@ class SwitchIngester:
                             gateway=gw,
                             gateway_unresolved=gw_unresolved,
                             dhcp_sources=tuple(sorted(dhcp_sources.get(vid, ()))),
+                            collisions=collisions,
                         )
                     )
 

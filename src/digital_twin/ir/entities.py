@@ -183,6 +183,9 @@ class Vlan:
     # dhcpd_config). Empty = NO modeled path (which is normal — external
     # servers are invisible); the wired.dhcp.path check reasons about REMOVAL.
     dhcp_sources: tuple[str, ...] = ()
+    # GS30: distinct OTHER network names that also claim this vlan_id (the dedup
+    # keeps the first; this surfaces the shadowed claimants). () = no collision.
+    collisions: tuple[str, ...] = ()
     meta: FactMeta = CONFIG_META
 
     @property
