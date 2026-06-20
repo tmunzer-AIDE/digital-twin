@@ -57,8 +57,17 @@ isolation: bool           # isolation OR l2_isolation (either client-isolation f
 apply_to: str | None      # "site" | "aps" | "wxtags" | None
 ap_ids: tuple[str, ...]   # sorted+deduped; explicit AP scope
 wxtag_ids: tuple[str, ...] # sorted+deduped
+inherited: bool           # True = org-template-owned (NOT site-writable); see below
 meta: FactMeta = CONFIG_META
 ```
+- **Derived list = effective facts, but not all are writable.** `_wlans()` fetches the
+  **derived** WLAN list (`listSiteWlansDerived`) precisely to include org-template WLANs the
+  site broadcasts. That is correct for **detection** — GS32/GS33 reason about the full
+  effective set. But an org-template WLAN is **not a site-writable object**, so `inherited`
+  records ownership: `inherited = True` when the row is org-template-owned (raw
+  `for_site == False` and/or a `template_id` not equal to the site's own). This split is
+  load-bearing: detection consumes all `Wlan`s; **simulation** (a `wlan` op) is allowed only
+  against site-owned (`inherited == False`) WLANs (see §2).
 - **Identity**: `id` = the provider WLAN id. This is a pragmatic deviation from the IR's
   "stable logical key" doctrine (an SSID rename then diffs as a *modification*, not
   remove+add — which is what we want for delta-conditioning). Documented here.
@@ -99,6 +108,14 @@ ChangePlan op must be simulable. Today `object_type="wlan"` is rejected pre-fetc
   **explicitly** on `device` vs `wlan` — today the non-`site_setting` fallback is effectively
   "device", so the WLAN branch must not fall through. The op payload merges via the existing
   root-level `effective_update`; the rolling update re-ingests and re-mints the `Wlan`.
+- **Inherited-WLAN rejection (honest, never misleading)**: a `wlan` op whose target id is an
+  **inherited** (org-template-owned) WLAN is rejected → UNKNOWN with a clear reason
+  ("WLAN `<id>` is inherited from an org wlantemplate; simulate the change at the org/template
+  level, not the site"). Only site-owned (`inherited == False`) WLANs are writable here.
+  Ownership is only known **post-fetch**, so this rejection lives at the post-fetch screen
+  (the same stage as the existing device-role "must be a switch" check in `screen_op`), NOT
+  the pre-fetch `object_gate` — and it is NEVER a silent pretend-update of an inherited row.
+  (Org-level WLAN-template simulation is a separate object type, out of scope for this tier.)
 - **Field gate** rides the new allowlist automatically.
 
 GS30/GS31 ride existing `site_setting` ops: `networks.*.vlan_id` (GS30) and
@@ -119,8 +136,10 @@ baseline_keys`); each supplies its own **violation key** and finding builder:
 reads as introduced, not pre-existing):
 - **GS30**: `(vlan_id, frozenset({winner_name, *collisions}))` — `corp+guest`→`corp+iot` is
   *altered* (new key), not INFO. `applies_to` touches `vlan`; `requires` WIRED_L2.
-- **GS31**: `frozenset({(vid_a, subnet_a), (vid_b, subnet_b)})` — the overlapping pair with
-  its subnets. Same IP version only; identical subnet on the *same* vlan is not a collision.
+- **GS31**: `frozenset({(vid_a, canon_a), (vid_b, canon_b)})` where `canon_x =
+  ip_network(subnet, strict=False)` — the **canonical parsed** network, NOT the raw string,
+  so a reformatted-but-identical CIDR doesn't read as a new violation (raw text stays in
+  evidence). Same IP version only; identical subnet on the *same* vlan is not a collision.
   `applies_to` touches `vlan`; `requires` WIRED_L2.
 - **GS32**: the overlapping **WLAN-id pair** (a pre-existing dup on A/B must not mask a new
   dup on C/D). `applies_to` touches `wlan`; `requires` WLAN_CONFIG.
@@ -137,13 +156,14 @@ reads as introduced, not pre-existing):
   positive) and contributes a coverage note **only when relevance-scoped** (see below).
 - **GS32**: group **enabled** WLANs by `ssid`; for a group of 2+, flag a pair whose AP scopes
   **provably overlap** — both `apply_to: site`; OR `site`/all + an explicit-AP WLAN; OR a
-  shared explicit `ap_id`. wxtag-scoped or mixed-wxtag → overlap **unverifiable** → coverage
-  note, **not** a finding.
+  shared explicit `ap_id`. wxtag-scoped, mixed-wxtag, **or `None`/unknown `apply_to`** →
+  overlap **unverifiable** → coverage note (relevance-scoped), **not** a finding.
 - **GS33**: violation = an **enabled** WLAN with `auth_type == "open"` AND
   `not isolation`. **Scope-aware**: explicit *empty* AP scope (`apply_to: aps`, `ap_ids=()`)
   → applies nowhere → silent (no finding/note); `site`/all or explicit non-empty AP → WARN;
-  wxtag-only scope → "potentially active, unresolved" → coverage note (PARTIAL), not a
-  finding. Unknown/unparsed `auth_type` → skipped (never assume open).
+  wxtag-only **or `None`/unknown `apply_to`** → "potentially active, unresolved" → coverage
+  note (relevance-scoped), not a finding. Unknown/unparsed `auth_type` → skipped (never assume
+  open). `None`/unknown scope is explicitly NOT treated as either "site-wide" or "inactive".
 
 **Relevance-scoped coverage (critical).** `PARTIAL` floors the verdict to REVIEW, so a lint
 check emits a coverage note **only** when the skipped/unverifiable item is **delta-touched**
@@ -171,17 +191,21 @@ unrelated change (same lesson as the blackhole/GS25 relevance-scoping). Otherwis
    vs the wxtag-unverifiable note + disabled-excluded; GS33 the open×isolation matrix incl.
    empty-scope-silent, wxtag-PARTIAL, and unknown-auth skipped.
 2. **Ingest units** — `Wlan` minted from ALL rows incl. disabled; `isolation = isolation or
-   l2_isolation`; scope normalization (site vs empty-explicit); tuple determinism.
-   `Vlan.collisions` = distinct OTHER names; repeated site+device effective rows don't
-   false-collide.
-3. **Object/apply/field-gate units for `wlan`** — object_gate accepts a `wlan` op; a modeled-
-   leaf edit (e.g. `isolation: false`) passes the field gate; an unmodeled-leaf edit → UNKNOWN;
+   l2_isolation`; `inherited` derived from `for_site`/`template_id`; scope normalization (site
+   vs empty-explicit); tuple determinism. `Vlan.collisions` = distinct OTHER names; repeated
+   site+device effective rows don't false-collide.
+3. **Object/apply/field-gate units for `wlan`** — object_gate accepts a `wlan` op (pre-fetch);
+   a modeled-leaf edit (e.g. `isolation: false`) on a **site-owned** WLAN passes the field
+   gate and applies; an unmodeled-leaf edit → UNKNOWN; an op targeting an **inherited**
+   (org-template) WLAN → UNKNOWN at the post-fetch screen (NOT a silent update);
    `get_object`/`replace_object` target `raw.wlans` by id (explicit `wlan` branch).
 4. **diff** — a `wlan` change diffs; a `Vlan.collisions` change diffs.
 5. **Goldens GS30–GS33** — a delta that *introduces* each violation → REVIEW naming it; the
    same violation **pre-existing** → SAFE with an INFO finding. The pre-existing goldens
-   include a **harmless in-domain edit** (a no-op `vlan`/`wlan` touch) so `applies_to` fires
-   and the INFO context is actually emitted.
+   include a **benign modeled in-domain edit that produces a diff but leaves the violation
+   key unchanged** (e.g. add an unrelated network, or toggle an unrelated WLAN field) — a
+   *true* no-op produces no diff, so `applies_to` would return NOT_APPLICABLE and no INFO
+   context would be emitted.
 6. **Live read-only verify** — the real org is rich material: `mist-guest` is open **with**
    `isolation:true` (GS33 negative); SSIDs like `Mist_IoT`/`Live_demo_only` appear on multiple
    org templates (candidate per-site GS32 cases). Confirm verdicts are unchanged on plans that
