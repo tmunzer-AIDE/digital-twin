@@ -1387,10 +1387,10 @@ def od_gw_failsafe_combined_plan() -> tuple[dict[str, Any], dict[str, Any]]:
 #   CL-duplicate_ssid_introduce  — GS32 REVIEW / .introduced
 # ---------------------------------------------------------------------------
 
-# Org-id / site-id borrowed from the real fixture so the FixtureProvider strict
-# scope guard accepts plan_for's site_id without complaint.
-CL_ORG_ID = "28f07d4d-f229-ae8c-d0c3-8cdb32cb4a15"
-CL_SITE_ID = "d60700f1-76fd-096b-f6d5-1d34b817f5a3"
+# Synthetic ids (matching the OD_/ST_/DP_ sibling convention). The plan scope is
+# derived from the doc itself, so any id the doc and op agree on works.
+CL_ORG_ID = "org-cl-tests"
+CL_SITE_ID = "site-cl-tests"
 
 
 def _cl_base_doc(*, with_wlans: bool = False) -> dict[str, Any]:
