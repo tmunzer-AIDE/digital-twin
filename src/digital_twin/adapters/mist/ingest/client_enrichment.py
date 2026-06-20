@@ -8,12 +8,13 @@ good base value (e.g. a real OUI manufacturer)."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from digital_twin.ir import ClientEnrichment, client_id
 
 _Json = dict[str, Any]
+_Extract = Callable[[_Json], dict[str, Any]]  # one source row -> its candidate fields
 
 
 def _clean(value: Any) -> str | None:
@@ -70,7 +71,7 @@ def _nac_vals(row: _Json) -> dict[str, Any]:
     }
 
 
-def _apply(acc: dict[str, dict[str, Any]], row: _Json, extract: Any) -> None:
+def _apply(acc: dict[str, dict[str, Any]], row: _Json, extract: _Extract) -> None:
     try:
         mac = row.get("mac")
         if not mac:
