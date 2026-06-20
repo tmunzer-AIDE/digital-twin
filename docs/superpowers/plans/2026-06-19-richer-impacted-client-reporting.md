@@ -388,8 +388,7 @@ from digital_twin.ir.model import IRBuilder
 
 def _ir_with(enrich: dict[str, ClientEnrichment]):
     b = IRBuilder()
-    for mac, ce in enrich.items():
-        b.add_client_enrichment(mac, ce)
+    b.set_client_enrichment(enrich)
     return b.build()
 
 
@@ -412,7 +411,7 @@ def test_diff_ignores_client_enrichment():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/ir/test_client_enrichment_ir.py -v`
-Expected: FAIL (`AttributeError: 'IRBuilder' object has no attribute 'add_client_enrichment'`).
+Expected: FAIL (`AttributeError: 'IRBuilder' object has no attribute 'set_client_enrichment'`).
 
 - [ ] **Step 3: Implement on the IR + builder**
 
@@ -433,16 +432,20 @@ In `src/digital_twin/ir/model.py`:
 (c) in `IRBuilder.__init__` (after `self._ap_wlan_unresolved`, line 88):
 
 ```python
-        self._client_enrichment: dict[str, ClientEnrichment] = {}
+        self._client_enrichment: Mapping[str, ClientEnrichment] = {}
 ```
 
-(d) add the builder method (after `mark_ap_wlan_unresolved`, line 153):
+(d) add the builder method (after `mark_ap_wlan_unresolved`, line 153). It publishes the
+WHOLE map in one assignment so a half-built map can never be observed (the ingester computes
+the complete map first, then calls this once — atomic publish):
 
 ```python
-    def add_client_enrichment(self, mac: str, enrichment: ClientEnrichment) -> IRBuilder:
-        """Best-effort observational identity (last writer wins). NOT validated in
-        build() — a bad enrichment entry must never fail the IR (non-load-bearing)."""
-        self._client_enrichment[mac] = enrichment
+    def set_client_enrichment(self, enrichment: Mapping[str, ClientEnrichment]) -> IRBuilder:
+        """Publish the COMPLETE observational enrichment map atomically. NOT validated
+        in build() — a bad entry must never fail the IR (non-load-bearing). Replacing
+        (not merging) keeps 'broken enrichment == no enrichment': a partial map is never
+        observed."""
+        self._client_enrichment = dict(enrichment)
         return self
 ```
 
@@ -553,13 +556,15 @@ class ClientEnrichmentIngester:
 
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
         try:
+            # Build the COMPLETE map first, then publish in ONE atomic call. If
+            # anything here raises, nothing is published — so a partial map is never
+            # observed and "broken enrichment == no enrichment" holds exactly.
             enrich = build_client_enrichment(
                 wired=ctx.raw.wired_clients,
                 wireless=ctx.raw.wireless_clients,
                 nac=ctx.raw.nac_clients,
             )
-            for mac, ce in enrich.items():
-                ctx.builder.add_client_enrichment(mac, ce)
+            ctx.builder.set_client_enrichment(enrich)
         except Exception:  # noqa: BLE001 — best-effort: degrade to "no enrichment", never fatal
             pass
         return frozenset()
@@ -614,34 +619,29 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.wired.client_impact import ClientImpactCheck
 from digital_twin.ir import (
-    AttachKind, Client, ClientEnrichment, ClientKind, Device, DeviceRole, IRCapability, Port, Vlan,
+    AttachKind, Client, ClientEnrichment, ClientKind, Device, DeviceRole, IRCapability,
+    Port, PortMode, Vlan,
 )
 from digital_twin.ir.diff import diff_ir
 from digital_twin.ir.model import IRBuilder
-
-CAPS = frozenset({IRCapability.WIRED_L2, IRCapability.CLIENTS_ACTIVE})
 
 
 def _sw() -> Device:
     return Device(id="sw1", role=DeviceRole.SWITCH, site="s1")
 
 
-def _port(native: int) -> Port:
-    return Port(id="sw1:ge-0/0/1", device_id="sw1", name="ge-0/0/1", native_vlan=native)
-
-
 def _build(*, native: int, subnet=None, enrich=None, dhcp_trusted=None) -> object:
     b = IRBuilder()
     b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.CLIENTS_ACTIVE)
     b.add_device(_sw())
-    p = Port(id="sw1:ge-0/0/1", device_id="sw1", name="ge-0/0/1", native_vlan=native,
-             dhcp_trusted=dhcp_trusted)
+    # Port.mode is REQUIRED (entities.py:116) — set it explicitly
+    p = Port(id="sw1:ge-0/0/1", device_id="sw1", name="ge-0/0/1", mode=PortMode.ACCESS,
+             native_vlan=native, dhcp_trusted=dhcp_trusted)
     b.add_port(p)
     b.add_vlan(Vlan(vlan_id=10, subnet=subnet))
     b.add_client(Client(mac="aabbcc000001", kind=ClientKind.WIRED,
                         attach_kind=AttachKind.PORT, attach_id="sw1:ge-0/0/1", vlan=10))
-    for mac, ce in (enrich or {}).items():
-        b.add_client_enrichment(mac, ce)
+    b.set_client_enrichment(enrich or {})  # atomic publish (see Task 3)
     return b.build()
 
 
@@ -739,8 +739,9 @@ from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
             if bv is not None and pv is not None and bv.dhcp_sources != pv.dhcp_sources:
                 return True
             # (b) a DHCP scope SERVING this vlan was added/removed/changed
+            # (DhcpScope exposes `vlan`, NOT `vlan_id` — entities.py:208)
             def serving(ir: Any) -> dict[str, Any]:
-                return {s.id: s for s in ir.dhcp_scopes if s.vlan_id == vid}
+                return {s.id: s for s in ir.dhcp_scopes if s.vlan == vid}
             if serving(base_ir) != serving(prop_ir):
                 return True
         # (c)/(d) the client's own attach port: dhcp_trusted flip, or its switch's snooping
@@ -1079,6 +1080,6 @@ git commit -m "docs(enrich): spec Implemented + roadmap done + redacted nac_clie
 - **Absent/present/broken equivalence golden** → Task 7. ✓
 - **Redacted fixture + live verify + docs/roadmap/memory; deferred traffic significance** → Task 8. ✓
 
-**Type consistency:** `build_client_enrichment(*, wired, wireless, nac)` keyword-only across Tasks 2/4; `ClientEnrichment` field names identical in entities (Task 2), `_identity` projection (Task 5), and the join (Task 2); `add_client_enrichment(mac, enrichment)` identical in builder (Task 3), ingester (Task 4), and check tests (Task 5). `dhcp_vlan_touched` (bool) and `client_enrichment` (IR field) named consistently throughout.
+**Type consistency:** `build_client_enrichment(*, wired, wireless, nac)` keyword-only across Tasks 2/4; `ClientEnrichment` field names identical in entities (Task 2), `_identity` projection (Task 5), and the join (Task 2); `set_client_enrichment(mapping)` (atomic, whole-map) identical in builder (Task 3), ingester (Task 4), and check tests (Task 5). `DhcpScope.vlan` (not `vlan_id`) and `Port.mode` (required) verified against entities.py. `dhcp_vlan_touched` (bool) and `client_enrichment` (IR field) named consistently throughout.
 
 **Known follow-up (flagged, not a gap):** if live verify shows the site `wired_clients` fetch omits `last_hostname`/`manufacture`, non-NAC wired clients get reduced enrichment until `_wired_clients` is switched to the rollup view — documented in Task 8, out of scope for this plan.
