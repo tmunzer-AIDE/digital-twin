@@ -17,8 +17,11 @@ sharp UNSAFE during live testing on the Live-Demo site.
 - 🔵 **wxtag WLAN scoping** (GS20) — resolve which APs a `apply_to: wxtags` WLAN
   applies to (evaluate wxtag membership against AP model/name/etc.). Today these
   WLANs are recorded `unresolved` → REVIEW. This is the last unmodeled piece of
-  the WLAN→VLAN story; it makes the *original* reported bug (AP-uplink
-  trunk→access) a precise UNSAFE naming the SSIDs. **← recommended next.**
+  the WLAN→VLAN story; it would make the *original* reported bug (AP-uplink
+  trunk→access) a precise UNSAFE naming the SSIDs. _Investigated + deprioritized
+  2026-06-20: the Live-Demo org uses no `apply_to: wxtags` WLANs, and current
+  behavior is already never-false-SAFE (unresolved → REVIEW/coverage note). Pick
+  it up only if a real org surfaces wxtag-scoped WLANs._
 - ✅ **PoE impact** — `poe_disabled` is now modeled (`Port.poe` config intent +
   `Port.poe_draw` observed from stats `poe_on`); `wired.poe.disconnect` fires
   UNSAFE when a port that powers an LLDP-confirmed AP or an observed-drawing
@@ -111,18 +114,25 @@ sharp UNSAFE during live testing on the Live-Demo site.
 The delta checks compare baseline vs proposed; these validate the proposed
 state on its own. Cheap: the data is already fetched and in the IR.
 
-- 🔵 **VLAN ID collision** (GS30, MVP: CFG-VLAN) — one vlan_id claimed by
-  multiple networks → forwarding ambiguity. NOTE: today's vlan ingest silently
-  dedups (`seen` set) — a collision would fold invisibly; the check must read
-  the raw networks maps.
-- 🔵 **IP subnet overlap** (GS31, MVP: CFG-SUBNET) — pairwise overlap across
-  networks/other_ip_configs subnets. Needs subnets in the IR (rides the
-  richer-L3 work).
-- 🔵 **Duplicate SSID** (GS32, MVP: CFG-SSID) — same SSID on multiple enabled
-  WLANs of the site; derived WLAN list is already fetched
-  (`RawSiteState.wlans`).
-- 🔵 **Open guest SSID without isolation** (GS33, MVP: SEC-GUEST) — open auth
-  + no client isolation → lateral traffic; same WLAN data.
+- ✅ **VLAN ID collision** (GS30) — `wired.l2.vlan_collision`. Reads
+  `Vlan.collisions` (distinct other names minted at the ingest dedup, no longer
+  folded invisibly). [done 2026-06-20]
+- ✅ **IP subnet overlap** (GS31) — `wired.l3.subnet_overlap`. Pairwise overlap
+  across VLAN subnets, keyed on the canonical parsed network; unresolved/
+  unparseable subnets skipped with a relevance-scoped coverage note. [done
+  2026-06-20]
+- ✅ **Duplicate SSID** (GS32) — `wireless.wlan.duplicate_ssid`. Same SSID on
+  2+ enabled WLANs with PROVABLE AP-scope overlap; wxtag/unknown scope →
+  coverage note, never a finding. [done 2026-06-20]
+- ✅ **Open guest SSID without isolation** (GS33) —
+  `wireless.wlan.open_guest`. Enabled open-auth WLAN with no client isolation;
+  scope-aware (empty scope silent, unresolved → note). [done 2026-06-20]
+
+All four are **delta-conditioned** via the shared `run_delta_lint` core
+(introduced → WARNING/REVIEW; pre-existing → INFO context, never floors an
+unrelated change) and rest on the new `Wlan` IR entity (secret-free) + WLAN as
+a simulable site object. Live-verified 2026-06-20: `mist-guest` (open WITH
+isolation) correctly NOT flagged; ingest clean.
 
 ### Routing & services tier (needs the L3/routing IR extension)
 

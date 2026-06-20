@@ -1,6 +1,6 @@
 # Config-lint tier (GS30–GS33)
 
-**Status:** design — pending user review
+**Status:** Implemented — live-verified 2026-06-20
 **Date:** 2026-06-20
 **Author:** brainstormed with the repo owner
 
