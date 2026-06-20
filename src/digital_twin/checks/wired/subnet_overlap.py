@@ -58,19 +58,22 @@ class SubnetOverlapCheck:
             if va == vb or na.version != nb.version:
                 continue
             if na.overlaps(nb):
+                # key on the CANONICAL parsed network (str(net)), not the raw subnet —
+                # a reformatted-but-equivalent CIDR keeps the same key (not a new violation).
                 key = frozenset({(va, str(na)), (vb, str(nb))})
-                lo, hi = sorted((va, vb))
+                # canonicalize the pair lo/hi by vlan_id so subject/affected/summary agree
+                (lo, ln), (hi, hn) = sorted(((va, na), (vb, nb)))
                 causes = tuple(
-                    c for c in (ctx.delta_index.cause("vlan", str(va)),
-                                ctx.delta_index.cause("vlan", str(vb))) if c is not None
+                    c for c in (ctx.delta_index.cause("vlan", str(lo)),
+                                ctx.delta_index.cause("vlan", str(hi))) if c is not None
                 )
                 viols.append(
                     Violation(
                         key=key,
                         subject=ObjectRef("vlan", str(lo)),
                         affected=(str(lo), str(hi)),
-                        summary=f"vlan {va} subnet {na} overlaps vlan {vb} subnet {nb}",
-                        evidence={"a": [va, str(na)], "b": [vb, str(nb)]},
+                        summary=f"vlan {lo} subnet {ln} overlaps vlan {hi} subnet {hn}",
+                        evidence={"a": [lo, str(ln)], "b": [hi, str(hn)]},
                         caused_by=causes,
                     )
                 )

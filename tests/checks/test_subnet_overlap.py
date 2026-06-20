@@ -46,3 +46,19 @@ def test_touched_unparseable_subnet_is_partial_note():
     res = SubnetOverlapCheck().run(_ctx(base, prop))
     assert res.coverage.state is CoverageState.PARTIAL
     assert any("20" in n for n in res.coverage.notes)
+
+
+def test_cross_version_pair_skipped_no_crash():
+    # mixed IPv4/IPv6 must be skipped, not crash (na.overlaps(nb) raises across versions)
+    ir = _ir(Vlan(vlan_id=10, subnet="10.0.0.0/24"), Vlan(vlan_id=20, subnet="2001:db8::/32"))
+    assert SubnetOverlapCheck().run(_ctx(ir, ir)).status is Status.PASS
+
+
+def test_reformatted_identical_cidr_is_not_a_new_violation():
+    # canonical key: host bits in the proposed CIDR canonicalize to the same network,
+    # so a pre-existing overlap stays pre-existing (INFO), never re-flagged as introduced.
+    base = _ir(Vlan(vlan_id=10, subnet="10.0.0.0/24"), Vlan(vlan_id=20, subnet="10.0.0.0/25"))
+    prop = _ir(Vlan(vlan_id=10, subnet="10.0.0.0/24"), Vlan(vlan_id=20, subnet="10.0.0.7/25"))
+    res = SubnetOverlapCheck().run(_ctx(base, prop))
+    assert res.status is Status.PASS
+    assert all(f.code.endswith(".preexisting") for f in res.findings)
