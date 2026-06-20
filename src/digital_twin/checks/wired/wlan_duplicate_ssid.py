@@ -38,6 +38,9 @@ class WlanDuplicateSsidCheck:
     default_severity = Severity.WARNING
 
     def requires(self) -> frozenset[Capability]:
+        # applies_to ("wlan" touched) implies WLAN_CONFIG was earned — Wlan entities
+        # exist only when the wlan fetch succeeded — so the no-capability path is
+        # correct-by-construction unreachable (never a spurious INSUFFICIENT_DATA floor).
         return frozenset({IRCapability.WLAN_CONFIG})
 
     def applies_to(self, diff: IRDiff) -> bool:
