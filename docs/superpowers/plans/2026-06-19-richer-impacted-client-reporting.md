@@ -718,10 +718,18 @@ Expected: FAIL (`KeyError: 'identity'` / `'subnet'`).
 
 In `src/digital_twin/checks/wired/client_impact.py`:
 
-(a) extend the entities import (line 20) and reuse snooping's canonical vlan helper:
+(a) two import edits — ruff sorts by module path (`I` is enabled), so place each in its
+correct alphabetical slot or the gate fails:
+- extend the existing entities import (line 20) to add `ClientEnrichment`:
 
 ```python
 from digital_twin.ir.entities import AttachKind, Client, ClientEnrichment
+```
+
+- add the snooping helper WITH the other `digital_twin.checks` imports — immediately after
+  `from digital_twin.checks.base import ...` and BEFORE `from digital_twin.contracts import ...`:
+
+```python
 from digital_twin.checks.wired.snooping import _snooped_vlans  # "vlans this device snoops"
 ```
 
