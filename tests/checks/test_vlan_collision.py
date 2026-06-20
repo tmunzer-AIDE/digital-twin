@@ -55,3 +55,13 @@ def test_reordered_collision_set_is_not_introduced():
     prop = _ir(Vlan(vlan_id=10, collisions=("lab", "guest")))
     res = VlanCollisionCheck().run(_ctx(base, prop))
     assert res.status is Status.PASS and res.findings[0].code.endswith(".preexisting")
+
+
+def test_winner_flip_same_claimant_set_is_not_introduced():
+    # same vid claimed by {corp, guest}; only the WINNER (name) flips (e.g. map order
+    # changed). collisions = claimants - {winner}, so it flips {guest}<->{corp}. The key
+    # must be the FULL claimant set so this reads pre-existing, not a spurious re-warn.
+    base = _ir(Vlan(vlan_id=10, name="corp", collisions=("guest",)))
+    prop = _ir(Vlan(vlan_id=10, name="guest", collisions=("corp",)))
+    res = VlanCollisionCheck().run(_ctx(base, prop))
+    assert res.status is Status.PASS and res.findings[0].code.endswith(".preexisting")

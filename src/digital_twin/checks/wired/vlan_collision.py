@@ -32,7 +32,10 @@ class VlanCollisionCheck:
             cause = ctx.delta_index.cause("vlan", str(v.vlan_id))
             viols.append(
                 Violation(
-                    key=(v.vlan_id, frozenset(v.collisions)),
+                    # key on the FULL claimant set, not just collisions (= claimants minus
+                    # the winning name). A reorder that flips the winner preserves the
+                    # claimant set, so the collision reads pre-existing, not re-introduced.
+                    key=(v.vlan_id, frozenset(n for n in (v.name, *v.collisions) if n)),
                     subject=ObjectRef("vlan", str(v.vlan_id)),
                     affected=(str(v.vlan_id),),
                     summary=(
