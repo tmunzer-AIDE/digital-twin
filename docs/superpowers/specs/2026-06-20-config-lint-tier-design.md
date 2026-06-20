@@ -64,10 +64,13 @@ meta: FactMeta = CONFIG_META
   **derived** WLAN list (`listSiteWlansDerived`) precisely to include org-template WLANs the
   site broadcasts. That is correct for **detection** — GS32/GS33 reason about the full
   effective set. But an org-template WLAN is **not a site-writable object**, so `inherited`
-  records ownership: `inherited = True` when the row is org-template-owned (raw
-  `for_site == False` and/or a `template_id` not equal to the site's own). This split is
-  load-bearing: detection consumes all `Wlan`s; **simulation** (a `wlan` op) is allowed only
-  against site-owned (`inherited == False`) WLANs (see §2).
+  records ownership. It is computed **fail-closed**: `inherited = False` (site-writable) ONLY
+  when the row is *positively* site-owned (raw `for_site == True` AND no foreign
+  `template_id`); a row with `for_site == False`, a `template_id`, OR **missing/ambiguous
+  ownership metadata** is `inherited = True` (not writable). A derived row whose ownership
+  can't be positively confirmed must never be silently mutable. This split is load-bearing:
+  detection consumes all `Wlan`s; **simulation** (a `wlan` op) is allowed only against
+  site-owned (`inherited == False`) WLANs (see §2).
 - **Identity**: `id` = the provider WLAN id. This is a pragmatic deviation from the IR's
   "stable logical key" doctrine (an SSID rename then diffs as a *modification*, not
   remove+add — which is what we want for delta-conditioning). Documented here.
@@ -80,6 +83,11 @@ meta: FactMeta = CONFIG_META
   (sorted+deduped). Empty `ap_ids` under `apply_to: site` does NOT mean "applies nowhere".
 - Stored as `ir.wlans: tuple[Wlan, ...]`; added to `diff_ir._ENTITY_KINDS` as
   `("wlan", lambda ir: ir.wlans)`. Earns the **existing** `WLAN_CONFIG` capability.
+- **`inherited` is NOT a diff-bearing lint fact.** `_changed_fields` compares every
+  dataclass field except an ignored set, so an ownership-only flip would otherwise make
+  `touches("wlan")` true and spuriously fire GS32/GS33 (which don't reason about ownership).
+  Add `inherited` to `_IGNORED_BY_KIND["wlan"]` (the same mechanism that ignores `Device.name`)
+  — it stays queryable for the apply screen but is invisible to the diff / `applies_to`.
 
 **`Vlan.collisions` field** (GS30) — the collision today's dedup hides. In
 `ingest/switch.py:_vlans`, the `seen` set keeps the first network per `vlan_id` and silently
@@ -199,7 +207,9 @@ unrelated change (same lesson as the blackhole/GS25 relevance-scoping). Otherwis
    gate and applies; an unmodeled-leaf edit → UNKNOWN; an op targeting an **inherited**
    (org-template) WLAN → UNKNOWN at the post-fetch screen (NOT a silent update);
    `get_object`/`replace_object` target `raw.wlans` by id (explicit `wlan` branch).
-4. **diff** — a `wlan` change diffs; a `Vlan.collisions` change diffs.
+4. **diff** — a modeled `wlan` change (ssid/enabled/auth/isolation/scope) diffs; a
+   `Vlan.collisions` change diffs; an **`inherited`-only flip does NOT diff** (it's in
+   `_IGNORED_BY_KIND["wlan"]`), so it can't spuriously fire GS32/GS33.
 5. **Goldens GS30–GS33** — a delta that *introduces* each violation → REVIEW naming it; the
    same violation **pre-existing** → SAFE with an INFO finding. The pre-existing goldens
    include a **benign modeled in-domain edit that produces a diff but leaves the violation
