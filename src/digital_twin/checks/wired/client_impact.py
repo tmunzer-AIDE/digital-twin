@@ -161,7 +161,7 @@ class ClientImpactCheck:
         # Four triggers, grouped by what they key on (so the code runs a,b,d,c, NOT
         # a,b,c,d): a+b are vid-scoped (DHCP providers / serving scopes for the vlan);
         # d+c are attach-port-scoped (this port's trust / its switch's snooping).
-        vid = client.vlan
+        vid = client.vlan  # the client's BASELINE attach vlan (held fixed across both arms)
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         # (a) the vlan's modeled DHCP providers changed
         if vid is not None:
