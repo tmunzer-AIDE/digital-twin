@@ -143,6 +143,8 @@ class IRBuilder:
         return self
 
     def add_wlan(self, wlan: Wlan) -> IRBuilder:
+        # no duplicate-id guard (unlike add_client etc.): WLANs are observational
+        # lint inputs — a bad/duplicate WLAN must never fail the build.
         self._wlans.append(wlan)
         return self
 
