@@ -18,6 +18,7 @@ from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
+from .vlan_collision import VlanCollisionCheck
 from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
 
@@ -40,12 +41,14 @@ ALL_WIRED_CHECKS: list[Check] = [
     WlanOpenGuestCheck(),
     WlanDuplicateSsidCheck(),
     SubnetOverlapCheck(),
+    VlanCollisionCheck(),
 ]
 
 __all__ = [
     "ALL_WIRED_CHECKS",
     "ClientImpactCheck",
     "SubnetOverlapCheck",
+    "VlanCollisionCheck",
     "DhcpPathCheck",
     "DhcpScopeLintCheck",
     "DhcpSnoopingCheck",
