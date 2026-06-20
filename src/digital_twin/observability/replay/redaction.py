@@ -19,7 +19,7 @@ import re
 from collections import Counter
 from typing import Any
 
-REDACTION_VERSION = "6"  # v6: high-entropy value backstop (unknown secret shapes)
+REDACTION_VERSION = "7"  # v7: hostname/username key-PART match (NAC + wired client PII)
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -32,8 +32,13 @@ STRIP_KEY_PARTS: tuple[str, ...] = (
     "private_key",
     "cert",
 )
-# keys whose STRING values are name-like -> "name-<h8>"
+# keys whose STRING values are name-like -> "name-<h8>" (EXACT, case-insensitive)
 NAME_KEYS: tuple[str, ...] = ("name", "hostname", "system_name", "neighbor_system_name")
+# SUBSTRING (case-insensitive) on the key — catches the `last_*` / `dhcp_*` variants the
+# exact list misses: last_hostname, dhcp_hostname, username, last_username. These are
+# client PII (hostnames + identities) the wired/wireless/NAC client rows carry; a value
+# that is a MAC/IP is still caught earlier by the MAC/IP rules (order preserved).
+NAME_KEY_PARTS: tuple[str, ...] = ("hostname", "username")
 
 _MAC = re.compile(r"^(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}$|^[0-9a-fA-F]{12}$")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -100,7 +105,8 @@ def _redact_scalar(key: str, value: str) -> str:
         return f"{ip}/{suffix}" if suffix else ip
     if _IPV6.match(value) and ":" in value:
         return f"2001:db8::{_h(value, 8)}"  # documentation prefix
-    if key in NAME_KEYS:
+    lk = key.lower()
+    if key in NAME_KEYS or any(part in lk for part in NAME_KEY_PARTS):
         return f"name-{_h(value, 8)}"
     return _sub_embedded(value)
 

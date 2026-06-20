@@ -1,6 +1,23 @@
 from digital_twin.observability.replay.redaction import REDACTION_VERSION, redact
 
 
+def test_nac_and_client_pii_keys_are_redacted():
+    # v7: the `last_*` / `dhcp_*` hostname + username variants the exact NAME_KEYS list
+    # missed — NAC and wired client rows carry these and a --replay-store run serializes them.
+    out = redact({
+        "last_hostname": "LiveDemo-CD51", "dhcp_hostname": "iDRAC-DNR-LD",
+        "username": ["jdoe@corp.com"], "last_username": "alice",
+        "last_nacrule_name": "wired_camera_mab", "last_family": "Surveillance Camera",
+    })
+    assert out["last_hostname"].startswith("name-") and "LiveDemo" not in out["last_hostname"]
+    assert out["dhcp_hostname"].startswith("name-")
+    assert out["username"][0].startswith("name-") and "jdoe" not in out["username"][0]
+    assert out["last_username"].startswith("name-") and out["last_username"] != "alice"
+    # non-secret descriptors are KEPT (the fixture must still drive checks)
+    assert out["last_nacrule_name"] == "wired_camera_mab"
+    assert out["last_family"] == "Surveillance Camera"
+
+
 def test_macs_pseudonymized_stably_and_shaped():
     a = redact({"mac": "aa:bb:cc:dd:ee:01", "peer": "aa:bb:cc:dd:ee:01"})
     assert a["mac"] == a["peer"]  # same input -> same token (topology preserved)
