@@ -17,6 +17,7 @@ from .scope_lint import DhcpScopeLintCheck
 from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_root import StpRootChangeCheck
+from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
 
 ALL_WIRED_CHECKS: list[Check] = [
@@ -36,6 +37,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     PoeDisconnectCheck(),
     ClientImpactCheck(),
     WlanOpenGuestCheck(),
+    WlanDuplicateSsidCheck(),
 ]
 
 __all__ = [
@@ -55,5 +57,6 @@ __all__ = [
     "PoeDisconnectCheck",
     "StpEdgeOnUplinkCheck",
     "StpRootChangeCheck",
+    "WlanDuplicateSsidCheck",
     "WlanOpenGuestCheck",
 ]
