@@ -53,6 +53,7 @@ def _impact_lines(f: Finding) -> list[str]:
         kind = f" ({kind})" if kind else ""
         detail = f": {i['detail']}" if i.get("detail") else ""
         tags = []
+        # guard so an entry with no auth/NAC fields produces no bare "auth " tag
         if ident.get("auth_type") or ident.get("status") or ident.get("nacrule"):
             auth = "/".join(str(ident[k]) for k in ("auth_type", "status") if ident.get(k))
             via = f" via {ident['nacrule']}" if ident.get("nacrule") else ""

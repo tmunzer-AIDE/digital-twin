@@ -25,6 +25,17 @@ def _verdict(impacts) -> Verdict:
                                decision=Decision.REVIEW)
 
 
+def test_human_minimal_impact_falls_back_to_mac():
+    # an entry with no identity/subnet/auth renders sanely: `who` falls back to the MAC,
+    # no auth/subnet/dhcp tags, nothing crashes (graceful degradation)
+    impacts = [{"mac": "aabbcc000009", "vlan": 5, "attachment": "sw1:ge-0/0/2",
+                "impact": "blackhole", "detail": "", "caused_by": (),
+                "subnet": None, "dhcp_vlan_touched": False}]
+    out = render_human(_verdict(impacts))
+    assert "aabbcc000009" in out and "blackhole" in out
+    assert "auth " not in out and "subnet " not in out and "dhcp config changed" not in out
+
+
 def test_human_expands_each_client_line():
     impacts = [{"mac": "aabbcc000001", "vlan": 30, "attachment": "sw1:mge-0/0/1",
                 "impact": "disconnect", "detail": "attach port removed", "caused_by": (),
