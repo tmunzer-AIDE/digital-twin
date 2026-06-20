@@ -123,7 +123,6 @@ def test_non_object_payload_is_fatal():
 
 
 def test_wlan_schema_validates_not_fatal():
-    from digital_twin.adapters.mist.validate.schema import validate_payload
     ok = validate_payload("wlan", {"isolation": True})       # modeled leaf
     assert ok.fatal is False and ok.findings == ()
     bad = validate_payload("wlan", {"enabled": "yes"})       # wrong type
