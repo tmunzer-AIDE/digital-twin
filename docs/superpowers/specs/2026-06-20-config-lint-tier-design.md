@@ -124,6 +124,19 @@ ChangePlan op must be simulable. Today `object_type="wlan"` is rejected pre-fetc
   (the same stage as the existing device-role "must be a switch" check in `screen_op`), NOT
   the pre-fetch `object_gate` — and it is NEVER a silent pretend-update of an inherited row.
   (Org-level WLAN-template simulation is a separate object type, out of scope for this tier.)
+- **L0 validation (required — else every `wlan` op fatals before apply).** The pipeline
+  L0-validates each effective object *before* `screen_op`/apply, and L0 treats an object type
+  with no registered schema as **fatal** (there's even a test pinning `validate_payload("wlan",
+  {})` as fatal). So `"wlan"` must get an L0 route: **commit a `site_wlan` OAS schema** and
+  register it in `_SCHEMA_FILES["wlan"]`, sourced from the Mist `wlan` object OAS — exactly how
+  `gatewaytemplate`/`sitetemplate` were added (fail-closed: a supported type with no schema is a
+  registration error). Because L0 is **scoped to changed roots by default** (`l0_full_object=
+  False`), a partial WLAN op like `{"isolation": false}` validates only the touched root, so the
+  full schema is fine and not unwieldy. If the upstream OAS has no cleanly-usable site-level WLAN
+  object, the fallback is a **thin permissive schema** covering just the modeled leaves
+  (`ssid`/`enabled`/`auth`/`isolation`/`l2_isolation`/`apply_to`/`ap_ids`/`wxtag_ids`,
+  `additionalProperties` permissive) — same precedent as the thin `site_template` schema. The
+  existing `test_validate_l0` case pinning `wlan` as fatal flips to "validates".
 - **Field gate** rides the new allowlist automatically.
 
 GS30/GS31 ride existing `site_setting` ops: `networks.*.vlan_id` (GS30) and
@@ -206,7 +219,9 @@ unrelated change (same lesson as the blackhole/GS25 relevance-scoping). Otherwis
    a modeled-leaf edit (e.g. `isolation: false`) on a **site-owned** WLAN passes the field
    gate and applies; an unmodeled-leaf edit → UNKNOWN; an op targeting an **inherited**
    (org-template) WLAN → UNKNOWN at the post-fetch screen (NOT a silent update);
-   `get_object`/`replace_object` target `raw.wlans` by id (explicit `wlan` branch).
+   `get_object`/`replace_object` target `raw.wlans` by id (explicit `wlan` branch). **L0**: a
+   `wlan` payload now **validates** (not fatal) against the committed `site_wlan` schema —
+   replace the existing `validate_payload("wlan", …)`-is-fatal test.
 4. **diff** — a modeled `wlan` change (ssid/enabled/auth/isolation/scope) diffs; a
    `Vlan.collisions` change diffs; an **`inherited`-only flip does NOT diff** (it's in
    `_IGNORED_BY_KIND["wlan"]`), so it can't spuriously fire GS32/GS33.
@@ -230,8 +245,10 @@ unrelated change (same lesson as the blackhole/GS25 relevance-scoping). Otherwis
   builder.
 - **P2** — `Vlan.collisions` field + collision recording at the `_vlans` dedup (distinct
   other names).
-- **P3** — WLAN as a simulable object: `object_gate` + `RAW_ALLOWLIST["wlan"]` + apply
-  `get_object`/`replace_object` (explicit `wlan` branch) + field-gate tests.
+- **P3** — WLAN as a simulable object: `object_gate` + `RAW_ALLOWLIST["wlan"]` + committed
+  `site_wlan` L0 schema (`_SCHEMA_FILES["wlan"]`, flips the wlan-fatal test) + apply
+  `get_object`/`replace_object` (explicit `wlan` branch) + post-fetch inherited rejection +
+  field-gate tests.
 - **P4** — the shared delta-conditioned helper + **GS33** (open guest) + **GS32**
   (duplicate ssid).
 - **P5** — **GS31** (subnet overlap) + **GS30** (vlan collision).
