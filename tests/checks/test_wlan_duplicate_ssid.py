@@ -33,6 +33,14 @@ def test_disabled_duplicate_not_flagged():
     assert WlanDuplicateSsidCheck().run(_ctx(ir, ir)).status is Status.PASS
 
 
+def test_provably_disjoint_aps_is_silent_pass():
+    # same SSID but explicit DISJOINT AP scopes -> _overlap "no" -> neither finding nor note
+    ir = _ir(Wlan(id="w1", ssid="corp", enabled=True, apply_to="aps", ap_ids=("apX",)),
+             Wlan(id="w2", ssid="corp", enabled=True, apply_to="aps", ap_ids=("apY",)))
+    res = WlanDuplicateSsidCheck().run(_ctx(ir, ir))
+    assert res.status is Status.PASS and res.coverage.state is CoverageState.COMPLETE
+
+
 def test_wxtag_scoped_duplicate_INTRODUCED_is_note_not_finding():
     # introducing the second wxtag WLAN touches it -> PARTIAL note, no WARNING
     w1 = Wlan(id="w1", ssid="corp", enabled=True, apply_to="wxtags", wxtag_ids=("t1",))
