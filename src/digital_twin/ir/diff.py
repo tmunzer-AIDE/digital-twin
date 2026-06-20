@@ -17,7 +17,10 @@ from .model import IR
 _IGNORED_FIELDS = {"meta", "stp_meta"}
 # Per-kind display-only fields: never a config change. Device.name is a label
 # (Vlan.name/Port.name are key-derived identity and STAY compared).
-_IGNORED_BY_KIND: dict[str, frozenset[str]] = {"device": frozenset({"name"})}
+_IGNORED_BY_KIND: dict[str, frozenset[str]] = {
+    "device": frozenset({"name"}),
+    "wlan": frozenset({"inherited"}),
+}
 
 # Entity kinds the diff walks. Adding a domain (WAN/NAC/routing) = append ONE line
 # here (every entity exposes a stable `.id`); the diff then extends automatically.
@@ -30,6 +33,7 @@ _ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
     ("ospf_intf", lambda ir: ir.ospf_intfs),
     ("client", lambda ir: ir.clients),
     ("dhcp_scope", lambda ir: ir.dhcp_scopes),
+    ("wlan", lambda ir: ir.wlans),
 ]
 
 

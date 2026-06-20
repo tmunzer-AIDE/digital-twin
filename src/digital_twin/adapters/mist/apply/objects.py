@@ -43,6 +43,11 @@ def get_object(raw: RawSiteState, object_type: str, object_id: str) -> _Json | N
         for dev in raw.devices:
             if str(dev.get("id")) == object_id:
                 return dev
+    if object_type == "wlan":
+        for w in raw.wlans:
+            if str(w.get("id")) == object_id:
+                return w
+        return None
     return None
 
 
@@ -69,6 +74,12 @@ def replace_object(
     """Caller must have resolved the object first (get_object is not None)."""
     if object_type == "site_setting":
         return dc_replace(raw, setting=effective_update(raw.setting, payload))
+    if object_type == "wlan":
+        wlans = tuple(
+            effective_update(w, payload) if str(w.get("id")) == object_id else w
+            for w in raw.wlans
+        )
+        return dc_replace(raw, wlans=wlans)
     devices = tuple(
         effective_update(dev, payload) if str(dev.get("id")) == object_id else dev
         for dev in raw.devices

@@ -122,10 +122,12 @@ def test_non_object_payload_is_fatal():
     assert res.fatal is True and len(res.findings) == 1
 
 
-def test_unknown_object_type_is_fatal():
-    res = validate_payload("wlan", {})
-    assert res.fatal is True
-    assert "wlan" in res.findings[0].message
+def test_wlan_schema_validates_not_fatal():
+    ok = validate_payload("wlan", {"isolation": True})       # modeled leaf
+    assert ok.fatal is False and ok.findings == ()
+    bad = validate_payload("wlan", {"enabled": "yes"})       # wrong type
+    assert bad.fatal is False and any("enabled" in f.evidence.get("path", "") or
+                                      "enabled" in f.message for f in bad.findings)
 
 
 def test_networktemplate_l0_schema_registered():

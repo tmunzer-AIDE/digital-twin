@@ -35,6 +35,10 @@ _SCHEMA_FILES: dict[str, str] = {
     # schema has no `additionalProperties: false`, so L0 stays PERMISSIVE for those
     # fields (no false-reject) — the field gate + compile + checks still cover them.
     "sitetemplate": "sitetemplate.schema.json",
+    # thin/permissive WLAN schema: types the modeled lint leaves so a `wlan` op
+    # L0-validates instead of fatal-rejecting; scoped L0 (changed roots) means a
+    # partial WLAN update only validates the touched root.
+    "wlan": "wlan.schema.json",
 }
 _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)

@@ -27,6 +27,7 @@ from .entities import (
     OspfIntf,
     Port,
     Vlan,
+    Wlan,
     client_id,
     link_id,
     port_id,
@@ -52,6 +53,7 @@ class IR:
     vlans: Mapping[int, Vlan]
     l3intfs: tuple[L3Intf, ...]
     clients: tuple[Client, ...]
+    wlans: tuple[Wlan, ...] = ()
     dhcp_scopes: tuple[DhcpScope, ...] = ()
     # config-derived AP VLAN requirements (WlanIngester): ap device id -> the
     # VLANs its enabled WLANs need delivered on its uplink; and ap device id ->
@@ -92,6 +94,7 @@ class IRBuilder:
         self._ap_wlan_vlans: dict[str, set[int]] = {}
         self._ap_wlan_unresolved: dict[str, list[str]] = {}
         self._client_enrichment: dict[str, ClientEnrichment] = {}
+        self._wlans: list[Wlan] = []
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -137,6 +140,12 @@ class IRBuilder:
             raise IRValidationError(f"duplicate client id {client.id}")
         self._client_ids.add(client.id)
         self._clients.append(client)
+        return self
+
+    def add_wlan(self, wlan: Wlan) -> IRBuilder:
+        # no duplicate-id guard (unlike add_client etc.): WLANs are observational
+        # lint inputs — a bad/duplicate WLAN must never fail the build.
+        self._wlans.append(wlan)
         return self
 
     def add_dhcp_scope(self, scope: DhcpScope) -> IRBuilder:
@@ -339,6 +348,7 @@ class IRBuilder:
             l3intfs=tuple(self._l3intfs),
             ospf_intfs=tuple(self._ospf_intfs),
             clients=tuple(self._clients),
+            wlans=tuple(self._wlans),
             dhcp_scopes=tuple(sorted(self._dhcp_scopes.values(), key=lambda s: s.id)),
             ap_wlan_vlans=MappingProxyType(
                 {ap: frozenset(v) for ap, v in self._ap_wlan_vlans.items()}

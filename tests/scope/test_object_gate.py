@@ -81,7 +81,7 @@ def test_delete_action_rejects_even_for_supported_object_type():
 def test_all_offending_ops_reported():
     plan = _plan(
         [
-            _op(object_type="wlan", object_id="w1", order=0),
+            _op(object_type="wxtag", object_id="x1", order=0),
             _op(object_type="rftemplate", object_id="r1", order=1),
         ]
     )

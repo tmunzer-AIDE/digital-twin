@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
 from digital_twin.scope.paths import allowed, changed_leaf_paths
@@ -38,6 +39,14 @@ def screen_op(
             reasons=(
                 f"device type {current.get('type')!r} is not modeled in M1 "
                 "(switch config only — AP/gateway devices are out of scope)",
+            ),
+        )
+    if object_type == "wlan" and wlan_is_inherited(current):
+        return Rejection(
+            stage=_STAGE,
+            reasons=(
+                f"WLAN {current.get('id')!r} is inherited from an org wlantemplate "
+                "(not a site-writable object) — simulate the change at the org/template level",
             ),
         )
     allowlist = RAW_ALLOWLIST.get(object_type, ())
