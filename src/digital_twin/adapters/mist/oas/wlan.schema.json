@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "ssid": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "isolation": { "type": "boolean" },
+    "l2_isolation": { "type": "boolean" },
+    "apply_to": { "type": "string", "enum": ["site", "aps", "wxtags"] },
+    "ap_ids": { "type": "array", "items": { "type": "string" } },
+    "wxtag_ids": { "type": "array", "items": { "type": "string" } },
+    "auth": {
+      "type": "object",
+      "properties": { "type": { "type": "string" } }
+    }
+  }
+}
