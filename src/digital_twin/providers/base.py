@@ -76,6 +76,9 @@ class RawSiteState:
     # client.impact report). Trailing + defaulted: absence is "not fetched" and
     # is NON-FATAL (best-effort enrichment, never earns/loses a capability).
     nac_clients: tuple[JsonObj, ...] = ()
+    # observed OSPF neighbor stats (GET /sites/{id}/stats/ospf_peers/search) — the
+    # GS27 telemetry layer. Trailing + defaulted: absence is "not fetched".
+    ospf_neighbors: tuple[JsonObj, ...] = ()
 
 
 @dataclass(frozen=True)
