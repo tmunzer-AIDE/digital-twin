@@ -113,7 +113,9 @@ yields REVIEW with id-only labels, not UNKNOWN.
 | Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch \| FetchError` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. **`NacFetch = {rules: tuple[raw,...], tags: tuple[raw,...], tag_findings: tuple[Finding,...]}`.** **Asymmetric failure:** a `nacrules` fetch failure returns `FetchError` → `baseline_unavailable` → UNKNOWN (load-bearing). A `nactags` failure is **labels-only** — shadowing keys on tag *ids* carried by the rules — so it returns the rules with `tags=()` plus a `Finding` in `tag_findings` (→ `adapter_findings`) — pinned `source=ADAPTER`, `category=OPERATIONAL`, `severity=WARNING`, HIGH confidence, so `decide()` floors it to **REVIEW** (id-only labels), **not** UNKNOWN. |
 | L0 / OAS | `adapters/mist/oas/nacrule.schema.json` (new) + `validate/schema.py` | extract `nac_rule` from the Mist OpenAPI; register in `_SCHEMA_FILES["nacrule"]`. **Prerequisite** (see §9). |
 | IR | `ir/entities.py` | new `NacRule`, `NacTag` frozen dataclasses; `IRBuilder.add_nacrule/add_nactag`; `IR.nacrules` / `IR.nactags` accessors. |
-| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted with `opaque_digest` set** (a digest of its raw row) + best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque_digest` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque_digest` set. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
+| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted with `opaque_digest` set** (a digest of its raw row) + best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit a **pinned `Finding`** (`source=ADAPTER`, `category=OPERATIONAL`,
+`severity=WARNING`, HIGH confidence) routed to the verdict's `adapter_findings` — WARNING
+makes `decide()` floor **REVIEW** (an operational INFO would silently NOT floor). A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque_digest` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque_digest` set. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
 | Simulate | `engine/pipeline.py` | `simulate_org_nac(plan, provider) -> OrgNacVerdict`. |
 | Scope | `scope/allowlist.py` | new `NAC_OBJECT_TYPES = ("nacrule",)` — **separate** from the site whitelist `SUPPORTED_OBJECT_TYPES` (its branch requires a `site_id`) and from `ORG_OBJECT_TYPES` (which drives the per-site fan-out routing). Plus `RAW_ALLOWLIST["nacrule"]` with **exact enumerated leaves** (see *nacrule allowlist leaves* below — no `matching.*` subtree, per the leaf-tightening rule). |
 | Gate | `scope/object_gate.py` | new NAC branch `is_nac = bool(ops) and all(op.object_type in NAC_OBJECT_TYPES) and not scope.site_id`, evaluated **before** `is_org` and the site branch. Allowed actions: `create` \| `update` \| `delete` (delete payload must be empty). |
@@ -360,6 +362,27 @@ The two NAC checks return `CheckResult`s like every other check (WARNING → REV
 INFO → context). `render.py` flattens `check_results[].findings` + `adapter_findings`
 (dict + human) like the other verdicts.
 
+### Finding catalogue (single source of truth)
+
+Every `Finding`/outcome the NAC path can produce, with the pinned shape that makes
+`decide()` reach the stated decision. Implementers and tests reference THIS table — a
+finding floors REVIEW only at `severity=WARNING` (any category) or operational
+`ERROR`/`CRITICAL`, so the severities below are load-bearing, not cosmetic.
+
+| Source | code / cause | source | category | severity | confidence | → decision |
+|---|---|---|---|---|---|---|
+| check | `nac.rule.change` (delta) | CHECK | NETWORK | WARNING | HIGH | REVIEW |
+| check | `nac.rule.shadowed` — introduced | CHECK | NETWORK | WARNING | HIGH | REVIEW |
+| check | `nac.rule.shadowed` — pre-existing | CHECK | NETWORK | INFO | HIGH | context (no floor) |
+| adapter | L0 schema violation (non-fatal) | ADAPTER | OPERATIONAL | ERROR | HIGH | REVIEW |
+| adapter | ingest parse-issue (opaque mint / dropped row) | ADAPTER | OPERATIONAL | WARNING | HIGH | REVIEW |
+| adapter | `nactags` fetch failure (`tag_findings`) | ADAPTER | OPERATIONAL | WARNING | HIGH | REVIEW |
+| — | `nacrules` fetch failure → `baseline_unavailable` | (not a finding) | — | — | — | UNKNOWN |
+| — | fatal L0 / gate / conflict / bad-id → `rejection` or `l0_fatal` | (not a finding) | — | — | — | UNKNOWN |
+
+v1 emits **no** NETWORK `ERROR`/`CRITICAL`, so **UNSAFE never occurs** — the decision range
+is {SAFE, REVIEW, UNKNOWN}.
+
 ## 8. Testing
 
 TDD throughout. Layers:
@@ -379,8 +402,9 @@ TDD throughout. Layers:
   each emit `nac.rule.change` (not merely appear in `diff_ir`); a change to a rule's
   unparseable content (`opaque_digest` changes) also emits `nac.rule.change`.
 - **IR/ingest** (`test_nac_ingest.py`) — full matching surface mapped; a row with an id
-  but a malformed proof field → minted with `opaque_digest` set + operational finding
-  (**not** dropped); a row with **no id** → dropped + operational finding; **a rule
+  but a malformed proof field → minted with `opaque_digest` set + a **WARNING** operational
+  finding (per the catalogue; **not** dropped); a row with **no id** → dropped + the same
+  finding; **a rule
   malformed in BOTH baseline and proposed still appears in `diff_ir`** — and **two
   *different* malformed proof values give different `opaque_digest` → a modify the diff
   catches** (regression: neither skipping nor digest-collapse may vanish a real change →
