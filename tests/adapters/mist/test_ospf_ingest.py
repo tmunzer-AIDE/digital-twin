@@ -48,14 +48,19 @@ def test_ospf_metric_minted_and_absent_is_none():
     assert by_name["mgmt"].metric == 0  # falsy-but-valid: 0 survives, not None
 
 
-def test_ospf_metric_templated_is_none():
+def test_ospf_metric_templated_is_none_but_carries_unresolved_token():
+    # present-but-unparseable metric: metric=None AND metric_unresolved keeps the raw token
+    # so an absent->templated edit is NOT an empty diff (would otherwise false-SAFE).
     dev = {
         "mac": "001122334455",
         "type": "switch",
         "name": "sw",
         "ospf_config": {"enabled": True},
-        "ospf_areas": {"0": {"networks": {"corp": {"metric": "{{cost}}"}}}},
+        "ospf_areas": {"0": {"networks": {"corp": {"metric": "{{cost}}"}, "iot": {}}}},
     }
-    setting = {"networks": {"corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"}}}
+    setting = {"networks": {"corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"},
+                            "iot": {"vlan_id": 30, "subnet": "10.0.2.0/24"}}}
     ir = MistAdapter().ingest(_raw(devices=[dev], setting=setting)).ir
-    assert next(o for o in ir.ospf_intfs if o.network_name == "corp").metric is None
+    by_name = {o.network_name: o for o in ir.ospf_intfs}
+    assert by_name["corp"].metric is None and by_name["corp"].metric_unresolved == "{{cost}}"
+    assert by_name["iot"].metric is None and by_name["iot"].metric_unresolved is None  # absent

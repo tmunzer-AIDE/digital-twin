@@ -776,6 +776,13 @@ class SwitchIngester:
             for name, ncfg in ((area_cfg or {}).get("networks") or {}).items():
                 ncfg = ncfg or {}
                 vid = _vlan_int((networks.get(str(name)) or {}).get("vlan_id"))
+                raw_metric = ncfg.get("metric")
+                metric = _metric_int(raw_metric)
+                # raw token ONLY when present-but-unparseable (so absent stays None);
+                # diff-bearing -> an absent->templated metric edit is not an empty diff.
+                metric_unresolved = (
+                    str(raw_metric) if (raw_metric is not None and metric is None) else None
+                )
                 ctx.builder.add_ospf_intf(
                     OspfIntf(
                         device_id=did,
@@ -783,7 +790,8 @@ class SwitchIngester:
                         area=str(area),
                         network_name=str(name),
                         passive=bool(ncfg.get("passive", False)),
-                        metric=_metric_int(ncfg.get("metric")),
+                        metric=metric,
+                        metric_unresolved=metric_unresolved,
                         unresolved=(vid is None),
                     )
                 )

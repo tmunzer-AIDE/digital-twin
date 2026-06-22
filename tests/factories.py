@@ -74,11 +74,12 @@ def irb(did: str, vlan: int, subnet: str | None = None) -> L3Intf:
 
 def ospf(did: str, vlan: int | None, area: str = "0", *, passive: bool = False,
          name: str | None = None, unresolved: bool = False,
-         metric: int | None = None) -> OspfIntf:
+         metric: int | None = None, metric_unresolved: str | None = None) -> OspfIntf:
     return OspfIntf(
         device_id=did, vlan_id=vlan, area=area,
         network_name=name if name is not None else (f"net{vlan}" if vlan is not None else "ghost"),
         passive=passive, unresolved=unresolved, metric=metric,
+        metric_unresolved=metric_unresolved,
     )
 
 

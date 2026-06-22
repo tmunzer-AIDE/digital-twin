@@ -268,7 +268,11 @@ class OspfIntf:
     area: str = "0"
     network_name: str = ""
     passive: bool = False
-    metric: int | None = None        # OSPF cost; None = absent/unparseable (Mist default)
+    metric: int | None = None        # OSPF cost; None = absent OR present-but-unparseable
+    # raw metric token when present-but-unparseable (templated/garbage), else None. Carried
+    # SEPARATELY from `metric` (and diff-bearing) so an absent->templated or templated->other
+    # metric edit produces a diff — else it collapses to metric=None==None -> false-SAFE.
+    metric_unresolved: str | None = None
     unresolved: bool = False
     meta: FactMeta = CONFIG_META
     id: str = ""  # auto-derived in __post_init__ if empty

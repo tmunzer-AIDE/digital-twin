@@ -338,6 +338,35 @@ def test_metric_changed_is_review():
     assert res.status is Status.WARN
 
 
+def test_metric_absent_to_templated_is_review_note_not_safe():
+    # the false-SAFE fix: an in-scope metric edit where both sides parse to None (absent ->
+    # templated) must NOT resolve SAFE — the twin can't evaluate the templated metric.
+    base = _ir([ospf("S", 10, name="corp")])                                    # metric absent
+    prop = _ir([ospf("S", 10, name="corp", metric_unresolved="{{cost}}")])      # templated
+    res = _run(base, prop)
+    assert res.coverage.state is CoverageState.PARTIAL
+    assert any("templated/unparseable" in n for n in res.coverage.notes)
+    assert all(not f.code.endswith(".metric_changed") for f in res.findings)
+
+
+def test_metric_template_to_different_template_is_review_note():
+    base = _ir([ospf("S", 10, name="corp", metric_unresolved="{{a}}")])
+    prop = _ir([ospf("S", 10, name="corp", metric_unresolved="{{b}}")])
+    res = _run(base, prop)
+    assert res.coverage.state is CoverageState.PARTIAL
+
+
+def test_metric_stable_template_emits_no_note():
+    # an UNCHANGED templated metric must not note on an unrelated OSPF edit (relevance)
+    base = _ir([ospf("S", 10, name="corp", metric_unresolved="{{x}}"),
+                ospf("S", 20, name="iot", metric=5)])
+    prop = _ir([ospf("S", 10, name="corp", metric_unresolved="{{x}}"),
+                ospf("S", 20, name="iot", metric=9)])   # only vlan-20 metric changes
+    res = _run(base, prop)
+    assert all("templated/unparseable" not in n for n in res.coverage.notes)
+    assert any(f.code.endswith(".metric_changed") for f in res.findings)  # vlan 20 still fires
+
+
 def test_passive_flip_non_collapsing_is_review():
     # device keeps another active intf (vlan 20) so vlan-10 flip does NOT collapse egress
     base = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])

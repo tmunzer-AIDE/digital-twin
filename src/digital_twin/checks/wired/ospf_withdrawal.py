@@ -98,6 +98,7 @@ _EGRESS_UNCONFIRMED = Confidence(
 class _Row:
     passive: bool
     metric: int | None
+    metric_unresolved: str | None = None  # raw token when templated/unparseable
 
 
 @dataclass
@@ -129,7 +130,7 @@ def _participation(ir: IR) -> _Part:
         if o.vlan_id is None:
             continue  # unresolved rows handled separately
         seg = by_dev_vlan.setdefault((o.device_id, o.vlan_id), _Seg())
-        row = _Row(passive=o.passive, metric=o.metric)
+        row = _Row(passive=o.passive, metric=o.metric, metric_unresolved=o.metric_unresolved)
         if o.area in seg.by_area and seg.by_area[o.area] != row:
             seg.ambiguous_areas.add(o.area)  # differing (passive, metric) -> ambiguous
         else:
@@ -360,7 +361,15 @@ class OspfWithdrawalCheck:
                         {"area": area},
                     ))
 
-                if b_row.metric != p_row.metric:
+                # metric: if either side is templated/unparseable AND the token/state
+                # changed, the metric can't be compared -> PARTIAL note (never SAFE — closes
+                # the absent->templated / templated->other false-SAFE). Else compare values.
+                if b_row.metric_unresolved != p_row.metric_unresolved:
+                    notes.append(
+                        f"OSPF metric for vlan {vid} on {did} area {area} is templated/"
+                        "unparseable on one side — change impact unverifiable"
+                    )
+                elif b_row.metric != p_row.metric:
                     findings.append(_mutation(
                         did, vid, "metric_changed",
                         f"OSPF cost for vlan {vid} on {did} area {area} changed "
