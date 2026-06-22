@@ -474,7 +474,10 @@ class OspfWithdrawalCheck:
                     continue  # shouldn't happen: broken_peers are covered-in-base
                 did, vid = cv
                 # Find the owning finding: an adjacency-affecting finding whose evidence
-                # names this (device, vlan) pair.
+                # names this (device, vlan) pair. Owner-matching relies on the
+                # structural findings (sections 1-5) carrying evidence device+vlan (or
+                # egress_lost's affected_vlans); a finding missing those keys falls
+                # through to the .peer_unreachable backstop — which is safe by design.
                 owner_idx: int | None = None
                 for i, f in enumerate(findings):
                     if f.code not in _ADJACENCY_AFFECTING:
@@ -550,15 +553,11 @@ class OspfWithdrawalCheck:
 
         # 8. Relevance-scoped notes.
 
-        # Compute OSPF-relevant context for note gating.
+        # Compute OSPF-relevant context for note gating: a structural finding exists, OR
+        # a delta-touched subnet belongs to an ACTIVE OSPF (device, vlan) in base or prop.
         ospf_relevant = bool(findings) or any(
-            vid in touched_vids
-            and (
-                any(
-                    oi.vlan_id == vid and not oi.passive
-                    for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
-                )
-            )
+            any(oi.vlan_id == vid and not oi.passive
+                for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs))
             for vid in touched_vids
         )
 
