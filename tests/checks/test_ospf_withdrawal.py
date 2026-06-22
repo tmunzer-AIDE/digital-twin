@@ -99,19 +99,21 @@ def test_advertised_removed_when_device_keeps_adjacency():
     assert r.status is Status.WARN
 
 
-def test_addition_and_unrelated_are_silent():
+def test_addition_to_ospf_is_participation_added_review():
+    # A wholly-new (device, vlan) added to OSPF -> .participation_added REVIEW (GS27).
+    # A pure addition cannot be silently SAFE — the new advertisement may affect routing.
     base = _ir([ospf("S", 10, name="transit")])
     prop = _ir([ospf("S", 10, name="transit"), ospf("S", 20, name="corp", passive=True)])
     r = _run(base, prop)
-    assert r.findings == ()
-    assert r.status is Status.PASS
+    assert any(f.code.endswith(".participation_added") for f in r.findings)
+    assert r.status is Status.WARN
 
 
 def test_transit_mutation_on_noncollapsing_passive_flip():
     base = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])
     prop = _ir([ospf("S", 10, name="a", passive=True), ospf("S", 20, name="b")])
     r = _run(base, prop)
-    f = next(f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.transit_mutation")
+    f = next(f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.passive_flip")
     assert f.severity is Severity.WARNING
     assert r.status is Status.WARN
 
@@ -124,12 +126,12 @@ def test_pure_rename_is_silent():
     assert r.status is Status.PASS
 
 
-def test_area_move_is_transit_mutation_not_withdrawal():
+def test_area_move_is_area_changed_not_withdrawal():
     base = _ir([ospf("S", 10, name="corp", area="0")])
     prop = _ir([ospf("S", 10, name="corp", area="1")])
     r = _run(base, prop)
     codes = {f.code for f in r.findings}
-    assert codes == {"wired.l3.ospf_withdrawal.transit_mutation"}
+    assert codes == {"wired.l3.ospf_withdrawal.area_changed"}
 
 
 def test_unresolved_withdrawal_abstains_partial_never_unsafe():
@@ -170,7 +172,8 @@ def test_collapse_on_one_device_does_not_suppress_mutation_on_another():
     r = _run(base, prop)
     codes = {f.code for f in r.findings}
     assert "wired.l3.ospf_withdrawal.egress_lost" in codes  # S1 collapsed on vlan 20
-    tm = [f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.transit_mutation"]
+    # S2 independently flips its own vlan-20 row active->passive -> .passive_flip
+    tm = [f for f in r.findings if f.code == "wired.l3.ospf_withdrawal.passive_flip"]
     assert len(tm) == 1 and tm[0].evidence["device"] == "S2"  # S2's mutation not suppressed
 
 
@@ -222,11 +225,11 @@ def test_advertised_removed_attributes_the_changed_ospf_intf():
     assert causes == {("ospf_intf", "S:ospf:0:corp")}
 
 
-def test_transit_mutation_attributes_the_changed_ospf_intf():
+def test_passive_flip_attributes_the_changed_ospf_intf():
     base = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])
     prop = _ir([ospf("S", 10, name="a", passive=True), ospf("S", 20, name="b")])
     r = _run(base, prop)
-    f = next(f for f in r.findings if f.code.endswith(".transit_mutation"))
+    f = next(f for f in r.findings if f.code.endswith(".passive_flip"))
     causes = {(c.ref.kind, c.ref.id) for c in f.caused_by}
     # the passive flip on vlan 10 reuses the same id (name unchanged) -> modified
     assert causes == {("ospf_intf", "S:ospf:0:a")}
@@ -304,3 +307,56 @@ def test_egress_lost_names_only_active_intf_not_an_unrelated_passive_one():
     causes = {c.ref.id for c in f.caused_by}
     assert causes == {"S:ospf:0:transit"}
     assert "S:ospf:0:stub" not in causes  # the passive row is not the adjacency cause
+
+
+# --- GS27 Task 6: four precise structural codes + applies_to ---
+
+
+def test_metric_changed_is_review():
+    base = _ir([ospf("S", 10, name="corp", metric=5)])
+    prop = _ir([ospf("S", 10, name="corp", metric=20)])
+    res = _run(base, prop)
+    assert any(f.code.endswith(".metric_changed") for f in res.findings)
+    assert res.status is Status.WARN
+
+
+def test_passive_flip_non_collapsing_is_review():
+    # device keeps another active intf (vlan 20) so vlan-10 flip does NOT collapse egress
+    base = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])
+    prop = _ir([ospf("S", 10, name="a", passive=True), ospf("S", 20, name="b")])
+    res = _run(base, prop)
+    assert any(f.code.endswith(".passive_flip") for f in res.findings) and res.status is Status.WARN
+
+
+def test_participation_added_is_review():
+    base = _ir([ospf("S", 10, name="a")])
+    prop = _ir([ospf("S", 10, name="a"), ospf("S", 20, name="b")])  # vlan 20 newly in OSPF
+    res = _run(base, prop)
+    assert any(f.code.endswith(".participation_added") for f in res.findings)
+
+
+def test_area_changed_and_transit_mutation_code_gone():
+    base = _ir([ospf("S", 10, name="a", area="0")])
+    prop = _ir([ospf("S", 10, name="a", area="1")])  # area moved
+    res = _run(base, prop)
+    assert any(f.code.endswith(".area_changed") for f in res.findings)
+    assert all(".transit_mutation" not in f.code for f in res.findings)
+
+
+def test_ambiguous_area_skips_precise_compare_with_note():
+    base = _ir([ospf("S", 10, name="a", metric=5), ospf("S", 10, name="b", metric=9)])
+    prop = _ir([ospf("S", 10, name="a", metric=7), ospf("S", 10, name="b", metric=9)])
+    res = _run(base, prop)
+    assert res.coverage.state is CoverageState.PARTIAL
+    assert all(not f.code.endswith(".metric_changed") for f in res.findings)
+
+
+def test_applies_to_vlan_name_change_does_not_fire():
+    from digital_twin.ir.diff import EntityRef, IRDiff, Modified
+
+    assert OspfWithdrawalCheck().applies_to(
+        IRDiff((), (), (Modified(EntityRef("vlan", "10"), ("name",)),))
+    ) is False
+    assert OspfWithdrawalCheck().applies_to(
+        IRDiff((), (), (Modified(EntityRef("vlan", "10"), ("subnet",)),))
+    ) is True

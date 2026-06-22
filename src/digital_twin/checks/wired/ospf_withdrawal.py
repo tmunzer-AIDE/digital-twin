@@ -1,18 +1,21 @@
 """wired.l3.ospf_withdrawal — structural withdrawal of a switch's OSPF
-participation for a routed segment (GS26).
+participation for a routed segment (GS26/GS27).
 
 The twin has no RIB, so this detects MODELED participation leaving OSPF, never
-real reachability, and floors accordingly. Three codes:
+real reachability, and floors accordingly. Codes:
 - .egress_lost: a device's last ACTIVE (adjacency-bearing) interface goes away
   (removed, ospf disabled, or active->passive flip that collapses it) -> the
   device loses modeled dynamic egress. ERROR/UNSAFE iff an affected routed
   segment has observed clients; else WARNING/REVIEW.
 - .advertised_removed: a routed segment fully withdrawn from OSPF while its
   device keeps adjacency -> WARNING/REVIEW (prefix no longer distributed).
-- .transit_mutation: a retained (device, vlan) whose active-status or area set
-  changed but no withdrawal owns it -> WARNING/REVIEW (the deferred-mutation
-  floor; GS27 replaces it with precise transit modeling). A pure rename leaves
-  the semantic tuple unchanged -> silent.
+- .area_changed: a retained (device, vlan) whose area SET changed -> WARNING/REVIEW.
+- .passive_flip: a retained (device, vlan, area) whose passive flag flipped,
+  non-collapsing -> WARNING/REVIEW (transit role changed).
+- .metric_changed: a retained (device, vlan, area) whose OSPF cost changed ->
+  WARNING/REVIEW (path selection may shift).
+- .participation_added: a (device, vlan) newly present in OSPF (wholly absent in
+  baseline) -> WARNING/REVIEW (new advertisement / possible transit).
 
 Comparison is by the semantic (device, vlan[, area, active]) tuple, NEVER by
 OspfIntf.id, so rename/area-move is not a false withdrawal. l3_unmodeled is
@@ -24,7 +27,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause,
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.ir import (
     Capability,
     Confidence,
@@ -109,6 +119,17 @@ def _routed(ir: IR, vid: int, l3_vids: set[int]) -> bool:
     return vlan is not None and (vlan.subnet is not None or vid in l3_vids)
 
 
+def _touches_vlan_subnet(diff: IRDiff) -> bool:
+    """vlan add/remove, or a modified vlan whose changed fields touch the subnet —
+    never name/collisions/dhcp_sources/etc."""
+    if any(r.kind == "vlan" for r in (*diff.added, *diff.removed)):
+        return True
+    return any(
+        m.ref.kind == "vlan" and ({"subnet", "subnet_unresolved"} & set(m.changed_fields))
+        for m in diff.modified
+    )
+
+
 class OspfWithdrawalCheck:
     id = "wired.l3.ospf_withdrawal"
     title = "routed segment withdrawn from OSPF"
@@ -119,7 +140,7 @@ class OspfWithdrawalCheck:
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        return diff.touches("ospf_intf")
+        return diff.touches("ospf_intf") or _touches_vlan_subnet(diff)
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
@@ -230,38 +251,129 @@ class OspfWithdrawalCheck:
                 )
             )
 
-        # 3. retained participation mutated (active-status or area) -> .transit_mutation
+        # 3. retained participation mutated -> precise per-area structural codes
+        def _ospf_caused_by(did: str, vid: int) -> tuple[Cause, ...]:
+            return ctx.delta_index.causes(
+                "ospf_intf",
+                [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                 if oi.device_id == did and oi.vlan_id == vid],
+            )
+
         for key in sorted(set(base.by_dev_vlan) & set(prop.by_dev_vlan)):
             did, vid = key
             if (did, vid) in egress_owned_pairs or not _routed(prop_ir, vid, prop_l3):
                 continue
             b, p = base.by_dev_vlan[key], prop.by_dev_vlan[key]
-            if (b.active, b.areas) == (p.active, p.areas):
-                continue  # tuple unchanged (a pure rename lands here -> silent)
+
+            # 3a. area_changed: the area SET changed
+            if b.areas != p.areas:
+                findings.append(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.area_changed",
+                        subject=ObjectRef("vlan", str(vid)),
+                        severity=Severity.WARNING,
+                        confidence=_UNVERIFIED,
+                        message=(
+                            f"OSPF area set for vlan {vid} on {did} changed "
+                            f"{sorted(b.areas)} → {sorted(p.areas)} — adjacency / "
+                            "LSA-scope may shift"
+                        ),
+                        affected_entities=(str(vid),),
+                        evidence={
+                            "device": did,
+                            "vlan": vid,
+                            "base_areas": sorted(b.areas),
+                            "proposed_areas": sorted(p.areas),
+                        },
+                        caused_by=_ospf_caused_by(did, vid),
+                    )
+                )
+
+            # 3b. per-area passive/metric comparison (only non-ambiguous retained areas)
+            ambiguous = b.ambiguous_areas | p.ambiguous_areas
+            for area in sorted(b.areas & p.areas):
+                if area in ambiguous:
+                    # 3c. emit PARTIAL note for ambiguous areas — skip precise compare
+                    notes.append(
+                        f"OSPF vlan {vid} on {did} area {area} is claimed by multiple "
+                        "network entries with differing passive/metric — transit-change "
+                        "detection skipped"
+                    )
+                    continue
+                b_row, p_row = b.by_area[area], p.by_area[area]
+
+                if b_row.passive != p_row.passive:
+                    findings.append(
+                        Finding(
+                            source=FindingSource.CHECK,
+                            category=FindingCategory.NETWORK,
+                            code=f"{self.id}.passive_flip",
+                            subject=ObjectRef("vlan", str(vid)),
+                            severity=Severity.WARNING,
+                            confidence=_UNVERIFIED,
+                            message=(
+                                f"OSPF vlan {vid} on {did} area {area} flipped "
+                                f"{'active→passive' if not b_row.passive else 'passive→active'}"
+                                " — transit role changed"
+                            ),
+                            affected_entities=(str(vid),),
+                            evidence={"device": did, "vlan": vid, "area": area},
+                            caused_by=_ospf_caused_by(did, vid),
+                        )
+                    )
+
+                if b_row.metric != p_row.metric:
+                    findings.append(
+                        Finding(
+                            source=FindingSource.CHECK,
+                            category=FindingCategory.NETWORK,
+                            code=f"{self.id}.metric_changed",
+                            subject=ObjectRef("vlan", str(vid)),
+                            severity=Severity.WARNING,
+                            confidence=_UNVERIFIED,
+                            message=(
+                                f"OSPF cost for vlan {vid} on {did} area {area} changed "
+                                f"{b_row.metric} → {p_row.metric} — path selection may "
+                                "shift (no RIB computed)"
+                            ),
+                            affected_entities=(str(vid),),
+                            evidence={
+                                "device": did,
+                                "vlan": vid,
+                                "area": area,
+                                "base_metric": b_row.metric,
+                                "proposed_metric": p_row.metric,
+                            },
+                            caused_by=_ospf_caused_by(did, vid),
+                        )
+                    )
+
+        # 4. participation_added: (device, vlan) wholly new to OSPF in proposed
+        for key in sorted(set(prop.by_dev_vlan) - set(base.by_dev_vlan)):
+            did, vid = key
+            if not _routed(prop_ir, vid, prop_l3):
+                continue
             findings.append(
                 Finding(
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
-                    code=f"{self.id}.transit_mutation",
+                    code=f"{self.id}.participation_added",
                     subject=ObjectRef("vlan", str(vid)),
                     severity=Severity.WARNING,
                     confidence=_UNVERIFIED,
                     message=(
-                        f"OSPF participation for vlan {vid} on {did} changed "
-                        "(passive/area) — transit & area-semantics impact is deferred "
-                        "to GS27"
+                        f"vlan {vid} on {did} is newly added to OSPF — new "
+                        "advertisement / possible transit; review intended scope"
                     ),
                     affected_entities=(str(vid),),
                     evidence={"device": did, "vlan": vid},
-                    caused_by=ctx.delta_index.causes(
-                        "ospf_intf",
-                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
-                         if oi.device_id == did and oi.vlan_id == vid],
-                    ),
+                    caused_by=_ospf_caused_by(did, vid),
                 )
             )
 
-        # 4. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
+        # 5. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
         touched_ids = {
             r.id
             for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))

@@ -1111,24 +1111,26 @@ def test_gs26c_disable_ospf_with_clients_is_unsafe(tmp_path):
     assert "wired.l3.ospf_withdrawal.egress_lost" in {f.code for f in v.findings}
 
 
-def test_gs26d_addition_to_ospf_is_safe(tmp_path):
-    # baseline: only transit in OSPF; op ADDS ospf_corp -> not a withdrawal
+def test_gs26d_addition_to_ospf_is_review(tmp_path):
+    # GS27 update: a wholly-new (device, vlan) added to OSPF -> .participation_added
+    # REVIEW (not SAFE — silently treating additions as SAFE would be a false-SAFE).
     doc = ospf_doc({"ospf_transit": {}})
     _corp_vid, _corp_subnet = OSPF_NETS["ospf_corp"]
     doc["setting"]["networks"]["ospf_corp"] = {"vlan_id": _corp_vid, "subnet": _corp_subnet}
     op = ospf_op(doc, {"ospf_transit": {}, "ospf_corp": {"passive": True}})
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
-    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.participation_added" in {f.code for f in v.findings}
 
 
 def test_gs26e_noncollapsing_passive_flip_is_review(tmp_path):
     # two active interfaces; flip ONE to passive -> device keeps an adjacency
-    # -> .transit_mutation REVIEW (not SAFE, not UNSAFE)
+    # -> .passive_flip REVIEW (not SAFE, not UNSAFE)
     doc = ospf_doc({"ospf_transit": {}, "ospf_corp": {}})
     op = ospf_op(doc, {"ospf_transit": {}, "ospf_corp": {"passive": True}})
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.REVIEW, v.decision_reasons
-    assert "wired.l3.ospf_withdrawal.transit_mutation" in {f.code for f in v.findings}
+    assert "wired.l3.ospf_withdrawal.passive_flip" in {f.code for f in v.findings}
 
 
 # --- MS: multi-site / org networktemplate simulation ----------------------
