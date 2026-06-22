@@ -281,6 +281,27 @@ class OspfIntf:
 
 
 @dataclass(frozen=True)
+class OspfNeighbor:
+    """OBSERVATIONAL live OSPF adjacency (site_ospf stats). Evidence/escalation
+    input only: NOT in diff_ir, no strict IR validation. `area=None` means the
+    telemetry omitted the area -> the reachability join matches on subnet only."""
+
+    device_id: str
+    peer_ip: str
+    area: str | None = None
+    state: str = ""                       # raw Mist state, e.g. "Full"
+    vrf: str | None = None
+    neighbor_router_id: str | None = None
+    meta: FactMeta = OBSERVED_META
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            area_key = self.area or "*"
+            object.__setattr__(self, "id", f"{self.device_id}:ospfnbr:{area_key}:{self.peer_ip}")
+
+
+@dataclass(frozen=True)
 class Client:
     mac: str
     kind: ClientKind
