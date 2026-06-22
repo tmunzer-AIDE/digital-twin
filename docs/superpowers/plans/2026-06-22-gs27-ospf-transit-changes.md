@@ -719,7 +719,8 @@ git commit -m "feat(gs27): .advertised_prefix_changed + unresolved-prefix struct
   - `is_established(state: str) -> bool` — normalized `Full`.
   - `covering_dev_vlan(neighbor, ir) -> tuple[str, int] | None` — the `(device, vlan)` of the active OSPF interface whose predicted subnet covers `peer_ip` (area-matched; peer area None → subnet-only), else None.
   - `covered(neighbor, ir) -> bool` — `covering_dev_vlan(...) is not None`.
-  - `broken_peers(base_ir, prop_ir) -> list[OspfNeighbor]` — established, covered-in-base, uncovered-in-prop.
+  - `broken_peers(base_ir, prop_ir) -> list[OspfNeighbor]` — **confirmed** breaks: established, covered-in-base, uncovered-in-prop, AND proposed coverage was evaluable (not the subnet→unresolved case).
+  - `unevaluable_peers(base_ir, prop_ir) -> list[OspfNeighbor]` — covered-in-base but proposed coverage UNEVALUABLE (covering interface still active OSPF, subnet now unresolved) → REVIEW note, not a break.
   - `blind_peers(ir) -> list[OspfNeighbor]` — established but NOT covered (model couldn't place it).
 
 - [ ] **Step 1: Write the adversarial failing tests** (this is the blind-built module — be thorough):
@@ -787,6 +788,24 @@ def test_subnet_exclude_breaks_peer():
         intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="c")],
         neighbors=[OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Full")])
     assert [n.peer_ip for n in broken_peers(base, prop)] == ["10.0.0.5"]
+
+
+def test_proposed_unresolved_is_unevaluable_not_broken():
+    # covered in baseline; proposed keeps the active OSPF interface but its subnet is
+    # unresolved (None) -> coverage UNEVALUABLE -> blind, NOT a confirmed break.
+    from digital_twin.analysis.ospf_reachability import unevaluable_peers
+    from digital_twin.ir.entities import Vlan
+    nb = [OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Full")]
+    base = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="c")],
+        neighbors=nb)
+    prop = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet=None, subnet_unresolved=True)],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="c")],
+        neighbors=nb)
+    assert broken_peers(base, prop) == []                      # NOT broken
+    assert [n.peer_ip for n in unevaluable_peers(base, prop)] == ["10.0.0.5"]
 
 
 def test_non_established_never_broken():
@@ -873,14 +892,46 @@ def covered(neighbor: OspfNeighbor, ir: IR) -> bool:
     return covering_dev_vlan(neighbor, ir) is not None
 
 
+def _proposed_unevaluable(neighbor: OspfNeighbor, base_ir: IR, prop_ir: IR) -> bool:
+    """The peer's baseline-covering (device, vlan) is STILL active OSPF in proposed but
+    its subnet is now unresolved/None -> proposed coverage CANNOT be evaluated. This is
+    'unknown/blind', NOT a confirmed break (do not escalate to UNSAFE)."""
+    cv = covering_dev_vlan(neighbor, base_ir)
+    if cv is None:
+        return False
+    did, vid = cv
+    for o in prop_ir.ospf_intfs:
+        if o.passive or o.device_id != did or o.vlan_id != vid:
+            continue
+        vlan = prop_ir.vlans.get(vid)
+        if vlan is None or _net(vlan.subnet) is None:
+            return True                   # active OSPF here, but subnet unevaluable
+    return False
+
+
 def broken_peers(base_ir: IR, prop_ir: IR) -> list[OspfNeighbor]:
+    """CONFIRMED breaks only: established, covered-in-baseline, uncovered-in-proposed,
+    and proposed coverage was EVALUABLE (covering interface structurally gone, or still
+    active with a RESOLVED subnet that excludes the peer). The unevaluable case is blind."""
     return [
         n for n in base_ir.ospf_neighbors
         if is_established(n.state) and covered(n, base_ir) and not covered(n, prop_ir)
+        and not _proposed_unevaluable(n, base_ir, prop_ir)
+    ]
+
+
+def unevaluable_peers(base_ir: IR, prop_ir: IR) -> list[OspfNeighbor]:
+    """Baseline-covered established peers whose PROPOSED coverage is unevaluable (covering
+    interface still active OSPF but subnet unresolved) -> a REVIEW coverage note, not a break."""
+    return [
+        n for n in base_ir.ospf_neighbors
+        if is_established(n.state) and covered(n, base_ir) and not covered(n, prop_ir)
+        and _proposed_unevaluable(n, base_ir, prop_ir)
     ]
 
 
 def blind_peers(ir: IR) -> list[OspfNeighbor]:
+    """Established peers the model could not place in THIS ir (no covering active subnet)."""
     return [n for n in ir.ospf_neighbors if is_established(n.state) and not covered(n, ir)]
 ```
 
@@ -924,12 +975,13 @@ def test_resolved_subnet_break_escalates_advertised_prefix_changed():
                for f in res.findings)
     assert all(not f.code.endswith(".peer_unreachable") for f in res.findings)
 
-def test_subnet_to_unresolved_break_is_peer_unreachable():
-    # subnet -> unresolved/None: NO .advertised_prefix_changed fires (only the prefix-coverage
-    # note), so a peer break here is truly ownerless -> .peer_unreachable.
+def test_subnet_to_unresolved_with_live_peer_is_review_note_not_unsafe():
+    # subnet -> unresolved/None: proposed coverage is UNEVALUABLE (the interface is still
+    # active OSPF, we just can't test containment) -> REVIEW note, NOT a confirmed break.
     res = _run_ospf_subnet_edit(vid=10, base="198.51.10.0/24", prop=None,
                                 vlan_in_ospf=True, telemetry=[("S", "198.51.10.5", "0", "Full")])
-    assert any(f.code.endswith(".peer_unreachable") and f.severity is Severity.ERROR
+    assert res.status is Status.WARN and res.coverage.state is CoverageState.PARTIAL
+    assert all(not f.code.endswith(".peer_unreachable") and f.severity is not Severity.ERROR
                for f in res.findings)
 
 def test_partial_unparsed_does_not_suppress_escalation():
@@ -950,6 +1002,13 @@ def test_preexisting_blind_peer_untouched_device_no_note():
     # unrelated non-OSPF subnet edit -> no note, clean PASS.
     res = _run_unrelated_edit_with_blind_peer()
     assert res.coverage.state is CoverageState.COMPLETE and res.status is Status.PASS
+
+def test_baseline_blind_peer_on_touched_device_emits_note():
+    # POSITIVE relevance case: a baseline-uncovered (blind) peer whose DEVICE is delta-touched
+    # (a structural OSPF edit on it) -> PARTIAL note (the branch must actually fire).
+    res = _run_ospf_metric_change(  # a metric edit on device S touches it
+        telemetry=[("S", "203.0.113.9", "0", "Full")])  # peer NOT in any S subnet -> blind
+    assert res.coverage.state is CoverageState.PARTIAL
 ```
 
 - [ ] **Step 2: Run, expect FAIL**.
@@ -957,7 +1016,8 @@ def test_preexisting_blind_peer_untouched_device_no_note():
 - [ ] **Step 3: Implement** — in `run()`. **Partial parse loss must NOT disable escalation** — split the gate into two independent signals:
   - `telemetry_known = (IRCapability.OSPF_TELEMETRY in base_ir.capabilities and IRCapability.OSPF_TELEMETRY in prop_ir.capabilities)`.
   - `has_unparsed = base_ir.ospf_telemetry_unparsed_count > 0 or prop_ir.ospf_telemetry_unparsed_count > 0`.
-  - **Escalation runs whenever `telemetry_known`** (the parsed rows are usable — one bad row never suppresses escalation for valid peers): `broken = broken_peers(base_ir, prop_ir)`. Attribute each broken peer to the structural/withdrawal finding owning its baseline-covering `(did, vid)`; if found AND adjacency-affecting (egress_lost / advertised_removed / passive_flip / area_changed / **advertised_prefix_changed** — NOT metric_changed / participation_added) → build that finding `Severity.ERROR`, `_HIGH`, naming the `peer_ip`(s). A broken peer with **no owning finding** (e.g. a subnet→**unresolved** edit that emitted only the prefix-coverage *note*, never `.advertised_prefix_changed`) → standalone `.peer_unreachable` (ERROR/`_HIGH`).
+  - **Escalation runs whenever `telemetry_known`** (the parsed rows are usable — one bad row never suppresses escalation for valid peers): `broken = broken_peers(base_ir, prop_ir)` (confirmed breaks only — subnet→unresolved is excluded by the pure module). Attribute each broken peer to the structural/withdrawal finding owning its baseline-covering `(did, vid)` (via `covering_dev_vlan(n, base_ir)`); if found AND adjacency-affecting (egress_lost / advertised_removed / passive_flip / area_changed / **advertised_prefix_changed** — NOT metric_changed / participation_added) → build that finding `Severity.ERROR`, `_HIGH`, naming the `peer_ip`(s). `.peer_unreachable` (ERROR/`_HIGH`) is a **defensive backstop** for a confirmed broken peer with no matched owner — not expected to fire given the attribution above (every confirmed break has a structural owner), kept so an attribution gap can never silently drop a confirmed break to SAFE.
+  - **Unevaluable peers → REVIEW note (NOT a break):** for each `n in unevaluable_peers(base_ir, prop_ir)` (covered-in-base, proposed coverage unevaluable because the covering interface's subnet went unresolved) append a PARTIAL coverage note `f"OSPF peer {n.peer_ip} on {n.device_id}: proposed coverage unevaluable (the advertising prefix is unresolved) — adjacency impact not confirmed"`. This is relevant by construction (the subnet that went unresolved is delta-touched). Pairs with Task 7's structural prefix-coverage note; both → REVIEW, never UNSAFE.
     - Attribution: peer→`(did, vid)` = the active OspfIntf in `base_ir` on the peer's device whose vlan subnet contained `peer_ip`. Expose `covering_dev_vlan(neighbor, ir) -> tuple[str, int] | None` in `ospf_reachability` (it already computes this inside `covered` — return the `(device, vlan)` instead of a bool).
   - **Relevance-scoped notes (PARTIAL → REVIEW):**
     - **Blind note** when `not telemetry_known` **OR** `has_unparsed` (the unparsed *portion* is blind even though parsed peers escalated), appended **iff OSPF-relevant**: a structural OSPF finding exists, OR a `_subnet_touched_vids(diff)` vlan has active OSPF participation in base or prop.
@@ -992,8 +1052,8 @@ git commit -m "feat(gs27): telemetry escalation (established peer break -> UNSAF
   - OSPF-vlan subnet → unresolved, telemetry usable+empty → REVIEW (PARTIAL coverage), no `.advertised_prefix_changed`
   - non-OSPF-vlan subnet edit → SAFE
   - passive flip + live established peer (telemetry) → UNSAFE + `.passive_flip` ERROR
-  - resolved subnet edit that excludes a live peer (retained OSPF vlan) → UNSAFE + `.advertised_prefix_changed` ERROR (the break has an owner — NOT `.peer_unreachable`)
-  - subnet → unresolved that breaks a live peer (ownerless: only the prefix-coverage note, no `.advertised_prefix_changed`) → UNSAFE + `.peer_unreachable`
+  - resolved subnet edit that excludes a live peer (retained OSPF vlan) → UNSAFE + `.advertised_prefix_changed` ERROR (the break has an owner)
+  - subnet → unresolved with a live peer → REVIEW (PARTIAL): proposed coverage unevaluable → prefix-coverage + unevaluable-peer notes, no UNSAFE, no `.peer_unreachable`
   - telemetry-absent on OSPF-active subnet edit → REVIEW + telemetry-blind note
 
 - [ ] **Step 2: Update the GS26 golden** — find the existing scenario asserting `.transit_mutation` (non-collapsing flip) in `test_golden_scenarios.py` and change the expected code to `.passive_flip` (decision unchanged: REVIEW).

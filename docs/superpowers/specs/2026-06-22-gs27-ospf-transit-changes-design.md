@@ -206,9 +206,13 @@ Notes:
    area)` is *covered* by an active OspfIntf on the **same device** whose predicted
    subnet contains `peer_ip` and whose area matches (telemetry area absent → match
    on subnet only — the lenient/safe direction).
-3. **broken_peers(base_ir, prop_ir)** — baseline neighbors that **were covered in
-   baseline but are not covered in proposed** (covering interface removed / went
-   passive / area-moved / subnet changed to exclude). A peer *not* covered in
+3. **broken_peers(base_ir, prop_ir)** — **confirmed** breaks: baseline neighbors
+   **covered in baseline, not covered in proposed, and proposed coverage was
+   evaluable** (covering interface removed / went passive / area-moved / subnet
+   changed to a **resolved** prefix that excludes the peer). If the covering
+   interface is still active OSPF but its subnet went **unresolved**, proposed
+   coverage is *unevaluable* → returned by `unevaluable_peers(...)` for a REVIEW note,
+   NOT a break. A peer *not* covered in
    baseline is one the model is **blind** for (never escalation) — the pure module
    returns it as data; whether it produces a note is the check's **relevance-scoped**
    decision (below), **not** an unconditional note. (Otherwise a pre-existing
@@ -232,9 +236,17 @@ confidence**, naming the `peer_ip`, instead of its REVIEW/`_UNVERIFIED` default.
   clients → REVIEW" case to UNSAFE when a live peer confirms the break.)
 - **`.metric_changed` and `.participation_added` never own a break** — metric
   affects path cost not adjacency; an addition cannot break a pre-existing peer.
-- A broken peer with **no owning structural finding** (e.g. the covering `(device,
-  vlan)` left OSPF in a shape that produced no other code) → standalone
-  **`.peer_unreachable`**, ERROR / UNSAFE / HIGH.
+- A break is **confirmed** only when proposed coverage was *evaluable*: the covering
+  interface is structurally gone, OR still active with a **resolved** subnet that now
+  excludes the peer. If the covering interface is still active OSPF but its subnet went
+  **unresolved**, proposed coverage is *unevaluable* → a REVIEW coverage note (the
+  unevaluable-peer note), **not** a break (never UNSAFE — overstating certainty).
+- A confirmed broken peer with **no owning structural finding** → standalone
+  **`.peer_unreachable`**, ERROR / UNSAFE / HIGH. This is a **defensive backstop**: given
+  the attribution above (resolved subnet changes own `.advertised_prefix_changed`,
+  structural losses own egress/passive/area), every confirmed break has an owner, so
+  `.peer_unreachable` is not expected to fire — it is kept so an attribution gap can
+  never silently drop a confirmed break to SAFE.
 
 HIGH is defensible: escalation fires only for peers **covered in baseline**, so
 `peer_ip ∈ a real predicted subnet` — the prediction is validated for that peer —
@@ -280,7 +292,8 @@ PARTIAL floors to REVIEW, so never taint an unrelated change).
 | `.passive_flip` / `.area_changed` / `.participation_added` / `.advertised_prefix_changed`, no peer break | WARNING | MEDIUM | REVIEW |
 | `.passive_flip` / `.area_changed` / `.advertised_prefix_changed` breaks an established peer | ERROR | HIGH | UNSAFE |
 | GS26 `.egress_lost` / `.advertised_removed` breaks an established peer | ERROR | HIGH | UNSAFE (even with 0 observed clients) |
-| `.peer_unreachable` (break with no structural owner) | ERROR | HIGH | UNSAFE |
+| `.peer_unreachable` (confirmed break, no structural owner — defensive backstop) | ERROR | HIGH | UNSAFE |
+| retained-OSPF peer, proposed prefix unresolved (coverage unevaluable) | — | — | PARTIAL note → REVIEW |
 | ambiguous `(device,vlan,area)` | — | — | PARTIAL note, skip precise compare |
 | retained-OSPF vlan, delta-touched subnet unresolved/absent either side | — | — | PARTIAL note → REVIEW (structural prefix-coverage) |
 | telemetry absent/unparsed **and OSPF-relevant** | — | — | PARTIAL note |
