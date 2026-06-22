@@ -501,6 +501,17 @@ def test_passive_flip_with_live_peer_is_unsafe():
                for f in res.findings)
 
 
+def test_two_broken_peers_on_one_owner_all_named():
+    # two established peers both in vlan-10's subnet break via the SAME passive_flip -> the
+    # escalated finding must name BOTH (full blast radius), not just the first.
+    res = _run_ospf_passive_flip(telemetry=[
+        ("S", "198.51.10.5", "0", "Full"), ("S", "198.51.10.6", "0", "Full")])
+    f = next(f for f in res.findings if f.code.endswith(".passive_flip"))
+    assert f.severity is Severity.ERROR
+    assert f.evidence["broken_peers"] == ["198.51.10.5", "198.51.10.6"]
+    assert "198.51.10.5" in f.message and "198.51.10.6" in f.message
+
+
 def test_metric_change_with_live_peer_does_not_escalate():
     # metric_changed is NOT adjacency-affecting -> escalation must NOT fire.
     res = _run_ospf_metric_change(telemetry=[("S", "198.51.10.5", "0", "Full")])

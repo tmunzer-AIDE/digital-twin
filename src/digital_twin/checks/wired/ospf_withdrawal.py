@@ -470,81 +470,62 @@ class OspfWithdrawalCheck:
         })
 
         if telemetry_known:
-            broken = broken_peers(base_ir, prop_ir)
-            # For each broken peer, find its owning structural finding and escalate it.
-            # Keep track of broken (did, vid) pairs that have been escalated to avoid
-            # a double .peer_unreachable backstop for the same pair.
-            escalated_pairs: set[tuple[str, int]] = set()
-            escalated_findings: set[int] = set()  # indices into `findings`
 
-            for n in broken:
-                cv = covering_dev_vlan(n, base_ir)
-                if cv is None:
-                    continue  # shouldn't happen: broken_peers are covered-in-base
-                did, vid = cv
-                # Find the owning finding: an adjacency-affecting finding whose evidence
-                # names this (device, vlan) pair. Owner-matching relies on the
-                # structural findings (sections 1-5) carrying evidence device+vlan (or
-                # egress_lost's affected_vlans); a finding missing those keys falls
-                # through to the .peer_unreachable backstop — which is safe by design.
-                owner_idx: int | None = None
+            def _owner_idx(did: str, vid: int) -> int | None:
+                # an adjacency-affecting finding whose evidence names this (device, vlan).
+                # Relies on sections 1-5 carrying evidence device+vlan (or egress_lost's
+                # affected_vlans); a missing key falls through to the backstop (safe).
                 for i, f in enumerate(findings):
                     if f.code not in _ADJACENCY_AFFECTING:
                         continue
                     ev = f.evidence or {}
                     if ev.get("device") == did and ev.get("vlan") == vid:
-                        owner_idx = i
-                        break
-                    # egress_lost uses affected_vlans (a list) and device key
-                    if f.code == f"{self.id}.egress_lost":
-                        if ev.get("device") == did and vid in (ev.get("affected_vlans") or []):
-                            owner_idx = i
-                            break
+                        return i
+                    if f.code == f"{self.id}.egress_lost" and ev.get("device") == did \
+                            and vid in (ev.get("affected_vlans") or []):
+                        return i
+                return None
 
-                if owner_idx is not None:
-                    if owner_idx in escalated_findings:
-                        # Already escalated to ERROR by an earlier broken peer — no double-wrap.
-                        escalated_pairs.add((did, vid))
-                        continue
-                    # Escalate the owning REVIEW finding to ERROR/HIGH, naming the peer.
-                    old = findings[owner_idx]
-                    escalated_findings.add(owner_idx)
-                    escalated_pairs.add((did, vid))
-                    findings[owner_idx] = Finding(
-                        source=old.source,
-                        category=old.category,
-                        code=old.code,
-                        subject=old.subject,
-                        severity=Severity.ERROR,
-                        confidence=_HIGH,
-                        message=(
-                            f"{old.message} | OSPF peer {n.peer_ip} on {did} "
-                            "confirmed unreachable in proposed config"
-                        ),
-                        affected_entities=old.affected_entities,
-                        evidence={**(old.evidence or {}), "broken_peer": n.peer_ip},
-                        caused_by=old.caused_by,
-                    )
-                else:
-                    # Defensive backstop: confirmed break with no owning finding.
-                    if (did, vid) not in escalated_pairs:
-                        escalated_pairs.add((did, vid))
-                        findings.append(Finding(
-                            source=FindingSource.CHECK,
-                            category=FindingCategory.NETWORK,
-                            code=f"{self.id}.peer_unreachable",
-                            subject=ObjectRef("device", did),
-                            severity=Severity.ERROR,
-                            confidence=_HIGH,
-                            message=(
-                                f"OSPF peer {n.peer_ip} on {did} is confirmed unreachable "
-                                "in the proposed config — no structural finding covers this "
-                                "break (attribution gap backstop)"
-                            ),
-                            affected_entities=(str(vid),),
-                            evidence={"device": did, "vlan": vid, "peer_ip": n.peer_ip},
-                            caused_by=(),
-                        ))
+            # Group ALL broken peers by owning finding (or unowned (did,vid)) so a finding/
+            # backstop names EVERY broken peer, not just the first — full blast radius.
+            peers_by_owner: dict[int, list[str]] = {}
+            unowned_peers: dict[tuple[str, int], list[str]] = {}
+            for n in broken_peers(base_ir, prop_ir):
+                cv = covering_dev_vlan(n, base_ir)
+                if cv is None:
+                    continue  # shouldn't happen: broken_peers are covered-in-base
+                idx = _owner_idx(*cv)
+                (peers_by_owner.setdefault(idx, []) if idx is not None
+                 else unowned_peers.setdefault(cv, [])).append(n.peer_ip)
+
+            for owner_idx, peer_ips in peers_by_owner.items():
+                old = findings[owner_idx]
+                did = str((old.evidence or {}).get("device", ""))
+                named = ", ".join(sorted(set(peer_ips)))
+                findings[owner_idx] = Finding(
+                    source=old.source, category=old.category, code=old.code,
+                    subject=old.subject, severity=Severity.ERROR, confidence=_HIGH,
+                    message=(f"{old.message} | OSPF peer(s) {named} on {did} "
+                             "confirmed unreachable in proposed config"),
+                    affected_entities=old.affected_entities,
+                    evidence={**(old.evidence or {}), "broken_peers": sorted(set(peer_ips))},
+                    caused_by=old.caused_by,
+                )
+
+            for (did, vid), peer_ips in unowned_peers.items():
+                # Defensive backstop: confirmed break with no owning finding.
+                named = ", ".join(sorted(set(peer_ips)))
+                findings.append(Finding(
+                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                    code=f"{self.id}.peer_unreachable",
+                    subject=ObjectRef("device", did), severity=Severity.ERROR, confidence=_HIGH,
+                    message=(f"OSPF peer(s) {named} on {did} confirmed unreachable in the "
+                             "proposed config — no structural finding covers this break "
+                             "(attribution gap backstop)"),
+                    affected_entities=(str(vid),),
+                    evidence={"device": did, "vlan": vid, "broken_peers": sorted(set(peer_ips))},
+                    caused_by=(),
+                ))
 
             # Unevaluable peers -> PARTIAL coverage NOTE (-> REVIEW floor), NOT a break.
             # A live established peer whose proposed coverage cannot be evaluated (subnet
