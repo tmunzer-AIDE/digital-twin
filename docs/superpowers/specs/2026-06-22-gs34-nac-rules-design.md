@@ -102,21 +102,23 @@ simulate_org_nac(plan, provider)            [engine/pipeline.py]
 ```
 
 Short-circuits to **UNKNOWN** (honest, never a guess) when: the `nacrule` L0 schema is
-missing/fatal, the payload is not an object, or the org fetch fails.
+missing/fatal, the payload is not an object, or the **`nacrules`** fetch fails. A
+**`nactags`** fetch failure is *not* fatal — it is labels-only (see Provider, §4) and
+yields REVIEW with id-only labels, not UNKNOWN.
 
 ## 4. Components
 
 | Area | File | Change |
 |---|---|---|
-| Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. **Asymmetric failure:** a `nacrules` fetch failure → `baseline_unavailable` → UNKNOWN (load-bearing). A `nactags` failure is **labels-only** — shadowing keys on tag *ids* carried by the rules, so degrade to id-only labels + an operational finding, **not** UNKNOWN. |
+| Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch \| FetchError` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. **`NacFetch = {rules: tuple[raw,...], tags: tuple[raw,...], tag_findings: tuple[Finding,...]}`.** **Asymmetric failure:** a `nacrules` fetch failure returns `FetchError` → `baseline_unavailable` → UNKNOWN (load-bearing). A `nactags` failure is **labels-only** — shadowing keys on tag *ids* carried by the rules — so it returns the rules with `tags=()` plus an operational `Finding` in `tag_findings` (→ `adapter_findings` → REVIEW, id-only labels), **not** UNKNOWN. |
 | L0 / OAS | `adapters/mist/oas/nacrule.schema.json` (new) + `validate/schema.py` | extract `nac_rule` from the Mist OpenAPI; register in `_SCHEMA_FILES["nacrule"]`. **Prerequisite** (see §9). |
 | IR | `ir/entities.py` | new `NacRule`, `NacTag` frozen dataclasses; `IRBuilder.add_nacrule/add_nactag`; `IR.nacrules` / `IR.nactags` accessors. |
-| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted `opaque=True`** with best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque=True` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque=True`. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
+| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted with `opaque_digest` set** (a digest of its raw row) + best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque_digest` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque_digest` set. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
 | Simulate | `engine/pipeline.py` | `simulate_org_nac(plan, provider) -> OrgNacVerdict`. |
 | Scope | `scope/allowlist.py` | new `NAC_OBJECT_TYPES = ("nacrule",)` — **separate** from the site whitelist `SUPPORTED_OBJECT_TYPES` (its branch requires a `site_id`) and from `ORG_OBJECT_TYPES` (which drives the per-site fan-out routing). Plus `RAW_ALLOWLIST["nacrule"]` with **exact enumerated leaves** (see *nacrule allowlist leaves* below — no `matching.*` subtree, per the leaf-tightening rule). |
 | Gate | `scope/object_gate.py` | new NAC branch `is_nac = bool(ops) and all(op.object_type in NAC_OBJECT_TYPES) and not scope.site_id`, evaluated **before** `is_org` and the site branch. Allowed actions: `create` \| `update` \| `delete` (delete payload must be empty). |
 | Routing | `drivers/cli.py`, `drivers/mcp_server.py` | `_is_org_nac_plan(plan)` (mirrors `is_nac`) routes to `simulate_org_nac` **before** `_is_org_plan` and the site fallback, so a no-`site_id` nacrule plan is no longer rejected by the site branch. |
-| Diff | `ir/diff.py` | register `nacrule` entity kind (add/remove/modify). Compares all CONFIG fields incl. `name` and `order`; per-kind diff-ignore `{"opaque"}` (a derived internal flag, never a reportable user change — `meta` is already globally ignored). |
+| Diff | `ir/diff.py` | register `nacrule` entity kind (add/remove/modify). Compares all CONFIG fields incl. `name`, `order`, and `opaque_digest` (the latter is **diff-bearing** so a change in *unparseable* content still shows — two different malformed values give different digests and cannot collapse-and-vanish). Only `meta` is ignored (already global); no per-kind ignore. |
 | Checks | `checks/nac/delta.py`, `checks/nac/shadowing.py` (new) | the two checks below. |
 | Verdict | `verdict/org_nac_verdict.py` (new) | lean `OrgNacVerdict`. |
 | Drivers | `drivers/cli.py`, `drivers/mcp_server.py`, `drivers/render.py` | route + render. |
@@ -129,7 +131,7 @@ class NacRule:
     id: str
     name: str | None
     order: int | None            # None = unparseable/absent → never ordered/proven
-    enabled: bool                # ABSENT ⇒ True (OAS default); present non-bool ⇒ opaque
+    enabled: bool                # ABSENT ⇒ True (OAS default); non-bool ⇒ opaque_digest set
     action: str | None           # "allow" | "block" | None
     auth_types: frozenset[str]   # ∅ = GENUINELY unconstrained (matches any)
     port_types: frozenset[str]   # ∅ = genuinely unconstrained
@@ -142,16 +144,19 @@ class NacRule:
     # the ENTIRE not_matching block normalized to (dimension, value) pairs — ONE field so
     # (a) the diff sees any negative-criteria change, and (b) `not not_matching` is the
     # whole non-emptiness test (no per-dim enumeration to forget). Any non-empty
-    # not_matching ⇒ non-provable. Unparseable not_matching ⇒ opaque.
+    # not_matching ⇒ non-provable. Unparseable not_matching ⇒ a parse problem (below).
     not_matching: frozenset[tuple[str, str]]
     apply_tags: frozenset[str]
-    opaque: bool                 # a proof field was unparseable, OR the row itself only
-    #                              partially parsed (ingest mints id'd rows opaque, never
-    #                              drops them) →
-    #                              excluded from shadowing in BOTH directions. CRITICAL:
-    #                              distinct from a genuinely-empty (∅) field, which is a
-    #                              real "any" constraint. A malformed value must never
-    #                              silently collapse to ∅ and become a catch-all shadower.
+    # `None` = the row parsed cleanly. A non-None value is a stable **digest of the raw row**
+    # (canonical JSON minus IGNORED_RAW_FIELDS), set when a proof field is unparseable or the
+    # row only partially parsed (ingest mints id'd rows like this, never drops them). ONE
+    # field, two roles: (1) `opaque_digest is None` IS the provability gate — non-None
+    # excludes the rule from shadowing BOTH ways (its parsed proof fields aren't trustworthy;
+    # a malformed value must never collapse to ∅ and become a catch-all shadower); (2) it is
+    # **diff-bearing**, so two *different* malformed values yield different digests and a
+    # change in unparseable content still surfaces in `diff_ir` — it cannot silently collapse
+    # and vanish → false SAFE. (Replaces an earlier bool, which had no such fingerprint.)
+    opaque_digest: str | None
     meta: FactMeta
 
 @dataclass(frozen=True)
@@ -251,14 +256,14 @@ forgotten:
 
 ```python
 def is_provable(r: NacRule) -> bool:
-    return (not r.opaque and r.order is not None
+    return (r.opaque_digest is None and r.order is not None  # cleanly parsed + ordered
             and not r.not_matching                      # ANY negative criterion ⇒ no
             and not (r.site_ids or r.sitegroup_ids or r.family or r.mfg
                      or r.model or r.os_type or r.vendor))  # any positive extra-dim ⇒ no
     # ⇒ the rule constrains ONLY on {auth_types, port_types, match_tags}.
 ```
 
-A rule that fails this — opaque (unparseable proof field / partial row), order-less, or
+A rule that fails this — `opaque_digest` set (unparseable proof field / partial row), order-less, or
 carrying *any* negative (`not_matching`) or positive extra-dimension criterion — is
 excluded from shadowing in **both** directions (it neither shadows nor is proven-shadowed;
 no finding). This is the single chokepoint that prevents a malformed or
@@ -365,28 +370,32 @@ TDD throughout. Layers:
   filter or an identical set shadows, but a strict-subset tag set (`{X}` vs `{X,Y}`) must
   **not** (guards the unconfirmed OR semantics); disabled A or B ⇒ no shadow;
   non-provable rule excluded both ways for *each* reason — unmodeled dim
-  (`site_ids`/`family`/`not_matching`), **unparseable proof field (`opaque`)**, and
-  `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
+  (`site_ids`/`family`/`not_matching`), **`opaque_digest` set (unparseable proof field)**,
+  and `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
   introduced-vs-pre-existing attribution.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
   REVIEW finding naming the rule + changed fields; `caused_by` is a `Cause` (ref + fields,
   `fields=()` for add/remove); a **`not_matching.*` change** and a **name-only change**
-  each emit `nac.rule.change` (not merely appear in `diff_ir`); a rule flipping `opaque`
-  with no config-field change emits **no** delta finding (it is diff-ignored).
+  each emit `nac.rule.change` (not merely appear in `diff_ir`); a change to a rule's
+  unparseable content (`opaque_digest` changes) also emits `nac.rule.change`.
 - **IR/ingest** (`test_nac_ingest.py`) — full matching surface mapped; a row with an id
-  but a malformed proof field → minted `opaque=True` + operational finding (**not**
-  dropped); a row with **no id** → dropped + operational finding; **a rule malformed in
-  BOTH baseline and proposed still appears in `diff_ir`** (regression: skipping both would
-  vanish a real change → false SAFE); a baseline-only parse failure does not manufacture a
-  "newly introduced" shadow; **a `not_matching.*` change appears in `diff_ir`** (regression
-  — gated + claimed-modeled, must not vanish); **absent `enabled` → `True`** and a rule
-  with a non-tag negative criterion is **non-provable** (no false shadow); non-bool
-  `enabled` → `opaque` + finding; unparseable `order` → None; `nactag` bad row skipped.
+  but a malformed proof field → minted with `opaque_digest` set + operational finding
+  (**not** dropped); a row with **no id** → dropped + operational finding; **a rule
+  malformed in BOTH baseline and proposed still appears in `diff_ir`** — and **two
+  *different* malformed proof values give different `opaque_digest` → a modify the diff
+  catches** (regression: neither skipping nor digest-collapse may vanish a real change →
+  false SAFE); identical malformed content → same digest → no spurious diff; a
+  baseline-only parse failure does not manufacture a "newly introduced" shadow; **a
+  `not_matching.*` change appears in `diff_ir`** (regression — gated + claimed-modeled,
+  must not vanish); **absent `enabled` → `True`** and a rule with a non-tag negative
+  criterion is **non-provable** (no false shadow); non-bool `enabled` → `opaque_digest`
+  set + finding; unparseable `order` → None; `nactag` bad row skipped.
 - **L0** — `validate_payload("nacrule", …)` registered, type violation caught, unknown
   type still fails closed.
-- **Pipeline** (`test_simulate_org_nac.py`) — fetch error (`baseline_unavailable`) and
-  bad-id rejections (create whose id ∈ baseline; update/delete whose id ∉ baseline) →
-  UNKNOWN; a **no-op** plan (empty effective diff) → SAFE; a reorder with **no new
+- **Pipeline** (`test_simulate_org_nac.py`) — `nacrules` fetch error
+  (`baseline_unavailable`) and bad-id rejections (create whose id ∈ baseline; update/delete
+  whose id ∉ baseline) → UNKNOWN; **a `nactags` fetch failure → REVIEW with id-only labels
+  + the operational `tag_findings`, NOT UNKNOWN** (shadowing still runs on tag ids); a **no-op** plan (empty effective diff) → SAFE; a reorder with **no new
   shadow** → REVIEW (delta finding only — every reorder is a GS34 delta); a reorder or
   `create` that **buries a rule** → REVIEW (delta + introduced-shadow findings);
   **non-fatal L0** violation in a payload → REVIEW with the L0 finding present in
@@ -425,7 +434,7 @@ registration task so `nacrule` validates instead of failing closed.
 - **Block-shadow security escalation** (shadowed `block` ⇒ UNSAFE) — needs action-interplay
   reasoning.
 - **`not_matching` / site / device-attribute coverage in proofs** — currently makes a rule
-  opaque; could be modeled later.
+  non-provable (excluded from shadowing); could be modeled later.
 
 ## 11. Coordination
 
