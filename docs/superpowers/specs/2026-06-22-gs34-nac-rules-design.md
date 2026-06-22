@@ -82,15 +82,18 @@ plan (ops: object_type="nacrule", no site_id)
   ▼
 simulate_org_nac(plan, provider)            [engine/pipeline.py]
   ├─ provider.resolve_org_nac(scope) ……… baseline nacrules + nactags (errors-as-values)
-  ├─ per op (mirrors the site pipeline's effective→L0 order):
-  │     current = baseline[id]  (update/delete)  |  {} + overlay id=object_id  (create)
-  │     existence: update/delete id∉base, or create id∈base → Rejection → UNKNOWN
-  │     effective = effective_update(current, op.payload)        # create ⇒ body (+id)
-  │     adapter_findings += validate_payload("nacrule", effective,
-  │            scope_roots = None (create, full obj) | _changed_roots(op.payload) (update))
-  │     screen_op("nacrule", current, effective)  → FIELD GATE: any changed leaf outside
-  │            RAW_ALLOWLIST["nacrule"] → Rejection → UNKNOWN (enforces leaf-tightening)
-  ├─ proposed set = baseline with ops applied
+  ├─ per op (mirrors the site pipeline):
+  │   existence: update/delete id∉base, or create id∈base → Rejection → UNKNOWN
+  │   • delete → drop id from proposed set; SKIP conflict/L0/field-gate (no proposed obj)
+  │   • create | update:
+  │       update_conflicts(op.payload)   (sets x AND sends '-x' → Rejection → UNKNOWN)
+  │       current = baseline[id] (update) | {} + overlay id=object_id (create)
+  │       effective = effective_update(current, op.payload)      # create ⇒ body (+id)
+  │       adapter_findings += validate_payload("nacrule", effective,
+  │              scope_roots = None (create, full obj) | _changed_roots(op.payload) (update))
+  │       screen_op("nacrule", current, effective)  → FIELD GATE: any changed leaf outside
+  │              RAW_ALLOWLIST["nacrule"] → Rejection → UNKNOWN (enforces leaf-tightening)
+  │       proposed set ← effective
   ├─ ingest baseline & proposed → IR        (NacRule + NacTag entities)
   ├─ diff_ir(base_ir, proposed_ir)          (nacrule kind: add/remove/modify)
   ├─ checks → CheckResult:  nac.rule.change (GS34 delta) ; nac.rule.shadowed (delta-attr)
@@ -178,7 +181,11 @@ buries existing ones* — require it, so NAC is the first type with a `create` a
 The **gate is pre-fetch** (no state), so it only checks action ∈ {create,update,delete},
 object_type, no `site_id`, and empty delete payload. **Existence is validated post-fetch**
 in `simulate_org_nac`: `update`/`delete` whose id ∉ baseline, or `create` whose id ∈
-baseline, become a `Rejection` → UNKNOWN.
+baseline, become a `Rejection` → UNKNOWN. A `delete` then **drops the row directly** and
+runs **neither** `update_conflicts`, L0, nor the field gate (there is no proposed object —
+exactly the org-template delete branch). Only `create`/`update` run
+`update_conflicts(op.payload)` (a payload that both sets `x` and sends the `-x` delete
+marker → `Rejection` → UNKNOWN) → effective merge → L0 → field gate.
 
 **L0 validates the EFFECTIVE post-merge object, never the partial body** (matching the site
 pipeline). This matters because the validator surfaces object-level `required` errors even
@@ -382,7 +389,9 @@ TDD throughout. Layers:
   body does **not** raise a bogus `required` L0 finding (effective-object validation). An
   **OAS-valid but unallowlisted field** (e.g. `guest_auth_state`) → field-gate Rejection →
   **UNKNOWN** (regression: without `screen_op` it would be ignored → empty diff → false
-  SAFE).
+  SAFE). A payload that both sets and `-`-deletes the same attribute
+  (`{"matching": …, "-matching": ""}`) → `update_conflicts` Rejection → **UNKNOWN**; a
+  `delete` op runs **no** L0 / field gate (drops the row), only its existence check.
 - **Routing** — `_is_org_nac_plan` true for nacrule/no-site plans, false otherwise; a
   no-`site_id` nacrule plan no longer falls through to rejection.
 - **Golden / real-data validation** — replay the **13 TM-LAB rules** through shadowing and
