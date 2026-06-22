@@ -268,6 +268,7 @@ class OspfIntf:
     area: str = "0"
     network_name: str = ""
     passive: bool = False
+    metric: int | None = None        # OSPF cost; None = absent/unparseable (Mist default)
     unresolved: bool = False
     meta: FactMeta = CONFIG_META
     id: str = ""  # auto-derived in __post_init__ if empty

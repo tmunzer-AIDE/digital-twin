@@ -62,6 +62,16 @@ def _vlan_int(value: Any) -> int | None:
         return None
 
 
+def _metric_int(value: Any) -> int | None:
+    """OSPF metric -> int or None (templated/unparseable/absent -> None)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _literal_subnet(value: Any) -> str | None:
     """A subnet still carrying '{{vars}}' is unresolved intent — not a fact."""
     if not value or "{{" in str(value):
@@ -772,6 +782,7 @@ class SwitchIngester:
                         area=str(area),
                         network_name=str(name),
                         passive=bool(ncfg.get("passive", False)),
+                        metric=_metric_int(ncfg.get("metric")),
                         unresolved=(vid is None),
                     )
                 )
