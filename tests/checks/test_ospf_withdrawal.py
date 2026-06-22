@@ -264,6 +264,18 @@ def test_two_devices_same_vlan_advertised_removed_names_only_its_own_intf():
     assert "B:ospf:0:b50" not in causes  # B's changed intf must NOT be cross-blamed
 
 
+def test_participation_by_area_and_ambiguity():
+    from digital_twin.checks.wired.ospf_withdrawal import _participation
+    from tests.factories import ospf
+    # two networks on the SAME (S, vlan 10, area 0) with DIFFERENT metric (needs the
+    # ospf(metric=) factory extension from the Test harness note). vlan 10 is in _ir's
+    # default routed=(10,20,30) so it already has a subnet.
+    ir = _ir([ospf("S", 10, area="0", name="a", metric=5),
+              ospf("S", 10, area="0", name="b", metric=9)])
+    seg = _participation(ir).by_dev_vlan[("S", 10)]
+    assert "0" in seg.ambiguous_areas    # differing metric -> ambiguous, no last-win
+
+
 def test_egress_lost_names_only_active_intf_not_an_unrelated_passive_one():
     # REGRESSION (round 9): a device's ACTIVE adjacency collapses while an
     # unrelated PASSIVE ospf row on the SAME device also changes (a passive row

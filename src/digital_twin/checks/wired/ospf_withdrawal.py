@@ -55,10 +55,24 @@ _EGRESS_UNCONFIRMED = Confidence(
 )
 
 
+@dataclass(frozen=True)
+class _Row:
+    passive: bool
+    metric: int | None
+
+
 @dataclass
 class _Seg:
-    active: bool = False
-    areas: set[str] = field(default_factory=set)
+    by_area: dict[str, _Row] = field(default_factory=dict)
+    ambiguous_areas: set[str] = field(default_factory=set)
+
+    @property
+    def active(self) -> bool:
+        return any(not r.passive for r in self.by_area.values())
+
+    @property
+    def areas(self) -> set[str]:
+        return set(self.by_area)
 
 
 @dataclass
@@ -74,9 +88,12 @@ def _participation(ir: IR) -> _Part:
         if o.vlan_id is None:
             continue  # unresolved rows handled separately
         seg = by_dev_vlan.setdefault((o.device_id, o.vlan_id), _Seg())
-        seg.areas.add(o.area)
+        row = _Row(passive=o.passive, metric=o.metric)
+        if o.area in seg.by_area and seg.by_area[o.area] != row:
+            seg.ambiguous_areas.add(o.area)  # differing (passive, metric) -> ambiguous
+        else:
+            seg.by_area[o.area] = row
         if not o.passive:
-            seg.active = True
             active_by_dev.setdefault(o.device_id, set()).add(o.vlan_id)
     return _Part(by_dev_vlan, active_by_dev)
 
