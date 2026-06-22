@@ -209,7 +209,10 @@ Notes:
 3. **broken_peers(base_ir, prop_ir)** — baseline neighbors that **were covered in
    baseline but are not covered in proposed** (covering interface removed / went
    passive / area-moved / subnet changed to exclude). A peer *not* covered in
-   baseline → the model is blind for it → coverage note, **never** escalation.
+   baseline is one the model is **blind** for (never escalation) — the pure module
+   returns it as data; whether it produces a note is the check's **relevance-scoped**
+   decision (below), **not** an unconditional note. (Otherwise a pre-existing
+   unmodelable neighbor would floor every unrelated edit to REVIEW.)
 
 ### Escalation (in `run()`, gated on `telemetry_known`)
 Only baseline neighbors whose **normalized state is established** (`Full`, pending
@@ -258,9 +261,16 @@ PARTIAL note (→ REVIEW) **iff the delta is OSPF-relevant**:
   or proposed (even with zero baseline peers — we cannot prove no peer would break).
 
 When telemetry is usable but a baseline-covered peer's proposed coverage could not
-be evaluated on a delta-touched device → note too. No note for an unrelated subnet
-edit (mirrors the `touched_ids` discipline — PARTIAL floors to REVIEW, so never
-taint an unrelated change).
+be evaluated on a delta-touched device → note too.
+
+A **baseline-uncovered** (blind) peer — one the model could not place even in
+baseline — is likewise noted **only when relevance-scoped**: its `device`/`vlan` is
+delta-touched, **or** a structural OSPF finding depends on that blind spot. A
+pre-existing unmodelable neighbor on an untouched device produces **no** note, so
+it can never floor an unrelated edit (e.g. a non-OSPF subnet change) to REVIEW.
+
+No note for an unrelated subnet edit (mirrors the `touched_ids` discipline —
+PARTIAL floors to REVIEW, so never taint an unrelated change).
 
 ## Section 4 — verdict matrix & edge cases
 
@@ -312,7 +322,9 @@ of telemetry.
   `.peer_unreachable`; metric-never-escalates; `applies_to` precision (vlan **name**
   change does *not* fire; **subnet** change does); relevance-scoped telemetry-blind
   note (incl. subnet-edit-without-telemetry → REVIEW, and unrelated subnet edit →
-  no note); non-established peer does not escalate.
+  no note); a **pre-existing baseline-uncovered (blind) peer on an untouched device
+  → no note** (an unrelated non-OSPF subnet edit still PASSes); non-established peer
+  does not escalate.
 - **Self-isolating ingester test:** malformed telemetry → `report.ok` stays True,
   `OSPF_TELEMETRY` earned, `ospf_telemetry_unparsed_count` reflects dropped rows
   (incl. the **partial** case: some rows parse, some skipped → count > 0).
