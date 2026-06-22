@@ -16,6 +16,10 @@ real reachability, and floors accordingly. Codes:
   WARNING/REVIEW (path selection may shift).
 - .participation_added: a (device, vlan) newly present in OSPF (wholly absent in
   baseline) -> WARNING/REVIEW (new advertisement / possible transit).
+- .advertised_prefix_changed: a retained OSPF (device, vlan) — active OR passive —
+  whose canonical Vlan.subnet changed -> WARNING/REVIEW (connected prefix shifted).
+  An unresolved/absent subnet on either side -> structural prefix-coverage NOTE
+  (PARTIAL -> REVIEW), telemetry-independent.
 
 Comparison is by the semantic (device, vlan[, area, active]) tuple, NEVER by
 OspfIntf.id, so rename/area-move is not a false withdrawal. l3_unmodeled is
@@ -24,6 +28,7 @@ gateway-only; the sole switch-side blindness is an unresolved network name.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +50,18 @@ from digital_twin.ir import (
     min_confidence,
 )
 from digital_twin.ir.model import IR
+
+_Net = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _net(subnet: str | None) -> _Net | None:
+    """Canonical network from a subnet string (GS31-style). Returns None on absent/invalid."""
+    if not subnet:
+        return None
+    try:
+        return ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        return None
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _UNVERIFIED = Confidence(
@@ -129,6 +146,24 @@ def _touches_vlan_subnet(diff: IRDiff) -> bool:
         m.ref.kind == "vlan" and ({"subnet", "subnet_unresolved"} & set(m.changed_fields))
         for m in diff.modified
     )
+
+
+def _subnet_touched_vids(diff: IRDiff) -> set[int]:
+    """vlan ids whose subnet/subnet_unresolved changed, or that were added/removed."""
+    out: set[int] = set()
+    for r in (*diff.added, *diff.removed):
+        if r.kind == "vlan":
+            try:
+                out.add(int(r.id))
+            except ValueError:
+                pass
+    for m in diff.modified:
+        if m.ref.kind == "vlan" and ({"subnet", "subnet_unresolved"} & set(m.changed_fields)):
+            try:
+                out.add(int(m.ref.id))
+            except ValueError:
+                pass
+    return out
 
 
 class OspfWithdrawalCheck:
@@ -336,7 +371,47 @@ class OspfWithdrawalCheck:
                 {},
             ))
 
-        # 5. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
+        # 5. advertised_prefix_changed: retained OSPF (device, vlan) — active OR passive —
+        # whose Vlan.subnet was delta-touched. Distinct source from the four ospf_intf-diff
+        # codes: joins participation set with Vlan.subnet diff. Never double-emits with
+        # egress_owned_pairs (collapsed device's withdrawal subsumes this).
+        touched_vids = _subnet_touched_vids(ctx.diff)
+        retained_pairs = set(base.by_dev_vlan) & set(prop.by_dev_vlan)
+        for key in sorted(retained_pairs):
+            did, vid = key
+            if (did, vid) in egress_owned_pairs or vid not in touched_vids:
+                continue
+            bnet = _net(base_ir.vlans[vid].subnet if vid in base_ir.vlans else None)
+            pnet = _net(prop_ir.vlans[vid].subnet if vid in prop_ir.vlans else None)
+            if bnet is not None and pnet is not None and bnet != pnet:
+                findings.append(Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.advertised_prefix_changed",
+                    subject=ObjectRef("vlan", str(vid)),
+                    severity=Severity.WARNING,
+                    confidence=_UNVERIFIED,
+                    message=(
+                        f"OSPF-participating vlan {vid} on {did} changed its connected "
+                        f"prefix {bnet} → {pnet} — the advertised subnet shifted; "
+                        "reachability impact unverifiable without RIB"
+                    ),
+                    affected_entities=(str(vid),),
+                    evidence={
+                        "device": did,
+                        "vlan": vid,
+                        "base_prefix": str(bnet),
+                        "proposed_prefix": str(pnet),
+                    },
+                    caused_by=ctx.delta_index.causes("vlan", [str(vid)]),
+                ))
+            elif bnet is None or pnet is None:
+                notes.append(
+                    f"OSPF-participating vlan {vid} on {did} advertised prefix could not "
+                    "be compared (unresolved/absent) — prefix-change impact unverifiable"
+                )
+
+        # 6. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
         touched_ids = {
             r.id
             for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))

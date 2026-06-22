@@ -12,11 +12,18 @@ from digital_twin.ir.entities import AttachKind, Client, ClientKind
 from tests.factories import access_port, irb, ospf, sw
 
 
-def _ir(ospf_rows, *, clients=(), routed=(10, 20, 30), with_clients_cap=True):
+def _ir(ospf_rows, *, clients=(), routed=(10, 20, 30), with_clients_cap=True,
+        subnets: dict[int, str | None] | None = None):
     b = IRBuilder().add_device(sw("S"))
     for vid in routed:
-        b.add_vlan(Vlan(vlan_id=vid, subnet=f"198.51.{vid}.0/24"))
-        b.add_l3intf(irb("S", vid, subnet=f"198.51.{vid}.0/24"))
+        if subnets and vid in subnets:
+            sn = subnets[vid]
+            b.add_vlan(Vlan(vlan_id=vid, subnet=sn, subnet_unresolved=(sn is None)))
+            if sn is not None:
+                b.add_l3intf(irb("S", vid, subnet=sn))
+        else:
+            b.add_vlan(Vlan(vlan_id=vid, subnet=f"198.51.{vid}.0/24"))
+            b.add_l3intf(irb("S", vid, subnet=f"198.51.{vid}.0/24"))
     if clients:
         b.add_port(access_port("S", "p1", vlan=routed[0]))
     for row in ospf_rows:
@@ -360,3 +367,31 @@ def test_applies_to_vlan_name_change_does_not_fire():
     assert OspfWithdrawalCheck().applies_to(
         IRDiff((), (), (Modified(EntityRef("vlan", "10"), ("subnet",)),))
     ) is True
+
+
+# --- GS27 Task 7: .advertised_prefix_changed + structural prefix-coverage note ---
+
+
+def test_advertised_prefix_changed_is_review():
+    base = _ir([ospf("S", 10, name="c")], subnets={10: "198.51.10.0/24"})
+    prop = _ir([ospf("S", 10, name="c")], subnets={10: "198.51.10.0/23"})  # adjacency survives
+    res = _run(base, prop)
+    assert any(f.code.endswith(".advertised_prefix_changed") for f in res.findings)
+    assert res.status is Status.WARN
+
+
+def test_unresolved_prefix_on_ospf_vlan_is_review_note():
+    base = _ir([ospf("S", 10, name="c")], subnets={10: "198.51.10.0/24"})
+    prop = _ir([ospf("S", 10, name="c")], subnets={10: None})   # became unresolved
+    res = _run(base, prop)
+    assert res.coverage.state is CoverageState.PARTIAL
+    assert all(not f.code.endswith(".advertised_prefix_changed") for f in res.findings)
+
+
+def test_subnet_edit_on_non_ospf_vlan_is_pass():
+    # vlan 10 NOT in OSPF; only its subnet changes -> applies_to fires, but no OSPF
+    # participation -> no finding, clean PASS.
+    base = _ir([], subnets={10: "198.51.10.0/24"})
+    prop = _ir([], subnets={10: "198.51.10.0/23"})
+    res = _run(base, prop)
+    assert res.status is Status.PASS and res.coverage.state is CoverageState.COMPLETE
