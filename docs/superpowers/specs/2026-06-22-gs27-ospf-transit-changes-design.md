@@ -47,7 +47,7 @@ reachability logic in a focused pure module the check consults.
 
 ```
 ir/entities.py            OspfIntf.metric; new OspfNeighbor
-ir/model.py               IR.ospf_neighbors + ospf_telemetry_unparsed flag + setters
+ir/model.py               IR.ospf_neighbors + ospf_telemetry_unparsed_count + setters
 ir/diff.py                OspfNeighbor NOT in _ENTITY_KINDS (non-diff-bearing)
 ir/__init__.py            export OspfNeighbor + IRCapability.OSPF_TELEMETRY
 adapters/mist/ingest/switch.py            _metric_int parser; _ospf reads metric
@@ -81,13 +81,17 @@ before this change any metric edit was denied → UNKNOWN; GS27 now consumes it.
 class OspfNeighbor:
     device_id: str
     peer_ip: str
-    area: str = "0"
+    area: str | None = None            # None = telemetry omitted area -> subnet-only match
     state: str = ""                    # raw Mist state, e.g. "Full"
     vrf: str | None = None
     neighbor_router_id: str | None = None
-    meta: FactMeta = TELEMETRY_META
-    id: str = ""                       # f"{device_id}:ospfnbr:{area}:{peer_ip}"
+    meta: FactMeta = OBSERVED_META     # repo has OBSERVED_META (no TELEMETRY_META)
+    id: str = ""                       # f"{device_id}:ospfnbr:{area or '*'}:{peer_ip}"
 ```
+`area` is `str | None`, **not** defaulted to `"0"`: a neighbor whose telemetry omits
+the area must stay distinguishable from a genuine area-0 neighbor, so the lenient
+subnet-only match (Section 3 `covers`) fires for it regardless of which area its
+interface is in. The id renders absent area as `*` for stability.
 - Minted by a **self-isolating** `OspfNeighborIngester` (mirrors
   `ClientEnrichmentIngester`): whole-body + per-row `try/except`; it never
   reaches the registry's `failures`, so malformed telemetry can never flip
@@ -101,12 +105,16 @@ class OspfNeighbor:
 - Earned when the `site_ospf` fetch **succeeds** (shape reachable), including the
   genuinely-empty case (a site with OSPF but no adjacencies up → zero peers,
   shape known). This is the `telemetry_known` gate, mirroring `clients_known`.
-- The ingester also sets a soft `IR.ospf_telemetry_unparsed` signal when raw rows
-  were present but **none** yielded a usable `peer_ip`/state (shape unrecognized).
-  The check honors it: unparsed → telemetry-blind + coverage note, **never** "no
-  Full neighbors exist." (Under the escalate-only invariant this is a
-  coverage-honesty refinement, not a false-SAFE fix — a wrongly-empty neighbor
-  set only means "no escalation, structural floor stands.")
+- The ingester also carries a soft `IR.ospf_telemetry_unparsed_count` — the number
+  of raw rows it **skipped** (no usable `peer_ip`/state). This counts **partial**
+  loss, not only the all-rows-failed case: if some rows parse and others are
+  dropped, the dropped ones must not vanish silently — for a subnet-only change
+  that could turn "there may be an affected peer we could not parse" into PASS.
+  The check honors `count > 0`: telemetry-blind for the unparsed portion + a
+  relevance-scoped coverage note (same scoping as Section 3), **never** "no Full
+  neighbors exist." (Under the escalate-only invariant this is a coverage-honesty
+  refinement, not a false-SAFE fix — a wrongly-empty neighbor set only means "no
+  escalation, structural floor stands"; the count makes the *partial* case honest.)
 - `OSPF_TELEMETRY` is **never** a hard `requires()` of the check (that would skip
   the whole check — and the structural REVIEW floor — when telemetry is absent).
   Escalation is conditional *inside* `run()`, exactly like `clients_known`.
@@ -215,16 +223,17 @@ changed-field tuples.) The vlan-subnet path does **only** telemetry peer-break
 work; structural codes still key on `ospf_intf` participation diffs.
 
 ### Relevance-scoped telemetry-blind note (closes the subnet-edit false-SAFE)
-When telemetry is absent/unparsed, emit a PARTIAL note (→ REVIEW) **iff the delta
-is OSPF-relevant**:
+Telemetry is **blind** when it was not fetched (no `OSPF_TELEMETRY`) **or**
+`ospf_telemetry_unparsed_count > 0` (some/all rows dropped). When blind, emit a
+PARTIAL note (→ REVIEW) **iff the delta is OSPF-relevant**:
 - a structural OSPF finding exists, **OR**
 - a delta-touched subnet belongs to an active OSPF `(device, vlan)` in baseline
   or proposed (even with zero baseline peers — we cannot prove no peer would break).
 
-When telemetry **is** present but a baseline-covered peer's proposed coverage
-could not be evaluated on a delta-touched device → note too. No note for an
-unrelated subnet edit (mirrors the `touched_ids` discipline — PARTIAL floors to
-REVIEW, so never taint an unrelated change).
+When telemetry is usable but a baseline-covered peer's proposed coverage could not
+be evaluated on a delta-touched device → note too. No note for an unrelated subnet
+edit (mirrors the `touched_ids` discipline — PARTIAL floors to REVIEW, so never
+taint an unrelated change).
 
 ## Section 4 — verdict matrix & edge cases
 
@@ -265,7 +274,8 @@ subnet edit on an OSPF-active vlan with telemetry absent → REVIEW note.
   note (incl. subnet-edit-without-telemetry → REVIEW, and unrelated subnet edit →
   no note); non-established peer does not escalate.
 - **Self-isolating ingester test:** malformed telemetry → `report.ok` stays True,
-  `OSPF_TELEMETRY` earned, `ospf_telemetry_unparsed` set.
+  `OSPF_TELEMETRY` earned, `ospf_telemetry_unparsed_count` reflects dropped rows
+  (incl. the **partial** case: some rows parse, some skipped → count > 0).
 - **Goldens** (end-to-end via `simulate`, GS26-style): metric / passive / area /
   participation_added REVIEW; ambiguous PARTIAL; passive_flip + live established
   peer → UNSAFE; subnet-break → `.peer_unreachable` UNSAFE; subnet-keeps-peer →
