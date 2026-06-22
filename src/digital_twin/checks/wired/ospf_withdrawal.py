@@ -25,6 +25,7 @@ gateway-only; the sole switch-side blindness is an unresolved network name.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import (
@@ -259,6 +260,23 @@ class OspfWithdrawalCheck:
                  if oi.device_id == did and oi.vlan_id == vid],
             )
 
+        def _mutation(
+            did: str, vid: int, code: str, message: str, extra: dict[str, Any]
+        ) -> Finding:
+            # the four GS27 structural codes share everything but code/message/evidence-extras
+            return Finding(
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.{code}",
+                subject=ObjectRef("vlan", str(vid)),
+                severity=Severity.WARNING,
+                confidence=_UNVERIFIED,
+                message=message,
+                affected_entities=(str(vid),),
+                evidence={"device": did, "vlan": vid, **extra},
+                caused_by=_ospf_caused_by(did, vid),
+            )
+
         for key in sorted(set(base.by_dev_vlan) & set(prop.by_dev_vlan)):
             did, vid = key
             if (did, vid) in egress_owned_pairs or not _routed(prop_ir, vid, prop_l3):
@@ -267,29 +285,12 @@ class OspfWithdrawalCheck:
 
             # 3a. area_changed: the area SET changed
             if b.areas != p.areas:
-                findings.append(
-                    Finding(
-                        source=FindingSource.CHECK,
-                        category=FindingCategory.NETWORK,
-                        code=f"{self.id}.area_changed",
-                        subject=ObjectRef("vlan", str(vid)),
-                        severity=Severity.WARNING,
-                        confidence=_UNVERIFIED,
-                        message=(
-                            f"OSPF area set for vlan {vid} on {did} changed "
-                            f"{sorted(b.areas)} → {sorted(p.areas)} — adjacency / "
-                            "LSA-scope may shift"
-                        ),
-                        affected_entities=(str(vid),),
-                        evidence={
-                            "device": did,
-                            "vlan": vid,
-                            "base_areas": sorted(b.areas),
-                            "proposed_areas": sorted(p.areas),
-                        },
-                        caused_by=_ospf_caused_by(did, vid),
-                    )
-                )
+                findings.append(_mutation(
+                    did, vid, "area_changed",
+                    f"OSPF area set for vlan {vid} on {did} changed "
+                    f"{sorted(b.areas)} → {sorted(p.areas)} — adjacency / LSA-scope may shift",
+                    {"base_areas": sorted(b.areas), "proposed_areas": sorted(p.areas)},
+                ))
 
             # 3b. per-area passive/metric comparison (only non-ambiguous retained areas)
             ambiguous = b.ambiguous_areas | p.ambiguous_areas
@@ -305,73 +306,35 @@ class OspfWithdrawalCheck:
                 b_row, p_row = b.by_area[area], p.by_area[area]
 
                 if b_row.passive != p_row.passive:
-                    findings.append(
-                        Finding(
-                            source=FindingSource.CHECK,
-                            category=FindingCategory.NETWORK,
-                            code=f"{self.id}.passive_flip",
-                            subject=ObjectRef("vlan", str(vid)),
-                            severity=Severity.WARNING,
-                            confidence=_UNVERIFIED,
-                            message=(
-                                f"OSPF vlan {vid} on {did} area {area} flipped "
-                                f"{'active→passive' if not b_row.passive else 'passive→active'}"
-                                " — transit role changed"
-                            ),
-                            affected_entities=(str(vid),),
-                            evidence={"device": did, "vlan": vid, "area": area},
-                            caused_by=_ospf_caused_by(did, vid),
-                        )
-                    )
+                    direction = "active→passive" if not b_row.passive else "passive→active"
+                    findings.append(_mutation(
+                        did, vid, "passive_flip",
+                        f"OSPF vlan {vid} on {did} area {area} flipped {direction}"
+                        " — transit role changed",
+                        {"area": area},
+                    ))
 
                 if b_row.metric != p_row.metric:
-                    findings.append(
-                        Finding(
-                            source=FindingSource.CHECK,
-                            category=FindingCategory.NETWORK,
-                            code=f"{self.id}.metric_changed",
-                            subject=ObjectRef("vlan", str(vid)),
-                            severity=Severity.WARNING,
-                            confidence=_UNVERIFIED,
-                            message=(
-                                f"OSPF cost for vlan {vid} on {did} area {area} changed "
-                                f"{b_row.metric} → {p_row.metric} — path selection may "
-                                "shift (no RIB computed)"
-                            ),
-                            affected_entities=(str(vid),),
-                            evidence={
-                                "device": did,
-                                "vlan": vid,
-                                "area": area,
-                                "base_metric": b_row.metric,
-                                "proposed_metric": p_row.metric,
-                            },
-                            caused_by=_ospf_caused_by(did, vid),
-                        )
-                    )
+                    findings.append(_mutation(
+                        did, vid, "metric_changed",
+                        f"OSPF cost for vlan {vid} on {did} area {area} changed "
+                        f"{b_row.metric} → {p_row.metric} — path selection may shift "
+                        "(no RIB computed)",
+                        {"area": area, "base_metric": b_row.metric,
+                         "proposed_metric": p_row.metric},
+                    ))
 
         # 4. participation_added: (device, vlan) wholly new to OSPF in proposed
         for key in sorted(set(prop.by_dev_vlan) - set(base.by_dev_vlan)):
             did, vid = key
             if not _routed(prop_ir, vid, prop_l3):
                 continue
-            findings.append(
-                Finding(
-                    source=FindingSource.CHECK,
-                    category=FindingCategory.NETWORK,
-                    code=f"{self.id}.participation_added",
-                    subject=ObjectRef("vlan", str(vid)),
-                    severity=Severity.WARNING,
-                    confidence=_UNVERIFIED,
-                    message=(
-                        f"vlan {vid} on {did} is newly added to OSPF — new "
-                        "advertisement / possible transit; review intended scope"
-                    ),
-                    affected_entities=(str(vid),),
-                    evidence={"device": did, "vlan": vid},
-                    caused_by=_ospf_caused_by(did, vid),
-                )
-            )
+            findings.append(_mutation(
+                did, vid, "participation_added",
+                f"vlan {vid} on {did} is newly added to OSPF — new advertisement / "
+                "possible transit; review intended scope",
+                {},
+            ))
 
         # 5. unresolved rows touched by the delta -> PARTIAL abstain (never silent)
         touched_ids = {
