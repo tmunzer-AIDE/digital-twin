@@ -253,29 +253,34 @@ git commit -m "feat(gs27): OspfNeighbor observational entity + OSPF_TELEMETRY ca
 
 **Files:**
 - Modify: `src/digital_twin/providers/base.py` (RawSiteState), `src/digital_twin/providers/mist_api.py`, `src/digital_twin/observability/replay/store.py`
-- Test: `tests/providers/test_replay_store.py` (extend), `tests/providers/test_mist_api.py` (extend if exists)
+- Modify: `tests/adapters/mist/fixtures.py` (add `ospf_neighbors` kwarg to `raw_site`)
+- Test: `tests/observability/test_replay_store.py` (extend — this is where replay tests actually live)
 
 **Interfaces:**
-- Produces: `RawSiteState.ospf_neighbors: tuple[JsonObj, ...] = ()`; `meta.fetched` contains `"ospf_neighbors"` on success; replay docs carry `ospf_neighbors`.
+- Produces: `RawSiteState.ospf_neighbors: tuple[JsonObj, ...] = ()`; `meta.fetched` contains `"ospf_neighbors"` on success; replay docs carry `ospf_neighbors`. `raw_site(..., ospf_neighbors=())`.
 
-- [ ] **Step 1: Write the failing test** — in `tests/providers/test_replay_store.py` add a round-trip asserting `ospf_neighbors` survives save→load:
+- [ ] **Step 1: Extend the `raw_site` helper** in `tests/adapters/mist/fixtures.py`: add `ospf_neighbors: tuple[dict[str, Any], ...] = ()` to the signature and pass `ospf_neighbors=ospf_neighbors` into the `RawSiteState(...)` it returns.
+
+- [ ] **Step 2: Write the failing test** — in `tests/observability/test_replay_store.py` (mirror the existing `test_wlans_round_trip_and_default_when_absent`; redaction REMAPS `peer_ip`/`mac`, so assert on `state`, which is preserved):
 
 ```python
-def test_ospf_neighbors_round_trip(tmp_path):
-    from digital_twin.observability.replay.store import load_fixture_doc
-    doc = _minimal_fixture_doc()          # reuse the file's existing helper
-    doc["ospf_neighbors"] = [{"mac": "001122334455", "peer_ip": "10.0.0.5",
-                              "area": "0", "state": "Full"}]
-    raw = load_fixture_doc(doc)
-    assert raw.ospf_neighbors == ({"mac": "001122334455", "peer_ip": "10.0.0.5",
-                                   "area": "0", "state": "Full"},)
+def test_ospf_neighbors_round_trip_and_default_when_absent(tmp_path):
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("run1", raw_site(ospf_neighbors=(
+        {"mac": "001122334455", "peer_ip": "10.0.0.5", "area": "0", "state": "Full"},)))
+    raw = load_fixture_raw(path)
+    assert raw.ospf_neighbors and raw.ospf_neighbors[0]["state"] == "Full"
+    # a fixture predating GS27 (no "ospf_neighbors" key) loads as empty, not a crash
+    data = json.loads(path.read_text())
+    del data["ospf_neighbors"]
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps(data))
+    assert load_fixture_raw(legacy).ospf_neighbors == ()
 ```
 
-(If the test file lacks a doc helper, build the doc inline from an existing fixture under `tests/golden/fixtures/`.)
+- [ ] **Step 3: Run, expect FAIL** — `RawSiteState`/`raw_site` has no `ospf_neighbors` / loader drops it.
 
-- [ ] **Step 2: Run, expect FAIL** — `RawSiteState` has no `ospf_neighbors` / loader drops it.
-
-- [ ] **Step 3: RawSiteState field** — `providers/base.py`, after `nac_clients`:
+- [ ] **Step 4: RawSiteState field** — `providers/base.py`, after `nac_clients`:
 
 ```python
     # observed OSPF neighbor stats (GET /sites/{id}/stats/ospf_peers/search) — the
@@ -283,7 +288,7 @@ def test_ospf_neighbors_round_trip(tmp_path):
     ospf_neighbors: tuple[JsonObj, ...] = ()
 ```
 
-- [ ] **Step 4: Provider fetch** — `providers/mist_api.py`, add a fetch method mirroring `_nac_clients`:
+- [ ] **Step 5: Provider fetch** — `providers/mist_api.py`, add a fetch method mirroring `_nac_clients`:
 
 ```python
     def _ospf_neighbors(self, s: SiteScope) -> list[_Json]:
@@ -300,18 +305,18 @@ In `_fetch_one`, in the `RawSiteState(...)` construction, add (mirroring `nac_cl
             ospf_neighbors=tuple(attempt("ospf_neighbors", lambda: self._ospf_neighbors(scope), [])),
 ```
 
-- [ ] **Step 5: Replay store** — `observability/replay/store.py`: add `"ospf_neighbors"` to `_RAW_FIELDS` (after `"nac_clients"`), and in `load_fixture_doc` add:
+- [ ] **Step 6: Replay store** — `observability/replay/store.py`: add `"ospf_neighbors"` to `_RAW_FIELDS` (after `"nac_clients"`), and in `load_fixture_doc` add:
 
 ```python
         ospf_neighbors=tuple(data.get("ospf_neighbors", ())),  # .get: pre-GS27 fixtures
 ```
 
-- [ ] **Step 6: Run + gate** — `uv run pytest tests/providers -q && uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
+- [ ] **Step 7: Run + gate** — `uv run pytest tests/observability/test_replay_store.py -q && uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/digital_twin/providers/ src/digital_twin/observability/replay/store.py tests/providers/
+git add src/digital_twin/providers/ src/digital_twin/observability/replay/store.py tests/observability/test_replay_store.py tests/adapters/mist/fixtures.py
 git commit -m "feat(gs27): fetch site_ospf neighbors (fail-soft) + RawSiteState + replay round-trip"
 ```
 
@@ -480,7 +485,7 @@ git commit -m "feat(gs27): self-isolating OspfNeighborIngester (earns OSPF_TELEM
 
 **Two harness extensions GS27 needs (make them in the first Phase-3/4 task that needs them):**
 1. `tests/factories.py:ospf(...)` — add `metric: int | None = None` and pass it to `OspfIntf(..., metric=metric)`.
-2. `_ir(...)` in `test_ospf_withdrawal.py` — add optional `neighbors=()` (→ `b.set_ospf_neighbors(neighbors, 0)`), `telemetry_cap=False` (→ `b.with_capability(IRCapability.OSPF_TELEMETRY)`), and `subnets: dict[int, str | None] | None = None` to override a routed vid's `Vlan.subnet` (for the prefix-change/exclude tests). The invented `_run_ospf_*` names in the snippets below are thin wrappers you write over `_ir`/`_run` using these — the assert bodies are exact.
+2. `_ir(...)` in `test_ospf_withdrawal.py` — add optional `neighbors=()` + `unparsed=0` (→ `b.set_ospf_neighbors(neighbors, unparsed)`), `telemetry_cap=False` (→ `b.with_capability(IRCapability.OSPF_TELEMETRY)` when `neighbors` or `telemetry_cap`), and `subnets: dict[int, str | None] | None = None` to override a routed vid's `Vlan.subnet` (`None` → mint `Vlan(vlan_id=vid, subnet=None, subnet_unresolved=True)` and skip its `irb`, for the unresolved-prefix tests). Build an `OspfNeighbor` from each `(device, peer_ip, area, state)` tuple. The `_run_ospf_*` names in the snippets below are thin wrappers you write over `_ir`/`_run` using these (a `telemetry=None` arg means "don't earn OSPF_TELEMETRY"; `telemetry=[...]` earns it + sets neighbors; `unparsed=N` adds dropped-row count) — the assert bodies are exact.
 
 > All Phase 3/4 check work is in `src/digital_twin/checks/wired/ospf_withdrawal.py`. Read the spec Sections 2–4 before starting. Unit tests extend `tests/checks/test_ospf_withdrawal.py`.
 
@@ -711,11 +716,11 @@ git commit -m "feat(gs27): .advertised_prefix_changed + unresolved-prefix struct
 
 **Interfaces:**
 - Produces (pure, IR-only):
-  - `predicted_subnets(ir) -> dict[tuple[str, int, str|None], _Net]` — keyed `(device, vlan, area)` for ACTIVE intfs whose vlan resolves.
   - `is_established(state: str) -> bool` — normalized `Full`.
-  - `covered(neighbor, ir) -> bool` — peer_ip in some active predicted subnet on its device, area-matched (peer area None → subnet-only).
+  - `covering_dev_vlan(neighbor, ir) -> tuple[str, int] | None` — the `(device, vlan)` of the active OSPF interface whose predicted subnet covers `peer_ip` (area-matched; peer area None → subnet-only), else None.
+  - `covered(neighbor, ir) -> bool` — `covering_dev_vlan(...) is not None`.
   - `broken_peers(base_ir, prop_ir) -> list[OspfNeighbor]` — established, covered-in-base, uncovered-in-prop.
-  - `blind_peers(ir) -> list[OspfNeighbor]` — established but NOT covered (model couldn't place even in baseline).
+  - `blind_peers(ir) -> list[OspfNeighbor]` — established but NOT covered (model couldn't place it).
 
 - [ ] **Step 1: Write the adversarial failing tests** (this is the blind-built module — be thorough):
 
@@ -837,31 +842,35 @@ def _addr(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
         return None
 
 
-def _active_intf_subnets(ir: IR) -> list[tuple[str, str, _Net]]:
-    """(device_id, area, subnet) for each ACTIVE (non-passive) resolved OSPF intf."""
-    out: list[tuple[str, str, _Net]] = []
+def _active_intf_subnets(ir: IR) -> list[tuple[str, int, str, _Net]]:
+    """(device_id, vlan_id, area, subnet) for each ACTIVE (non-passive) resolved OSPF intf."""
+    out: list[tuple[str, int, str, _Net]] = []
     for o in ir.ospf_intfs:
         if o.passive or o.vlan_id is None:
             continue
         vlan = ir.vlans.get(o.vlan_id)
         net = _net(vlan.subnet) if vlan is not None else None
         if net is not None:
-            out.append((o.device_id, o.area, net))
+            out.append((o.device_id, o.vlan_id, o.area, net))
     return out
 
 
-def covered(neighbor: OspfNeighbor, ir: IR) -> bool:
+def covering_dev_vlan(neighbor: OspfNeighbor, ir: IR) -> tuple[str, int] | None:
     addr = _addr(neighbor.peer_ip)
     if addr is None:
-        return False
-    for did, area, net in _active_intf_subnets(ir):
+        return None
+    for did, vid, area, net in _active_intf_subnets(ir):
         if did != neighbor.device_id:
             continue
         if neighbor.area is not None and neighbor.area != area:
             continue                      # area given -> must match; absent -> subnet-only
         if addr in net:
-            return True
-    return False
+            return (did, vid)
+    return None
+
+
+def covered(neighbor: OspfNeighbor, ir: IR) -> bool:
+    return covering_dev_vlan(neighbor, ir) is not None
 
 
 def broken_peers(base_ir: IR, prop_ir: IR) -> list[OspfNeighbor]:
@@ -895,39 +904,64 @@ git commit -m "feat(gs27): pure ospf_reachability (predict/cover/broken_peers, e
 - [ ] **Step 1: Write the failing tests**:
 
 ```python
+# telemetry tuples are (device_id, peer_ip, area, state); device "S" matches the _ir harness.
 def test_passive_flip_with_live_peer_is_unsafe():
-    res = _run_ospf_passive_flip(telemetry=[("d1", "10.0.0.5", "0", "Full")], peer_subnet="10.0.0.0/24")
+    res = _run_ospf_passive_flip(telemetry=[("S", "198.51.10.5", "0", "Full")])  # vid 10 subnet 198.51.10.0/24
     assert res.status is Status.FAIL
     assert any(f.code.endswith(".passive_flip") and f.severity is Severity.ERROR for f in res.findings)
 
 def test_metric_change_with_live_peer_does_not_escalate():
-    res = _run_ospf_metric_change(telemetry=[("d1", "10.0.0.5", "0", "Full")], peer_subnet="10.0.0.0/24")
+    res = _run_ospf_metric_change(telemetry=[("S", "198.51.10.5", "0", "Full")])
     assert res.status is Status.WARN
     assert all(f.severity is not Severity.ERROR for f in res.findings)
 
-def test_subnet_break_no_structural_owner_is_peer_unreachable():
-    res = _run_ospf_subnet_exclude(telemetry=[("d1", "10.0.0.5", "0", "Full")])  # only subnet edit
-    assert any(f.code.endswith(".peer_unreachable") and f.severity is Severity.ERROR for f in res.findings)
+def test_resolved_subnet_break_escalates_advertised_prefix_changed():
+    # subnet 198.51.10.0/24 -> 198.51.99.0/24 (excludes the peer) on a RETAINED OSPF vlan:
+    # the break HAS an owner -> escalate .advertised_prefix_changed, NOT .peer_unreachable.
+    res = _run_ospf_subnet_edit(vid=10, base="198.51.10.0/24", prop="198.51.99.0/24",
+                                vlan_in_ospf=True, telemetry=[("S", "198.51.10.5", "0", "Full")])
+    assert any(f.code.endswith(".advertised_prefix_changed") and f.severity is Severity.ERROR
+               for f in res.findings)
+    assert all(not f.code.endswith(".peer_unreachable") for f in res.findings)
+
+def test_subnet_to_unresolved_break_is_peer_unreachable():
+    # subnet -> unresolved/None: NO .advertised_prefix_changed fires (only the prefix-coverage
+    # note), so a peer break here is truly ownerless -> .peer_unreachable.
+    res = _run_ospf_subnet_edit(vid=10, base="198.51.10.0/24", prop=None,
+                                vlan_in_ospf=True, telemetry=[("S", "198.51.10.5", "0", "Full")])
+    assert any(f.code.endswith(".peer_unreachable") and f.severity is Severity.ERROR
+               for f in res.findings)
+
+def test_partial_unparsed_does_not_suppress_escalation():
+    # one valid established peer that breaks via passive_flip + 1 unparsed row:
+    # escalation still fires (UNSAFE) AND a PARTIAL note flags the dropped row.
+    res = _run_ospf_passive_flip(telemetry=[("S", "198.51.10.5", "0", "Full")], unparsed=1)
+    assert res.status is Status.FAIL
+    assert any(f.severity is Severity.ERROR for f in res.findings)
+    assert res.coverage.state is CoverageState.PARTIAL
 
 def test_telemetry_absent_on_ospf_subnet_edit_is_review_note():
-    res = _run_ospf_subnet_edit(base="10.0.0.0/24", prop="10.0.0.0/23", vlan_in_ospf=True,
-                                telemetry=None)   # OSPF_TELEMETRY not earned
+    res = _run_ospf_subnet_edit(vid=10, base="198.51.10.0/24", prop="198.51.10.0/23",
+                                vlan_in_ospf=True, telemetry=None)   # OSPF_TELEMETRY not earned
     assert res.coverage.state is CoverageState.PARTIAL   # blind + OSPF-relevant -> note
 
 def test_preexisting_blind_peer_untouched_device_no_note():
-    # a blind peer on a device with NO structural finding + an unrelated non-OSPF subnet edit
+    # a blind peer (uncovered in BASELINE) on a device with NO structural finding + an
+    # unrelated non-OSPF subnet edit -> no note, clean PASS.
     res = _run_unrelated_edit_with_blind_peer()
     assert res.coverage.state is CoverageState.COMPLETE and res.status is Status.PASS
 ```
 
 - [ ] **Step 2: Run, expect FAIL**.
 
-- [ ] **Step 3: Implement** — in `run()`:
-  - Compute `telemetry_known = (IRCapability.OSPF_TELEMETRY in base_ir.capabilities and IRCapability.OSPF_TELEMETRY in prop_ir.capabilities)`.
-  - `blind = (not telemetry_known) or base_ir.ospf_telemetry_unparsed_count > 0 or prop_ir.ospf_telemetry_unparsed_count > 0`.
-  - If `telemetry_known and not blind`: `broken = broken_peers(base_ir, prop_ir)`, indexed by `(device_id, vlan)` of the covering baseline interface. For each emitted structural/withdrawal finding whose `(did, vid)` ∈ broken-owners and which is adjacency-affecting (egress_lost/advertised_removed/passive_flip/area_changed/advertised_prefix_changed — NOT metric_changed/participation_added) → build it as `Severity.ERROR`, `_HIGH`, message naming the `peer_ip`(s). For broken peers with no owning finding → emit `.peer_unreachable` (ERROR/`_HIGH`).
-    - Attribution: a broken peer's owner = the structural finding on the `(did, vid)` of the active baseline interface that covered it. Compute peer→(did,vid) by finding the active OspfIntf in `base_ir` on the peer's device whose vlan subnet contained `peer_ip` (reuse the reachability helpers; expose a small `covering_dev_vlan(neighbor, ir) -> tuple[str,int] | None` in the pure module if cleaner).
-  - **Blind notes (relevance-scoped):** when `blind`, append the telemetry-blind PARTIAL note iff OSPF-relevant: a structural finding exists OR a `_subnet_touched_vids(diff)` vlan has active OSPF participation in base or prop. When `not blind`, for each `n in blind_peers(prop_ir)` whose `device_id`/`vlan` is delta-touched (ospf_intf touched on that device, or its covering vid in `_subnet_touched_vids`) OR a structural finding depends on it → append a note. Never note a blind peer on an untouched device.
+- [ ] **Step 3: Implement** — in `run()`. **Partial parse loss must NOT disable escalation** — split the gate into two independent signals:
+  - `telemetry_known = (IRCapability.OSPF_TELEMETRY in base_ir.capabilities and IRCapability.OSPF_TELEMETRY in prop_ir.capabilities)`.
+  - `has_unparsed = base_ir.ospf_telemetry_unparsed_count > 0 or prop_ir.ospf_telemetry_unparsed_count > 0`.
+  - **Escalation runs whenever `telemetry_known`** (the parsed rows are usable — one bad row never suppresses escalation for valid peers): `broken = broken_peers(base_ir, prop_ir)`. Attribute each broken peer to the structural/withdrawal finding owning its baseline-covering `(did, vid)`; if found AND adjacency-affecting (egress_lost / advertised_removed / passive_flip / area_changed / **advertised_prefix_changed** — NOT metric_changed / participation_added) → build that finding `Severity.ERROR`, `_HIGH`, naming the `peer_ip`(s). A broken peer with **no owning finding** (e.g. a subnet→**unresolved** edit that emitted only the prefix-coverage *note*, never `.advertised_prefix_changed`) → standalone `.peer_unreachable` (ERROR/`_HIGH`).
+    - Attribution: peer→`(did, vid)` = the active OspfIntf in `base_ir` on the peer's device whose vlan subnet contained `peer_ip`. Expose `covering_dev_vlan(neighbor, ir) -> tuple[str, int] | None` in `ospf_reachability` (it already computes this inside `covered` — return the `(device, vlan)` instead of a bool).
+  - **Relevance-scoped notes (PARTIAL → REVIEW):**
+    - **Blind note** when `not telemetry_known` **OR** `has_unparsed` (the unparsed *portion* is blind even though parsed peers escalated), appended **iff OSPF-relevant**: a structural OSPF finding exists, OR a `_subnet_touched_vids(diff)` vlan has active OSPF participation in base or prop.
+    - **Baseline-uncovered (blind) peer note:** iterate `blind_peers(base_ir)` (peers the model could not place **in baseline** — `prop_ir` is wrong here). A blind peer has **no covering vlan** by definition, so scope by **device**: note it iff its `device_id` is delta-touched (an `ospf_intf` ref on that device in the diff, OR a `_subnet_touched_vids` vlan whose OSPF participation is on that device) OR a structural finding is on that device. Never note a blind peer on an untouched device.
   - Coverage `PARTIAL` iff any notes (existing logic).
 
 - [ ] **Step 4: Run + gate** — targeted then full.
@@ -958,7 +992,8 @@ git commit -m "feat(gs27): telemetry escalation (established peer break -> UNSAF
   - OSPF-vlan subnet → unresolved, telemetry usable+empty → REVIEW (PARTIAL coverage), no `.advertised_prefix_changed`
   - non-OSPF-vlan subnet edit → SAFE
   - passive flip + live established peer (telemetry) → UNSAFE + `.passive_flip` ERROR
-  - subnet edit excludes a live peer, no structural owner → UNSAFE + `.peer_unreachable`
+  - resolved subnet edit that excludes a live peer (retained OSPF vlan) → UNSAFE + `.advertised_prefix_changed` ERROR (the break has an owner — NOT `.peer_unreachable`)
+  - subnet → unresolved that breaks a live peer (ownerless: only the prefix-coverage note, no `.advertised_prefix_changed`) → UNSAFE + `.peer_unreachable`
   - telemetry-absent on OSPF-active subnet edit → REVIEW + telemetry-blind note
 
 - [ ] **Step 2: Update the GS26 golden** — find the existing scenario asserting `.transit_mutation` (non-collapsing flip) in `test_golden_scenarios.py` and change the expected code to `.passive_flip` (decision unchanged: REVIEW).
