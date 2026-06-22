@@ -35,6 +35,36 @@ def test_covered_in_subnet_area_match():
     assert covered(ir.ospf_neighbors[0], ir) is True
 
 
+def test_area_none_matches_on_subnet_only():
+    # telemetry frequently omits the area -> match on subnet alone (the lenient/safe path)
+    ir = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="5", network_name="c")],
+        neighbors=[OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area=None, state="Full")])
+    assert covered(ir.ospf_neighbors[0], ir) is True
+
+
+def test_area_mismatch_is_not_covered():
+    # peer in area 0, the only interface is area 1 -> no area-valid candidate -> not covered
+    ir = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="1", network_name="c")],
+        neighbors=[OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Full")])
+    assert covered(ir.ospf_neighbors[0], ir) is False
+
+
+def test_covered_by_a_different_vlans_intf_on_same_device():
+    # the scan must keep looking past the non-matching (d1, vlan 10) to find (d1, vlan 20)
+    from digital_twin.analysis.ospf_reachability import covering_dev_vlan
+    ir = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="a", subnet="10.0.0.0/24"),
+               Vlan(vlan_id=20, name="b", subnet="10.0.20.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="a"),
+               OspfIntf(device_id="d1", vlan_id=20, area="0", network_name="b")],
+        neighbors=[OspfNeighbor(device_id="d1", peer_ip="10.0.20.7", area="0", state="Full")])
+    assert covering_dev_vlan(ir.ospf_neighbors[0], ir) == ("d1", 20)
+
+
 def test_peer_not_in_subnet_is_blind_not_broken():
     ir = _switch_ir(
         vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],

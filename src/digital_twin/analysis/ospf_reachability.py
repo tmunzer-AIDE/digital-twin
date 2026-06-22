@@ -11,6 +11,9 @@ from digital_twin.ir import OspfNeighbor
 from digital_twin.ir.model import IR
 
 _Net = ipaddress.IPv4Network | ipaddress.IPv6Network
+# Full = adjacency complete; 2-Way (non-DR/BDR) intentionally excluded — only a
+# fully-established peer is a confirmed adjacency. Mist-OAS state assumption, pending
+# live grounding (no OSPF in the reachable org); unknown states -> not established.
 _ESTABLISHED = {"full"}
 
 
