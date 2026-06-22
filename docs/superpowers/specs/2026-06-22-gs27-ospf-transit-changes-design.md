@@ -1,6 +1,9 @@
 # GS27 — OSPF transit changes
 
-**Status:** design — approved 2026-06-22 (5 review rounds); implementation pending
+**Status:** Implemented — 2026-06-22 (built blind; live regression-only, the org has zero OSPF).
+Live note: the `site_ospf` endpoint 404s on the live org → currently read as "fetched empty"
+(earns OSPF_TELEMETRY, zero peers). Never-false-SAFE (escalate-only), but a 404 should read
+telemetry-blind for coverage honesty — deferred follow-up (see ROADMAP GS27).
 **Date:** 2026-06-22
 **Author:** brainstormed with the repo owner
 **Builds on:** GS26 (`wired.l3.ospf_withdrawal`, the `OspfIntf` IR entity) — see

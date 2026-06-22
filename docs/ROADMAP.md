@@ -222,9 +222,26 @@ modeling" below.
   REVIEW). Gateway OSPF deferred (device-level gateway ops are out of M1 scope at
   the field gate). All eight live plans unchanged (live `ospf_areas` empty).
   Spec/plan: docs/superpowers/{specs,plans}/2026-06-13-gs26-ospf-exit-withdrawal*.md.
-- 🔵 **OSPF transit changes** (GS27, MVP: ROUTE-OSPF) — passive/metric changes
-  on a transit interface → REVIEW; with live telemetry: peer IPs no longer
-  reachable within predicted interface subnets → adjacency break.
+- ✅ **OSPF transit changes** (GS27) — done 2026-06-22. Five structural codes on
+  `wired.l3.ospf_withdrawal` replacing the GS26 `.transit_mutation` placeholder:
+  `.metric_changed` / `.passive_flip` / `.area_changed` / `.participation_added`
+  (additions are NOT SAFE — a bare-`{}` add yields an `ospf_intf` diff) /
+  `.advertised_prefix_changed` (a retained OSPF vlan's connected prefix shifted).
+  All WARNING/REVIEW; `metric` now modeled + allowlisted. Plus an **escalate-only
+  live-telemetry** layer (`site_ospf` neighbors → `OspfNeighbor`, secret-free,
+  non-diff-bearing, self-isolating ingester, `OSPF_TELEMETRY` capability; pure
+  `analysis/ospf_reachability.py` predicts each active interface's connected subnet
+  and confirms a break only for an **established** peer): a confirmed break escalates
+  the owning structural finding to UNSAFE naming the peer; `.peer_unreachable` is the
+  defensive backstop; unevaluable (subnet→unresolved) and blind cases stay REVIEW
+  notes, never UNSAFE. **Built blind** (the reachable org has zero OSPF) — proven by
+  synthetic goldens; live regression-only. **Deferred follow-ups:** (a) ground/verify
+  the telemetry model on a real OSPF-bearing org; (b) the `site_ospf` endpoint **404s**
+  on the live org and is currently read as "fetched empty" (earns `OSPF_TELEMETRY`,
+  zero peers) — never-false-SAFE under escalate-only, but a 404/endpoint-unavailable
+  should read as telemetry-**blind** (no capability) for coverage honesty; (c) extract
+  the telemetry layer (`run()` sections 7–8) into a `_apply_telemetry` helper.
+  Spec/plan: `docs/superpowers/{specs,plans}/2026-06-22-gs27-ospf-transit-changes*.md`.
 - 🔵 **BGP adjacency break** (GS28, MVP: ROUTE-BGP) — `bgp_config` on SWITCHES
   too, and NOT only in EVPN/campus-fabric deployments: a standalone L3 switch
   can run plain BGP (peering to a router/firewall/upstream) with no fabric at
