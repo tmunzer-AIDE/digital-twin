@@ -300,22 +300,32 @@ special case and are caught for free.
 For each enabled provable B, the **first** earlier enabled provable A with `A_covers_B`
 is the shadower. Output: shadowed rule B, shadower A.
 
-**Delta attribution** (consistent with the config-lint tier):
+**Delta attribution** — the baseline status is a **tristate**, because with `opaque_digest`
+a baseline "no shadow" can mean *proven absent* OR *couldn't be evaluated*. Conflating them
+would let a baseline-unprovable rule masquerade as a newly-introduced shadow.
 
-| Shadowed in proposed? | Shadowed in baseline? | Outcome |
+| Shadowed in proposed? | Baseline status of the A→B pair | Outcome |
 |---|---|---|
-| yes | no  | **introduced** → `severity=WARNING` → REVIEW |
-| yes | yes | **pre-existing** → `severity=INFO` (context, no floor) |
+| yes | **proven absent** — A & B both provable in baseline (or newly created), A did *not* cover B | **introduced** → `severity=WARNING` → REVIEW |
+| yes | **proven present** — the same A→B pair shadowed in baseline | **pre-existing** → `severity=INFO` (context, no floor) |
+| yes | **indeterminate** — A or B existed but was *unprovable* in baseline (`opaque_digest` / orderless / unmodeled criteria) | **suppress** the network shadow finding (cannot prove it is new) |
+| no  | — | nothing |
+
+The *suppress* row is safe: whenever the baseline pair is indeterminate, the rule that
+became provable necessarily changed a provability-affecting field (so a `nac.rule.change`
+delta fires) or carries a parse issue (so an operational finding fires) — REVIEW is reached
+without a false "introduced" claim.
 
 Finding: `source=CHECK`, `category=NETWORK`, `subject=ObjectRef("nacrule", B.id, B.name)`.
 The shadower **A goes in `evidence["shadower"]`** (A's ref + both rules' `action` + the
 covering dimensions) — **not** in `caused_by`, because A may be an *unchanged* baseline
 catch-all and the `Cause` contract is reserved for entities the plan actually changed.
 `caused_by` is built from the rule(s) in **this plan's diff** that introduced the shadow:
-at least one of {A, B} (or the created/reordered rule) has a non-empty diff row, since a
-newly-*introduced* shadow requires a relative-order or match change to A or B. A reorder
-that buries a rule under a broader one therefore surfaces as an introduced shadow with
-`caused_by` = the reordered rule(s) from the diff.
+at least one of {A, B} has a non-empty diff row, since a newly-introduced shadow requires a
+change to A's or B's **order, `enabled` state, or coverage/provability fields**
+(auth/port/match_tags, or any field that flips provability). Examples: a reorder buries B
+under a broader A; an earlier A flips `enabled` `false→true` and now shadows B; B flips
+`enabled` `true` under an existing covering A. `caused_by` = those changed rows.
 
 **Severity is uniform WARNING for v1.** A shadowed `block` rule is a latent security gap
 and a shadowed `allow` rule is dead config; distinguishing them (escalating block-shadows
@@ -395,7 +405,12 @@ TDD throughout. Layers:
   non-provable rule excluded both ways for *each* reason — unmodeled dim
   (`site_ids`/`family`/`not_matching`), **`opaque_digest` set (unparseable proof field)**,
   and `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
-  introduced-vs-pre-existing attribution.
+  **tristate attribution** — introduced (baseline proven-absent), pre-existing (baseline
+  proven-present), and **suppressed** when baseline is indeterminate (A or B
+  `opaque_digest`/orderless in baseline → no "introduced" finding; a baseline-only parse
+  failure must not manufacture a newly-introduced shadow); **`enabled` as a cause** — an
+  earlier A flipping `enabled` `false→true` (and B flipping `enabled` under an existing
+  covering A) is an introduced shadow with the flipped rule in `caused_by`.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
   REVIEW finding naming the rule + changed fields; `caused_by` is a `Cause` (ref + fields,
   `fields=()` for add/remove); a **`not_matching.*` change** and a **name-only change**
