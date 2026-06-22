@@ -12,8 +12,9 @@ Turn **mutation of retained OSPF transit config** into precise verdicts, and
 add a **live-telemetry adjacency-break** layer. Two halves:
 
 1. **Structural** (config-delta, no RIB, like GS26): a metric change, a
-   non-collapsing active↔passive flip, an area move, or a *newly added* routed
-   OSPF participation → **REVIEW**. Replaces GS26's coarse `.transit_mutation`
+   non-collapsing active↔passive flip, an area move, a *newly added* routed OSPF
+   participation, or a *changed advertised connected prefix* (the subnet of an
+   OSPF-participating vlan) → **REVIEW**. Replaces GS26's coarse `.transit_mutation`
    placeholder, and models `metric` (today denied → blunt UNKNOWN).
 2. **Telemetry** (`site_ospf` neighbor stats): a live, established OSPF peer
    that the proposed config no longer covers within its predicted connected
@@ -145,17 +146,29 @@ For each **retained** `(device, vlan)` present in both IRs and **not** owned by 
 egress-collapse (`egress_owned_pairs` subsumption carries over), diff `by_area`
 and emit precise REVIEW findings (replacing GS26's `.transit_mutation`):
 
-| code | trigger | message gist |
-|---|---|---|
-| `.metric_changed` | retained `(device,vlan,area)` metric `X→Y` | "path selection may shift (no RIB computed)" |
-| `.passive_flip` | retained `(device,vlan,area)` flipped active↔passive, non-collapsing | "transit role changed" |
-| `.area_changed` | the `(device,vlan)` area **set** changed | "adjacency / LSA-scope may shift" |
-| `.participation_added` | a `(device,vlan)` newly present in OSPF (absent in baseline) | "new advertisement / possible transit — review" |
+| code | source | trigger | message gist |
+|---|---|---|---|
+| `.metric_changed` | `ospf_intf` diff | retained `(device,vlan,area)` metric `X→Y` | "path selection may shift (no RIB computed)" |
+| `.passive_flip` | `ospf_intf` diff | retained `(device,vlan,area)` flipped active↔passive, non-collapsing | "transit role changed" |
+| `.area_changed` | `ospf_intf` diff | the `(device,vlan)` area **set** changed | "adjacency / LSA-scope may shift" |
+| `.participation_added` | `ospf_intf` diff | a `(device,vlan)` newly present in OSPF (absent in baseline) | "new advertisement / possible transit — review" |
+| `.advertised_prefix_changed` | `Vlan.subnet` diff ∩ OSPF | a retained OSPF `(device,vlan)` whose canonical `Vlan.subnet` changed | "the connected prefix advertised into OSPF changed" |
 
-All four: **WARNING → REVIEW**, MEDIUM confidence (reuse `_UNVERIFIED`). Never
-UNSAFE structurally. `caused_by` names the changed `ospf_intf` rows via
-`delta_index`. Gated on `_routed(prop_ir, vid)` like the GS26 codes; an
-*unresolved* added/changed row rides the existing unresolved-row PARTIAL note.
+All five: **WARNING → REVIEW**, MEDIUM confidence (reuse `_UNVERIFIED`). Never
+UNSAFE structurally. `caused_by` names the changed `ospf_intf` rows (or, for
+`.advertised_prefix_changed`, the changed `vlan`) via `delta_index`. The first
+four are gated on `_routed(prop_ir, vid)` like the GS26 codes; an *unresolved*
+added/changed `ospf_intf` row rides the existing unresolved-row PARTIAL note.
+
+`.advertised_prefix_changed` has a **distinct source**: it is not an `ospf_intf`
+attribute diff but a join of the OSPF participation set with the `Vlan.subnet`
+diff. For each `(device, vlan)` in OSPF participation in **both** IRs (active OR
+passive — a stub still advertises its connected prefix), if both subnets resolve
+and **differ canonically** (`ip_network`, GS31-style), emit it. If either side is
+unresolved/`None`, the prefix can't be compared → the relevance-scoped telemetry/
+unresolved note, not a precise finding. This closes the false-SAFE where a subnet
+edit on an OSPF-active VLAN silently advertised a new prefix while the adjacency
+survived.
 
 Notes:
 - `.participation_added` is required for safety, not just usefulness: a bare-`{}`
@@ -200,13 +213,15 @@ confidence**, naming the `peer_ip`, instead of its REVIEW/`_UNVERIFIED` default.
 - The owning finding may be any adjacency-affecting code: GS26's `.egress_lost`
   (collapse) or `.advertised_removed` (this device's interface withdrawn while it
   keeps adjacency elsewhere — the peer that was adjacent over *that* interface
-  breaks), or GS27's `.passive_flip` / `.area_changed`. (This also sharpens
-  `.egress_lost`'s "no observed clients → REVIEW" case to UNSAFE when a live peer
-  confirms the break.)
+  breaks); or GS27's `.passive_flip` / `.area_changed`; or
+  `.advertised_prefix_changed` when the subnet edit that broke the peer is on a
+  retained OSPF `(device, vlan)`. (This also sharpens `.egress_lost`'s "no observed
+  clients → REVIEW" case to UNSAFE when a live peer confirms the break.)
 - **`.metric_changed` and `.participation_added` never own a break** — metric
   affects path cost not adjacency; an addition cannot break a pre-existing peer.
-- A broken peer with **no owning structural finding** (e.g. a pure `Vlan.subnet`
-  edit that excludes the peer) → standalone **`.peer_unreachable`**, ERROR / UNSAFE / HIGH.
+- A broken peer with **no owning structural finding** (e.g. the covering `(device,
+  vlan)` left OSPF in a shape that produced no other code) → standalone
+  **`.peer_unreachable`**, ERROR / UNSAFE / HIGH.
 
 HIGH is defensible: escalation fires only for peers **covered in baseline**, so
 `peer_ip ∈ a real predicted subnet` — the prediction is validated for that peer —
@@ -219,8 +234,10 @@ downstream routing is broken."
 where `_touches_vlan_subnet` matches **vlan add/remove** and **modified-vlan**
 entries whose changed fields intersect `{subnet, subnet_unresolved}` — never
 `name` / `collisions` / `dhcp_sources` / etc. (The diff carries per-`Modified`
-changed-field tuples.) The vlan-subnet path does **only** telemetry peer-break
-work; structural codes still key on `ospf_intf` participation diffs.
+changed-field tuples.) The vlan-subnet path does **both** the structural
+`.advertised_prefix_changed` detection (join with OSPF participation) **and**
+telemetry peer-break work; the other four structural codes key on `ospf_intf`
+participation diffs.
 
 ### Relevance-scoped telemetry-blind note (closes the subnet-edit false-SAFE)
 Telemetry is **blind** when it was not fetched (no `OSPF_TELEMETRY`) **or**
@@ -240,17 +257,20 @@ taint an unrelated change).
 | condition | severity | conf | status |
 |---|---|---|---|
 | `.metric_changed` (retained) | WARNING | MEDIUM | REVIEW |
-| `.passive_flip` / `.area_changed` / `.participation_added`, no peer break | WARNING | MEDIUM | REVIEW |
-| `.passive_flip` / `.area_changed` breaks an established peer | ERROR | HIGH | UNSAFE |
+| `.passive_flip` / `.area_changed` / `.participation_added` / `.advertised_prefix_changed`, no peer break | WARNING | MEDIUM | REVIEW |
+| `.passive_flip` / `.area_changed` / `.advertised_prefix_changed` breaks an established peer | ERROR | HIGH | UNSAFE |
 | GS26 `.egress_lost` / `.advertised_removed` breaks an established peer | ERROR | HIGH | UNSAFE (even with 0 observed clients) |
-| `.peer_unreachable` (subnet-driven, no structural owner) | ERROR | HIGH | UNSAFE |
+| `.peer_unreachable` (break with no structural owner) | ERROR | HIGH | UNSAFE |
 | ambiguous `(device,vlan,area)` | — | — | PARTIAL note, skip precise compare |
 | telemetry absent/unparsed **and OSPF-relevant** | — | — | PARTIAL note |
 | OSPF addition (routed) | WARNING | MEDIUM | REVIEW (`.participation_added`) |
 
 Edge cases: an egress-collapsed `(device,vlan)` subsumes mutation findings and
-its peer-breaks escalate the egress finding; a subnet edit that *still* covers the
-peer → check runs, finds nothing → clean PASS (no spurious note, via
+its peer-breaks escalate the egress finding; a subnet edit on an **OSPF-participating**
+vlan that *still* covers the peer → `.advertised_prefix_changed` REVIEW (the
+advertised prefix changed even though the adjacency survived) — **not** a PASS; a
+subnet edit on a **non-OSPF** vlan → check runs (applies_to fires on the subnet
+diff), finds no OSPF participation → clean PASS (no finding, no spurious note via
 relevance-scoping); empty `site_ospf` = success → `OSPF_TELEMETRY` earned with
 genuinely-zero peers.
 
@@ -259,7 +279,8 @@ The structural REVIEW floor is independent of telemetry; telemetry is
 escalate-only; opening the `metric` leaf is safe because GS27 consumes it (no
 UNKNOWN→SAFE regression); ambiguous / unparsed / absent-but-relevant / unresolved
 → REVIEW floor + note, never SAFE; additions → REVIEW (no silent-add false-SAFE);
-subnet edit on an OSPF-active vlan with telemetry absent → REVIEW note.
+a subnet edit on an OSPF-participating vlan → `.advertised_prefix_changed` REVIEW
+(prefix change is real even when the adjacency survives), independent of telemetry.
 
 ## Testing
 
@@ -267,8 +288,11 @@ subnet edit on an OSPF-active vlan with telemetry absent → REVIEW note.
   cover in/out of subnet; area match / mismatch / absent; each break cause
   (remove / passive / area-move / subnet-exclude); malformed neighbor → no match;
   vlan-without-subnet → blind; non-established state → not broken.
-- **Check unit tests:** each structural code (incl. `.participation_added` and the
-  bare-`{}` add); ambiguous-area note; egress subsumption; per-code escalation;
+- **Check unit tests:** each structural code (incl. `.participation_added` + the
+  bare-`{}` add, and `.advertised_prefix_changed` on an OSPF vlan whose subnet
+  changed — adjacency-surviving REVIEW, *not* PASS); subnet edit on a **non-OSPF**
+  vlan → PASS; ambiguous-area note; egress subsumption; per-code escalation (incl.
+  `.advertised_prefix_changed` → UNSAFE when the subnet edit also breaks a peer);
   `.peer_unreachable`; metric-never-escalates; `applies_to` precision (vlan **name**
   change does *not* fire; **subnet** change does); relevance-scoped telemetry-blind
   note (incl. subnet-edit-without-telemetry → REVIEW, and unrelated subnet edit →
@@ -278,10 +302,11 @@ subnet edit on an OSPF-active vlan with telemetry absent → REVIEW note.
   (incl. the **partial** case: some rows parse, some skipped → count > 0).
 - **Goldens** (end-to-end via `simulate`, GS26-style): metric / passive / area /
   participation_added REVIEW; ambiguous PARTIAL; passive_flip + live established
-  peer → UNSAFE; subnet-break → `.peer_unreachable` UNSAFE; subnet-keeps-peer →
-  SAFE; telemetry-absent on OSPF-active subnet edit → REVIEW + relevance note;
-  egress + live peer → UNSAFE. Update the GS26 `.transit_mutation` golden →
-  `.passive_flip`.
+  peer → UNSAFE; OSPF-vlan subnet edit, adjacency survives → `.advertised_prefix_changed`
+  REVIEW; OSPF-vlan subnet edit that excludes a live peer → escalates that finding
+  to UNSAFE; non-OSPF-vlan subnet edit → SAFE; telemetry-absent on OSPF-active
+  subnet edit → REVIEW + relevance note; egress + live peer → UNSAFE. Update the
+  GS26 `.transit_mutation` golden → `.passive_flip`.
 
 ## Live-verify (honest about the constraint)
 
