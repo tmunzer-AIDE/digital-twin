@@ -116,7 +116,7 @@ missing/fatal, the payload is not an object, or the org fetch fails.
 | Scope | `scope/allowlist.py` | new `NAC_OBJECT_TYPES = ("nacrule",)` — **separate** from the site whitelist `SUPPORTED_OBJECT_TYPES` (its branch requires a `site_id`) and from `ORG_OBJECT_TYPES` (which drives the per-site fan-out routing). Plus `RAW_ALLOWLIST["nacrule"]` with **exact enumerated leaves** (see *nacrule allowlist leaves* below — no `matching.*` subtree, per the leaf-tightening rule). |
 | Gate | `scope/object_gate.py` | new NAC branch `is_nac = bool(ops) and all(op.object_type in NAC_OBJECT_TYPES) and not scope.site_id`, evaluated **before** `is_org` and the site branch. Allowed actions: `create` \| `update` \| `delete` (delete payload must be empty). |
 | Routing | `drivers/cli.py`, `drivers/mcp_server.py` | `_is_org_nac_plan(plan)` (mirrors `is_nac`) routes to `simulate_org_nac` **before** `_is_org_plan` and the site fallback, so a no-`site_id` nacrule plan is no longer rejected by the site branch. |
-| Diff | `ir/diff.py` | register `nacrule` entity kind (add/remove/modify incl. `order`). |
+| Diff | `ir/diff.py` | register `nacrule` entity kind (add/remove/modify). Compares all CONFIG fields incl. `name` and `order`; per-kind diff-ignore `{"opaque"}` (a derived internal flag, never a reportable user change — `meta` is already globally ignored). |
 | Checks | `checks/nac/delta.py`, `checks/nac/shadowing.py` (new) | the two checks below. |
 | Verdict | `verdict/org_nac_verdict.py` (new) | lean `OrgNacVerdict`. |
 | Drivers | `drivers/cli.py`, `drivers/mcp_server.py`, `drivers/render.py` | route + render. |
@@ -226,12 +226,16 @@ diff → false SAFE; with it, anything not enumerated above is a deliberate UNKN
 ## 5. GS34 delta-reporting (`nac.rule.change`)
 
 Reads the `nacrule` rows of `diff_ir`. For each **added / removed / modified** rule
-(modify includes `order`, `enabled`, `action`, and any `matching` / `not_matching` /
-`apply_tags` field):
+(modify includes `name`, `order`, `enabled`, `action`, and any `matching` /
+`not_matching` / `apply_tags` field — `name` is a real edit and is reported, *not*
+diff-ignored; see the diff note below):
 
 - emit one `Finding`: `source=CHECK`, `category=NETWORK`, `severity=WARNING`,
-  `subject = ObjectRef("nacrule", id, name)`, `caused_by` = the changed fields,
-  message states *what* changed and that **access impact is not modeled** (REVIEW).
+  `subject = ObjectRef("nacrule", id, name)`. `caused_by` is `tuple[Cause, ...]` (not raw
+  strings): for a modified rule
+  `caused_by=(Cause(ref=ObjectRef("nacrule", id, name), fields=changed_fields),)`; for an
+  add/remove `fields=()`. Message states *what* changed and that **access impact is not
+  modeled** (REVIEW).
 - No allow/block/role reasoning — that is deferred impact modeling, explicitly out of
   scope for GS34's first step.
 
@@ -365,8 +369,10 @@ TDD throughout. Layers:
   `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
   introduced-vs-pre-existing attribution.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
-  REVIEW finding naming the rule + changed fields; a **`not_matching.*` change emits
-  `nac.rule.change`** (not merely appears in `diff_ir`).
+  REVIEW finding naming the rule + changed fields; `caused_by` is a `Cause` (ref + fields,
+  `fields=()` for add/remove); a **`not_matching.*` change** and a **name-only change**
+  each emit `nac.rule.change` (not merely appear in `diff_ir`); a rule flipping `opaque`
+  with no config-field change emits **no** delta finding (it is diff-ignored).
 - **IR/ingest** (`test_nac_ingest.py`) — full matching surface mapped; a row with an id
   but a malformed proof field → minted `opaque=True` + operational finding (**not**
   dropped); a row with **no id** → dropped + operational finding; **a rule malformed in
