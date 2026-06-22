@@ -88,6 +88,8 @@ simulate_org_nac(plan, provider)            [engine/pipeline.py]
   │     effective = effective_update(current, op.payload)        # create ⇒ body (+id)
   │     adapter_findings += validate_payload("nacrule", effective,
   │            scope_roots = None (create, full obj) | _changed_roots(op.payload) (update))
+  │     screen_op("nacrule", current, effective)  → FIELD GATE: any changed leaf outside
+  │            RAW_ALLOWLIST["nacrule"] → Rejection → UNKNOWN (enforces leaf-tightening)
   ├─ proposed set = baseline with ops applied
   ├─ ingest baseline & proposed → IR        (NacRule + NacTag entities)
   ├─ diff_ir(base_ir, proposed_ir)          (nacrule kind: add/remove/modify)
@@ -206,14 +208,19 @@ not_matching.site_ids, not_matching.sitegroup_ids, not_matching.family,
 not_matching.mfg, not_matching.model, not_matching.os_type, not_matching.vendor
 ```
 
-A nacrule edit touching any other leaf trips the field gate → UNKNOWN (default-deny). If
-the committed `nacrule` schema permits a nested matching field not listed here, that is a
-deliberate UNKNOWN, never a false-SAFE.
+Enforced by the **existing `screen_op` field gate** (`scope/field_gate.py`), which
+`simulate_org_nac` must call post-L0 / pre-apply exactly as the site pipeline does
+(`pipeline.py`). `screen_op` needs **no** NAC-specific branch — it diffs `current` vs the
+effective object and rejects any changed leaf not in `RAW_ALLOWLIST["nacrule"]`. So an
+OAS-valid but **unmodeled** field (e.g. `guest_auth_state`) passes L0 yet trips the field
+gate → UNKNOWN. Without this call the field would be silently ignored by ingest → empty
+diff → false SAFE; with it, anything not enumerated above is a deliberate UNKNOWN.
 
 ## 5. GS34 delta-reporting (`nac.rule.change`)
 
 Reads the `nacrule` rows of `diff_ir`. For each **added / removed / modified** rule
-(modify includes `order`, `enabled`, `action`, any `matching`/`apply_tags` field):
+(modify includes `order`, `enabled`, `action`, and any `matching` / `not_matching` /
+`apply_tags` field):
 
 - emit one `Finding`: `source=CHECK`, `category=NETWORK`, `severity=WARNING`,
   `subject = ObjectRef("nacrule", id, name)`, `caused_by` = the changed fields,
@@ -351,7 +358,8 @@ TDD throughout. Layers:
   `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
   introduced-vs-pre-existing attribution.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
-  REVIEW finding naming the rule + changed fields.
+  REVIEW finding naming the rule + changed fields; a **`not_matching.*` change emits
+  `nac.rule.change`** (not merely appears in `diff_ir`).
 - **IR/ingest** (`test_nac_ingest.py`) — full matching surface mapped; a row with an id
   but a malformed proof field → minted `opaque=True` + operational finding (**not**
   dropped); a row with **no id** → dropped + operational finding; **a rule malformed in
@@ -371,7 +379,10 @@ TDD throughout. Layers:
   **non-fatal L0** violation in a payload → REVIEW with the L0 finding present in
   `adapter_findings` (regression for the dropped-adapter-findings bug — never SAFE);
   **fatal** L0 → UNKNOWN. create/update/delete each exercised, and an `update`'s partial
-  body does **not** raise a bogus `required` L0 finding (effective-object validation).
+  body does **not** raise a bogus `required` L0 finding (effective-object validation). An
+  **OAS-valid but unallowlisted field** (e.g. `guest_auth_state`) → field-gate Rejection →
+  **UNKNOWN** (regression: without `screen_op` it would be ignored → empty diff → false
+  SAFE).
 - **Routing** — `_is_org_nac_plan` true for nacrule/no-site plans, false otherwise; a
   no-`site_id` nacrule plan no longer falls through to rejection.
 - **Golden / real-data validation** — replay the **13 TM-LAB rules** through shadowing and
