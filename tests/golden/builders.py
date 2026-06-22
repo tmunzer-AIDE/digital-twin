@@ -459,8 +459,7 @@ def ospf_subnet_op(
     doc: dict[str, Any], net_name: str, proposed_subnet: str | None, *, order: int = 0
 ) -> dict[str, Any]:
     """A site_setting op that changes `networks.<net_name>.subnet` to `proposed_subnet`
-    (None -> omit the key, making the subnet absent/unresolved for a templated value use
-    case — callers should set the value to e.g. '{{var}}' for a real unresolved case).
+    (None -> omit the subnet key entirely, so the IR mints `Vlan.subnet_unresolved=True`).
     The payload preserves ALL existing networks to avoid the root-replace trap: Mist
     replaces the networks root wholesale, so omitting a network would delete it."""
     site_id = doc["scope"]["site_id"]
@@ -564,28 +563,9 @@ def ospf_minimal_doc(
     return doc
 
 
-def ospf_minimal_subnet_op(
-    doc: dict[str, Any], net_name: str, proposed_subnet: str | None, *, order: int = 0
-) -> dict[str, Any]:
-    """site_setting op on an ospf_minimal_doc: change networks.<net_name>.subnet.
-    None -> remove the subnet key (unresolved). Preserves all other networks."""
-    site_id = doc["scope"]["site_id"]
-    existing = doc["setting"].get("networks") or {}
-    proposed_networks: dict[str, Any] = {k: dict(v) for k, v in existing.items()}
-    if net_name in proposed_networks:
-        entry = dict(proposed_networks[net_name])
-        if proposed_subnet is None:
-            entry.pop("subnet", None)
-        else:
-            entry["subnet"] = proposed_subnet
-        proposed_networks[net_name] = entry
-    return {
-        "action": "update",
-        "order": order,
-        "object_type": "site_setting",
-        "object_id": site_id,
-        "payload": {"networks": proposed_networks},
-    }
+# ospf_minimal_doc and ospf_doc share the same scope.site_id + setting.networks shape,
+# so the subnet op is identical for both — alias for self-documenting call sites.
+ospf_minimal_subnet_op = ospf_subnet_op
 
 
 # --- MS: org networktemplate (multi-site) goldens -------------------------

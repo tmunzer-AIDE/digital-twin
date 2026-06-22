@@ -1215,7 +1215,6 @@ def test_gs27_passive_flip_with_live_peer_is_unsafe(tmp_path):
         f for f in v.findings if f.code == "wired.l3.ospf_withdrawal.passive_flip"
     ]
     assert passive_flip_findings, "expected .passive_flip finding"
-    from digital_twin.contracts import Severity
     assert any(f.severity is Severity.ERROR for f in passive_flip_findings)
 
 
@@ -1231,7 +1230,6 @@ def test_gs27_subnet_excludes_live_peer_is_unsafe(tmp_path):
     op = ospf_subnet_op(doc, "ospf_transit", "198.51.99.0/24")
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.UNSAFE, v.decision_reasons
-    from digital_twin.contracts import Severity
     prefix_findings = [
         f for f in v.findings
         if f.code == "wired.l3.ospf_withdrawal.advertised_prefix_changed"
