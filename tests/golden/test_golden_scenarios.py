@@ -20,8 +20,10 @@ from .builders import (
     EDGE_ACCESS_PORT,
     EDGE_PAR_PORT,
     EDGE_UPLINK_PORT,
+    GS27_HUB_MAC,
     GT_SITE_A,
     GT_SITE_B,
+    HUB,
     OD_SITE_A,
     OD_SITE_B,
     OD_ST_ID,
@@ -52,7 +54,10 @@ from .builders import (
     od_delete_zero_sites,
     od_gw_failsafe_combined_plan,
     ospf_doc,
+    ospf_minimal_doc,
+    ospf_minimal_subnet_op,
     ospf_op,
+    ospf_subnet_op,
     plan_for,
     st_add_unused_vlan,
     st_fetch_fail_site,
@@ -1131,6 +1136,146 @@ def test_gs26e_noncollapsing_passive_flip_is_review(tmp_path):
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.REVIEW, v.decision_reasons
     assert "wired.l3.ospf_withdrawal.passive_flip" in {f.code for f in v.findings}
+
+
+# --- GS27: OSPF transit mutations (structural REVIEW + telemetry UNSAFE) ---
+
+
+def test_gs27_metric_change_is_review(tmp_path):
+    # retained OSPF interface changes its cost -> .metric_changed REVIEW.
+    # Non-collapsing, no adjacency confirmed broken without telemetry.
+    doc = ospf_doc({"ospf_transit": {}})
+    op = ospf_op(doc, {"ospf_transit": {"metric": 20}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.metric_changed" in {f.code for f in v.findings}
+
+
+# GS27: non-collapsing passive flip -> SKIP (GS26e already pins this scenario).
+
+# GS27: participation added -> SKIP (GS26d already pins this scenario).
+
+
+def test_gs27_advertised_prefix_changed_no_telemetry_is_review(tmp_path):
+    # OSPF-participating vlan's advertised subnet changes (resolved -> different
+    # resolved); no telemetry -> .advertised_prefix_changed REVIEW (blind).
+    doc = ospf_doc({"ospf_transit": {}})
+    op = ospf_subnet_op(doc, "ospf_transit", "198.51.72.0/24")
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.ospf_withdrawal.advertised_prefix_changed" in {f.code for f in v.findings}
+
+
+def test_gs27_subnet_to_unresolved_telemetry_empty_is_review_partial(tmp_path):
+    # OSPF-vlan subnet removed (-> absent/unresolved) while telemetry is present
+    # but shows zero peers. Proposed coverage is unevaluable -> structural
+    # prefix-coverage note -> PARTIAL -> REVIEW. No UNSAFE / no
+    # .advertised_prefix_changed (subnet comparison requires both sides resolved).
+    # Uses minimal doc (no dynamic ports) to keep the site_setting op clean.
+    doc = ospf_minimal_doc({"ospf_transit": {}}, ospf_neighbors=[])
+    # Remove the subnet (absent -> unresolved in the IR)
+    op = ospf_minimal_subnet_op(doc, "ospf_transit", None)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not any(
+        f.code == "wired.l3.ospf_withdrawal.advertised_prefix_changed" for f in v.findings
+    )
+    ospf_result = next(r for r in v.check_results if r.check_id == "wired.l3.ospf_withdrawal")
+    assert ospf_result.coverage.state is CoverageState.PARTIAL
+
+
+def test_gs27_non_ospf_vlan_subnet_edit_is_safe(tmp_path):
+    # A site_setting subnet edit on a vlan that is NOT in OSPF -> the OSPF
+    # withdrawal check does not fire (or fires but finds nothing) -> SAFE.
+    # Baseline: ospf_transit in OSPF; ospf_corp in setting but NOT in OSPF.
+    # Uses minimal doc (no dynamic ports) to keep the site_setting op clean.
+    _corp_vid, _corp_subnet = OSPF_NETS["ospf_corp"]
+    doc = ospf_minimal_doc({"ospf_transit": {}})
+    # Add ospf_corp to the setting (vlan known, but no OSPF entry for it)
+    doc["setting"]["networks"]["ospf_corp"] = {"vlan_id": _corp_vid, "subnet": _corp_subnet}
+    op = ospf_minimal_subnet_op(doc, "ospf_corp", "198.51.80.0/24")
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+
+
+def test_gs27_passive_flip_with_live_peer_is_unsafe(tmp_path):
+    # Telemetry: HUB has an established peer in ospf_transit's 198.51.70.0/24.
+    # Flipping ospf_transit to passive breaks that peer -> escalate .passive_flip
+    # from WARNING to ERROR -> UNSAFE.
+    peer_ip = "198.51.70.5"
+    doc = ospf_doc(
+        {"ospf_transit": {}, "ospf_corp": {}},
+        ospf_neighbors=[{"mac": HUB, "peer_ip": peer_ip, "area": "0", "state": "Full"}],
+    )
+    # Flip ospf_transit to passive (keeps ospf_corp active -> non-collapsing).
+    op = ospf_op(doc, {"ospf_transit": {"passive": True}, "ospf_corp": {}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    passive_flip_findings = [
+        f for f in v.findings if f.code == "wired.l3.ospf_withdrawal.passive_flip"
+    ]
+    assert passive_flip_findings, "expected .passive_flip finding"
+    from digital_twin.contracts import Severity
+    assert any(f.severity is Severity.ERROR for f in passive_flip_findings)
+
+
+def test_gs27_subnet_excludes_live_peer_is_unsafe(tmp_path):
+    # Telemetry: established peer 198.51.70.5 in ospf_transit (198.51.70.0/24).
+    # Op changes subnet to 198.51.99.0/24 (excludes the peer) -> confirmed break
+    # -> escalate .advertised_prefix_changed to ERROR -> UNSAFE.
+    peer_ip = "198.51.70.5"
+    doc = ospf_doc(
+        {"ospf_transit": {}},
+        ospf_neighbors=[{"mac": HUB, "peer_ip": peer_ip, "area": "0", "state": "Full"}],
+    )
+    op = ospf_subnet_op(doc, "ospf_transit", "198.51.99.0/24")
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    from digital_twin.contracts import Severity
+    prefix_findings = [
+        f for f in v.findings
+        if f.code == "wired.l3.ospf_withdrawal.advertised_prefix_changed"
+    ]
+    assert prefix_findings, "expected .advertised_prefix_changed finding"
+    assert any(f.severity is Severity.ERROR for f in prefix_findings)
+
+
+def test_gs27_subnet_to_unresolved_with_live_peer_is_review_not_unsafe(tmp_path):
+    # Telemetry: established peer 198.51.70.5 in ospf_transit. Op removes the
+    # subnet (-> absent/unresolved). Proposed coverage is UNEVALUABLE (interface
+    # still active OSPF, subnet now unresolved) -> REVIEW note, NOT UNSAFE.
+    # No .advertised_prefix_changed (requires both sides resolved). No .peer_unreachable.
+    # Uses minimal doc (no dynamic ports) to keep the site_setting op clean.
+    peer_ip = "198.51.70.5"
+    doc = ospf_minimal_doc(
+        {"ospf_transit": {}},
+        ospf_neighbors=[{"mac": GS27_HUB_MAC, "peer_ip": peer_ip, "area": "0", "state": "Full"}],
+    )
+    op = ospf_minimal_subnet_op(doc, "ospf_transit", None)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not any(
+        f.code in (
+            "wired.l3.ospf_withdrawal.peer_unreachable",
+            "wired.l3.ospf_withdrawal.advertised_prefix_changed",
+        )
+        for f in v.findings
+    )
+    ospf_result = next(r for r in v.check_results if r.check_id == "wired.l3.ospf_withdrawal")
+    assert ospf_result.coverage.state is CoverageState.PARTIAL
+
+
+def test_gs27_telemetry_absent_on_ospf_subnet_edit_is_review(tmp_path):
+    # No telemetry (ospf_neighbors not fetched -> OSPF_TELEMETRY not earned).
+    # Op changes ospf_transit subnet. Peer-break detection is blind ->
+    # telemetry-blind note -> PARTIAL -> REVIEW.
+    doc = ospf_doc({"ospf_transit": {}})  # no ospf_neighbors kwarg -> telemetry-blind
+    op = ospf_subnet_op(doc, "ospf_transit", "198.51.99.0/24")
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    ospf_result = next(r for r in v.check_results if r.check_id == "wired.l3.ospf_withdrawal")
+    assert ospf_result.coverage.state is CoverageState.PARTIAL
+    assert any("blind" in n.lower() or "telemetry" in n.lower() for n in ospf_result.coverage.notes)
 
 
 # --- MS: multi-site / org networktemplate simulation ----------------------
