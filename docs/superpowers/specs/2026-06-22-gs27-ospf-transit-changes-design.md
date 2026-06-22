@@ -1,6 +1,6 @@
 # GS27 — OSPF transit changes
 
-**Status:** design — pending user review
+**Status:** design — approved 2026-06-22 (5 review rounds); implementation pending
 **Date:** 2026-06-22
 **Author:** brainstormed with the repo owner
 **Builds on:** GS26 (`wired.l3.ospf_withdrawal`, the `OspfIntf` IR entity) — see
