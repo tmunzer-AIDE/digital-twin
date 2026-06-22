@@ -808,6 +808,24 @@ def test_proposed_unresolved_is_unevaluable_not_broken():
     assert [n.peer_ip for n in unevaluable_peers(base, prop)] == ["10.0.0.5"]
 
 
+def test_area_move_with_subnet_unresolved_is_broken_not_unevaluable():
+    # peer in area 0; proposed interface moved to area 1 AND subnet went unresolved. The
+    # area mismatch is a CONFIRMED break (no area-0 cover candidate) -> broken, not blind.
+    from digital_twin.analysis.ospf_reachability import unevaluable_peers
+    from digital_twin.ir.entities import Vlan
+    nb = [OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Full")]
+    base = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="c")],
+        neighbors=nb)
+    prop = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet=None, subnet_unresolved=True)],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="1", network_name="c")],
+        neighbors=nb)
+    assert [n.peer_ip for n in broken_peers(base, prop)] == ["10.0.0.5"]
+    assert unevaluable_peers(base, prop) == []
+
+
 def test_non_established_never_broken():
     base = _switch_ir(
         vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
@@ -893,9 +911,13 @@ def covered(neighbor: OspfNeighbor, ir: IR) -> bool:
 
 
 def _proposed_unevaluable(neighbor: OspfNeighbor, base_ir: IR, prop_ir: IR) -> bool:
-    """The peer's baseline-covering (device, vlan) is STILL active OSPF in proposed but
-    its subnet is now unresolved/None -> proposed coverage CANNOT be evaluated. This is
-    'unknown/blind', NOT a confirmed break (do not escalate to UNSAFE)."""
+    """The peer's baseline-covering (device, vlan) is STILL active OSPF in proposed, in an
+    AREA that would still cover this peer, but its subnet is now unresolved/None -> proposed
+    coverage CANNOT be evaluated. This is 'unknown/blind', NOT a confirmed break.
+
+    The area gate matters: if the interface ALSO moved area away from the peer (e.g. peer in
+    area 0, proposed interface in area 1), that is a confirmed area-driven break (owned by
+    .area_changed), not an unevaluable note — so an area-mismatched candidate does NOT count."""
     cv = covering_dev_vlan(neighbor, base_ir)
     if cv is None:
         return False
@@ -903,9 +925,11 @@ def _proposed_unevaluable(neighbor: OspfNeighbor, base_ir: IR, prop_ir: IR) -> b
     for o in prop_ir.ospf_intfs:
         if o.passive or o.device_id != did or o.vlan_id != vid:
             continue
+        if neighbor.area is not None and neighbor.area != o.area:
+            continue                      # area mismatch -> not a valid cover candidate
         vlan = prop_ir.vlans.get(vid)
         if vlan is None or _net(vlan.subnet) is None:
-            return True                   # active OSPF here, but subnet unevaluable
+            return True                   # area-valid active OSPF here, but subnet unevaluable
     return False
 
 
