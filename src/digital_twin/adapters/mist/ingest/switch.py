@@ -65,7 +65,8 @@ def _vlan_int(value: Any) -> int | None:
 def _metric_int(value: Any) -> int | None:
     """OSPF metric -> int or None (templated/unparseable/absent -> None)."""
     if isinstance(value, bool) or value is None:
-        return None
+        return None  # bool is an int subclass; reject before int() coerces True->1
+
     try:
         return int(value)
     except (TypeError, ValueError):

@@ -31,18 +31,21 @@ def test_ospf_metric_minted_and_absent_is_none():
         "type": "switch",
         "name": "sw",
         "ospf_config": {"enabled": True},
-        "ospf_areas": {"0": {"networks": {"corp": {"metric": 50}, "guest": {}}}},
+        "ospf_areas": {"0": {"networks": {
+            "corp": {"metric": 50}, "guest": {}, "mgmt": {"metric": 0}}}},
     }
     setting = {
         "networks": {
             "corp": {"vlan_id": 10, "subnet": "10.0.0.0/24"},
             "guest": {"vlan_id": 20, "subnet": "10.0.1.0/24"},
+            "mgmt": {"vlan_id": 30, "subnet": "10.0.2.0/24"},
         }
     }
     ir = MistAdapter().ingest(_raw(devices=[dev], setting=setting)).ir
     by_name = {o.network_name: o for o in ir.ospf_intfs}
     assert by_name["corp"].metric == 50
     assert by_name["guest"].metric is None  # absent -> None
+    assert by_name["mgmt"].metric == 0  # falsy-but-valid: 0 survives, not None
 
 
 def test_ospf_metric_templated_is_none():
