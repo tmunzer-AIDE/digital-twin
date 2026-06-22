@@ -300,18 +300,33 @@ special case and are caught for free.
 For each enabled provable B, the **first** earlier enabled provable A with `A_covers_B`
 is the shadower. Output: shadowed rule B, shadower A.
 
-**Delta attribution** — a **tristate** keyed on the *full* baseline **shadow relation**
-A→B (= A present ∧ B present ∧ both enabled ∧ A earlier than B ∧ both provable ∧ A covers
-B). Because with `opaque_digest` a baseline "no shadow" can mean *evaluably false* OR
-*couldn't be evaluated*, conflating them would let a baseline-unprovable rule masquerade as
+**One authoritative relation** (the single definition attribution derives from — no prose
+re-derives it; ordering matters, since disabled/order/absence short-circuit to FALSE even
+when cover is unevaluable):
+
+```python
+def shadow_status(a_id, b_id, state) -> "TRUE | FALSE | INDETERMINATE":
+    a, b = state.get(a_id), state.get(b_id)
+    if a is None or b is None:                 return FALSE   # absent (e.g. newly created)
+    if not a.enabled or not b.enabled:         return FALSE   # disabled never participates
+    if (a.order is not None and b.order is not None
+            and a.order >= b.order):           return FALSE   # A not strictly earlier
+    if not is_provable(a) or not is_provable(b):  return INDETERMINATE  # opaque/orderless/unmodeled
+    return TRUE if A_covers_B(a, b) else FALSE
+```
+
+**Delta attribution** — for each pair with `shadow_status(A,B,proposed) == TRUE`, key on
+`shadow_status(A,B,baseline)`. Because with `opaque_digest` a baseline "no shadow" can mean
+*evaluably FALSE* OR *INDETERMINATE*, conflating them would let a baseline-unprovable rule
+masquerade as
 a newly-introduced shadow.
 
-| Shadowed in proposed? | Baseline shadow relation A→B | Outcome |
+| `shadow_status(A,B,proposed)` | `shadow_status(A,B,baseline)` | Outcome |
 |---|---|---|
-| yes | **evaluably FALSE** — provably did not hold: A or B absent/new, **or** A/B disabled, **or** A not earlier than B, **or** (both provable) A did not cover B | **introduced** → `severity=WARNING` → REVIEW |
-| yes | **evaluably TRUE** — held (the same A→B pair shadowed in baseline) | **pre-existing** → `severity=INFO` (context, no floor) |
-| yes | **indeterminate** — both A and B present & enabled in baseline, but the relation can't be evaluated (A or B `opaque_digest` / orderless / unmodeled criteria) | **suppress** the network shadow finding (cannot prove it is new) |
-| no  | — | nothing |
+| TRUE | **FALSE** — absent/new, disabled, not-earlier, or (both provable) no-cover | **introduced** → `severity=WARNING` → REVIEW |
+| TRUE | **TRUE** — the same A→B pair shadowed in baseline | **pre-existing** → `severity=INFO` (context, no floor) |
+| TRUE | **INDETERMINATE** — both present & enabled but unevaluable (`opaque_digest`/orderless/unmodeled) | **suppress** the network shadow finding (cannot prove it is new) |
+| not TRUE | — | nothing |
 
 Note disabled/order/absence short-circuit the relation to *false* even if the cover test
 itself is unevaluable (a disabled-in-baseline A that flips `enabled` → introduced). The
