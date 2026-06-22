@@ -7,13 +7,17 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.ospf_withdrawal import OspfWithdrawalCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, OspfNeighbor, Vlan, diff_ir
 from digital_twin.ir.entities import AttachKind, Client, ClientKind
 from tests.factories import access_port, irb, ospf, sw
 
 
 def _ir(ospf_rows, *, clients=(), routed=(10, 20, 30), with_clients_cap=True,
-        subnets: dict[int, str | None] | None = None):
+        subnets: dict[int, str | None] | None = None,
+        telemetry: list[tuple[str, str, str, str]] | None = None,
+        unparsed: int = 0):
+    """Build a test IR. telemetry=None -> no OSPF_TELEMETRY cap; telemetry=[...] earns it.
+    Each telemetry tuple is (device_id, peer_ip, area, state)."""
     b = IRBuilder().add_device(sw("S"))
     for vid in routed:
         if subnets and vid in subnets:
@@ -36,6 +40,13 @@ def _ir(ospf_rows, *, clients=(), routed=(10, 20, 30), with_clients_cap=True,
     b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
     if with_clients_cap:
         b.with_capability(IRCapability.CLIENTS_ACTIVE)
+    if telemetry is not None:
+        neighbors = [
+            OspfNeighbor(device_id=did, peer_ip=pip, area=area, state=state)
+            for did, pip, area, state in telemetry
+        ]
+        b.set_ospf_neighbors(neighbors, unparsed)
+        b.with_capability(IRCapability.OSPF_TELEMETRY)
     return b.build()
 
 
@@ -395,3 +406,137 @@ def test_subnet_edit_on_non_ospf_vlan_is_pass():
     prop = _ir([], subnets={10: "198.51.10.0/23"})
     res = _run(base, prop)
     assert res.status is Status.PASS and res.coverage.state is CoverageState.COMPLETE
+
+
+# --- GS27 Task 9: telemetry escalation + .peer_unreachable + relevance-scoped notes ---
+#
+# Helpers: thin wrappers over _ir/_run.  telemetry=None means no OSPF_TELEMETRY;
+# telemetry=[...] earns it. unparsed=N adds dropped-row count.
+
+
+def _run_ospf_passive_flip(
+    telemetry: list[tuple[str, str, str, str]] | None = None, unparsed: int = 0
+):
+    """Non-collapsing passive flip on vlan 10 (vlan 20 keeps the device active)."""
+    base = _ir(
+        [ospf("S", 10, name="a"), ospf("S", 20, name="b")],
+        telemetry=telemetry, unparsed=unparsed,
+    )
+    prop = _ir(
+        [ospf("S", 10, name="a", passive=True), ospf("S", 20, name="b")],
+        telemetry=telemetry, unparsed=unparsed,
+    )
+    return _run(base, prop)
+
+
+def _run_ospf_metric_change(
+    telemetry: list[tuple[str, str, str, str]] | None = None,
+):
+    """Metric change on vlan 10."""
+    base = _ir([ospf("S", 10, name="corp", metric=5)], telemetry=telemetry)
+    prop = _ir([ospf("S", 10, name="corp", metric=20)], telemetry=telemetry)
+    return _run(base, prop)
+
+
+def _run_ospf_subnet_edit(
+    *,
+    vid: int = 10,
+    base: str | None,
+    prop: str | None,
+    vlan_in_ospf: bool,
+    telemetry: list[tuple[str, str, str, str]] | None = None,
+):
+    """Subnet change on a vlan, optionally with OSPF participation."""
+    ospf_rows_b = [ospf("S", vid, name="c")] if vlan_in_ospf else []
+    ospf_rows_p = [ospf("S", vid, name="c")] if vlan_in_ospf else []
+    ir_b = _ir(ospf_rows_b, subnets={vid: base}, telemetry=telemetry)
+    ir_p = _ir(ospf_rows_p, subnets={vid: prop}, telemetry=telemetry)
+    return _run(ir_b, ir_p)
+
+
+def _run_unrelated_edit_with_blind_peer():
+    """Non-OSPF subnet edit on vlan 10, plus a blind peer (not in any subnet) on device S.
+    The blind peer is on an UNTOUCHED device from an OSPF perspective -> no note."""
+    # vlan 20 not in OSPF; peer 203.0.113.9 is not in any S subnet -> blind
+    telemetry: list[tuple[str, str, str, str]] = [("S", "203.0.113.9", "0", "Full")]
+    base = _ir([], subnets={10: "198.51.10.0/24"}, telemetry=telemetry)
+    prop = _ir([], subnets={10: "198.51.10.0/23"}, telemetry=telemetry)
+    return _run(base, prop)
+
+
+def test_passive_flip_with_live_peer_is_unsafe():
+    # vlan 10 subnet is 198.51.10.0/24; peer 198.51.10.5 is in it -> confirmed break.
+    res = _run_ospf_passive_flip(telemetry=[("S", "198.51.10.5", "0", "Full")])
+    assert res.status is Status.FAIL
+    assert any(f.code.endswith(".passive_flip") and f.severity is Severity.ERROR
+               for f in res.findings)
+
+
+def test_metric_change_with_live_peer_does_not_escalate():
+    # metric_changed is NOT adjacency-affecting -> escalation must NOT fire.
+    res = _run_ospf_metric_change(telemetry=[("S", "198.51.10.5", "0", "Full")])
+    assert res.status is Status.WARN
+    assert all(f.severity is not Severity.ERROR for f in res.findings)
+
+
+def test_resolved_subnet_break_escalates_advertised_prefix_changed():
+    # Subnet 198.51.10.0/24 -> 198.51.99.0/24 excludes the peer: the break HAS
+    # an owner (.advertised_prefix_changed) -> escalate that, NOT .peer_unreachable.
+    res = _run_ospf_subnet_edit(
+        vid=10, base="198.51.10.0/24", prop="198.51.99.0/24",
+        vlan_in_ospf=True, telemetry=[("S", "198.51.10.5", "0", "Full")],
+    )
+    assert any(f.code.endswith(".advertised_prefix_changed") and f.severity is Severity.ERROR
+               for f in res.findings)
+    assert all(not f.code.endswith(".peer_unreachable") for f in res.findings)
+
+
+def test_subnet_to_unresolved_with_live_peer_is_review_note_not_unsafe():
+    # Subnet -> None: proposed coverage UNEVALUABLE (interface still active OSPF,
+    # subnet unresolved). It is an UNKNOWN, not a confirmed break -> a PARTIAL coverage
+    # note (-> REVIEW floor at the verdict), NOT a finding, NOT UNSAFE. Same status as the
+    # no-telemetry T7 prefix-coverage note: observing a live peer must not change the
+    # check STATUS of an unknown (telemetry escalates confirmed breaks, not unknowns).
+    res = _run_ospf_subnet_edit(
+        vid=10, base="198.51.10.0/24", prop=None,
+        vlan_in_ospf=True, telemetry=[("S", "198.51.10.5", "0", "Full")],
+    )
+    assert res.status is Status.PASS and res.coverage.state is CoverageState.PARTIAL
+    assert all(not f.code.endswith(".peer_unreachable") and f.severity is not Severity.ERROR
+               for f in res.findings)
+    assert any("unevaluable" in n for n in res.coverage.notes)
+
+
+def test_partial_unparsed_does_not_suppress_escalation():
+    # 1 valid established peer breaks via passive_flip + 1 unparsed row:
+    # escalation still fires (UNSAFE) AND PARTIAL note for the dropped row.
+    res = _run_ospf_passive_flip(telemetry=[("S", "198.51.10.5", "0", "Full")], unparsed=1)
+    assert res.status is Status.FAIL
+    assert any(f.severity is Severity.ERROR for f in res.findings)
+    assert res.coverage.state is CoverageState.PARTIAL
+
+
+def test_telemetry_absent_on_ospf_subnet_edit_is_review_note():
+    # telemetry=None -> OSPF_TELEMETRY not earned -> blind note (OSPF-relevant).
+    res = _run_ospf_subnet_edit(
+        vid=10, base="198.51.10.0/24", prop="198.51.10.0/23",
+        vlan_in_ospf=True, telemetry=None,
+    )
+    assert res.coverage.state is CoverageState.PARTIAL   # blind + OSPF-relevant -> note
+
+
+def test_preexisting_blind_peer_untouched_device_no_note():
+    # A blind peer (uncovered in BASELINE) on device S, but the only edit is a
+    # NON-OSPF subnet change (vlan 10 not in OSPF) -> device S has NO structural
+    # OSPF finding AND is not delta-touched via ospf_intf -> no note, clean PASS.
+    res = _run_unrelated_edit_with_blind_peer()
+    assert res.coverage.state is CoverageState.COMPLETE and res.status is Status.PASS
+
+
+def test_baseline_blind_peer_on_touched_device_emits_note():
+    # Metric edit on device S touches it (structural OSPF finding on S).
+    # Peer 203.0.113.9 NOT in any S subnet -> blind in baseline.
+    # Because S is "delta-touched" (has a structural OSPF finding on it) the
+    # baseline-blind-peer note MUST fire -> PARTIAL.
+    res = _run_ospf_metric_change(telemetry=[("S", "203.0.113.9", "0", "Full")])
+    assert res.coverage.state is CoverageState.PARTIAL

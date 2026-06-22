@@ -20,6 +20,11 @@ real reachability, and floors accordingly. Codes:
   whose canonical Vlan.subnet changed -> WARNING/REVIEW (connected prefix shifted).
   An unresolved/absent subnet on either side -> structural prefix-coverage NOTE
   (PARTIAL -> REVIEW), telemetry-independent.
+- .peer_unreachable: telemetry escalation backstop — a confirmed peer break with no
+  matching adjacency-affecting structural owner -> ERROR/UNSAFE (GS27 Task 9).
+An UNEVALUABLE live peer (interface still active OSPF but subnet now unresolved) is an
+unknown, not a break -> a PARTIAL coverage note (-> REVIEW floor), never UNSAFE, the
+same as the structural prefix-coverage note (telemetry-independent).
 
 Comparison is by the semantic (device, vlan[, area, active]) tuple, NEVER by
 OspfIntf.id, so rename/area-move is not a false withdrawal. l3_unmodeled is
@@ -32,6 +37,12 @@ import ipaddress
 from dataclasses import dataclass, field
 from typing import Any
 
+from digital_twin.analysis.ospf_reachability import (
+    blind_peers,
+    broken_peers,
+    covering_dev_vlan,
+    unevaluable_peers,
+)
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import (
     Cause,
@@ -425,6 +436,169 @@ class OspfWithdrawalCheck:
                     f"ospf interface {o.id}: network name {o.network_name!r} does not "
                     "resolve to a vlan — withdrawal impact cannot be verified"
                 )
+
+        # 7. Telemetry escalation (GS27 Task 9) — ESCALATE-ONLY post-pass.
+        # telemetry_known: both base and prop have OSPF_TELEMETRY -> parsed rows usable.
+        # has_unparsed: some rows were dropped -> the parsed-only slice still escalates.
+        telemetry_known = (
+            IRCapability.OSPF_TELEMETRY in base_ir.capabilities
+            and IRCapability.OSPF_TELEMETRY in prop_ir.capabilities
+        )
+        has_unparsed = (
+            base_ir.ospf_telemetry_unparsed_count > 0
+            or prop_ir.ospf_telemetry_unparsed_count > 0
+        )
+
+        # Adjacency-affecting codes: only these justify escalating a structural finding
+        # to ERROR/UNSAFE when a confirmed peer break is attributed to them.
+        # metric_changed and participation_added are NOT adjacency-affecting.
+        _ADJACENCY_AFFECTING = frozenset({
+            f"{self.id}.egress_lost",
+            f"{self.id}.advertised_removed",
+            f"{self.id}.passive_flip",
+            f"{self.id}.area_changed",
+            f"{self.id}.advertised_prefix_changed",
+        })
+
+        if telemetry_known:
+            broken = broken_peers(base_ir, prop_ir)
+            # For each broken peer, find its owning structural finding and escalate it.
+            # Keep track of broken (did, vid) pairs that have been escalated to avoid
+            # a double .peer_unreachable backstop for the same pair.
+            escalated_pairs: set[tuple[str, int]] = set()
+            escalated_findings: set[int] = set()  # indices into `findings`
+
+            for n in broken:
+                cv = covering_dev_vlan(n, base_ir)
+                if cv is None:
+                    continue  # shouldn't happen: broken_peers are covered-in-base
+                did, vid = cv
+                # Find the owning finding: an adjacency-affecting finding whose evidence
+                # names this (device, vlan) pair.
+                owner_idx: int | None = None
+                for i, f in enumerate(findings):
+                    if f.code not in _ADJACENCY_AFFECTING:
+                        continue
+                    ev = f.evidence or {}
+                    if ev.get("device") == did and ev.get("vlan") == vid:
+                        owner_idx = i
+                        break
+                    # egress_lost uses affected_vlans (a list) and device key
+                    if f.code == f"{self.id}.egress_lost":
+                        if ev.get("device") == did and vid in (ev.get("affected_vlans") or []):
+                            owner_idx = i
+                            break
+
+                if owner_idx is not None:
+                    # Escalate the owning finding to ERROR/HIGH.
+                    old = findings[owner_idx]
+                    # Accumulate peer IPs if multiple broken peers map to same owner.
+                    if owner_idx in escalated_findings:
+                        # Already escalated; the finding is already ERROR — no double-wrap.
+                        escalated_pairs.add((did, vid))
+                        continue
+                    escalated_findings.add(owner_idx)
+                    escalated_pairs.add((did, vid))
+                    findings[owner_idx] = Finding(
+                        source=old.source,
+                        category=old.category,
+                        code=old.code,
+                        subject=old.subject,
+                        severity=Severity.ERROR,
+                        confidence=_HIGH,
+                        message=(
+                            f"{old.message} | OSPF peer {n.peer_ip} on {did} "
+                            "confirmed unreachable in proposed config"
+                        ),
+                        affected_entities=old.affected_entities,
+                        evidence={**(old.evidence or {}), "broken_peer": n.peer_ip},
+                        caused_by=old.caused_by,
+                    )
+                else:
+                    # Defensive backstop: confirmed break with no owning finding.
+                    if (did, vid) not in escalated_pairs:
+                        escalated_pairs.add((did, vid))
+                        findings.append(Finding(
+                            source=FindingSource.CHECK,
+                            category=FindingCategory.NETWORK,
+                            code=f"{self.id}.peer_unreachable",
+                            subject=ObjectRef("device", did),
+                            severity=Severity.ERROR,
+                            confidence=_HIGH,
+                            message=(
+                                f"OSPF peer {n.peer_ip} on {did} is confirmed unreachable "
+                                "in the proposed config — no structural finding covers this "
+                                "break (attribution gap backstop)"
+                            ),
+                            affected_entities=(str(vid),),
+                            evidence={"device": did, "vlan": vid, "peer_ip": n.peer_ip},
+                            caused_by=(),
+                        ))
+
+            # Unevaluable peers -> PARTIAL coverage NOTE (-> REVIEW floor), NOT a break.
+            # A live established peer whose proposed coverage cannot be evaluated (subnet
+            # unresolved but interface still active OSPF) is unknown, not confirmed-broken
+            # — so it is a note, never UNSAFE. This is the SAME condition as Task 7's
+            # structural prefix-coverage note, so it stays a note regardless of telemetry:
+            # observing a live peer there must not change the verdict STATUS of an unknown
+            # (telemetry escalates confirmed breaks, not unknowns — spec §4 matrix).
+            for n in unevaluable_peers(base_ir, prop_ir):
+                notes.append(
+                    f"OSPF peer {n.peer_ip} on {n.device_id}: proposed coverage unevaluable "
+                    "(the advertising prefix is unresolved) — adjacency impact not confirmed"
+                )
+
+        # 8. Relevance-scoped notes.
+
+        # Compute OSPF-relevant context for note gating.
+        ospf_relevant = bool(findings) or any(
+            vid in touched_vids
+            and (
+                any(
+                    oi.vlan_id == vid and not oi.passive
+                    for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                )
+            )
+            for vid in touched_vids
+        )
+
+        # 8a. Telemetry-blind note: when no telemetry OR has unparsed rows, and OSPF-relevant.
+        if (not telemetry_known or has_unparsed) and ospf_relevant:
+            notes.append(
+                "OSPF neighbor telemetry unavailable/partial — peer-break detection is "
+                "blind for the changed OSPF segment(s)"
+            )
+
+        # 8b. Baseline-uncovered (blind) peer note: only note when the peer's device is
+        # delta-touched (has a structural OSPF finding on it, OR an ospf_intf diff ref,
+        # OR a _subnet_touched_vids vlan whose OSPF participation is on that device).
+        if telemetry_known:
+            # Compute delta-touched device IDs.
+            ospf_intf_touched_devices: set[str] = {
+                r.id.split(":")[0]
+                for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
+                if r.kind == "ospf_intf"
+            }
+            subnet_touched_devices: set[str] = {
+                oi.device_id
+                for vid in touched_vids
+                for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                if oi.vlan_id == vid
+            }
+            finding_devices: set[str] = {
+                f.evidence.get("device", "")
+                for f in findings
+                if f.evidence and "device" in f.evidence
+            }
+            touched_devices = ospf_intf_touched_devices | subnet_touched_devices | finding_devices
+
+            for n in blind_peers(base_ir):
+                if n.device_id in touched_devices:
+                    notes.append(
+                        f"OSPF peer {n.peer_ip} on {n.device_id}: peer could not be "
+                        "placed in the baseline coverage model (no matching active OSPF "
+                        "subnet) — adjacency state is unverifiable for this peer"
+                    )
 
         worst = Status.PASS
         for f in findings:
