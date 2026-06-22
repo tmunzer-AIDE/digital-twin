@@ -66,11 +66,13 @@ field (`client_mac`, `mdm_status`, …) and `values` are the literals.
 - **Unconfirmed** from public docs: whether multiple `matching.nactags` on a rule are
   always AND, or OR-grouped by `match` type.
 
-Consequence: comparing arbitrary tag *predicates* is **not v1**. The only safe atom is
-**tag identity** — a rule referencing tag `X` requires exactly what another rule
-referencing `X` requires. Shadowing therefore compares **sets of tag ids**, never tag
-internals. This is conservative by construction (we may miss some real shadows; we will
-not invent false ones), which matches the twin's no-false-positive doctrine.
+Consequence: comparing arbitrary tag *predicates* is **not v1** — and even comparing
+*different* tag-id sets is unsafe while cross-tag AND/OR is unconfirmed (if tags
+OR-group, `{X}` does **not** cover `{X,Y}`). v1 therefore proves tag coverage in only
+two cases: the earlier rule has **no tag constraint at all**, or the two rules have an
+**identical tag-id set**. Tag internals are never read. This is conservative by
+construction (we may miss real shadows; we never invent false ones), matching the twin's
+no-false-positive doctrine.
 
 ## 3. Architecture
 
@@ -80,8 +82,9 @@ plan (ops: object_type="nacrule", no site_id)
   ▼
 simulate_org_nac(plan, provider)            [engine/pipeline.py]
   ├─ provider.resolve_org_nac(scope) ……… baseline nacrules + nactags (errors-as-values)
-  ├─ L0: validate_payload("nacrule", body, scope_roots=changed)  per edited rule
-  ├─ apply ops → proposed nacrule set       (effective_update per rule, by id)
+  ├─ L0: validate_payload("nacrule", body[, scope_roots])  (create=full obj; update=scoped)
+  ├─ apply ops (create|update|delete) → proposed set; post-fetch existence check
+  │       (bad id → Rejection → UNKNOWN)
   ├─ ingest baseline & proposed → IR        (NacRule + NacTag entities)
   ├─ diff_ir(base_ir, proposed_ir)          (nacrule kind: add/remove/modify)
   ├─ checks:  nac.rule.change   (GS34 delta-report)
@@ -99,10 +102,11 @@ missing/fatal, the payload is not an object, or the org fetch fails.
 | Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. |
 | L0 / OAS | `adapters/mist/oas/nacrule.schema.json` (new) + `validate/schema.py` | extract `nac_rule` from the Mist OpenAPI; register in `_SCHEMA_FILES["nacrule"]`. **Prerequisite** (see §9). |
 | IR | `ir/entities.py` | new `NacRule`, `NacTag` frozen dataclasses; `IRBuilder.add_nacrule/add_nactag`; `IR.nacrules` / `IR.nactags` accessors. |
-| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR; per-row try/except (one bad row never drops the batch); unparseable values → conservative empties. |
+| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR; per-row try/except (one bad row never drops the batch). A genuinely-absent match field stays ∅ (real "any"); a **present-but-unparseable proof-bearing field** (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque=True` — **never** silently collapsed to ∅. Unparseable `order` → None. |
 | Simulate | `engine/pipeline.py` | `simulate_org_nac(plan, provider) -> OrgNacVerdict`. |
-| Scope | `scope/allowlist.py` | add `"nacrule"` to `SUPPORTED_OBJECT_TYPES` + a `RAW_ALLOWLIST["nacrule"]` leaf set (order, enabled, action, matching.*, not_matching.*, apply_tags). **Not** added to `ORG_OBJECT_TYPES` (that constant means "fan out to sites"). |
-| Routing | `scope/object_gate.py` or driver | `_is_org_nac_plan(plan)`: every op `object_type=="nacrule"` and no `site_id`. |
+| Scope | `scope/allowlist.py` | new `NAC_OBJECT_TYPES = ("nacrule",)` — **separate** from the site whitelist `SUPPORTED_OBJECT_TYPES` (its branch requires a `site_id`) and from `ORG_OBJECT_TYPES` (which drives the per-site fan-out routing). Plus `RAW_ALLOWLIST["nacrule"]` with **exact enumerated leaves** (see *nacrule allowlist leaves* below — no `matching.*` subtree, per the leaf-tightening rule). |
+| Gate | `scope/object_gate.py` | new NAC branch `is_nac = bool(ops) and all(op.object_type in NAC_OBJECT_TYPES) and not scope.site_id`, evaluated **before** `is_org` and the site branch. Allowed actions: `create` \| `update` \| `delete` (delete payload must be empty). |
+| Routing | `drivers/cli.py`, `drivers/mcp_server.py` | `_is_org_nac_plan(plan)` (mirrors `is_nac`) routes to `simulate_org_nac` **before** `_is_org_plan` and the site fallback, so a no-`site_id` nacrule plan is no longer rejected by the site branch. |
 | Diff | `ir/diff.py` | register `nacrule` entity kind (add/remove/modify incl. `order`). |
 | Checks | `checks/nac/delta.py`, `checks/nac/shadowing.py` (new) | the two checks below. |
 | Verdict | `verdict/org_nac_verdict.py` (new) | lean `OrgNacVerdict`. |
@@ -118,15 +122,21 @@ class NacRule:
     order: int | None            # None = unparseable/absent → never ordered/proven
     enabled: bool
     action: str | None           # "allow" | "block" | None
-    auth_types: frozenset[str]   # ∅ = unconstrained (matches any)
-    port_types: frozenset[str]   # ∅ = unconstrained
-    match_tags: frozenset[str]   # matching.nactags ids (AND atoms)
+    auth_types: frozenset[str]   # ∅ = GENUINELY unconstrained (matches any)
+    port_types: frozenset[str]   # ∅ = genuinely unconstrained
+    match_tags: frozenset[str]   # matching.nactags ids
     not_match_tags: frozenset[str]
-    # remaining match dims — modeled for the diff, treated as opaque by shadowing:
+    # remaining match dims — modeled for the diff; their non-emptiness makes a rule
+    # non-provable for shadowing (it neither shadows nor is shadowed):
     site_ids: frozenset[str]; sitegroup_ids: frozenset[str]
     family: frozenset[str]; mfg: frozenset[str]; model: frozenset[str]
     os_type: frozenset[str]; vendor: frozenset[str]
     apply_tags: frozenset[str]
+    opaque: bool                 # a proof-bearing field was PRESENT-but-unparseable →
+    #                              excluded from shadowing in BOTH directions. CRITICAL:
+    #                              distinct from a genuinely-empty (∅) field, which is a
+    #                              real "any" constraint. A malformed value must never
+    #                              silently collapse to ∅ and become a catch-all shadower.
     meta: FactMeta
 
 @dataclass(frozen=True)
@@ -140,6 +150,48 @@ class NacTag:
 
 `NacTag.match/values/match_all` are carried for labels and future predicate work; v1
 shadowing never reads them.
+
+### NAC actions & apply model
+
+Today no object type supports `create` (site = `update` only; org = `update`/`delete`).
+GS34's "additions" — and the highest-risk shadowing case, *adding a broad rule that
+buries existing ones* — require it, so NAC is the first type with a `create` action.
+
+| Action | Op shape | Baseline → proposed |
+|---|---|---|
+| `update` | `object_id` = existing rule id; payload = changed leaves (incl. `order` for a reorder) | `effective_update(baseline[id], payload)` replaces that rule |
+| `delete` | `object_id` = existing rule id; **empty** payload | drop `id` from the set |
+| `create` | `object_id` = caller-supplied **provisional** id; payload = full rule body | add `{provisional_id: body}` to the set |
+
+The **gate is pre-fetch** (no state), so it only checks action ∈ {create,update,delete},
+object_type, no `site_id`, and empty delete payload. **Existence is validated post-fetch**
+in `simulate_org_nac`: `update`/`delete` whose id ∉ baseline, or `create` whose id ∈
+baseline, become a `Rejection` → UNKNOWN. A `create`'s id is provisional and labelled as
+such (a real apply POSTs and Mist assigns the server id); the twin needs it only to key
+the rule within the proposed set for diff + shadowing. L0 validates a `create` body as a
+full object (no `scope_roots`); `update` bodies validate scoped to their changed roots.
+Confirm the change-plan envelope (`parse_change_plan`) accepts `action="create"` (it
+parses the action as a free string; the gate is the allowlist) as an early task.
+
+### nacrule allowlist leaves
+
+`RAW_ALLOWLIST["nacrule"]` — exact leaves only (`id`/`org_id`/`created_time`/
+`modified_time` are already dropped by `IGNORED_RAW_FIELDS`). List values are atomic
+leaves (the path flattener treats lists atomically, as with `ap_ids`):
+
+```
+name, order, enabled, action, apply_tags,
+matching.auth_type, matching.port_types, matching.nactags,
+matching.site_ids, matching.sitegroup_ids, matching.family,
+matching.mfg, matching.model, matching.os_type, matching.vendor,
+not_matching.auth_type, not_matching.port_types, not_matching.nactags,
+not_matching.site_ids, not_matching.sitegroup_ids, not_matching.family,
+not_matching.mfg, not_matching.model, not_matching.os_type, not_matching.vendor
+```
+
+A nacrule edit touching any other leaf trips the field gate → UNKNOWN (default-deny). If
+the committed `nacrule` schema permits a nested matching field not listed here, that is a
+deliberate UNKNOWN, never a false-SAFE.
 
 ## 5. GS34 delta-reporting (`nac.rule.change`)
 
@@ -159,10 +211,13 @@ WARNING ⇒ the run floors to **REVIEW**.
 Single-state lint over a rule set, run on **baseline IR** and **proposed IR** for delta
 attribution.
 
-**Provable rule** (eligible for proof): `order is not None`, and it constrains *only* on
-`{auth_types, port_types, match_tags}` — i.e. `not_match_tags` and every other match dim
-(`site_ids, sitegroup_ids, family, mfg, model, os_type, vendor`) are empty. Any rule
-that fails this is **opaque**: it can neither shadow nor be proven-shadowed (no finding).
+**Provable rule** (eligible for proof): `not opaque`, `order is not None`, and it
+constrains *only* on `{auth_types, port_types, match_tags}` — i.e. `not_match_tags` and
+every other match dim (`site_ids, sitegroup_ids, family, mfg, model, os_type, vendor`)
+are empty. A rule that fails *any* of these — opaque (unparseable proof field),
+order-less, or using an unmodeled-for-proof dimension — is excluded from shadowing in
+**both** directions (it neither shadows nor is proven-shadowed; no finding). This is the
+single chokepoint that prevents a malformed rule from manufacturing a false shadow.
 
 **Coverage** — for two enabled, provable rules A (earlier `order`) and B (later):
 
@@ -172,18 +227,23 @@ def covers_choice(a: frozenset, b: frozenset) -> bool:   # auth_types / port_typ
     if not b: return False        # B matches any, A does not
     return b <= a                 # A accepts every value B accepts
 
-def covers_and(a: frozenset, b: frozenset) -> bool:       # match_tags (AND)
-    return a <= b                 # A requires fewer-or-equal tags ⇒ broader
+def covers_tags(a: frozenset, b: frozenset) -> bool:      # match_tags — CONSERVATIVE
+    return (not a) or (a == b)    # A has no tag filter, OR identical tag set.
+    # NOT `a <= b`: that assumes tags AND. Cross-tag AND/OR is UNCONFIRMED (§2),
+    # so a strict-subset would false-positive if tags OR-group. Revisit only once
+    # Mist's cross-nactag semantics are confirmed (§10).
 
 A_covers_B = (covers_choice(A.auth_types, B.auth_types)
               and covers_choice(A.port_types, B.port_types)
-              and covers_and(A.match_tags, B.match_tags))
+              and covers_tags(A.match_tags, B.match_tags))
 ```
 
-`auth_types`/`port_types` are **choice** dimensions (∅ = "any"; larger set = broader);
-`match_tags` is an **AND** dimension (∅ = "no constraint"; larger set = narrower). The
-direction differs per dimension — this is the crux and is unit-tested exhaustively.
-Exact-duplicate matches are the `A == B` special case and are caught for free.
+`auth_types`/`port_types` are **choice** dimensions (∅ = "any"; larger set = broader),
+where the unconstrained/superset direction is sound regardless of tag semantics.
+`match_tags` is the **unconfirmed** dimension, so coverage is allowed only when A has no
+tag filter or the sets are identical (above). The directions differ per dimension — this
+is the crux and is unit-tested exhaustively. Exact-duplicate matches are the `A == B`
+special case and are caught for free.
 
 For each enabled provable B, the **first** earlier enabled provable A with `A_covers_B`
 is the shadower. Output: shadowed rule B, shadower A.
@@ -240,18 +300,26 @@ Rendered by `render.py` (dict + human) like the other verdicts.
 TDD throughout. Layers:
 
 - **Shadowing algorithm** (`tests/checks/nac/test_shadowing.py`) — the core. Tables over:
-  catch-all shadows all; equal auth/port/tags = duplicate shadow; subset vs superset on
-  each of auth/port/tags *in the correct direction*; disabled A or B ⇒ no shadow;
-  opaque rule (uses `site_ids`/`family`/`not_matching`) ⇒ neither shadows nor is shadowed;
-  `order is None` ⇒ excluded; introduced-vs-pre-existing attribution.
+  catch-all shadows all; equal auth/port/tags = duplicate shadow; auth/port coverage in
+  the **choice** direction (∅=any, `b ⊆ a`); **match_tags conservatism** — A with no tag
+  filter or an identical set shadows, but a strict-subset tag set (`{X}` vs `{X,Y}`) must
+  **not** (guards the unconfirmed OR semantics); disabled A or B ⇒ no shadow;
+  non-provable rule excluded both ways for *each* reason — unmodeled dim
+  (`site_ids`/`family`/`not_matching`), **unparseable proof field (`opaque`)**, and
+  `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
+  introduced-vs-pre-existing attribution.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
   REVIEW finding naming the rule + changed fields.
 - **IR/ingest** (`test_nac_ingest.py`) — full matching surface mapped; bad row skipped;
   unparseable `order` → None.
 - **L0** — `validate_payload("nacrule", …)` registered, type violation caught, unknown
   type still fails closed.
-- **Pipeline** (`test_simulate_org_nac.py`) — fetch error → UNKNOWN; clean reorder with no
-  shadow → SAFE; reorder that buries a rule → REVIEW.
+- **Pipeline** (`test_simulate_org_nac.py`) — fetch error and bad-id rejections
+  (create whose id ∈ baseline; update/delete whose id ∉ baseline) → UNKNOWN; a **no-op**
+  plan (empty effective diff) → SAFE; a reorder with **no new shadow** → REVIEW (delta
+  finding only — every reorder is a GS34 delta); a reorder or `create` that **buries a
+  rule** → REVIEW (delta + introduced-shadow findings). create/update/delete each
+  exercised.
 - **Routing** — `_is_org_nac_plan` true for nacrule/no-site plans, false otherwise; a
   no-`site_id` nacrule plan no longer falls through to rejection.
 - **Golden / real-data validation** — replay the **13 TM-LAB rules** through shadowing and
@@ -260,8 +328,9 @@ TDD throughout. Layers:
 
 ## 9. Prerequisite — OAS snapshot
 
-The committed OAS has only the three switch schemas; `nacrule` is absent, so today a
-nacrule plan L0-fails-closed → UNKNOWN. Implementation must add `nac_rule` (and the
+The committed OAS carries `site_setting`, `device`, `networktemplate`, `gatewaytemplate`,
+`sitetemplate`, and `wlan` — but **not** `nacrule`, so today a nacrule plan
+L0-fails-closed → UNKNOWN. Implementation must add `nac_rule` (and the
 `nac_rule_matching` component) to the `extract_oas` WANTED set, re-extract from the Mist
 OpenAPI, commit `oas/nacrule.schema.json`, and bump the OAS VERSION. Done before the L0
 registration task so `nacrule` validates instead of failing closed.
@@ -270,9 +339,11 @@ registration task so `nacrule` validates instead of failing closed.
 
 - **NAC impact modeling** (which clients/roles/VLANs an allow/block actually yields) — GS34
   is reporting-only by design.
-- **Tag-predicate subsumption** (reasoning across different tag ids via `match`/`values`/
-  `match_all`, prefix/substring/negation, and cross-nactag AND-vs-OR semantics) — blocked
-  on confirming Mist's cross-tag semantics; v1 uses tag-identity only.
+- **Strict-subset & predicate tag coverage** — v1 proves tag coverage only when the
+  earlier rule has *no* tag filter or an *identical* tag-id set. Strict-subset coverage
+  (`{X}` covers `{X,Y}`, valid only if tags AND) and predicate subsumption across
+  different tag ids (`match`/`values`/`match_all`, prefix/substring/negation) are both
+  deferred until Mist's cross-nactag AND-vs-OR semantics are confirmed.
 - **Block-shadow security escalation** (shadowed `block` ⇒ UNSAFE) — needs action-interplay
   reasoning.
 - **`not_matching` / site / device-attribute coverage in proofs** — currently makes a rule
