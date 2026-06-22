@@ -300,18 +300,22 @@ special case and are caught for free.
 For each enabled provable B, the **first** earlier enabled provable A with `A_covers_B`
 is the shadower. Output: shadowed rule B, shadower A.
 
-**Delta attribution** — the baseline status is a **tristate**, because with `opaque_digest`
-a baseline "no shadow" can mean *proven absent* OR *couldn't be evaluated*. Conflating them
-would let a baseline-unprovable rule masquerade as a newly-introduced shadow.
+**Delta attribution** — a **tristate** keyed on the *full* baseline **shadow relation**
+A→B (= A present ∧ B present ∧ both enabled ∧ A earlier than B ∧ both provable ∧ A covers
+B). Because with `opaque_digest` a baseline "no shadow" can mean *evaluably false* OR
+*couldn't be evaluated*, conflating them would let a baseline-unprovable rule masquerade as
+a newly-introduced shadow.
 
-| Shadowed in proposed? | Baseline status of the A→B pair | Outcome |
+| Shadowed in proposed? | Baseline shadow relation A→B | Outcome |
 |---|---|---|
-| yes | **proven absent** — A & B both provable in baseline (or newly created), A did *not* cover B | **introduced** → `severity=WARNING` → REVIEW |
-| yes | **proven present** — the same A→B pair shadowed in baseline | **pre-existing** → `severity=INFO` (context, no floor) |
-| yes | **indeterminate** — A or B existed but was *unprovable* in baseline (`opaque_digest` / orderless / unmodeled criteria) | **suppress** the network shadow finding (cannot prove it is new) |
+| yes | **evaluably FALSE** — provably did not hold: A or B absent/new, **or** A/B disabled, **or** A not earlier than B, **or** (both provable) A did not cover B | **introduced** → `severity=WARNING` → REVIEW |
+| yes | **evaluably TRUE** — held (the same A→B pair shadowed in baseline) | **pre-existing** → `severity=INFO` (context, no floor) |
+| yes | **indeterminate** — both A and B present & enabled in baseline, but the relation can't be evaluated (A or B `opaque_digest` / orderless / unmodeled criteria) | **suppress** the network shadow finding (cannot prove it is new) |
 | no  | — | nothing |
 
-The *suppress* row is safe: whenever the baseline pair is indeterminate, the rule that
+Note disabled/order/absence short-circuit the relation to *false* even if the cover test
+itself is unevaluable (a disabled-in-baseline A that flips `enabled` → introduced). The
+*suppress* row is safe: whenever the baseline relation is indeterminate, the rule that
 became provable necessarily changed a provability-affecting field (so a `nac.rule.change`
 delta fires) or carries a parse issue (so an operational finding fires) — REVIEW is reached
 without a false "introduced" claim.
@@ -405,12 +409,14 @@ TDD throughout. Layers:
   non-provable rule excluded both ways for *each* reason — unmodeled dim
   (`site_ids`/`family`/`not_matching`), **`opaque_digest` set (unparseable proof field)**,
   and `order is None`; a genuinely-empty (∅) field still counts as a real "any" (catch-all);
-  **tristate attribution** — introduced (baseline proven-absent), pre-existing (baseline
-  proven-present), and **suppressed** when baseline is indeterminate (A or B
-  `opaque_digest`/orderless in baseline → no "introduced" finding; a baseline-only parse
-  failure must not manufacture a newly-introduced shadow); **`enabled` as a cause** — an
-  earlier A flipping `enabled` `false→true` (and B flipping `enabled` under an existing
-  covering A) is an introduced shadow with the flipped rule in `caused_by`.
+  **tristate attribution** keyed on the full baseline relation — introduced when it is
+  *evaluably false* for **each** reason (A/B absent-new, **disabled**, **not-earlier**, or
+  no-cover, incl. cases where A *did* cover B in baseline but was disabled/later);
+  pre-existing when *evaluably true*; **suppressed** when *indeterminate* (both present &
+  enabled but A or B `opaque_digest`/orderless/unmodeled → no "introduced" finding; a
+  baseline-only parse failure must not manufacture a newly-introduced shadow); **`enabled`
+  as a cause** — an earlier A flipping `enabled` `false→true` (and B flipping `enabled`
+  under an existing covering A) is an introduced shadow with the flipped rule in `caused_by`.
 - **Delta-report** (`test_delta.py`) — add/remove/modify/reorder each yield one WARNING
   REVIEW finding naming the rule + changed fields; `caused_by` is a `Cause` (ref + fields,
   `fields=()` for add/remove); a **`not_matching.*` change** and a **name-only change**
