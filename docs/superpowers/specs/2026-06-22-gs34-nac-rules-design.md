@@ -110,7 +110,7 @@ yields REVIEW with id-only labels, not UNKNOWN.
 
 | Area | File | Change |
 |---|---|---|
-| Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch \| FetchError` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. **`NacFetch = {rules: tuple[raw,...], tags: tuple[raw,...], tag_findings: tuple[Finding,...]}`.** **Asymmetric failure:** a `nacrules` fetch failure returns `FetchError` → `baseline_unavailable` → UNKNOWN (load-bearing). A `nactags` failure is **labels-only** — shadowing keys on tag *ids* carried by the rules — so it returns the rules with `tags=()` plus an operational `Finding` in `tag_findings` (→ `adapter_findings` → REVIEW, id-only labels), **not** UNKNOWN. |
+| Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch \| FetchError` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. **`NacFetch = {rules: tuple[raw,...], tags: tuple[raw,...], tag_findings: tuple[Finding,...]}`.** **Asymmetric failure:** a `nacrules` fetch failure returns `FetchError` → `baseline_unavailable` → UNKNOWN (load-bearing). A `nactags` failure is **labels-only** — shadowing keys on tag *ids* carried by the rules — so it returns the rules with `tags=()` plus a `Finding` in `tag_findings` (→ `adapter_findings`) — pinned `source=ADAPTER`, `category=OPERATIONAL`, `severity=WARNING`, HIGH confidence, so `decide()` floors it to **REVIEW** (id-only labels), **not** UNKNOWN. |
 | L0 / OAS | `adapters/mist/oas/nacrule.schema.json` (new) + `validate/schema.py` | extract `nac_rule` from the Mist OpenAPI; register in `_SCHEMA_FILES["nacrule"]`. **Prerequisite** (see §9). |
 | IR | `ir/entities.py` | new `NacRule`, `NacTag` frozen dataclasses; `IRBuilder.add_nacrule/add_nactag`; `IR.nacrules` / `IR.nactags` accessors. |
 | Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted with `opaque_digest` set** (a digest of its raw row) + best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque_digest` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque_digest` set. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
@@ -231,9 +231,9 @@ diff → false SAFE; with it, anything not enumerated above is a deliberate UNKN
 ## 5. GS34 delta-reporting (`nac.rule.change`)
 
 Reads the `nacrule` rows of `diff_ir`. For each **added / removed / modified** rule
-(modify includes `name`, `order`, `enabled`, `action`, and any `matching` /
-`not_matching` / `apply_tags` field — `name` is a real edit and is reported, *not*
-diff-ignored; see the diff note below):
+(modify includes `name`, `order`, `enabled`, `action`, any `matching` / `not_matching` /
+`apply_tags` field, and `opaque_digest` — a change in otherwise-unparseable content;
+`name` is a real edit and is reported, *not* diff-ignored; see the diff note below):
 
 - emit one `Finding`: `source=CHECK`, `category=NETWORK`, `severity=WARNING`,
   `subject = ObjectRef("nacrule", id, name)`. `caused_by` is `tuple[Cause, ...]` (not raw
@@ -395,7 +395,8 @@ TDD throughout. Layers:
 - **Pipeline** (`test_simulate_org_nac.py`) — `nacrules` fetch error
   (`baseline_unavailable`) and bad-id rejections (create whose id ∈ baseline; update/delete
   whose id ∉ baseline) → UNKNOWN; **a `nactags` fetch failure → REVIEW with id-only labels
-  + the operational `tag_findings`, NOT UNKNOWN** (shadowing still runs on tag ids); a **no-op** plan (empty effective diff) → SAFE; a reorder with **no new
+  + a `tag_findings` entry asserted `source=ADAPTER`/`category=OPERATIONAL`/`severity=WARNING`,
+  NOT UNKNOWN** (shadowing still runs on tag ids); a **no-op** plan (empty effective diff) → SAFE; a reorder with **no new
   shadow** → REVIEW (delta finding only — every reorder is a GS34 delta); a reorder or
   `create` that **buries a rule** → REVIEW (delta + introduced-shadow findings);
   **non-fatal L0** violation in a payload → REVIEW with the L0 finding present in
