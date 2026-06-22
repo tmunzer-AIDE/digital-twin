@@ -276,6 +276,16 @@ def test_participation_by_area_and_ambiguity():
     assert "0" in seg.ambiguous_areas    # differing metric -> ambiguous, no last-win
 
 
+def test_participation_agreeing_duplicate_collapses_not_ambiguous():
+    from digital_twin.checks.wired.ospf_withdrawal import _participation
+    from tests.factories import ospf
+    # two networks on (S, vlan 10, area 0), IDENTICAL (passive, metric) -> collapse, not ambiguous
+    ir = _ir([ospf("S", 10, area="0", name="a", metric=5),
+              ospf("S", 10, area="0", name="b", metric=5)])
+    seg = _participation(ir).by_dev_vlan[("S", 10)]
+    assert seg.ambiguous_areas == set() and seg.by_area["0"].metric == 5
+
+
 def test_egress_lost_names_only_active_intf_not_an_unrelated_passive_one():
     # REGRESSION (round 9): a device's ACTIVE adjacency collapses while an
     # unrelated PASSIVE ospf row on the SAME device also changes (a passive row

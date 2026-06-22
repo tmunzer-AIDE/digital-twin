@@ -64,6 +64,8 @@ class _Row:
 @dataclass
 class _Seg:
     by_area: dict[str, _Row] = field(default_factory=dict)
+    # areas where 2+ network entries gave conflicting (passive, metric) — never last-win;
+    # GS27 transit-mutation detection skips precise compare for these (emits a PARTIAL note).
     ambiguous_areas: set[str] = field(default_factory=set)
 
     @property
