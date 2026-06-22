@@ -82,14 +82,18 @@ plan (ops: object_type="nacrule", no site_id)
   ▼
 simulate_org_nac(plan, provider)            [engine/pipeline.py]
   ├─ provider.resolve_org_nac(scope) ……… baseline nacrules + nactags (errors-as-values)
-  ├─ L0: validate_payload("nacrule", body[, scope_roots])  (create=full obj; update=scoped)
-  ├─ apply ops (create|update|delete) → proposed set; post-fetch existence check
-  │       (bad id → Rejection → UNKNOWN)
+  ├─ per op (mirrors the site pipeline's effective→L0 order):
+  │     current = baseline[id]  (update/delete)  |  {} + overlay id=object_id  (create)
+  │     existence: update/delete id∉base, or create id∈base → Rejection → UNKNOWN
+  │     effective = effective_update(current, op.payload)        # create ⇒ body (+id)
+  │     adapter_findings += validate_payload("nacrule", effective,
+  │            scope_roots = None (create, full obj) | _changed_roots(op.payload) (update))
+  ├─ proposed set = baseline with ops applied
   ├─ ingest baseline & proposed → IR        (NacRule + NacTag entities)
   ├─ diff_ir(base_ir, proposed_ir)          (nacrule kind: add/remove/modify)
-  ├─ checks:  nac.rule.change   (GS34 delta-report)
-  │           nac.rule.shadowed (shadowing, delta-attributed)
-  └─ assemble → OrgNacVerdict                (decision via decide_nac)
+  ├─ checks → CheckResult:  nac.rule.change (GS34 delta) ; nac.rule.shadowed (delta-attr)
+  └─ decide(DecisionInputs(rejections, l0_fatal, baseline_unavailable,
+            check_results, adapter_findings))  → OrgNacVerdict
 ```
 
 Short-circuits to **UNKNOWN** (honest, never a guess) when: the `nacrule` L0 schema is
@@ -161,17 +165,24 @@ buries existing ones* — require it, so NAC is the first type with a `create` a
 |---|---|---|
 | `update` | `object_id` = existing rule id; payload = changed leaves (incl. `order` for a reorder) | `effective_update(baseline[id], payload)` replaces that rule |
 | `delete` | `object_id` = existing rule id; **empty** payload | drop `id` from the set |
-| `create` | `object_id` = caller-supplied **provisional** id; payload = full rule body | add `{provisional_id: body}` to the set |
+| `create` | `object_id` = caller-supplied **provisional** id; payload = full rule body (may omit `id`) | add the effective body with **`id=op.object_id` overlaid** |
 
 The **gate is pre-fetch** (no state), so it only checks action ∈ {create,update,delete},
 object_type, no `site_id`, and empty delete payload. **Existence is validated post-fetch**
 in `simulate_org_nac`: `update`/`delete` whose id ∉ baseline, or `create` whose id ∈
-baseline, become a `Rejection` → UNKNOWN. A `create`'s id is provisional and labelled as
-such (a real apply POSTs and Mist assigns the server id); the twin needs it only to key
-the rule within the proposed set for diff + shadowing. L0 validates a `create` body as a
-full object (no `scope_roots`); `update` bodies validate scoped to their changed roots.
-Confirm the change-plan envelope (`parse_change_plan`) accepts `action="create"` (it
-parses the action as a free string; the gate is the allowlist) as an early task.
+baseline, become a `Rejection` → UNKNOWN.
+
+**L0 validates the EFFECTIVE post-merge object, never the partial body** (matching the site
+pipeline). This matters because the validator surfaces object-level `required` errors even
+under `scope_roots`, and `nac_rule` requires `action`/`name` — validating a partial update
+body directly would emit bogus "required" findings. So: `update` validates
+`effective_update(baseline[id], payload)` with `scope_roots=_changed_roots(op.payload)`
+(required fields inherited from baseline); `create` overlays `id=op.object_id` onto the
+full body and validates it whole (`scope_roots=None`). The overlaid `id` also satisfies the
+IR's required `NacRule.id` so the ingester keys the new row correctly (Mist assigns the
+real id at apply; the provisional id is labelled as such and is needed only to key the rule
+for diff + shadowing). Confirm `parse_change_plan` accepts `action="create"` (it parses the
+action as a free string; the gate is the allowlist) as an early task.
 
 ### nacrule allowlist leaves
 
@@ -255,10 +266,15 @@ is the shadower. Output: shadowed rule B, shadower A.
 | yes | no  | **introduced** → `severity=WARNING` → REVIEW |
 | yes | yes | **pre-existing** → `severity=INFO` (context, no floor) |
 
-Finding: `source=CHECK`, `category=NETWORK`, `subject=ObjectRef("nacrule", B.id, B.name)`,
-`caused_by` references A, evidence records both rules' `action` and the covering
-dimensions. A reorder that buries a rule under a broader one therefore surfaces as an
-*introduced* shadow.
+Finding: `source=CHECK`, `category=NETWORK`, `subject=ObjectRef("nacrule", B.id, B.name)`.
+The shadower **A goes in `evidence["shadower"]`** (A's ref + both rules' `action` + the
+covering dimensions) — **not** in `caused_by`, because A may be an *unchanged* baseline
+catch-all and the `Cause` contract is reserved for entities the plan actually changed.
+`caused_by` is built from the rule(s) in **this plan's diff** that introduced the shadow:
+at least one of {A, B} (or the created/reordered rule) has a non-empty diff row, since a
+newly-*introduced* shadow requires a relative-order or match change to A or B. A reorder
+that buries a rule under a broader one therefore surfaces as an introduced shadow with
+`caused_by` = the reordered rule(s) from the diff.
 
 **Severity is uniform WARNING for v1.** A shadowed `block` rule is a latent security gap
 and a shadowed `allow` rule is dead config; distinguishing them (escalating block-shadows
@@ -266,8 +282,9 @@ toward UNSAFE) needs action-interplay reasoning and is a **roadmap follow-up** (
 
 ## 7. Verdict & decision
 
-`OrgNacVerdict` (lean; no `per_site`/`driving_sites` — mirrors `OrgVerdict`'s
-`changes`/`rejections` conventions, reusing the existing `Rejection` type):
+`OrgNacVerdict` (lean; no `per_site`/`driving_sites`). It carries the **decision inputs**
+verbatim so nothing that reaches the decision can be dropped from the record — in
+particular the non-fatal L0 `adapter_findings`, which are `Finding`s (not `Rejection`s):
 
 ```python
 @dataclass(frozen=True)
@@ -281,19 +298,28 @@ class NacDelta:
 class OrgNacVerdict:
     decision: Decision
     decision_reasons: tuple[str, ...]
-    changes: tuple[NacDelta, ...]     # the nacrule rows of the diff
-    findings: tuple[Finding, ...]     # nac.rule.change + nac.rule.shadowed
-    rejections: tuple[Rejection, ...] # short-circuit causes → UNKNOWN
+    changes: tuple[NacDelta, ...]            # the nacrule rows of the diff
+    check_results: tuple[CheckResult, ...]   # nac.rule.change + nac.rule.shadowed
+    adapter_findings: tuple[Finding, ...]    # NON-fatal L0 schema findings
+    rejections: tuple[Rejection, ...]        # short-circuit causes → UNKNOWN
 ```
 
-Decision via a small `decide_nac(findings, rejections)` helper, mirroring the existing
-floor rules (no per-site assumptions, so `decide_org` does not apply):
-- any `rejection` (gate / fetch failure / fatal L0) ⇒ **UNKNOWN**.
-- any WARNING check finding ⇒ **REVIEW**; any ERROR/CRITICAL `NETWORK` finding ⇒ UNSAFE
-  (none emitted in v1).
-- only INFO / none ⇒ **SAFE**.
+**Reuse the existing `decide(DecisionInputs)`** — it is fully generic (no site
+assumptions) and already routes *both* `adapter_findings` and `check_results` through the
+proven floor logic. No bespoke `decide_nac`:
 
-Rendered by `render.py` (dict + human) like the other verdicts.
+```python
+decision, reasons = decide(DecisionInputs(
+    rejections=rejections, l0_fatal=l0_fatal, baseline_unavailable=fetch_failed,
+    check_results=check_results, adapter_findings=adapter_findings))
+```
+
+This guarantees the Critical case is handled structurally: a **non-fatal** malformed
+nacrule payload emits an L0 `OPERATIONAL`/`ERROR` `Finding` → `decide` floors **REVIEW**
+(operational ERROR/CRITICAL), never silently SAFE; a **fatal** L0 → `l0_fatal` → UNKNOWN.
+The two NAC checks return `CheckResult`s like every other check (WARNING → REVIEW,
+INFO → context). `render.py` flattens `check_results[].findings` + `adapter_findings`
+(dict + human) like the other verdicts.
 
 ## 8. Testing
 
@@ -314,12 +340,15 @@ TDD throughout. Layers:
   unparseable `order` → None.
 - **L0** — `validate_payload("nacrule", …)` registered, type violation caught, unknown
   type still fails closed.
-- **Pipeline** (`test_simulate_org_nac.py`) — fetch error and bad-id rejections
-  (create whose id ∈ baseline; update/delete whose id ∉ baseline) → UNKNOWN; a **no-op**
-  plan (empty effective diff) → SAFE; a reorder with **no new shadow** → REVIEW (delta
-  finding only — every reorder is a GS34 delta); a reorder or `create` that **buries a
-  rule** → REVIEW (delta + introduced-shadow findings). create/update/delete each
-  exercised.
+- **Pipeline** (`test_simulate_org_nac.py`) — fetch error (`baseline_unavailable`) and
+  bad-id rejections (create whose id ∈ baseline; update/delete whose id ∉ baseline) →
+  UNKNOWN; a **no-op** plan (empty effective diff) → SAFE; a reorder with **no new
+  shadow** → REVIEW (delta finding only — every reorder is a GS34 delta); a reorder or
+  `create` that **buries a rule** → REVIEW (delta + introduced-shadow findings);
+  **non-fatal L0** violation in a payload → REVIEW with the L0 finding present in
+  `adapter_findings` (regression for the dropped-adapter-findings bug — never SAFE);
+  **fatal** L0 → UNKNOWN. create/update/delete each exercised, and an `update`'s partial
+  body does **not** raise a bogus `required` L0 finding (effective-object validation).
 - **Routing** — `_is_org_nac_plan` true for nacrule/no-site plans, false otherwise; a
   no-`site_id` nacrule plan no longer falls through to rejection.
 - **Golden / real-data validation** — replay the **13 TM-LAB rules** through shadowing and
