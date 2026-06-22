@@ -106,7 +106,7 @@ missing/fatal, the payload is not an object, or the org fetch fails.
 | Provider | `providers/*` | add `resolve_org_nac(scope) -> NacFetch` to the protocol + Mist impl (`listOrgNacRules`, `listOrgNacTags`); errors-as-values, mirrors `resolve_org_template`. |
 | L0 / OAS | `adapters/mist/oas/nacrule.schema.json` (new) + `validate/schema.py` | extract `nac_rule` from the Mist OpenAPI; register in `_SCHEMA_FILES["nacrule"]`. **Prerequisite** (see §9). |
 | IR | `ir/entities.py` | new `NacRule`, `NacTag` frozen dataclasses; `IRBuilder.add_nacrule/add_nactag`; `IR.nacrules` / `IR.nactags` accessors. |
-| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted `opaque=True`** with best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque=True` — never collapsed to ∅. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
+| Ingest | `adapters/mist/ingest/nac.py` (new) | nacrules + nactags → IR. **nacrule rows are load-bearing — the generic "skip bad row" pattern must NOT apply**: a row WITH a stable `id` that hits a parse problem is **minted `opaque=True`** with best-effort fields (kept in the set, keyed by id) so the diff still sees it and shadowing skips it; only a row **without a usable id** is dropped (nothing to key against). Both emit an **operational `Finding`** routed to the verdict's `adapter_findings` → REVIEW. A genuinely-absent match field stays ∅ (real "any"); a present-but-unparseable proof-bearing field (e.g. `auth_type` not a string, `nactags` not a list) sets `opaque=True` — never collapsed to ∅. **Absent `enabled` ⇒ `True`** (OAS default — so a created broad rule that omits it still participates/shadows); present non-bool `enabled` ⇒ `opaque=True`. The whole `not_matching` block is normalized to `(dimension, value)` pairs. Unparseable `order` → None. `nactag` rows are labels-only and may still be skipped. |
 | Simulate | `engine/pipeline.py` | `simulate_org_nac(plan, provider) -> OrgNacVerdict`. |
 | Scope | `scope/allowlist.py` | new `NAC_OBJECT_TYPES = ("nacrule",)` — **separate** from the site whitelist `SUPPORTED_OBJECT_TYPES` (its branch requires a `site_id`) and from `ORG_OBJECT_TYPES` (which drives the per-site fan-out routing). Plus `RAW_ALLOWLIST["nacrule"]` with **exact enumerated leaves** (see *nacrule allowlist leaves* below — no `matching.*` subtree, per the leaf-tightening rule). |
 | Gate | `scope/object_gate.py` | new NAC branch `is_nac = bool(ops) and all(op.object_type in NAC_OBJECT_TYPES) and not scope.site_id`, evaluated **before** `is_org` and the site branch. Allowed actions: `create` \| `update` \| `delete` (delete payload must be empty). |
@@ -124,17 +124,21 @@ class NacRule:
     id: str
     name: str | None
     order: int | None            # None = unparseable/absent → never ordered/proven
-    enabled: bool
+    enabled: bool                # ABSENT ⇒ True (OAS default); present non-bool ⇒ opaque
     action: str | None           # "allow" | "block" | None
     auth_types: frozenset[str]   # ∅ = GENUINELY unconstrained (matches any)
     port_types: frozenset[str]   # ∅ = genuinely unconstrained
     match_tags: frozenset[str]   # matching.nactags ids
-    not_match_tags: frozenset[str]
-    # remaining match dims — modeled for the diff; their non-emptiness makes a rule
-    # non-provable for shadowing (it neither shadows nor is shadowed):
+    # remaining POSITIVE match dims — modeled for the diff; their non-emptiness makes a
+    # rule non-provable for shadowing (it neither shadows nor is shadowed):
     site_ids: frozenset[str]; sitegroup_ids: frozenset[str]
     family: frozenset[str]; mfg: frozenset[str]; model: frozenset[str]
     os_type: frozenset[str]; vendor: frozenset[str]
+    # the ENTIRE not_matching block normalized to (dimension, value) pairs — ONE field so
+    # (a) the diff sees any negative-criteria change, and (b) `not not_matching` is the
+    # whole non-emptiness test (no per-dim enumeration to forget). Any non-empty
+    # not_matching ⇒ non-provable. Unparseable not_matching ⇒ opaque.
+    not_matching: frozenset[tuple[str, str]]
     apply_tags: frozenset[str]
     opaque: bool                 # a proof field was unparseable, OR the row itself only
     #                              partially parsed (ingest mints id'd rows opaque, never
@@ -224,13 +228,23 @@ WARNING ⇒ the run floors to **REVIEW**.
 Single-state lint over a rule set, run on **baseline IR** and **proposed IR** for delta
 attribution.
 
-**Provable rule** (eligible for proof): `not opaque`, `order is not None`, and it
-constrains *only* on `{auth_types, port_types, match_tags}` — i.e. `not_match_tags` and
-every other match dim (`site_ids, sitegroup_ids, family, mfg, model, os_type, vendor`)
-are empty. A rule that fails *any* of these — opaque (unparseable proof field),
-order-less, or using an unmodeled-for-proof dimension — is excluded from shadowing in
-**both** directions (it neither shadows nor is proven-shadowed; no finding). This is the
-single chokepoint that prevents a malformed rule from manufacturing a false shadow.
+**Provable rule** (eligible for proof) — one centralized predicate so no dimension can be
+forgotten:
+
+```python
+def is_provable(r: NacRule) -> bool:
+    return (not r.opaque and r.order is not None
+            and not r.not_matching                      # ANY negative criterion ⇒ no
+            and not (r.site_ids or r.sitegroup_ids or r.family or r.mfg
+                     or r.model or r.os_type or r.vendor))  # any positive extra-dim ⇒ no
+    # ⇒ the rule constrains ONLY on {auth_types, port_types, match_tags}.
+```
+
+A rule that fails this — opaque (unparseable proof field / partial row), order-less, or
+carrying *any* negative (`not_matching`) or positive extra-dimension criterion — is
+excluded from shadowing in **both** directions (it neither shadows nor is proven-shadowed;
+no finding). This is the single chokepoint that prevents a malformed or
+incompletely-modeled rule from manufacturing a false shadow.
 
 **Coverage** — for two enabled, provable rules A (earlier `order`) and B (later):
 
@@ -343,7 +357,10 @@ TDD throughout. Layers:
   dropped); a row with **no id** → dropped + operational finding; **a rule malformed in
   BOTH baseline and proposed still appears in `diff_ir`** (regression: skipping both would
   vanish a real change → false SAFE); a baseline-only parse failure does not manufacture a
-  "newly introduced" shadow; unparseable `order` → None; `nactag` bad row skipped.
+  "newly introduced" shadow; **a `not_matching.*` change appears in `diff_ir`** (regression
+  — gated + claimed-modeled, must not vanish); **absent `enabled` → `True`** and a rule
+  with a non-tag negative criterion is **non-provable** (no false shadow); non-bool
+  `enabled` → `opaque` + finding; unparseable `order` → None; `nactag` bad row skipped.
 - **L0** — `validate_payload("nacrule", …)` registered, type violation caught, unknown
   type still fails closed.
 - **Pipeline** (`test_simulate_org_nac.py`) — fetch error (`baseline_unavailable`) and
