@@ -493,13 +493,12 @@ class OspfWithdrawalCheck:
                             break
 
                 if owner_idx is not None:
-                    # Escalate the owning finding to ERROR/HIGH.
-                    old = findings[owner_idx]
-                    # Accumulate peer IPs if multiple broken peers map to same owner.
                     if owner_idx in escalated_findings:
-                        # Already escalated; the finding is already ERROR — no double-wrap.
+                        # Already escalated to ERROR by an earlier broken peer — no double-wrap.
                         escalated_pairs.add((did, vid))
                         continue
+                    # Escalate the owning REVIEW finding to ERROR/HIGH, naming the peer.
+                    old = findings[owner_idx]
                     escalated_findings.add(owner_idx)
                     escalated_pairs.add((did, vid))
                     findings[owner_idx] = Finding(
