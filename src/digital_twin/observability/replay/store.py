@@ -337,7 +337,7 @@ class FixtureProvider:
                                              f"not the requested {scope.org_id}"),),
                 acquired_at=datetime.now(UTC), host=self._host)
         nac = self._data.get("nac") if isinstance(self._data, dict) else None
-        if not nac:
+        if nac is None:
             return FetchError(
                 scope=scope,
                 failures=(FetchFailure(object="org_nac",
