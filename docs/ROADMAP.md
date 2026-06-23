@@ -360,7 +360,7 @@ modeling" below.
   delete overlay appears as `kind="removed"`. Populated on all three verdict
   types: `Verdict` (site path), `OrgVerdict` (org-template/delete-ripple path),
   and `OrgNacVerdict` (NAC path). Spec:
-  `docs/superpowers/specs/2026-06-21-config-diff-design.md`.
+  `docs/superpowers/specs/2026-06-23-config-diff-in-results-design.md`.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
