@@ -92,31 +92,47 @@ class BgpPeer:
     neighbor_ip: str                  # peer IP — identity + the direct telemetry join key
     local_as: int | None = None
     neighbor_as: int | None = None
-    session_type: str | None = None   # "external" | "internal"
+    session_type: str | None = None   # "external" | "internal" (None if absent OR unparseable)
     disabled: bool = False            # per-neighbor admin shutdown (schema default False)
-    via: str | None = None            # gateway transport (lan|tunnel|vpn|wan); None = switch/LAN
-    # raw tokens when present-but-unparseable (templated {{var}}), carried DIFF-BEARING so a
-    # templated->other edit produces a diff (the GS27 metric false-SAFE scar tissue):
+    via: str | None = None            # gateway transport lan|tunnel|vpn|wan (None if absent OR unparseable)
+    # Raw tokens when a value is PRESENT-but-unparseable (templated {{var}} / non-enum / non-bool),
+    # carried DIFF-BEARING so `absent (None) -> "{{x}}"` does NOT collapse and the check can emit a
+    # coverage note instead of misclassifying (the GS27 metric false-SAFE scar tissue). Every
+    # modeled value-leaf gets one:
     local_as_unresolved: str | None = None
     neighbor_as_unresolved: str | None = None
-    disabled_unresolved: str | None = None     # raw token if `disabled` is non-boolean/templated
+    session_type_unresolved: str | None = None   # raw token if `type` not in {external,internal}
+    via_unresolved: str | None = None            # raw token if `via` not in {lan,tunnel,vpn,wan}
+    disabled_unresolved: str | None = None       # raw token if `disabled` is non-boolean/templated
     unresolved: bool = False          # True when the neighbor-IP map key is NOT a literal IP
+    ambiguous: bool = False           # True when 2+ sessions defined this (device, neighbor_ip)
     meta: FactMeta = CONFIG_META
     id: str = ""                      # f"{device_id}:bgp:{neighbor_ip}"
 ```
-**Identity collision guard:** if the same `(device, neighbor_ip)` appears in 2+
-sessions with **differing** `(local_as, neighbor_as, session_type, via)`, the
-`(device, neighbor_ip)` is **ambiguous** — never last-win; the check emits a PARTIAL
-note and skips precise compare. (No `vrf` in `bgp_config`, so VRF-scoped identity
-`(device, vrf, neighbor_ip)` is a noted deferred refinement if real configs reuse a
-peer IP across VRFs.)
+**Identity collision guard (collision-preserving, like `Vlan.collisions`):** because
+`IR.bgp_peers`/`diff_ir` index by `BgpPeer.id` (= `device:bgp:neighbor_ip`), a naive
+last-win would *hide* a duplicate before the check sees it. So the **ingest/dedup
+step detects the collision**: if the same `(device, neighbor_ip)` is produced by 2+
+sessions whose **modeled attributes differ** — the comparison key is the full set
+`(local_as, local_as_unresolved, neighbor_as, neighbor_as_unresolved, session_type,
+session_type_unresolved, via, via_unresolved, disabled, disabled_unresolved)`,
+i.e. admin-state and every unresolved token included — they collapse into **one**
+`BgpPeer` with `ambiguous=True` (never last-win). `ambiguous` is a diff-bearing fact
+(a config becoming/ceasing-to-be ambiguous is a change). The check, seeing a
+delta-touched `ambiguous` peer, emits a PARTIAL note and skips precise compare. (No
+`vrf` in `bgp_config`, so VRF-scoped identity `(device, vrf, neighbor_ip)` is a noted
+deferred refinement if real configs reuse a peer IP across VRFs.)
 
 ### Ingest — role-aware `_bgp`
 For each device (switch **or** gateway) with effective `bgp_config`, walk
 `bgp_config.<session>.neighbors.<ip>` → mint one `BgpPeer` per neighbor, tagged with
 `Device.role`. A `disabled` neighbor is still minted (so a disabled↔enabled flip is
 detectable). ASNs parsed by `_as_int` (int or, when present-but-unparseable, the raw
-token into `*_as_unresolved`; absent → both None). A non-literal-IP neighbor key →
+token into `*_as_unresolved`; absent → both None). `type`/`via` are validated against
+their enum sets: a valid value → `session_type`/`via`; a present-but-non-enum value
+(templated `{{...}}` / garbage) → the raw token into `session_type_unresolved`/
+`via_unresolved` with the parsed field left `None`; absent → both `None` (so
+`absent → "{{type}}"` produces a diff, not a collapse). A non-literal-IP neighbor key →
 `unresolved=True` (`neighbor_ip` = the raw key), never dropped.
 **IMPLEMENTATION REQUIREMENT (build-verified):** gateway peers MUST be minted from
 the gateway's true **`gateway_effective`** config (materialized onto the gateway raw
@@ -145,22 +161,31 @@ MEDIUM** (`_UNVERIFIED` — no RIB; config-certain change, impact unconfirmed):
 | `.peering_disabled` | active in baseline, present `disabled:true` in proposed | yes |
 | `.peering_added` | not-active in baseline (absent or disabled), active in proposed | **no** |
 | `.as_changed` | retained active peering whose `local_as` or `neighbor_as` changed | yes |
-| `.session_type_changed` | retained active peering, `type` external↔internal | yes |
-| `.transport_changed` | retained active **gateway** peering, `via` changed | yes |
+| `.session_type_changed` | retained active peering, `type` external↔internal (both sides resolved) | yes |
+| `.transport_changed` | retained active **gateway** peering, `via` changed (both sides resolved) | yes |
 
 - `.peering_added` fires only with **literal identity** (neighbor IP a literal IP AND
   ASN not templated-unresolved); a fuzzy-identity add → the unresolved/AS-unresolved
   note instead of a confident added finding. Additions never escalate.
+- `.session_type_changed` / `.transport_changed` fire only when **both** sides'
+  `type`/`via` are resolved; if either side carries `session_type_unresolved` /
+  `via_unresolved` and the token changed, emit the type/transport-unresolved note
+  (below) instead of a confident change finding (don't misclassify a templated value).
 - `.as_changed` evidence carries `local_as_changed` / `neighbor_as_changed` booleans +
   base/proposed values (so an agent knows which ASN moved). `.as_changed` and
   `.session_type_changed` **co-fire** on the same peer (separate break causes).
 - `caused_by` names the changed `bgp_peer` via `delta_index`.
 
-Relevance-scoped **coverage notes** (→ REVIEW, never silent, never UNSAFE):
-- **ambiguous** `(device, neighbor_ip)` (same IP, 2+ sessions, differing attrs);
+Relevance-scoped **coverage notes** (→ REVIEW, never silent, never UNSAFE) — one per
+unresolved value-leaf, so a templated value can never collapse to a confident SAFE/
+classification:
+- **ambiguous** `(device, neighbor_ip)` (`ambiguous=True` — 2+ sessions, differing attrs);
 - **unresolved** neighbor-IP key (templated/non-literal) when delta-touched;
 - **AS-unresolved**: a retained peering whose `local_as`/`neighbor_as` token is
   templated and the token changed → can't compare (the GS27 metric-unresolved guard);
+- **type/transport-unresolved**: a retained peering whose `session_type`/`via` token
+  is templated/non-enum (`session_type_unresolved`/`via_unresolved` set) and changed →
+  can't decide → note;
 - **admin-state-unresolved**: a `disabled` value that is templated/non-boolean
   (`disabled_unresolved` set) and changed → can't decide active-ness → note.
 
@@ -173,6 +198,7 @@ class BgpNeighbor:
     device_id: str
     peer_ip: str
     state: str = ""                   # raw BGP state, e.g. "Established"
+    up: bool | None = None            # raw liveness flag when the payload carries one
     neighbor_as: int | None = None
     vrf: str | None = None
     meta: FactMeta = OBSERVED_META
@@ -183,14 +209,17 @@ build — likely `mac`→device, `peer_ip`/`neighbor`, `state`, `neighbor_as`,
 `vrf_name`, `up`). **Non-diff-bearing**, **non-load-bearing** (no validation),
 **self-isolating `BgpNeighborIngester`** (never flips `report.ok`); earns
 **`BGP_TELEMETRY`** only on fetch-success; carries `bgp_telemetry_unparsed_count`.
-`is_established(state)` normalizes the BGP up-state (`"Established"` / `up==true`,
-case-normalized — like GS27's lowercase `"full"` surprise; confirmed at build).
+**`is_established(n) = (n.up is True) or (n.state.strip().lower() == "established")`** —
+both `up` and `state` are represented so a payload that conveys liveness via the
+boolean (not the string) still escalates; a missed `up` would *under*-escalate a
+live session. Exact up-state string confirmed at build (GS27's lowercase `"full"`
+surprise).
 
 ### Escalation (escalate-only; baseline telemetry)
 **No reachability computation, no pure module.** The structural findings *are* the
 breaks; baseline telemetry confirms which were live:
 `established_baseline = {(n.device_id, n.peer_ip) for n in base_ir.bgp_neighbors if
-is_established(n.state)}` (only when **baseline** carries `BGP_TELEMETRY`). For each
+is_established(n)}` (only when **baseline** carries `BGP_TELEMETRY`). For each
 **session-breaking** finding (removed / disabled / as_changed / session_type_changed /
 transport_changed) on `(device, neighbor_ip)`, if that pair ∈ `established_baseline`
 → build it **ERROR / UNSAFE / HIGH**, naming the peer; **aggregate** all confirmed
@@ -230,24 +259,31 @@ prediction), there is essentially no blind-build risk in it.
 | session-breaking code, no live peer | WARNING | MED | REVIEW |
 | session-breaking code, **baseline-established** peer | ERROR | HIGH | UNSAFE |
 | `.peering_added` | WARNING | MED | REVIEW |
-| ambiguous / unresolved-IP / AS-unresolved / admin-state-unresolved (delta-touched) | — | — | PARTIAL note |
+| ambiguous / unresolved-IP / AS- / type-transport- / admin-state-unresolved (delta-touched) | — | — | PARTIAL note |
 | telemetry-blind **and** a session-breaking finding | — | — | PARTIAL note |
 | established peer not in modeled config (delta-touched device) | — | — | PARTIAL note |
 | `auth_key` / `networks` / timer edit | — | — | **UNKNOWN** (field gate denies) |
 
-**Edge cases:** `disabled` absent → False (schema default); `disabled` templated →
-`disabled_unresolved` + admin-state note; `.as_changed` + `.session_type_changed`
-co-fire; switch `via`=None (LAN implicit → no `.transport_changed` for switches);
-gateway-only peering minted from `gateway_effective` (not `site_effective`).
+**Edge cases:** `disabled` absent → False (schema default); `disabled`/`type`/`via`
+templated → the matching `*_unresolved` token + coverage note (no collapse, no
+misclassification); `absent → "{{type}}"`/`"{{transport}}"` yields a diff (not None==None);
+`.as_changed` + `.session_type_changed` co-fire; switch `via`=None (LAN implicit → no
+`.transport_changed` for switches); gateway-only peering minted from `gateway_effective`
+(not `site_effective`); telemetry liveness via `up==True` with empty/odd `state` still
+escalates.
 
 ## Testing
 
-- **Check unit tests:** each of the 6 codes; ambiguity guard; unresolved neighbor-IP
-  note; AS-unresolved templated-change note; admin-state-unresolved note; per-code
+- **Check unit tests:** each of the 6 codes; ambiguity guard (2 sessions, same IP,
+  differing attrs incl. admin-state → one `ambiguous` peer + note, no last-win);
+  unresolved neighbor-IP note; AS-unresolved templated-change note; **type/transport-
+  unresolved note** (`absent → "{{type}}"` and `via → "{{transport}}"` both yield a
+  diff + note, never collapse/misclassify); admin-state-unresolved note; per-code
   telemetry escalation (removed/disabled/as/type/transport → UNSAFE with established
-  peer); aggregation (2 broken peers → both named); `.peering_added` does NOT
-  escalate; telemetry-blind note (session-breaking only, not added); established-peer-
-  not-in-config note; `applies_to("bgp_peer")` precision; `disabled` default-False.
+  peer); **`up==True` with empty `state` escalates**; aggregation (2 broken peers →
+  both named); `.peering_added` does NOT escalate; telemetry-blind note (session-
+  breaking only, not added); established-peer-not-in-config note;
+  `applies_to("bgp_peer")` precision; `disabled` default-False.
 - **Self-isolating ingester test:** malformed telemetry → `report.ok` stays True,
   `BGP_TELEMETRY` earned, `bgp_telemetry_unparsed_count` reflects dropped rows
   (incl. partial).
