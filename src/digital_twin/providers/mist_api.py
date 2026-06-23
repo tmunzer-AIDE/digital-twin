@@ -27,9 +27,13 @@ from typing import Any
 
 import mistapi
 
+from digital_twin.contracts.finding import Finding, FindingCategory, FindingSource, Severity
+from digital_twin.ir import Confidence, ConfidenceLevel
+
 from .base import (
     FetchError,
     FetchFailure,
+    NacFetch,
     OrgScope,
     OrgTemplateContext,
     RawSiteState,
@@ -39,6 +43,17 @@ from .base import (
 )
 
 _Json = dict[str, Any]
+
+
+def _nactag_fetch_finding(error: str) -> Finding:
+    return Finding(
+        source=FindingSource.ADAPTER,
+        category=FindingCategory.OPERATIONAL,
+        code="nac.tags.fetch_failed",
+        severity=Severity.WARNING,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message=f"nactags fetch failed ({error}) — labels degraded to ids",
+    )
 
 
 def _now() -> datetime:
@@ -157,6 +172,21 @@ class MistApiProvider(StateProvider):
             if s.get("id") and str(s.get(id_field) or "") == template_id
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
+
+    def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+        try:
+            rules = mistapi.api.v1.orgs.nacrules.listOrgNacRules(self._session, scope.org_id).data
+        except Exception as e:  # noqa: BLE001 — errors-as-values at the boundary
+            return FetchError(scope=scope, failures=(FetchFailure("nacrules", str(e)),),
+                              acquired_at=datetime.now(UTC), host=self._host)
+        tag_findings: tuple[Finding, ...] = ()
+        try:
+            tags = mistapi.api.v1.orgs.nactags.listOrgNacTags(self._session, scope.org_id).data
+        except Exception as e:  # noqa: BLE001 — labels-only, NOT fatal
+            tags = []
+            tag_findings = (_nactag_fetch_finding(str(e)),)
+        return NacFetch(rules=tuple(rules or ()), tags=tuple(tags or ()),
+                        tag_findings=tag_findings)
 
     # -- shared per-site assembly ---------------------------------------------
     def _fetch_one(

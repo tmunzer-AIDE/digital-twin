@@ -23,6 +23,7 @@ from digital_twin.engine.run_context import RunContext
 from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
 from digital_twin.providers.base import (
     FetchError,
+    NacFetch,
     OrgScope,
     OrgTemplateContext,
     RawSiteState,
@@ -64,6 +65,9 @@ class _RecordingProvider:
         self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
         return self._inner.resolve_org_template(scope, template_id, object_type)
+
+    def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+        return self._inner.resolve_org_nac(scope)
 
 
 def _is_org_plan(plan_data: object) -> bool:
