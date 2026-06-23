@@ -1,9 +1,15 @@
 # GS27 — OSPF transit changes
 
-**Status:** Implemented — 2026-06-22 (built blind; live regression-only, the org has zero OSPF).
-Live note: the `site_ospf` endpoint 404s on the live org → currently read as "fetched empty"
+**Status:** Implemented — 2026-06-22 (built blind; live regression-only, the test org has zero OSPF).
+Live note: the `site_ospf` endpoint 404s on the test org → currently read as "fetched empty"
 (earns OSPF_TELEMETRY, zero peers). Never-false-SAFE (escalate-only), but a 404 should read
 telemetry-blind for coverage honesty — deferred follow-up (see ROADMAP GS27).
+**Field shape GROUNDED 2026-06-23** against a real `ospf_peers/search` record from an OSPF-bearing
+org: the blind-built `_row_to_neighbor` mapping is correct — live records carry lowercase
+`state` ("full", handled by case-normalized `is_established`), `vrf_name`, `mac`, `peer_ip`, and
+**NO `area`** (so live coverage matching is always subnet-only, the lenient/safe path). Pinned by
+`test_real_ospf_peers_payload_shape_parses`. (A full live simulate against an OSPF org is still
+deferred.)
 **Date:** 2026-06-22
 **Author:** brainstormed with the repo owner
 **Builds on:** GS26 (`wired.l3.ospf_withdrawal`, the `OspfIntf` IR entity) — see

@@ -67,3 +67,19 @@ def test_per_row_exception_is_isolated_and_counted():
     ]))
     assert out.report.ok                              # never fatal
     assert len(out.ir.ospf_neighbors) == 1 and out.ir.ospf_telemetry_unparsed_count == 1
+
+
+def test_real_ospf_peers_payload_shape_parses():
+    # GROUNDED against a REAL ospf_peers/search record (captured 2026-06-23). Live shape:
+    # lowercase state "full", vrf under `vrf_name`, and NO `area` key (-> subnet-only match).
+    from digital_twin.analysis.ospf_reachability import is_established
+    real = {"dead_time": 33, "timestamp": 1782219522.68, "vrf_name": "master",
+            "state": "full", "org_id": "x", "site_id": "y", "port_id": "irb.172",
+            "peer_ip": "10.3.172.3", "up": True, "priority": 128, "mac": "2093390f6200"}
+    out = MistAdapter().ingest(_raw([real]))
+    assert out.report.ok and IRCapability.OSPF_TELEMETRY in out.ir.capabilities
+    assert out.ir.ospf_telemetry_unparsed_count == 0
+    n = out.ir.ospf_neighbors[0]
+    assert n.peer_ip == "10.3.172.3" and n.state == "full" and n.vrf == "master"
+    assert n.area is None              # live payload omits area -> subnet-only match
+    assert is_established(n.state)     # lowercase "full" normalizes to established

@@ -236,7 +236,10 @@ modeling" below.
   defensive backstop; unevaluable (subnet→unresolved) and blind cases stay REVIEW
   notes, never UNSAFE. **Built blind** (the reachable org has zero OSPF) — proven by
   synthetic goldens; live regression-only. **Deferred follow-ups:** (a) ground/verify
-  the telemetry model on a real OSPF-bearing org; (b) the `site_ospf` endpoint **404s**
+  the telemetry model on a real OSPF-bearing org — PARTIAL: the `ospf_peers/search` record
+  shape was grounded 2026-06-23 (live records are lowercase `state`, carry `vrf_name`, omit
+  `area` → subnet-only matching; pinned by `test_real_ospf_peers_payload_shape_parses`); a
+  full live simulate against an OSPF org is still pending; (b) the `site_ospf` endpoint **404s**
   on the live org and is currently read as "fetched empty" (earns `OSPF_TELEMETRY`,
   zero peers) — never-false-SAFE under escalate-only, but a 404/endpoint-unavailable
   should read as telemetry-**blind** (no capability) for coverage honesty; (c) extract
