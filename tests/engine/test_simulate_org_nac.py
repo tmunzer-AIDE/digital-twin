@@ -204,3 +204,15 @@ def test_config_diff_empty_on_unknown():
                          provider=FakeProvider(nf))
     assert v.decision is Decision.UNKNOWN
     assert v.config_diffs == ()
+
+
+def test_config_diff_dropped_when_later_op_makes_plan_unknown():
+    # op-b accumulates a diff, then op-a (unallowlisted field) → UNKNOWN.
+    # The decision-gate must drop the accumulated diff: config_diffs == ().
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(
+        _plan(_op("update", "b", {"order": 0}, order=0),
+              _op("update", "a", {"guest_auth_state": "x"}, order=1)),
+        provider=FakeProvider(nf))
+    assert v.decision is Decision.UNKNOWN
+    assert v.config_diffs == ()
