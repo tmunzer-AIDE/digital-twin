@@ -264,10 +264,15 @@ modeling" below.
   committed `device_switch.schema.json` to include `bgp_config` (L0 permissive
   covers it for now); full live-simulate against a BGP-bearing org (test org has
   zero live BGP — `site_bgp` returns cleanly empty, unlike OSPF's 404).
-  Also landed: `scope/paths.py` `*` now matches 1+ path segments (BGP neighbors
-  are keyed by IP, whose literal dots expand to multiple path segments) — guarded
-  by a never-over-match regression test; `compile/switch.py` `_DEVICE_OWN_FIELDS`
-  gained `bgp_config` (device-level switch BGP simulable, symmetric with OSPF).
+  Also landed: `scope/paths.py` gained a `**` allowlist token (one-or-more path
+  segments) used ONLY in the two BGP neighbor patterns — BGP neighbors are keyed
+  by IP, whose literal dots expand to multiple path segments, so `*` (restored to
+  EXACTLY-one) couldn't match them; `**` is scoped to the neighbor-IP position so
+  no other domain over-matches (a final-review catch: a global greedy `*` had
+  over-matched real gatewaytemplate `dhcpd_config.*.options.*.type` /
+  `port_config.*.wan_source_nat.disabled` → false-SAFE; now denied, regression-
+  tested off the committed OAS). `compile/switch.py` `_DEVICE_OWN_FIELDS` gained
+  `bgp_config` (device-level switch BGP simulable, symmetric with OSPF).
 - 🔵 **WAN failover impact** (GS29, MVP: ROUTE-WAN) — WAN port removed from a
   gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
 - 🔵 **Security policy / NAC rule deltas** (GS34, MVP: SEC-POLICY, SEC-NAC) —

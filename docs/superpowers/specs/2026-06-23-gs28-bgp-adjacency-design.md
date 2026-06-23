@@ -7,9 +7,13 @@ returns cleanly EMPTY (no 404, unlike OSPF's `ospf_peers/search`), so
 genuine empty fetch, and no spurious BGP findings arise. The neighbor-record
 field mapping is grounded by `test_gs28_bgp_neighbor_field_mapping_real_shape`
 (re-confirm against a live paste when a BGP-bearing org is reachable).
-Two cross-cutting fixes landed during implementation: `scope/paths.py` `*` now
-matches 1+ segments (IP-keyed neighbor paths contain literal dots) — cleared as
-no-live-false-SAFE + guarded by a regression test; `compile/switch.py`
+Two cross-cutting fixes landed during implementation: `scope/paths.py` gained a
+`**` allowlist token (one-or-more segments) used ONLY in the two BGP neighbor
+patterns (IP-keyed neighbor paths contain literal dots); `*` stays EXACTLY-one so
+no other domain over-matches — the final whole-branch review caught that a global
+greedy `*` had over-matched real gatewaytemplate leaves
+(`dhcpd_config.*.options.*.type`, `port_config.*.wan_source_nat.disabled`) →
+false-SAFE; fixed + regression-tested off the committed OAS. `compile/switch.py`
 `_DEVICE_OWN_FIELDS` gained `bgp_config` so a device-level switch BGP edit is
 simulable (was a latent device-op false-SAFE), symmetric with OSPF.
 **Date:** 2026-06-23

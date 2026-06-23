@@ -5,7 +5,8 @@ IR actually models are in scope — networks carry 7 OAS leaves but the IR model
 only vlan_id; port_usages carry 42 but the IR consumes only the four VLAN-
 semantics attributes. Allowing a whole subtree would let an unmodeled change
 (networks.*.isolation) simulate as falsely "in scope". Entry syntax is
-scope.paths.matches: '*' = one key segment, trailing
+scope.paths.matches: '*' = exactly one key segment, '**' = one or more segments
+(only for dict keys that contain literal dots, e.g. BGP neighbor IPs), trailing
 '.*' = whole subtree, bare = exact leaf.
 """
 
