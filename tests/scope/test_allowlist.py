@@ -49,8 +49,8 @@ def test_ospf_allowlist_is_leaf_tightened():
         # modeled + acted-on leaves are in scope
         assert allowed("ospf_config.enabled", al)
         assert allowed("ospf_areas.0.networks.corp.passive", al)
-        # unmodeled leaves stay DENIED (GS27 owns them; deny prevents false-SAFE)
-        assert not allowed("ospf_areas.0.networks.corp.metric", al)
+        assert allowed("ospf_areas.0.networks.corp.metric", al)  # GS27-T1
+        # unmodeled leaves stay DENIED (deny prevents false-SAFE)
         assert not allowed("ospf_areas.0.type", al)
         assert not allowed("ospf_areas.0.networks.corp.auth_password", al)
         assert not allowed("ospf_areas.0.networks.corp.interface_type", al)

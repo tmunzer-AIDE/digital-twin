@@ -21,6 +21,7 @@ from digital_twin.adapters.mist.ingest.base import IngestContext, Ingester
 from digital_twin.adapters.mist.ingest.client_enrichment import ClientEnrichmentIngester
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
+from digital_twin.adapters.mist.ingest.ospf_neighbors import OspfNeighborIngester
 from digital_twin.adapters.mist.ingest.registry import IngesterRegistry, IngestReport
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
 from digital_twin.adapters.mist.ingest.wlan import WlanIngester
@@ -47,7 +48,7 @@ class MistAdapter:
             ingesters
             if ingesters is not None
             else [SwitchIngester(), LldpIngester(), ClientsIngester(), WlanIngester(),
-                  ClientEnrichmentIngester()]
+                  ClientEnrichmentIngester(), OspfNeighborIngester()]
         )
 
     def validate(

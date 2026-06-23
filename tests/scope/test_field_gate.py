@@ -281,3 +281,19 @@ def test_screen_op_networktemplate_rejects_switch_matching():
                   {"id": "nt1", "switch_matching": {"enable": True}},
                   {"id": "nt1", "switch_matching": {"enable": False}})
     assert r is not None  # switch_matching not allowlisted
+
+
+def test_ospf_metric_leaf_is_in_scope():
+    # GS27-T1: ospf_areas.*.networks.*.metric is now allowlisted on device
+    # (and site_setting); a metric-only change must not be rejected.
+    cur = {
+        **SWITCH_CUR,
+        "ospf_config": {"enabled": True},
+        "ospf_areas": {"0": {"networks": {"corp": {"passive": False}}}},
+    }
+    new = {
+        **SWITCH_CUR,
+        "ospf_config": {"enabled": True},
+        "ospf_areas": {"0": {"networks": {"corp": {"passive": False, "metric": 50}}}},
+    }
+    assert screen_op("device", cur, new) is None

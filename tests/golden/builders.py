@@ -410,12 +410,19 @@ OSPF_NETS = {  # name -> (vlan_id, subnet)
 
 
 def ospf_doc(
-    entries: dict[str, dict[str, Any]], *, client_vlan: int | None = None
+    entries: dict[str, dict[str, Any]],
+    *,
+    client_vlan: int | None = None,
+    ospf_neighbors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """HUB switch running OSPF. `entries` maps a name from OSPF_NETS to its
     ospf_areas network entry ({} = active, {"passive": True} = stub). Each named
     net gets a Vlan (with subnet) + an IRB on HUB (a routed segment). Optionally
-    place one observed wired client on `client_vlan`."""
+    place one observed wired client on `client_vlan`.
+
+    `ospf_neighbors`: when given (including an empty list), sets doc["ospf_neighbors"]
+    and appends "ospf_neighbors" to doc["meta"]["fetched"] so OSPF_TELEMETRY is
+    earned. When None (default), both are absent (telemetry-blind world)."""
     doc = fixture_doc()
     hub = _device(doc, HUB)
     # the redacted fixture left the HUB's remote_syslog full of blanked tokens
@@ -442,7 +449,123 @@ def ospf_doc(
         doc["wired_clients"] = list(doc["wired_clients"]) + [
             {"mac": WIRED_CLIENT_MAC, "device_mac": HUB, "port_id": hub_port, "vlan": client_vlan}
         ]
+    if ospf_neighbors is not None:
+        doc["ospf_neighbors"] = list(ospf_neighbors)
+        doc["meta"]["fetched"] = list(doc["meta"]["fetched"]) + ["ospf_neighbors"]
     return doc
+
+
+def ospf_subnet_op(
+    doc: dict[str, Any], net_name: str, proposed_subnet: str | None, *, order: int = 0
+) -> dict[str, Any]:
+    """A site_setting op that changes `networks.<net_name>.subnet` to `proposed_subnet`
+    (None -> omit the subnet key entirely, so the IR mints `Vlan.subnet_unresolved=True`).
+    The payload preserves ALL existing networks to avoid the root-replace trap: Mist
+    replaces the networks root wholesale, so omitting a network would delete it."""
+    site_id = doc["scope"]["site_id"]
+    # Copy all existing setting.networks, then mutate the target
+    existing = doc["setting"].get("networks") or {}
+    proposed_networks: dict[str, Any] = {k: dict(v) for k, v in existing.items()}
+    if net_name in proposed_networks:
+        entry = dict(proposed_networks[net_name])
+        if proposed_subnet is None:
+            entry.pop("subnet", None)
+        else:
+            entry["subnet"] = proposed_subnet
+        proposed_networks[net_name] = entry
+    return {
+        "action": "update",
+        "order": order,
+        "object_type": "site_setting",
+        "object_id": site_id,
+        "payload": {"networks": proposed_networks},
+    }
+
+
+# Synthetic ids for the minimal OSPF doc (no real fixture, no dynamic ports).
+GS27_ORG_ID = "org-gs27-tests"
+GS27_SITE_ID = "site-gs27-tests"
+GS27_HUB_MAC = "aa0027000001"
+GS27_HUB_ID = "sw-gs27-hub"
+
+
+def ospf_minimal_doc(
+    entries: dict[str, dict[str, Any]],
+    *,
+    ospf_neighbors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A MINIMAL single-switch doc for OSPF site_setting subnet-edit scenarios.
+    Unlike ospf_doc (which uses the real fixture and its dynamically-profiled
+    ports), this builds a synthetic site with a single HUB switch and NO other
+    devices, so a site_setting networks-root op never trips the dynamic-ports
+    honesty gate. `entries` maps a name from OSPF_NETS to its ospf_areas network
+    entry; `ospf_neighbors` works identically to ospf_doc's kwarg."""
+    fetched = [
+        "site", "setting", "devices", "device_stats", "port_stats",
+        "wireless_clients", "wired_clients",
+    ]
+    if ospf_neighbors is not None:
+        fetched.append("ospf_neighbors")
+
+    networks: dict[str, Any] = {}
+    other_ip_configs: dict[str, Any] = {}
+    networks_block: dict[str, Any] = {}
+    for name, entry in entries.items():
+        vid, subnet = OSPF_NETS[name]
+        networks[name] = {"vlan_id": vid, "subnet": subnet}
+        other_ip_configs[name] = {
+            "type": "static",
+            "ip": subnet.replace(".0/24", ".1"),
+            "netmask": "255.255.255.0",
+        }
+        networks_block[name] = entry
+
+    doc: dict[str, Any] = {
+        "redaction_version": 6,
+        "scope": {"org_id": GS27_ORG_ID, "site_id": GS27_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-22T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": fetched,
+            "failures": [],
+        },
+        "site": {
+            "id": GS27_SITE_ID, "org_id": GS27_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": None,
+        },
+        "setting": {"networks": networks, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GS27_HUB_MAC,
+                "id": GS27_HUB_ID,
+                "type": "switch",
+                "model": "EX2300-24P",
+                "ospf_config": {"enabled": True},
+                "ospf_areas": {"0": {"networks": networks_block}},
+                "other_ip_configs": other_ip_configs,
+                "port_config": {},
+            }
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+    if ospf_neighbors is not None:
+        doc["ospf_neighbors"] = list(ospf_neighbors)
+    return doc
+
+
+# ospf_minimal_doc and ospf_doc share the same scope.site_id + setting.networks shape,
+# so the subnet op is identical for both — alias for self-documenting call sites.
+ospf_minimal_subnet_op = ospf_subnet_op
 
 
 # --- MS: org networktemplate (multi-site) goldens -------------------------

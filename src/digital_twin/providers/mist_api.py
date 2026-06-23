@@ -255,6 +255,9 @@ class MistApiProvider(StateProvider):
             wired_clients=tuple(attempt("wired_clients", wired_clients_fn, [])),
             wlans=tuple(attempt("wlans", lambda: self._wlans(scope), [])),
             nac_clients=tuple(attempt("nac_clients", lambda: self._nac_clients(scope), [])),
+            ospf_neighbors=tuple(
+                attempt("ospf_neighbors", lambda: self._ospf_neighbors(scope), [])
+            ),
             org_networks=tuple(attempt("org_networks", lambda: self._org_networks(scope), [])),
             derived_setting=derived,
             meta=StateMeta(
@@ -365,6 +368,13 @@ class MistApiProvider(StateProvider):
         resp = mistapi.api.v1.orgs.nac_clients.searchOrgNacClients(
             self._session, s.org_id, site_id=s.site_id, duration="1d"
         )
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
+    def _ospf_neighbors(self, s: SiteScope) -> list[_Json]:
+        # OBSERVATIONAL OSPF adjacency telemetry (GS27). A failure is NON-FATAL —
+        # `attempt` records it in StateMeta.failures and the OspfNeighborIngester
+        # degrades to telemetry-blind, never UNKNOWN.
+        resp = mistapi.api.v1.sites.stats.searchSiteOspfStats(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _wlans(self, s: SiteScope) -> list[_Json]:
