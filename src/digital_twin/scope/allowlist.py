@@ -18,6 +18,17 @@ SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 # reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
 ORG_OBJECT_TYPES: tuple[str, ...] = ("networktemplate", "gatewaytemplate", "sitetemplate")
 
+# Org-level NAC rules (GS34). SEPARATE from SUPPORTED_OBJECT_TYPES (the site
+# whitelist, whose gate branch requires a site_id) and from ORG_OBJECT_TYPES
+# (which drives the per-site fan-out). Routed by its own gate branch + driver
+# predicate to simulate_org_nac.
+NAC_OBJECT_TYPES: tuple[str, ...] = ("nacrule",)
+
+_NAC_MATCH_DIMS: tuple[str, ...] = (
+    "auth_type", "port_types", "nactags", "site_ids", "sitegroup_ids",
+    "family", "mfg", "model", "os_type", "vendor",
+)
+
 # What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
 # + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
 # about cutting power to a powered device).
@@ -166,6 +177,15 @@ _WLAN_LEAVES: tuple[str, ...] = (
     "apply_to", "ap_ids", "wxtag_ids",
 )
 RAW_ALLOWLIST["wlan"] = _WLAN_LEAVES
+
+# nacrule leaves — exact, leaf-tightened (no matching.* subtree). List values are
+# atomic leaves (the path flattener treats lists atomically, as with ap_ids).
+# id/org_id/created_time/modified_time are dropped by IGNORED_RAW_FIELDS.
+RAW_ALLOWLIST["nacrule"] = (
+    "name", "order", "enabled", "action", "apply_tags",
+    *(f"matching.{d}" for d in _NAC_MATCH_DIMS),
+    *(f"not_matching.{d}" for d in _NAC_MATCH_DIMS),
+)
 
 RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
 # vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate
