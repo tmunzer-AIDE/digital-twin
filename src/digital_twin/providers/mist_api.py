@@ -258,6 +258,9 @@ class MistApiProvider(StateProvider):
             ospf_neighbors=tuple(
                 attempt("ospf_neighbors", lambda: self._ospf_neighbors(scope), [])
             ),
+            bgp_neighbors=tuple(
+                attempt("bgp_neighbors", lambda: self._bgp_neighbors(scope), [])
+            ),
             org_networks=tuple(attempt("org_networks", lambda: self._org_networks(scope), [])),
             derived_setting=derived,
             meta=StateMeta(
@@ -375,6 +378,12 @@ class MistApiProvider(StateProvider):
         # `attempt` records it in StateMeta.failures and the OspfNeighborIngester
         # degrades to telemetry-blind, never UNKNOWN.
         resp = mistapi.api.v1.sites.stats.searchSiteOspfStats(self._session, s.site_id)
+        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
+    def _bgp_neighbors(self, s: SiteScope) -> list[_Json]:
+        # OBSERVATIONAL BGP adjacency telemetry (GS28). Non-fatal: `attempt` records
+        # any failure in StateMeta.failures and BgpNeighborIngester degrades to blind.
+        resp = mistapi.api.v1.sites.stats.searchSiteBgpStats(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
 
     def _wlans(self, s: SiteScope) -> list[_Json]:

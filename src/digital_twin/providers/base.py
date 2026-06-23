@@ -79,6 +79,9 @@ class RawSiteState:
     # observed OSPF neighbor stats (GET /sites/{id}/stats/ospf_peers/search) — the
     # GS27 telemetry layer. Trailing + defaulted: absence is "not fetched".
     ospf_neighbors: tuple[JsonObj, ...] = ()
+    # observed BGP neighbor stats (GET /sites/{id}/stats/bgp_peers/search) — the
+    # GS28 telemetry layer. Trailing + defaulted: absence is "not fetched".
+    bgp_neighbors: tuple[JsonObj, ...] = ()
 
 
 @dataclass(frozen=True)

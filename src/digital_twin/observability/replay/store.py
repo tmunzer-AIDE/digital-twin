@@ -43,6 +43,7 @@ _RAW_FIELDS = (
     "gatewaytemplate",
     "nac_clients",
     "ospf_neighbors",
+    "bgp_neighbors",
 )
 
 
@@ -110,6 +111,7 @@ def load_fixture_doc(data: dict[str, Any]) -> RawSiteState:
         gatewaytemplate=data.get("gatewaytemplate"),  # .get: pre-gateway-site-templates fixtures
         nac_clients=tuple(data.get("nac_clients", ())),  # .get: pre-enrichment fixtures
         ospf_neighbors=tuple(data.get("ospf_neighbors", ())),  # .get: pre-GS27 fixtures
+        bgp_neighbors=tuple(data.get("bgp_neighbors", ())),  # .get: pre-GS28 fixtures
         meta=StateMeta(
             acquired_at=datetime.fromisoformat(meta["acquired_at"]).astimezone(UTC),
             host=meta["host"],

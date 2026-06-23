@@ -327,6 +327,25 @@ def test_legacy_template_key_still_resolves_as_networktemplate(tmp_path):
     assert set(resolved.assigned_site_ids) == {"siteA"}
 
 
+def test_bgp_neighbors_round_trip_and_default_when_absent(tmp_path):
+    from digital_twin.observability.replay.store import load_fixture_doc
+
+    # _site_doc writes via ReplayStore (redacted) and parses back to a dict —
+    # the exact shape load_fixture_doc expects.
+    store = ReplayStore(tmp_path)
+    doc = _site_doc(store, "bgp1", raw_site())
+
+    # a doc WITHOUT bgp_neighbors still loads (pre-GS28 fixtures)
+    doc.pop("bgp_neighbors", None)
+    assert load_fixture_doc(doc).bgp_neighbors == ()
+
+    # a doc WITH bgp_neighbors round-trips (state field is not redacted)
+    doc["bgp_neighbors"] = [{"mac": "aa", "peer_ip": "10.0.0.2", "state": "Established"}]
+    state = load_fixture_doc(doc)
+    assert len(state.bgp_neighbors) == 1
+    assert state.bgp_neighbors[0]["peer_ip"] == "10.0.0.2"
+
+
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):
     from digital_twin.observability.trace import Trace
 
