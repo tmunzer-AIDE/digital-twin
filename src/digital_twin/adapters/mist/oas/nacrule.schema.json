@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "org_id": {"type": "string"},
+    "name": {"type": "string"},
+    "order": {"type": "integer"},
+    "enabled": {"type": "boolean"},
+    "action": {"type": "string", "enum": ["allow", "block"]},
+    "matching": {"type": "object"},
+    "not_matching": {"type": "object"},
+    "apply_tags": {"type": "array", "items": {"type": "string"}},
+    "created_time": {"type": "number"},
+    "modified_time": {"type": "number"}
+  },
+  "required": ["name", "action"]
+}
