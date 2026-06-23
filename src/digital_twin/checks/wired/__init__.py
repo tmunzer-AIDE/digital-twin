@@ -2,6 +2,7 @@
 
 from digital_twin.checks.base import Check
 
+from .bgp_adjacency import BgpAdjacencyCheck
 from .client_impact import ClientImpactCheck
 from .dhcp_path import DhcpPathCheck
 from .gateway_gap import GatewayGapCheck
@@ -33,6 +34,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     StpRootChangeCheck(),
     GatewayGapCheck(),
     OspfWithdrawalCheck(),
+    BgpAdjacencyCheck(),
     DhcpPathCheck(),
     DhcpScopeLintCheck(),
     DhcpSnoopingCheck(),
@@ -46,6 +48,7 @@ ALL_WIRED_CHECKS: list[Check] = [
 
 __all__ = [
     "ALL_WIRED_CHECKS",
+    "BgpAdjacencyCheck",
     "ClientImpactCheck",
     "SubnetOverlapCheck",
     "VlanCollisionCheck",
