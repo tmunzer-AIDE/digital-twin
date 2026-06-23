@@ -245,15 +245,29 @@ modeling" below.
   should read as telemetry-**blind** (no capability) for coverage honesty; (c) extract
   the telemetry layer (`run()` sections 7–8) into a `_apply_telemetry` helper.
   Spec/plan: `docs/superpowers/{specs,plans}/2026-06-22-gs27-ospf-transit-changes*.md`.
-- 🔵 **BGP adjacency break** (GS28, MVP: ROUTE-BGP) — `bgp_config` on SWITCHES
-  too, and NOT only in EVPN/campus-fabric deployments: a standalone L3 switch
-  can run plain BGP (peering to a router/firewall/upstream) with no fabric at
-  all. Cases: fabric underlay/overlay peers, standalone switch BGP, gateway
-  WAN peers. Removing a neighbor that carries the peering or the default
-  route → UNSAFE; with live telemetry: peer IPs vs predicted subnets. NOTE:
-  the committed `device_switch.schema.json` snapshot has
-  ospf_areas/ospf_config but NO `bgp_config` — refresh the OAS snapshot when
-  this lands, or switch-BGP plans will fail/act unvalidated at L0.
+- ✅ **BGP adjacency break** (GS28, ROUTE-BGP) — DONE 2026-06-23. Role-aware
+  `BgpPeer` IR entity minted for SWITCHES **and** gateways (switch via
+  site_setting/networktemplate/device-own; gateway via `gatewaytemplate` →
+  `gateway_effective` materialize). Check `wired.l3.bgp_adjacency`: six
+  structural codes (`.peering_removed`/`.peering_disabled`/`.peering_added`/
+  `.as_changed`/`.session_type_changed`/`.transport_changed`) at REVIEW, plus
+  an escalate-only telemetry layer (`BgpNeighbor` from `org_bgp`/`site_bgp`,
+  `BGP_TELEMETRY`) that raises a session-breaking change on a **baseline-
+  established** peer to UNSAFE via a DIRECT peer-IP set lookup (config carries
+  the neighbor IP — no subnet prediction). `auth_key` (secret) + `networks`
+  (advertised prefixes) + timers DENIED → UNKNOWN. The OAS-refresh NOTE was a
+  non-issue: every committed schema is top-level permissive and `gatewaytemplate`
+  defines `bgp_config`, so a bgp edit never fatals at L0.
+  Deferred follow-ups: advertised-prefix (`networks`) BGP checking; auth_key-
+  bearing-neighbor-removal sharpness (→ UNKNOWN today); VRF-scoped peer identity;
+  gateway device-op BGP (still UNKNOWN — M1 field-gate switch-only); refresh the
+  committed `device_switch.schema.json` to include `bgp_config` (L0 permissive
+  covers it for now); full live-simulate against a BGP-bearing org (test org has
+  zero live BGP — `site_bgp` returns cleanly empty, unlike OSPF's 404).
+  Also landed: `scope/paths.py` `*` now matches 1+ path segments (BGP neighbors
+  are keyed by IP, whose literal dots expand to multiple path segments) — guarded
+  by a never-over-match regression test; `compile/switch.py` `_DEVICE_OWN_FIELDS`
+  gained `bgp_config` (device-level switch BGP simulable, symmetric with OSPF).
 - 🔵 **WAN failover impact** (GS29, MVP: ROUTE-WAN) — WAN port removed from a
   gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
 - 🔵 **Security policy / NAC rule deltas** (GS34, MVP: SEC-POLICY, SEC-NAC) —

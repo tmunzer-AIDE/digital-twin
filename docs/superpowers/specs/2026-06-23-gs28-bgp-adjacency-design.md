@@ -1,6 +1,17 @@
 # GS28 — BGP adjacency break
 
-**Status:** design — pending user review
+**Status:** Implemented — 2026-06-23 (11 tasks, subagent-driven, full gate green).
+Live regression verify: the test org has zero live BGP — `searchSiteBgpStats`
+returns cleanly EMPTY (no 404, unlike OSPF's `ospf_peers/search`), so
+`bgp_neighbors` lands in `state_meta.fetched`, `BGP_TELEMETRY` is earned on a
+genuine empty fetch, and no spurious BGP findings arise. The neighbor-record
+field mapping is grounded by `test_gs28_bgp_neighbor_field_mapping_real_shape`
+(re-confirm against a live paste when a BGP-bearing org is reachable).
+Two cross-cutting fixes landed during implementation: `scope/paths.py` `*` now
+matches 1+ segments (IP-keyed neighbor paths contain literal dots) — cleared as
+no-live-false-SAFE + guarded by a regression test; `compile/switch.py`
+`_DEVICE_OWN_FIELDS` gained `bgp_config` so a device-level switch BGP edit is
+simulable (was a latent device-op false-SAFE), symmetric with OSPF.
 **Date:** 2026-06-23
 **Author:** brainstormed with the repo owner
 **Builds on:** the GS27 OSPF pattern (`wired.l3.ospf_withdrawal`, `OspfNeighbor`,
