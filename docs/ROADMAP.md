@@ -236,9 +236,7 @@ modeling" below.
   this lands, or switch-BGP plans will fail/act unvalidated at L0.
 - 🔵 **WAN failover impact** (GS29, MVP: ROUTE-WAN) — WAN port removed from a
   gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
-- 🔵 **Security policy / NAC rule deltas** (GS34, MVP: SEC-POLICY, SEC-NAC) —
-  new object types (out-of-scope → UNKNOWN today); first step is honest diff
-  REPORTING of additions/removals/changes, before any impact modeling.
+- ✅ **Org NAC rules** (GS34) — wired→nac: honest delta-reporting (`nac.rule.change`) + provable-superset shadowing (`nac.rule.shadowed`) via a dedicated `simulate_org_nac` path; decision range SAFE/REVIEW/UNKNOWN (no impact modeling yet).
 
 ## 3. New scope — more fields / objects / sites
 
