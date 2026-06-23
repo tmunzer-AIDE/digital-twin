@@ -146,6 +146,24 @@ isolation) correctly NOT flagged; ingest clean.
   unmodeled churn so GS33 runs; a pure auth change with no type change stays
   UNKNOWN. (Decide the psk→eap-reads-SAFE edge before building.)
 
+- 🔵 **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`,
+  proposed) — on a switch's effective config, if **at least one ASSIGNED port profile
+  uses 802.1X and/or MAC-auth (MAB)**, then **at least one RADIUS server OR Mist NAC
+  must be configured**; otherwise authenticating clients are denied/dropped (no
+  authenticator to reach). Single-state config-lint over the PROPOSED IR, **delta-
+  conditioned** via `run_delta_lint` (introduced = a profile gains dot1x/MAB while no
+  RADIUS/NAC exists, OR the last RADIUS/NAC is removed while a dot1x/MAB profile stays
+  assigned → WARNING/REVIEW; pre-existing → INFO context). **Assigned** is load-bearing:
+  a dot1x/MAB profile that no port uses must NOT fire (mirrors GS33's explicit-empty-scope
+  rule). Coverage note (PARTIAL → REVIEW, never false-SAFE) when the auth mode or the
+  RADIUS/NAC presence is unresolved (templated `{{var}}` server list / unparseable
+  profile). **Modeling gap to close first:** the IR does not yet carry port-profile auth
+  mode (dot1x / `enable_mac_auth`) nor the switch's authenticator config (site/template
+  `radius_config`/`auth_servers` + Mist-NAC enablement) — both need ingest + allowlist
+  leaves (secret-free: RADIUS shared secrets stay denied/redacted, presence-only). Severity
+  is REVIEW (config-certain misconfig, client-impact unconfirmed without observed auth
+  telemetry); a future telemetry layer (failed-auth events) could escalate.
+
 ### Routing & services tier (needs the L3/routing IR extension)
 
 Today every plan touching these resolves to UNKNOWN by default-deny (test
