@@ -1056,6 +1056,33 @@ def test_unresolved_type_change_is_note_not_confident_change():
                _ir([_peer(session_type=None, session_type_unresolved="{{t}}")]))
     assert "wired.l3.bgp_adjacency.session_type_changed" not in _codes(res)
     assert res.coverage.notes
+
+
+def test_ambiguous_on_either_side_abstains():
+    # baseline ambiguous -> proposed clean: must STILL abstain (no confident as_changed)
+    res1 = _run(_ir([_peer(ambiguous=True, neighbor_as=65001)]),
+                _ir([_peer(ambiguous=False, neighbor_as=65002)]))
+    assert "wired.l3.bgp_adjacency.as_changed" not in _codes(res1)
+    assert res1.coverage.notes
+    # baseline clean -> proposed ambiguous: also abstain
+    res2 = _run(_ir([_peer(ambiguous=False, neighbor_as=65001)]),
+                _ir([_peer(ambiguous=True, neighbor_as=65002)]))
+    assert "wired.l3.bgp_adjacency.as_changed" not in _codes(res2)
+    assert res2.coverage.notes
+
+
+def test_added_with_templated_local_as_is_note_not_confident_add():
+    res = _run(_ir([]),
+               _ir([_peer(local_as=None, local_as_unresolved="{{asn}}", neighbor_as=65001)]))
+    assert "wired.l3.bgp_adjacency.peering_added" not in _codes(res)
+    assert res.coverage.notes
+
+
+def test_switch_via_diff_is_silent():
+    # a via difference on a SWITCH peer must NOT emit .transport_changed (switches are LAN)
+    res = _run(_ir([_peer(via="lan")]), _ir([_peer(via="wan")]))
+    assert "wired.l3.bgp_adjacency.transport_changed" not in _codes(res)
+    assert not res.findings
 ```
 Confirm the real import path for building an `AnalysisContext` from an IR (the OSPF tests use the same harness — grep `tests/checks/wired/` for how an existing check test constructs `CheckContext`, and copy that exact helper/import).
 
@@ -1100,6 +1127,7 @@ from digital_twin.ir import (
     Capability,
     Confidence,
     ConfidenceLevel,
+    DeviceRole,
     IRCapability,
     IRDiff,
     min_confidence,
@@ -1160,17 +1188,18 @@ class BgpAdjacencyCheck:
                 caused_by=_caused_by(p),
             )
 
-        def _note_if_fuzzy(p: BgpPeer, other: BgpPeer | None = None) -> bool:
-            """Emit a coverage note for an ambiguous/unresolved/templated peer; return
-            True if a note fired (caller then skips confident findings on it)."""
-            if p.ambiguous:
-                notes.append(f"BGP peer {p.neighbor_ip} on {p.device_id} is claimed by "
-                             "multiple sessions with differing attributes — change "
-                             "detection skipped")
+        def _note_if_fuzzy(did: str, nip: str, b: BgpPeer | None, p: BgpPeer | None) -> bool:
+            """Emit a coverage note if EITHER side is ambiguous/unresolved, and return
+            True so the caller skips confident compare AND telemetry escalation on this
+            peer. Checking both sides is load-bearing: a baseline-ambiguous peer that
+            becomes clean (or vice-versa) must still abstain (spec §2)."""
+            if (b is not None and b.ambiguous) or (p is not None and p.ambiguous):
+                notes.append(f"BGP peer {nip} on {did} is claimed by multiple sessions with "
+                             "differing attributes — change detection skipped")
                 return True
-            if p.unresolved:
-                notes.append(f"BGP peer key {p.neighbor_ip!r} on {p.device_id} is not a "
-                             "literal IP — peering change impact cannot be verified")
+            if (b is not None and b.unresolved) or (p is not None and p.unresolved):
+                notes.append(f"BGP peer key {nip!r} on {did} is not a literal IP — peering "
+                             "change impact cannot be verified")
                 return True
             return False
 
@@ -1178,9 +1207,7 @@ class BgpAdjacencyCheck:
         for key in all_keys:
             b, p = base.get(key), prop.get(key)
             did, nip = key
-            cur = p or b
-            assert cur is not None
-            if _note_if_fuzzy(cur):
+            if _note_if_fuzzy(did, nip, b, p):
                 continue
             b_active = b is not None and _active(b)
             p_active = p is not None and _active(p)
@@ -1198,10 +1225,11 @@ class BgpAdjacencyCheck:
                 continue
             # added / enabled (not active -> active)
             if not b_active and p_active:
-                # require literal identity + resolved ASN for a confident add
-                if p.neighbor_as_unresolved is not None:
-                    notes.append(f"BGP peer {nip} on {did} added with a templated neighbor "
-                                 "AS — new-peering details unverifiable")
+                # require literal identity + resolved ASN (BOTH local and neighbor) for a
+                # confident add — else a coverage note, never a confident .peering_added
+                if p.neighbor_as_unresolved is not None or p.local_as_unresolved is not None:
+                    notes.append(f"BGP peer {nip} on {did} added with a templated AS "
+                                 "— new-peering details unverifiable")
                     continue
                 findings.append(_mk("peering_added", p,
                     f"BGP peering to {nip} on {did} is newly added — a new session shifts "
@@ -1237,14 +1265,18 @@ class BgpAdjacencyCheck:
                         f"BGP peering to {nip} on {did} changed type {b.session_type}->"
                         f"{p.session_type} (iBGP/eBGP) — the session must re-establish",
                         {"base_type": b.session_type, "proposed_type": p.session_type}))
-                # transport (gateway via)
-                if b.via_unresolved != p.via_unresolved:
-                    notes.append(f"BGP peer {nip} on {did} has a templated transport on one "
-                                 "side — transport-change impact unverifiable")
-                elif b.via != p.via:
-                    findings.append(_mk("transport_changed", p,
-                        f"BGP peering to {nip} on {did} changed transport {b.via}->{p.via} "
-                        "— the session path changed", {"base_via": b.via, "proposed_via": p.via}))
+                # transport (gateway via) — role-gated: switches are implicitly LAN and
+                # have no transport dimension; never rely on field-gate invariants in a
+                # pure check (p.role == b.role, same device).
+                if p.role is DeviceRole.GATEWAY:
+                    if b.via_unresolved != p.via_unresolved:
+                        notes.append(f"BGP peer {nip} on {did} has a templated transport on "
+                                     "one side — transport-change impact unverifiable")
+                    elif b.via != p.via:
+                        findings.append(_mk("transport_changed", p,
+                            f"BGP peering to {nip} on {did} changed transport {b.via}->{p.via} "
+                            "— the session path changed",
+                            {"base_via": b.via, "proposed_via": p.via}))
                 # admin-state token (disabled templated on one side, value otherwise equal)
                 if b.disabled_unresolved != p.disabled_unresolved:
                     notes.append(f"BGP peer {nip} on {did} has a templated admin-state on "
