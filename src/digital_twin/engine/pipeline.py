@@ -504,6 +504,7 @@ def simulate_org_plan(
     org_scope = OrgScope(org_id=plan.scope.org_id)
     overlays: list[OrgOverlay] = []
     template_findings: list[Finding] = []
+    org_diffs: list[ObjectConfigDiff] = []
     for i, op in enumerate(plan.ops):
         resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
         # P3: thread template_findings through EVERY short-circuit so earlier ops'
@@ -541,6 +542,10 @@ def simulate_org_plan(
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
             baseline=snapshot, proposed=proposed,
         ))
+        org_diffs.append(object_config_diff(
+            object_type=op.object_type, object_id=op.object_id,
+            name=snapshot.get("name"), action=op.action,
+            before=snapshot, after=proposed))
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
@@ -552,7 +557,8 @@ def simulate_org_plan(
         )
         return OrgVerdict(decision=decision, decision_reasons=reasons, changes=tuple(changes),
             per_site={}, driving_sites=driving, site_failures={},
-            template_findings=tf, org_rejections=())
+            template_findings=tf, org_rejections=(),
+            config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else ())
 
     raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
@@ -596,6 +602,7 @@ def simulate_org_plan(
         decision=decision, decision_reasons=reasons, changes=tuple(changes),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
         template_findings=tf, org_rejections=(),
+        config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else (),
     )
 
 
