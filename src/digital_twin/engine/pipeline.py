@@ -340,6 +340,7 @@ def simulate(
     # object (Mist root-level update semantics: present roots replace, omitted
     # roots persist, "-attr" deletes), L0-validate it, field-gate it, apply.
     proposed_raw = raw
+    site_diffs: list[ObjectConfigDiff] = []
     with trace.stage("l0+scope.post+apply", note=f"{len(plan.ops)} op(s)"):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
@@ -394,6 +395,10 @@ def simulate(
                     run=run,
                     state_meta=state_meta,
                 )
+            site_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=current.get("name"), action=op.action,
+                before=current, after=effective))
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return _unknown(
@@ -436,12 +441,15 @@ def simulate(
                 state_meta=state_meta, baseline_unavailable=True,
             )
 
-    return _simulate_site_state(
+    verdict = _simulate_site_state(
         raw, proposed_raw,
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
         profile_proposed=profile_proposed,
     )
+    if verdict.decision is not Decision.UNKNOWN:
+        verdict = replace(verdict, config_diffs=tuple(site_diffs))
+    return verdict
 
 
 def simulate_org_plan(
