@@ -268,6 +268,11 @@ class OspfIntf:
     area: str = "0"
     network_name: str = ""
     passive: bool = False
+    metric: int | None = None        # OSPF cost; None = absent OR present-but-unparseable
+    # raw metric token when present-but-unparseable (templated/garbage), else None. Carried
+    # SEPARATELY from `metric` (and diff-bearing) so an absent->templated or templated->other
+    # metric edit produces a diff — else it collapses to metric=None==None -> false-SAFE.
+    metric_unresolved: str | None = None
     unresolved: bool = False
     meta: FactMeta = CONFIG_META
     id: str = ""  # auto-derived in __post_init__ if empty
@@ -277,6 +282,27 @@ class OspfIntf:
             object.__setattr__(
                 self, "id", f"{self.device_id}:ospf:{self.area}:{self.network_name}"
             )
+
+
+@dataclass(frozen=True)
+class OspfNeighbor:
+    """OBSERVATIONAL live OSPF adjacency (site_ospf stats). Evidence/escalation
+    input only: NOT in diff_ir, no strict IR validation. `area=None` means the
+    telemetry omitted the area -> the reachability join matches on subnet only."""
+
+    device_id: str
+    peer_ip: str
+    area: str | None = None
+    state: str = ""                       # raw Mist state, e.g. "Full"
+    vrf: str | None = None
+    neighbor_router_id: str | None = None
+    meta: FactMeta = OBSERVED_META
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            area_key = self.area or "*"
+            object.__setattr__(self, "id", f"{self.device_id}:ospfnbr:{area_key}:{self.peer_ip}")
 
 
 @dataclass(frozen=True)

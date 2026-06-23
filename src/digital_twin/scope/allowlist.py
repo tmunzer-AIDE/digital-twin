@@ -114,6 +114,7 @@ _SNOOPING_LEAVES: tuple[str, ...] = (
 _OSPF_LEAVES: tuple[str, ...] = (
     "ospf_config.enabled",
     "ospf_areas.*.networks.*.passive",
+    "ospf_areas.*.networks.*.metric",
 )
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"

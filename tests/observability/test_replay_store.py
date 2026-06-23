@@ -55,6 +55,21 @@ def test_wlans_round_trip_and_default_when_absent(tmp_path):
     assert load_fixture_raw(legacy).wlans == ()
 
 
+def test_ospf_neighbors_round_trip_and_default_when_absent(tmp_path):
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("run1", raw_site(ospf_neighbors=(
+        {"mac": "001122334455", "peer_ip": "10.0.0.5", "area": "0", "state": "Full"},)))
+    raw = load_fixture_raw(path)
+    # assert on `state` (redaction remaps mac/peer_ip on save; state survives unchanged)
+    assert raw.ospf_neighbors and raw.ospf_neighbors[0]["state"] == "Full"
+    # a fixture predating GS27 (no "ospf_neighbors" key) loads as empty, not a crash
+    data = json.loads(path.read_text())
+    del data["ospf_neighbors"]
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps(data))
+    assert load_fixture_raw(legacy).ospf_neighbors == ()
+
+
 def test_fixture_provider_serves_matching_scope(tmp_path):
     store = ReplayStore(tmp_path)
     path = store.save_raw("run1", raw_site())

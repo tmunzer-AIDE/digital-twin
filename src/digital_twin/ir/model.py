@@ -8,7 +8,7 @@ are read-only proxies; never mutate after build().
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -27,6 +27,7 @@ from .entities import (
     NacRule,
     NacTag,
     OspfIntf,
+    OspfNeighbor,
     Port,
     Vlan,
     Wlan,
@@ -69,6 +70,10 @@ class IR:
     client_enrichment: Mapping[str, ClientEnrichment] = _EMPTY_MAP  # type: ignore[assignment]
     nacrules: tuple[NacRule, ...] = ()
     nactags: tuple[NacTag, ...] = ()
+    # OBSERVATIONAL live OSPF adjacencies (site_ospf stats). Evidence/escalation
+    # input only: NOT in diff_ir, no strict IR validation. Defaulted: absence = no telemetry.
+    ospf_neighbors: tuple[OspfNeighbor, ...] = ()
+    ospf_telemetry_unparsed_count: int = 0
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -103,6 +108,8 @@ class IRBuilder:
         self._nacrule_ids: set[str] = set()
         self._nactags: list[NacTag] = []
         self._nactag_ids: set[str] = set()
+        self._ospf_neighbors: list[OspfNeighbor] = []
+        self._ospf_unparsed = 0
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -195,6 +202,15 @@ class IRBuilder:
         (not merging) keeps 'broken enrichment == no enrichment': a partial map is never
         observed."""
         self._client_enrichment = dict(enrichment)
+        return self
+
+    def set_ospf_neighbors(
+        self, neighbors: Iterable[OspfNeighbor], unparsed_count: int = 0
+    ) -> IRBuilder:
+        """Publish OBSERVATIONAL live OSPF adjacencies atomically. NOT validated in
+        build() — a bad neighbor must never fail the IR (non-load-bearing)."""
+        self._ospf_neighbors = list(neighbors)
+        self._ospf_unparsed = unparsed_count
         return self
 
     # -- lookups / mutation used by ingesters (pre-build) ----------------------
@@ -381,4 +397,6 @@ class IRBuilder:
             client_enrichment=MappingProxyType(dict(self._client_enrichment)),
             nacrules=tuple(self._nacrules),
             nactags=tuple(self._nactags),
+            ospf_neighbors=tuple(self._ospf_neighbors),
+            ospf_telemetry_unparsed_count=self._ospf_unparsed,
         )

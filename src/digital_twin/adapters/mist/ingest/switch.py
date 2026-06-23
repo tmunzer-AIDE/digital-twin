@@ -62,6 +62,17 @@ def _vlan_int(value: Any) -> int | None:
         return None
 
 
+def _metric_int(value: Any) -> int | None:
+    """OSPF metric -> int or None (templated/unparseable/absent -> None)."""
+    if isinstance(value, bool) or value is None:
+        return None  # bool is an int subclass; reject before int() coerces True->1
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _literal_subnet(value: Any) -> str | None:
     """A subnet still carrying '{{vars}}' is unresolved intent — not a fact."""
     if not value or "{{" in str(value):
@@ -765,6 +776,13 @@ class SwitchIngester:
             for name, ncfg in ((area_cfg or {}).get("networks") or {}).items():
                 ncfg = ncfg or {}
                 vid = _vlan_int((networks.get(str(name)) or {}).get("vlan_id"))
+                raw_metric = ncfg.get("metric")
+                metric = _metric_int(raw_metric)
+                # raw token ONLY when present-but-unparseable (so absent stays None);
+                # diff-bearing -> an absent->templated metric edit is not an empty diff.
+                metric_unresolved = (
+                    str(raw_metric) if (raw_metric is not None and metric is None) else None
+                )
                 ctx.builder.add_ospf_intf(
                     OspfIntf(
                         device_id=did,
@@ -772,6 +790,8 @@ class SwitchIngester:
                         area=str(area),
                         network_name=str(name),
                         passive=bool(ncfg.get("passive", False)),
+                        metric=metric,
+                        metric_unresolved=metric_unresolved,
                         unresolved=(vid is None),
                     )
                 )
