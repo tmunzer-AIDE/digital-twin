@@ -1,0 +1,161 @@
+[
+  {
+    "id": "r0",
+    "name": "================",
+    "order": 0,
+    "enabled": true,
+    "action": "block",
+    "matching": {},
+    "apply_tags": []
+  },
+  {
+    "id": "r1",
+    "name": "Wi-Fi TEAP - STA",
+    "order": 1,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "eap-teap",
+      "port_types": ["wireless"],
+      "nactags": ["t0"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r2",
+    "name": "Wi-Fi TLS MIC - STA",
+    "order": 2,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wireless"],
+      "nactags": ["t0", "t1"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r3",
+    "name": "Wi-Fi TLS MINC - STA",
+    "order": 3,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wireless"],
+      "nactags": ["t0", "t2"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r4",
+    "name": "Wi-Fi TLS - STA",
+    "order": 4,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wireless"],
+      "nactags": ["t0"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r5",
+    "name": "Wi-Fi TLS - Corporate",
+    "order": 5,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wireless"],
+      "nactags": ["t3", "t4", "t5"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r6",
+    "name": "================",
+    "order": 6,
+    "enabled": false,
+    "action": "block",
+    "matching": {},
+    "apply_tags": []
+  },
+  {
+    "id": "r7",
+    "name": "Wired MAB - AP Staging",
+    "order": 7,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "mab",
+      "port_types": ["wired"],
+      "nactags": ["t6"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r8",
+    "name": "Wired TLS - AP Prod",
+    "order": 8,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wired"],
+      "nactags": ["t7"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r9",
+    "name": "Wired TLS - Corp",
+    "order": 9,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "cert",
+      "port_types": ["wired"],
+      "nactags": ["t8"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r10",
+    "name": "Wired MAB - SRV",
+    "order": 10,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "mab",
+      "port_types": ["wired"],
+      "nactags": ["t9"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r11",
+    "name": "Wired MAB - STA",
+    "order": 11,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "auth_type": "mab",
+      "port_types": ["wired"],
+      "nactags": ["t10"]
+    },
+    "apply_tags": []
+  },
+  {
+    "id": "r12",
+    "name": "Default-Wired",
+    "order": 12,
+    "enabled": true,
+    "action": "allow",
+    "matching": {
+      "port_types": ["wired"]
+    },
+    "apply_tags": []
+  }
+]
