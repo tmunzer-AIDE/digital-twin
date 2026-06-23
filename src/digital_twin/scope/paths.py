@@ -27,22 +27,40 @@ position and must NOT be used elsewhere.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 _MISSING = object()
 
 
-def changed_leaf_paths(
-    current: Mapping[str, Any],
-    new: Mapping[str, Any],
-    ignore_top: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    out: list[str] = []
+@dataclass(frozen=True)
+class LeafDelta:
+    path: str
+    kind: str  # "added" | "removed" | "changed"
+    before: Any
+    after: Any
+
+
+def leaf_changes(
+    current: Mapping[str, Any], new: Mapping[str, Any], ignore_top: tuple[str, ...] = (),
+) -> tuple[LeafDelta, ...]:
+    """Every LEAF that differs between two mappings, WITH its raw before/after.
+    Same traversal/semantics as changed_leaf_paths (null==absent, descended
+    add/removed subtrees, atomic lists); sorted by path for determinism."""
+    out: list[LeafDelta] = []
     _walk(dict(current), dict(new), "", out, ignore_top)
-    return tuple(sorted(out))
+    return tuple(sorted(out, key=lambda d: d.path))
 
 
-def _walk(cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, ...]) -> None:
+def changed_leaf_paths(
+    current: Mapping[str, Any], new: Mapping[str, Any], ignore_top: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Dot-paths of every leaf that differs — now derived from leaf_changes so the
+    field gate and the config diff share ONE definition of 'what changed'."""
+    return tuple(d.path for d in leaf_changes(current, new, ignore_top))
+
+
+def _walk(cur: Any, new: Any, path: str, out: list[LeafDelta], ignore_top: tuple[str, ...]) -> None:
     if isinstance(cur, dict) and isinstance(new, dict):
         for key in sorted(set(cur) | set(new)):
             if not path and key in ignore_top:
@@ -52,18 +70,20 @@ def _walk(cur: Any, new: Any, path: str, out: list[str], ignore_top: tuple[str, 
             # null == absent (Mist PUT semantics, same canon as compile equivalence)
             if cv is _MISSING and nv is None or nv is _MISSING and cv is None:
                 continue
-            # descend into an added/removed SUBTREE so its leaves gate individually
+            # descend into an added/removed SUBTREE so its leaves surface individually
             if cv is _MISSING and isinstance(nv, dict):
                 cv = {}
             if nv is _MISSING and isinstance(cv, dict):
                 nv = {}
-            if cv is _MISSING or nv is _MISSING:
-                out.append(sub)  # scalar/list added or removed = changed (PUT semantics)
+            if cv is _MISSING:
+                out.append(LeafDelta(sub, "added", None, nv))  # scalar/list added
+            elif nv is _MISSING:
+                out.append(LeafDelta(sub, "removed", cv, None))  # scalar/list removed
             else:
                 _walk(cv, nv, sub, out, ignore_top)
         return
     if _normalized(cur) != _normalized(new):
-        out.append(path)
+        out.append(LeafDelta(path, "changed", cur, new))
 
 
 def _normalized(value: Any) -> Any:
