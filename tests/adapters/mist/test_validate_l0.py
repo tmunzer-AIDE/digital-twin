@@ -160,3 +160,25 @@ def test_unregistered_org_type_fails_closed():
     # an object_type with no committed schema must FAIL CLOSED (fatal -> UNKNOWN)
     res = validate_payload("rftemplate", {"x": 1})
     assert res.fatal
+
+
+def test_nacrule_schema_registered_and_validates():
+    res = validate_payload("nacrule", {"name": "r1", "action": "allow", "order": 1,
+                                       "enabled": True, "matching": {}})
+    assert isinstance(res, L0Result) and not res.fatal and res.findings == ()
+
+
+def test_nacrule_type_violations_detected():
+    # enabled must be bool, order int, action enum
+    res = validate_payload("nacrule", {"name": "r1", "action": "nope",
+                                       "enabled": "yes", "order": "x"})
+    paths = " ".join(str(f.evidence.get("path")) + f.message for f in res.findings)
+    assert not res.fatal
+    assert "enabled" in paths and "order" in paths and "action" in paths
+
+
+def test_nacrule_unmodeled_field_passes_l0_permissive():
+    # OAS-valid-but-unmodeled fields are NOT rejected at L0 (the field gate owns them)
+    res = validate_payload("nacrule", {"name": "r", "action": "allow",
+                                       "guest_auth_state": "whatever"})
+    assert not res.fatal and res.findings == ()

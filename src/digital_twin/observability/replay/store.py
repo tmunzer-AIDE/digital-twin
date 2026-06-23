@@ -18,6 +18,7 @@ from digital_twin.observability.trace import Trace
 from digital_twin.providers.base import (
     FetchError,
     FetchFailure,
+    NacFetch,
     OrgScope,
     OrgTemplateContext,
     RawSiteState,
@@ -145,6 +146,7 @@ class FixtureProvider:
     def __init__(self, path: Path | str, *, strict: bool = True) -> None:
         data = json.loads(Path(path).read_text())
         self._strict = strict
+        self._data: dict[str, Any] = data  # raw parsed doc (for optional top-level sections)
         self._sites: dict[str, RawSiteState] = {}
         self._site_docs: dict[str, dict[str, Any]] = {}
         self._template: dict[str, Any] | None = None
@@ -177,6 +179,8 @@ class FixtureProvider:
         else:  # single-site fixture (unchanged)
             self._raw = load_fixture_doc(data)
             self._host = self._raw.meta.host
+            self._org_id = self._raw.scope.org_id
+            self._acquired_at = self._raw.meta.acquired_at
 
     @property
     def _single(self) -> RawSiteState:
@@ -327,3 +331,21 @@ class FixtureProvider:
             if str((doc.get("site") or {}).get(id_field) or "") == template_id
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
+
+    def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_nac",
+                                       error=f"fixture holds org {self._org_id}, "
+                                             f"not the requested {scope.org_id}"),),
+                acquired_at=datetime.now(UTC), host=self._host)
+        nac = self._data.get("nac") if isinstance(self._data, dict) else None
+        if nac is None:
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_nac",
+                                       error="fixture carries no 'nac' section"),),
+                acquired_at=datetime.now(UTC), host=self._host)
+        return NacFetch(rules=tuple(nac.get("rules", ())),
+                        tags=tuple(nac.get("tags", ())), tag_findings=())

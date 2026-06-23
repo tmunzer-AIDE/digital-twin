@@ -592,3 +592,128 @@ def simulate_org_plan(
 
 
 simulate_org_template = simulate_org_plan  # back-compat alias (single-op is a 1-op plan)
+
+
+# ---------------------------------------------------------------------------
+# GS34 — org-NAC orchestrator
+# ---------------------------------------------------------------------------
+from digital_twin.adapters.mist.ingest.nac import build_nac_ir  # noqa: E402
+from digital_twin.adapters.mist.validate import validate_payload  # noqa: E402
+from digital_twin.checks.nac.delta import NacDeltaCheck  # noqa: E402
+from digital_twin.checks.nac.shadowing import NacShadowingCheck  # noqa: E402
+from digital_twin.providers.base import FetchError  # noqa: E402
+from digital_twin.verdict.decision import decide  # noqa: E402
+from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
+    OrgNacVerdict,
+    nac_changes,
+)
+
+
+def _org_nac_unknown(rej: Rejection, *, adapter_findings: tuple[Finding, ...] = ()
+                     ) -> OrgNacVerdict:
+    decision, reasons = decide(DecisionInputs(
+        rejections=(rej,), l0_fatal=False, baseline_unavailable=False,
+        check_results=(), adapter_findings=adapter_findings))
+    return OrgNacVerdict(decision, reasons, (), (), adapter_findings, (rej,))
+
+
+def simulate_org_nac(
+    plan_data: Mapping[str, Any],
+    *,
+    provider: StateProvider,
+    run: RunContext | None = None,
+    l0_full_object: bool = False,
+) -> OrgNacVerdict:
+    plan = parse_change_plan(plan_data)
+    if isinstance(plan, Rejection):
+        return _org_nac_unknown(plan)
+    rej = check_objects(plan)
+    if rej:
+        return _org_nac_unknown(rej)
+
+    fetch = provider.resolve_org_nac(OrgScope(org_id=plan.scope.org_id))
+    if isinstance(fetch, FetchError):
+        decision, reasons = decide(DecisionInputs(
+            rejections=(), l0_fatal=False, baseline_unavailable=True,
+            check_results=(), adapter_findings=()))
+        return OrgNacVerdict(decision, reasons, (), (), (), ())
+
+    # FIRST-wins, matching build_nac_ir's dedup — NOT a dict comprehension (which is
+    # last-wins). Otherwise base_ir (built first-wins from fetch.rules) and proposed_raw
+    # would disagree on a duplicate id → a phantom modify on a no-op, and updates would
+    # apply to the row the ingester drops. The duplicate WARNING still comes from base_ir.
+    baseline_raw: dict[str, dict[str, Any]] = {}
+    for r in fetch.rules:
+        rid = r.get("id")
+        if rid and str(rid) not in baseline_raw:
+            baseline_raw[str(rid)] = dict(r)
+    proposed_raw: dict[str, dict[str, Any]] = dict(baseline_raw)
+    adapter_findings: tuple[Finding, ...] = ()
+
+    for op in sorted(plan.ops, key=lambda o: o.order):
+        exists = op.object_id in baseline_raw
+        if op.action in ("update", "delete") and not exists:
+            return _org_nac_unknown(Rejection(stage="apply", reasons=(
+                f"ops[order={op.order}]: no nacrule with id {op.object_id!r}",)),
+                adapter_findings=adapter_findings)
+        if op.action == "create" and exists:
+            return _org_nac_unknown(Rejection(stage="apply", reasons=(
+                f"ops[order={op.order}]: nacrule id {op.object_id!r} already exists",)),
+                adapter_findings=adapter_findings)
+        if op.action == "delete":
+            proposed_raw.pop(op.object_id, None)
+            continue
+        if update_conflicts(op.payload):
+            return _org_nac_unknown(Rejection(stage="apply", reasons=(
+                f"ops[order={op.order}]: conflicting set AND '-' delete marker",)),
+                adapter_findings=adapter_findings)
+        current = baseline_raw.get(op.object_id, {"id": op.object_id})
+        effective = effective_update(current, op.payload)
+        if op.action == "create":
+            effective["id"] = op.object_id
+        scope_roots = None if (op.action == "create" or l0_full_object) \
+            else _changed_roots(op.payload)
+        l0 = validate_payload("nacrule", effective, scope_roots=scope_roots)
+        subject = ObjectRef("nacrule", op.object_id, name=current.get("name"))
+        adapter_findings += _stamp(l0.findings, subject)
+        if l0.fatal:
+            decision, reasons = decide(DecisionInputs(
+                rejections=(), l0_fatal=True, baseline_unavailable=False,
+                check_results=(), adapter_findings=adapter_findings))
+            return OrgNacVerdict(decision, reasons, (), (), adapter_findings, ())
+        fg = screen_op("nacrule", current, effective)
+        if fg:
+            return _org_nac_unknown(fg, adapter_findings=adapter_findings)
+        proposed_raw[op.object_id] = effective
+
+    # Build the baseline IR from the RAW fetch.rules (not the id-keyed baseline_raw) so
+    # id-less / malformed FETCHED rows still emit their ingester warnings. (baseline_raw
+    # is only the id-keyed subset the apply loop needs; building from it would drop those
+    # rows silently — bypassing the load-bearing-ingest contract → hidden operational
+    # findings.) Both states' findings reach the verdict; dedup a rule malformed in both.
+    base_ir, base_findings = build_nac_ir(fetch.rules, fetch.tags)
+    prop_ir, prop_findings = build_nac_ir(proposed_raw.values(), fetch.tags)
+    seen: set[tuple[str, object]] = set()
+    for f in (*base_findings, *prop_findings):
+        key = (f.code, f.evidence.get("id"))
+        if key not in seen:
+            seen.add(key)
+            adapter_findings += (f,)
+    adapter_findings += fetch.tag_findings
+
+    diff = diff_ir(base_ir, prop_ir)
+    ctx = CheckContext(baseline=AnalysisContext(base_ir),
+                       proposed=AnalysisContext(prop_ir), diff=diff)
+    # Run through CheckRegistry, NOT direct c.run(ctx): the registry isolates a
+    # crashing check to a CHECK_ERROR + OPERATIONAL finding (→ decide() floors
+    # REVIEW), gates applies_to (NOT_APPLICABLE when the diff doesn't touch nac),
+    # and resolves finding names centrally — so a check bug degrades, never escapes.
+    results = CheckRegistry([NacDeltaCheck(), NacShadowingCheck()]).run_all(ctx)
+
+    decision, reasons = decide(DecisionInputs(
+        rejections=(), l0_fatal=False, baseline_unavailable=False,
+        check_results=results, adapter_findings=adapter_findings))
+    base_map = {r.id: r for r in base_ir.nacrules}
+    prop_map = {r.id: r for r in prop_ir.nacrules}
+    return OrgNacVerdict(decision, reasons, nac_changes(diff, base_map, prop_map),
+                         results, adapter_findings, ())

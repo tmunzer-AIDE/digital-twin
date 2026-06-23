@@ -421,3 +421,44 @@ class Wlan:
     wxtag_ids: tuple[str, ...] = ()  # sorted+deduped
     inherited: bool = False          # True = org-template-owned (fail-closed at ingest)
     meta: FactMeta = CONFIG_META
+
+
+@dataclass(frozen=True)
+class NacRule:
+    id: str
+    name: str | None = None
+    order: int | None = None        # None = unparseable/absent → never ordered/proven
+    enabled: bool = True            # absent ⇒ True (OAS default); non-bool ⇒ opaque_digest
+    action: str | None = None       # "allow" | "block" | None
+    auth_types: frozenset[str] = frozenset()   # ∅ = genuinely unconstrained (any)
+    port_types: frozenset[str] = frozenset()
+    match_tags: frozenset[str] = frozenset()   # matching.nactags ids
+    site_ids: frozenset[str] = frozenset()
+    sitegroup_ids: frozenset[str] = frozenset()
+    family: frozenset[str] = frozenset()
+    mfg: frozenset[str] = frozenset()
+    model: frozenset[str] = frozenset()
+    os_type: frozenset[str] = frozenset()
+    vendor: frozenset[str] = frozenset()
+    # the ENTIRE not_matching block normalized to (dimension, value) pairs — ONE field so
+    # the diff sees any negative-criteria change and `not not_matching` is the whole
+    # non-emptiness test. Any non-empty not_matching ⇒ non-provable for shadowing.
+    not_matching: frozenset[tuple[str, str]] = frozenset()
+    apply_tags: frozenset[str] = frozenset()
+    # None = parsed cleanly. Non-None = stable digest of the raw row, set when a proof
+    # field is unparseable or the row only partially parsed. Two roles: (1) provability
+    # gate (opaque_digest is None); (2) diff-bearing so a change in unparseable content
+    # still surfaces and cannot collapse-and-vanish.
+    opaque_digest: str | None = None
+    meta: FactMeta = CONFIG_META
+
+
+@dataclass(frozen=True)
+class NacTag:
+    id: str
+    name: str | None = None
+    type: str | None = None
+    match: str | None = None        # the match field, for type == "match"
+    values: frozenset[str] = frozenset()
+    match_all: bool = False
+    meta: FactMeta = CONFIG_META

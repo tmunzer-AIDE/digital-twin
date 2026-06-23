@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from digital_twin.contracts.finding import Finding
+
 JsonObj = Mapping[str, Any]
 
 
@@ -94,6 +96,20 @@ class OrgTemplateContext:
 
 
 @dataclass(frozen=True)
+class NacFetch:
+    """Org-level NAC fetch result: rule payloads + tag payloads (vendor-shaped).
+
+    `tag_findings` carries OPERATIONAL/WARNING diagnostics when nactags could not
+    be fetched (labels-only degradation — the rules themselves are still usable).
+    A nacrules failure produces a FetchError instead (whole fetch is fatal).
+    """
+
+    rules: tuple[Mapping[str, Any], ...]
+    tags: tuple[Mapping[str, Any], ...]
+    tag_findings: tuple[Finding, ...] = ()
+
+
+@dataclass(frozen=True)
 class FetchError:
     """Total fetch failure — no usable baseline (site/setting could not be read).
 
@@ -132,4 +148,10 @@ class StateProvider(Protocol):
         template_id, and fetch the template. A lookup failure (sites or template)
         is a FetchError (whole-plan UNKNOWN). 0 assigned sites is a SUCCESS with
         an empty assigned_site_ids tuple."""
+        ...
+
+    def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+        """Fetch the org's NAC rules and tags. A nacrules failure is a total
+        FetchError; a nactags failure yields NacFetch(rules, (), (tag_finding,))
+        so downstream can still apply rules without label resolution."""
         ...
