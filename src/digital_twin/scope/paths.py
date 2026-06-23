@@ -8,12 +8,18 @@ exactly this (a new network with only vlan_id is in scope; one that also sets
 isolation is not).
 
 matches(): allowlist entry syntax —
-  - '*' matches exactly ONE key segment        ('networks.*.vlan_id')
+  - '*' matches ONE OR MORE dot-separated path segments ('networks.*.vlan_id',
+    'bgp_config.*.neighbors.*.neighbor_as' where neighbor keys are IPs like
+    10.0.0.2 that contain literal dots and expand to multiple dot-path segments)
   - a trailing '.*' matches the WHOLE subtree,
     including the root key itself              ('vars.*' allows vars and below)
   - bare entries match exactly                 ('name')
-Keys containing literal dots are unsupported (Mist keys here are port ranges,
-network names, var names — none use dots).
+
+Note on IP-address keys: Mist BGP neighbor dicts are keyed by IP (e.g.
+'10.0.0.2').  The `_walk` path-builder joins keys with '.' so such a key
+contributes FOUR dot-segments to the path.  '*' in an allowlist pattern must
+therefore be allowed to consume one OR MORE path segments — the `_matches_segs`
+helper implements backtracking to handle this.
 """
 
 from __future__ import annotations
@@ -68,15 +74,31 @@ def _normalized(value: Any) -> Any:
     return value
 
 
+def _matches_segs(entry_segs: list[str], path_segs: list[str]) -> bool:
+    """Backtracking segment match.  A '*' in the entry consumes ONE OR MORE path
+    segments so that IP-address dictionary keys (e.g. '10.0.0.2', which expands
+    to four dot-separated path segments) are still matched by a single '*'."""
+    ei, pi = 0, 0
+    while ei < len(entry_segs) and pi < len(path_segs):
+        if entry_segs[ei] == "*":
+            # try consuming 1..N path segments for this wildcard
+            ei += 1
+            for consume in range(1, len(path_segs) - pi + 1):
+                if _matches_segs(entry_segs[ei:], path_segs[pi + consume:]):
+                    return True
+            return False
+        if entry_segs[ei] != path_segs[pi]:
+            return False
+        ei += 1
+        pi += 1
+    return ei == len(entry_segs) and pi == len(path_segs)
+
+
 def matches(path: str, entry: str) -> bool:
     if entry.endswith(".*"):
         root = entry[:-2]
         return path == root or path.startswith(root + ".")
-    entry_segs = entry.split(".")
-    path_segs = path.split(".")
-    if len(entry_segs) != len(path_segs):
-        return False
-    return all(e in ("*", p) for e, p in zip(entry_segs, path_segs, strict=True))
+    return _matches_segs(entry.split("."), path.split("."))
 
 
 def allowed(path: str, allowlist: tuple[str, ...]) -> bool:

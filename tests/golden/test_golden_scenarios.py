@@ -21,6 +21,7 @@ from .builders import (
     EDGE_PAR_PORT,
     EDGE_UPLINK_PORT,
     GS27_HUB_MAC,
+    GS28_HUB_MAC,
     GT_SITE_A,
     GT_SITE_B,
     HUB,
@@ -35,6 +36,9 @@ from .builders import (
     ap_unresolved_wlan_doc,
     ap_wlan_doc,
     augmented_doc,
+    bgp_gateway_scenario,
+    bgp_minimal_doc,
+    bgp_op,
     device_op,
     dp_gatewaytemplate_edit_with_profiled_gw,
     dp_only_ap_profiled_not_tainted,
@@ -1639,3 +1643,113 @@ def test_od_gw_failsafe_combined_plan_never_safe(tmp_path):
         f"gtSiteA yielded false-SAFE in a combined plan: "
         f"{ov.per_site[GT_SITE_A].decision_reasons}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GS28: BGP adjacency-break goldens (switch + gateway)
+# ---------------------------------------------------------------------------
+
+
+def test_gs28_switch_peering_removed_with_live_peer_is_unsafe(tmp_path):
+    # A switch site_setting carries bgp_config with one neighbor (10.0.0.2).
+    # Telemetry shows that neighbor is ESTABLISHED. The op empties `neighbors` ->
+    # peering_removed structural code + telemetry escalation -> ERROR/UNSAFE.
+    doc = bgp_minimal_doc(
+        {"underlay": {"type": "external", "local_as": 65000,
+                      "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}},
+        bgp_neighbors=[{"mac": GS28_HUB_MAC, "peer_ip": "10.0.0.2",
+                        "state": "Established", "neighbor_as": 65001}],
+    )
+    op = bgp_op(doc, {"underlay": {"type": "external", "local_as": 65000, "neighbors": {}}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    removed = [f for f in v.findings if f.code == "wired.l3.bgp_adjacency.peering_removed"]
+    assert removed and any(f.severity is Severity.ERROR for f in removed)
+
+
+def test_gs28_as_change_is_review(tmp_path):
+    # The neighbor's ASN changes (65001 -> 65099). No telemetry -> the structural
+    # finding is WARNING/UNVERIFIED -> verdict REVIEW.
+    doc = bgp_minimal_doc(
+        {"underlay": {"type": "external", "local_as": 65000,
+                      "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}},
+    )
+    op = bgp_op(doc, {"underlay": {"type": "external", "local_as": 65000,
+                                   "neighbors": {"10.0.0.2": {"neighbor_as": 65099}}}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.bgp_adjacency.as_changed" in {f.code for f in v.findings}
+
+
+def test_gs28_auth_key_edit_is_unknown(tmp_path):
+    # auth_key is NOT in the bgp allowlist (_BGP_LEAVES) — the raw field gate
+    # fires for bgp_config.*.auth_key -> verdict UNKNOWN.
+    doc = bgp_minimal_doc(
+        {"underlay": {"type": "external", "local_as": 65000,
+                      "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}},
+    )
+    op = bgp_op(doc, {"underlay": {"type": "external", "local_as": 65000,
+                                   "auth_key": "s3cret",
+                                   "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
+
+
+def test_gs28_networks_edit_is_unknown(tmp_path):
+    # bgp_config.*.networks (advertised-prefix list) is NOT in the bgp allowlist
+    # -> the raw field gate fires -> verdict UNKNOWN.
+    doc = bgp_minimal_doc(
+        {"underlay": {"type": "external", "local_as": 65000,
+                      "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}},
+    )
+    op = bgp_op(doc, {"underlay": {"type": "external", "local_as": 65000,
+                                   "networks": ["corp-net"],
+                                   "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}})
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
+
+
+def test_gs28_gateway_only_bgp_via_gatewaytemplate(tmp_path):
+    # A gateway site inherits bgp_config from a gatewaytemplate. The op removes
+    # the sole neighbor from the template -> peering_removed fires -> the per-site
+    # verdict contains the finding. Proves gateway peers are minted from the
+    # materialized gateway_effective (gatewaytemplate compiled onto the device).
+    doc, plan = bgp_gateway_scenario(
+        base={"wan": {"type": "external", "local_as": 65000, "via": "wan",
+                      "neighbors": {"203.0.113.1": {"neighbor_as": 65010}}}},
+        proposed={"wan": {"type": "external", "local_as": 65000, "via": "wan",
+                          "neighbors": {}}},
+    )
+    ov = _simulate_org(doc, plan, tmp_path)
+    # OrgVerdict has no top-level .findings — collect from per_site verdicts
+    all_finding_codes = {
+        f.code for v in ov.per_site.values() for f in v.findings
+    }
+    assert "wired.l3.bgp_adjacency.peering_removed" in all_finding_codes, (
+        f"expected peering_removed in per-site findings, got: {sorted(all_finding_codes)}"
+    )
+
+
+def test_gs28_bgp_neighbor_field_mapping_real_shape():
+    # Pin the ingester field mapping against a realistic org_bgp/site_bgp record.
+    # Re-confirm field names against a live API paste when available.
+    from digital_twin.adapters.mist.ingest.bgp_neighbors import _row_to_neighbor
+    row = {
+        "mac": "2093390f6200",
+        "peer_ip": "10.3.172.3",
+        "neighbor_as": 65001,
+        "state": "Established",
+        "vrf_name": "master",
+        "up": True,
+        # extra keys the real API includes — must be tolerated and ignored
+        "org_id": "x",
+        "site_id": "y",
+    }
+    n = _row_to_neighbor(row)
+    assert n is not None
+    assert n.device_id == "2093390f6200"
+    assert n.peer_ip == "10.3.172.3"
+    assert n.neighbor_as == 65001
+    assert n.state == "Established"
+    assert n.up is True
+    assert n.vrf == "master"

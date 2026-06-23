@@ -1,10 +1,22 @@
 from digital_twin.scope.paths import allowed, changed_leaf_paths, matches
 
 
-def test_wildcard_matches_exactly_one_segment():
+def test_wildcard_matches_one_or_more_segments():
+    # Simple keys (no dots): '*' still matches one segment as before.
     assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
     assert not matches("networks.corp.isolation", "networks.*.vlan_id")
-    assert not matches("networks.corp.sub.vlan_id", "networks.*.vlan_id")
+    # IP-address keys contain literal dots: the path walker joins them with '.',
+    # so 'bgp_config.underlay.neighbors.10.0.0.2.neighbor_as' is the assembled
+    # path for the key '10.0.0.2' inside neighbors. '*' must consume 1+ segments
+    # to allow 'bgp_config.*.neighbors.*.neighbor_as' to pass the field gate.
+    assert matches(
+        "bgp_config.underlay.neighbors.10.0.0.2.neighbor_as",
+        "bgp_config.*.neighbors.*.neighbor_as",
+    )
+    assert not matches(
+        "bgp_config.underlay.neighbors.10.0.0.2.auth_key",
+        "bgp_config.*.neighbors.*.neighbor_as",
+    )
 
 
 def test_trailing_star_matches_whole_subtree_including_root():
