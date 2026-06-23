@@ -166,3 +166,41 @@ def test_crashing_nac_check_degrades_to_review_not_crash(monkeypatch):
     v = simulate_org_nac(_plan(_op("update", "b", {"order": 0})), provider=FakeProvider(nf))
     assert v.decision is Decision.REVIEW
     assert any(r.status is Status.CHECK_ERROR for r in v.check_results)
+
+
+def test_config_diff_update_shows_redacted_before_after():
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("update", "b", {"order": 0})), provider=FakeProvider(nf))
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "b" in cds and cds["b"].object_type == "nacrule" and cds["b"].action == "update"
+    by = {c.path: c for c in cds["b"].changes}
+    assert by["order"].kind == "changed" and by["order"].before == 2 and by["order"].after == 0
+
+
+def test_config_diff_create_lists_added_leaves():
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("create", "z", _rule("z", 0))), provider=FakeProvider(nf))
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["z"].action == "create"
+    assert cds["z"].name == "z"  # name comes from `effective`, not the {"id":...} stub
+    assert {c.kind for c in cds["z"].changes} == {"added"}
+    paths = {c.path for c in cds["z"].changes}
+    assert "order" in paths and "action" in paths
+
+
+def test_config_diff_delete_lists_removed_leaves():
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("delete", "b", {})), provider=FakeProvider(nf))
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["b"].action == "delete"
+    assert {c.kind for c in cds["b"].changes} == {"removed"}
+    paths = {c.path for c in cds["b"].changes}
+    assert "order" in paths and "action" in paths
+
+
+def test_config_diff_empty_on_unknown():
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("update", "b", {"guest_auth_state": "x"})),
+                         provider=FakeProvider(nf))
+    assert v.decision is Decision.UNKNOWN
+    assert v.config_diffs == ()

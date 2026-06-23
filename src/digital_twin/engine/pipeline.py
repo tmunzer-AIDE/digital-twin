@@ -601,6 +601,8 @@ from digital_twin.adapters.mist.ingest.nac import build_nac_ir  # noqa: E402
 from digital_twin.adapters.mist.validate import validate_payload  # noqa: E402
 from digital_twin.checks.nac.delta import NacDeltaCheck  # noqa: E402
 from digital_twin.checks.nac.shadowing import NacShadowingCheck  # noqa: E402
+from digital_twin.config_diff import object_config_diff  # noqa: E402
+from digital_twin.contracts import ObjectConfigDiff  # noqa: E402
 from digital_twin.providers.base import FetchError  # noqa: E402
 from digital_twin.verdict.decision import decide  # noqa: E402
 from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
@@ -649,6 +651,7 @@ def simulate_org_nac(
             baseline_raw[str(rid)] = dict(r)
     proposed_raw: dict[str, dict[str, Any]] = dict(baseline_raw)
     adapter_findings: tuple[Finding, ...] = ()
+    nac_diffs: list[ObjectConfigDiff] = []
 
     for op in sorted(plan.ops, key=lambda o: o.order):
         exists = op.object_id in baseline_raw
@@ -661,6 +664,10 @@ def simulate_org_nac(
                 f"ops[order={op.order}]: nacrule id {op.object_id!r} already exists",)),
                 adapter_findings=adapter_findings)
         if op.action == "delete":
+            nac_diffs.append(object_config_diff(
+                object_type="nacrule", object_id=op.object_id,
+                name=baseline_raw[op.object_id].get("name"),
+                action="delete", before=baseline_raw[op.object_id], after={}))
             proposed_raw.pop(op.object_id, None)
             continue
         if update_conflicts(op.payload):
@@ -684,6 +691,12 @@ def simulate_org_nac(
         fg = screen_op("nacrule", current, effective)
         if fg:
             return _org_nac_unknown(fg, adapter_findings=adapter_findings)
+        nac_diffs.append(object_config_diff(
+            object_type="nacrule", object_id=op.object_id,
+            # create's `current` is only {"id": ...}; the new name lives in `effective`
+            name=effective.get("name") if op.action == "create" else current.get("name"),
+            action=op.action,
+            before={} if op.action == "create" else current, after=effective))
         proposed_raw[op.object_id] = effective
 
     # Build the baseline IR from the RAW fetch.rules (not the id-keyed baseline_raw) so
@@ -715,5 +728,8 @@ def simulate_org_nac(
         check_results=results, adapter_findings=adapter_findings))
     base_map = {r.id: r for r in base_ir.nacrules}
     prop_map = {r.id: r for r in prop_ir.nacrules}
-    return OrgNacVerdict(decision, reasons, nac_changes(diff, base_map, prop_map),
-                         results, adapter_findings, ())
+    return OrgNacVerdict(
+        decision, reasons, nac_changes(diff, base_map, prop_map),
+        results, adapter_findings, (),
+        tuple(nac_diffs) if decision is not Decision.UNKNOWN else (),
+    )
