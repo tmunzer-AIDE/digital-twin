@@ -36,8 +36,10 @@ from .builders import (
     ap_unresolved_wlan_doc,
     ap_wlan_doc,
     augmented_doc,
+    bgp_device_op,
     bgp_gateway_scenario,
     bgp_minimal_doc,
+    bgp_minimal_doc_device,
     bgp_op,
     device_op,
     dp_gatewaytemplate_edit_with_profiled_gw,
@@ -1753,3 +1755,23 @@ def test_gs28_bgp_neighbor_field_mapping_real_shape():
     assert n.state == "Established"
     assert n.up is True
     assert n.vrf == "master"
+
+
+def test_gs28_device_op_switch_peering_removed_is_review(tmp_path):
+    # A switch device carries bgp_config directly (NOT on setting). A device op
+    # removes the sole neighbor. No telemetry -> structural finding is WARNING/
+    # UNVERIFIED -> REVIEW.  This proves a device-level bgp_config edit flows
+    # through compile_device -> IR -> bgp_adjacency check (Fix 1 correctness):
+    # without bgp_config in _DEVICE_OWN_FIELDS the compile drops it, the diff is
+    # empty and the verdict would be SAFE (false-SAFE).
+    doc = bgp_minimal_doc_device(
+        {"underlay": {"type": "external", "local_as": 65000,
+                      "neighbors": {"10.0.0.2": {"neighbor_as": 65001}}}},
+    )
+    op = bgp_device_op(
+        doc,
+        {"underlay": {"type": "external", "local_as": 65000, "neighbors": {}}},
+    )
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wired.l3.bgp_adjacency.peering_removed" in {f.code for f in v.findings}

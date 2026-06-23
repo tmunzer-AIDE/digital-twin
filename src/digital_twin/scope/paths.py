@@ -95,6 +95,11 @@ def _matches_segs(entry_segs: list[str], path_segs: list[str]) -> bool:
 
 
 def matches(path: str, entry: str) -> bool:
+    """Safety invariant for greedy '*': no DENIED leaf may share a trailing leaf
+    name with an allowed pattern below the same prefix (e.g. 'bgp_config.*.networks'
+    must not appear in a denied path when 'bgp_config.*.neighbors.*.neighbor_as'
+    is allowed — the '*' in the allowed entry cannot over-match it because
+    'networks' never appears as a trailing leaf in any allowed bgp pattern)."""
     if entry.endswith(".*"):
         root = entry[:-2]
         return path == root or path.startswith(root + ".")

@@ -1797,6 +1797,84 @@ def bgp_op(
     }
 
 
+def bgp_minimal_doc_device(
+    bgp_config: dict[str, Any],
+    *,
+    bgp_neighbors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Variant of bgp_minimal_doc that places bgp_config on the SWITCH DEVICE dict
+    (NOT on setting). Tests Fix 1: device-level bgp_config must flow through
+    compile_device (_DEVICE_OWN_FIELDS) so a device op produces a real IR diff.
+
+    The setting carries NO bgp_config; only the device dict does.  With Fix 1 in
+    place, compile_device overlays the device's bgp_config wholesale (device wins).
+    Without Fix 1 the device bgp_config is DROPPED — the effective is identical
+    before and after, the diff is empty, and the verdict is a false-SAFE."""
+    fetched = [
+        "site", "setting", "devices", "device_stats", "port_stats",
+        "wireless_clients", "wired_clients",
+    ]
+    if bgp_neighbors is not None:
+        fetched.append("bgp_neighbors")
+    doc: dict[str, Any] = {
+        "redaction_version": 6,
+        "scope": {"org_id": GS28_ORG_ID, "site_id": GS28_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-23T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": fetched,
+            "failures": [],
+        },
+        "site": {
+            "id": GS28_SITE_ID, "org_id": GS28_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": None,
+        },
+        # setting carries NO bgp_config — only the device dict does
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GS28_HUB_MAC,
+                "id": GS28_HUB_ID,
+                "type": "switch",
+                "model": "EX2300-24P",
+                "bgp_config": bgp_config,
+                "port_config": {},
+            }
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+    if bgp_neighbors is not None:
+        doc["bgp_neighbors"] = list(bgp_neighbors)
+    return doc
+
+
+def bgp_device_op(
+    doc: dict[str, Any], proposed_bgp_config: dict[str, Any], *, order: int = 0
+) -> dict[str, Any]:
+    """A MINIMAL root-level device PUT that sets bgp_config on the switch device.
+    Mirror of ospf_op's envelope: carries ONLY the roots under test so no other
+    effective field changes (a full-object payload would reshape unrelated state).
+
+    Used with bgp_minimal_doc_device (device carries bgp_config) to prove that
+    device-level bgp_config edits flow through compile_device -> IR -> check."""
+    dev = doc["devices"][0]
+    return {
+        "action": "update", "order": order, "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": {"type": dev.get("type", "switch"), "bgp_config": proposed_bgp_config},
+    }
+
+
 def _bgp_gw_template(bgp_config: dict[str, Any]) -> dict[str, Any]:
     return {"id": GS28_GT_ID, "name": "gs28-bgp-gw-template", "bgp_config": bgp_config}
 

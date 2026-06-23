@@ -1,3 +1,4 @@
+from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
 from digital_twin.scope.paths import allowed, changed_leaf_paths, matches
 
 
@@ -66,3 +67,37 @@ def test_allowed_checks_any_entry():
     assert allowed("networks.corp.vlan_id", allowlist)
     assert allowed("vars.dhcp_ip", allowlist)
     assert not allowed("networks.corp.isolation", allowlist)
+
+
+def test_effective_allowlist_greedy_star_does_not_overmatch_bgp_denied_leaves():
+    # Guard against '*' backtracking silently allowing a DENIED BGP leaf.
+    # 'bgp_config.*.neighbors.*.neighbor_as' IS allowed; these adjacent paths
+    # with structurally similar prefixes or SAME trailing leaf names are NOT.
+
+    # bgp_config.<vrf>.networks is NOT a modeled leaf (advertised-prefix list,
+    # explicitly kept out of _BGP_LEAVES to avoid false-SAFE).
+    assert not allowed("bgp_config.underlay.networks", EFFECTIVE_ALLOWLIST)
+
+    # bgp_config.<vrf>.auth_key is a secret — explicitly denied
+    assert not allowed("bgp_config.underlay.auth_key", EFFECTIVE_ALLOWLIST)
+
+    # import_policy is not a modeled leaf — denied even though it sits under
+    # the neighbors subtree that the allowed 'neighbors.*.neighbor_as' touches
+    assert not allowed(
+        "bgp_config.underlay.neighbors.10.0.0.2.import_policy", EFFECTIVE_ALLOWLIST
+    )
+
+    # auth_key on a neighbor is also denied (peer-level secret, not neighbor_as)
+    assert not allowed(
+        "bgp_config.underlay.neighbors.10.0.0.2.auth_key", EFFECTIVE_ALLOWLIST
+    )
+
+    # Positive cases: the modeled BGP leaves ARE allowed
+    assert allowed("bgp_config.underlay.neighbors.10.0.0.2.neighbor_as", EFFECTIVE_ALLOWLIST)
+    assert allowed("bgp_config.underlay.local_as", EFFECTIVE_ALLOWLIST)
+    assert allowed("bgp_config.underlay.type", EFFECTIVE_ALLOWLIST)
+    assert allowed("bgp_config.underlay.neighbors.10.0.0.2.disabled", EFFECTIVE_ALLOWLIST)
+
+    # Dotless key baseline: simple one-segment key still works
+    assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
+    assert not matches("networks.corp.isolation", "networks.*.vlan_id")

@@ -50,6 +50,7 @@ _DEVICE_OWN_FIELDS = (
     "dhcp_snooping",
     "ospf_config",
     "ospf_areas",
+    "bgp_config",
 )
 
 
