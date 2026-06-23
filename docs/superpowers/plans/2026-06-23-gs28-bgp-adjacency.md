@@ -1083,6 +1083,22 @@ def test_switch_via_diff_is_silent():
     res = _run(_ir([_peer(via="lan")]), _ir([_peer(via="wan")]))
     assert "wired.l3.bgp_adjacency.transport_changed" not in _codes(res)
     assert not res.findings
+
+
+def test_absent_to_templated_disabled_is_note_not_added():
+    # active-ness of the proposed peer is UNKNOWN (templated disabled) -> abstain, not add
+    res = _run(_ir([]),
+               _ir([_peer(disabled=False, disabled_unresolved="{{flag}}", neighbor_as=65001)]))
+    assert "wired.l3.bgp_adjacency.peering_added" not in _codes(res)
+    assert res.coverage.notes
+
+
+def test_templated_disabled_baseline_removed_is_note_not_removed():
+    # baseline active-ness UNKNOWN (templated disabled); peer gone -> abstain, not remove
+    res = _run(_ir([_peer(disabled=False, disabled_unresolved="{{flag}}", neighbor_as=65001)]),
+               _ir([]))
+    assert "wired.l3.bgp_adjacency.peering_removed" not in _codes(res)
+    assert res.coverage.notes
 ```
 Confirm the real import path for building an `AnalysisContext` from an IR (the OSPF tests use the same harness — grep `tests/checks/wired/` for how an existing check test constructs `CheckContext`, and copy that exact helper/import).
 
@@ -1189,10 +1205,14 @@ class BgpAdjacencyCheck:
             )
 
         def _note_if_fuzzy(did: str, nip: str, b: BgpPeer | None, p: BgpPeer | None) -> bool:
-            """Emit a coverage note if EITHER side is ambiguous/unresolved, and return
-            True so the caller skips confident compare AND telemetry escalation on this
-            peer. Checking both sides is load-bearing: a baseline-ambiguous peer that
-            becomes clean (or vice-versa) must still abstain (spec §2)."""
+            """Emit a coverage note if EITHER present side is ambiguous / unresolved-IP /
+            templated-admin-state, and return True so the caller skips confident compare,
+            ACTIVE-STATE classification, AND telemetry escalation on this peer. Checking
+            both sides is load-bearing: a baseline-ambiguous (or templated-disabled) peer
+            that becomes clean — or vice-versa — must still abstain (spec §2). The
+            admin-state check MUST run before add/remove classification: `disabled` parses
+            to False when templated, so without this guard `_active()` would wrongly read a
+            templated-disabled peer as active and emit a confident .peering_added/_removed."""
             if (b is not None and b.ambiguous) or (p is not None and p.ambiguous):
                 notes.append(f"BGP peer {nip} on {did} is claimed by multiple sessions with "
                              "differing attributes — change detection skipped")
@@ -1200,6 +1220,11 @@ class BgpAdjacencyCheck:
             if (b is not None and b.unresolved) or (p is not None and p.unresolved):
                 notes.append(f"BGP peer key {nip!r} on {did} is not a literal IP — peering "
                              "change impact cannot be verified")
+                return True
+            if (b is not None and b.disabled_unresolved is not None) or \
+                    (p is not None and p.disabled_unresolved is not None):
+                notes.append(f"BGP peer {nip} on {did} has a templated/non-boolean admin "
+                             "state — active-ness is unknown, change detection skipped")
                 return True
             return False
 
@@ -1277,10 +1302,9 @@ class BgpAdjacencyCheck:
                             f"BGP peering to {nip} on {did} changed transport {b.via}->{p.via} "
                             "— the session path changed",
                             {"base_via": b.via, "proposed_via": p.via}))
-                # admin-state token (disabled templated on one side, value otherwise equal)
-                if b.disabled_unresolved != p.disabled_unresolved:
-                    notes.append(f"BGP peer {nip} on {did} has a templated admin-state on "
-                                 "one side — enable/disable impact unverifiable")
+                # (admin-state-unresolved is handled UP FRONT by _note_if_fuzzy, which
+                # abstains before active-state classification — so a retained peer that
+                # reaches here has resolved admin-state on both sides.)
 
         return self._finish(findings, notes)
 
