@@ -306,6 +306,44 @@ class OspfNeighbor:
 
 
 @dataclass(frozen=True)
+class BgpPeer:
+    """A switch/gateway BGP peering (one per session-neighbor), modeled for the
+    wired.l3.bgp_adjacency check (GS28). Identity is (device, neighbor_ip): a
+    device peers with a given neighbor IP once; session_name is config grouping,
+    DIFF-IGNORED (see ir/diff.py) so a session rename is not a false change. ASN /
+    type / via / disabled that are PRESENT-but-unparseable (templated {{var}} /
+    non-enum / non-bool) keep their parsed field None and carry the raw token in
+    the matching *_unresolved field (diff-bearing) so absent->templated does not
+    collapse to None==None (the GS27 metric false-SAFE scar tissue). auth_key is
+    NEVER modeled (secret). `unresolved` = the neighbor-IP map key is not a literal
+    IP. `ambiguous` = 2+ sessions defined this (device, neighbor_ip) with differing
+    modeled attrs (set by ingest, never last-win)."""
+
+    device_id: str
+    role: DeviceRole
+    session_name: str
+    neighbor_ip: str
+    local_as: int | None = None
+    neighbor_as: int | None = None
+    session_type: str | None = None   # "external" | "internal"; None if absent OR unparseable
+    disabled: bool = False            # per-neighbor admin shutdown (schema default False)
+    via: str | None = None            # transport lan|tunnel|vpn|wan; None if absent/unparseable
+    local_as_unresolved: str | None = None
+    neighbor_as_unresolved: str | None = None
+    session_type_unresolved: str | None = None
+    via_unresolved: str | None = None
+    disabled_unresolved: str | None = None
+    unresolved: bool = False
+    ambiguous: bool = False
+    meta: FactMeta = CONFIG_META
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            object.__setattr__(self, "id", f"{self.device_id}:bgp:{self.neighbor_ip}")
+
+
+@dataclass(frozen=True)
 class Client:
     mac: str
     kind: ClientKind

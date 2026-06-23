@@ -20,6 +20,7 @@ _IGNORED_FIELDS = {"meta", "stp_meta"}
 _IGNORED_BY_KIND: dict[str, frozenset[str]] = {
     "device": frozenset({"name"}),
     "wlan": frozenset({"inherited"}),
+    "bgp_peer": frozenset({"session_name"}),
 }
 
 # Entity kinds the diff walks. Adding a domain (WAN/NAC/routing) = append ONE line
@@ -34,6 +35,7 @@ _ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
     ("client", lambda ir: ir.clients),
     ("dhcp_scope", lambda ir: ir.dhcp_scopes),
     ("wlan", lambda ir: ir.wlans),
+    ("bgp_peer", lambda ir: ir.bgp_peers),
 ]
 
 

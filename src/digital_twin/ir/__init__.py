@@ -5,6 +5,7 @@ from .confidence import Confidence, ConfidenceLevel, min_confidence
 from .diff import EntityRef, IRDiff, Modified, diff_ir
 from .entities import (
     AttachKind,
+    BgpPeer,
     Client,
     ClientEnrichment,
     ClientKind,
@@ -56,6 +57,7 @@ __all__ = [
     "fact_meta",
     "CONFIG_META",
     "OBSERVED_META",
+    "BgpPeer",
     "Device",
     "DeviceRole",
     "Port",
