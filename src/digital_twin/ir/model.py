@@ -24,6 +24,8 @@ from .entities import (
     L3Intf,
     Link,
     LinkKind,
+    NacRule,
+    NacTag,
     OspfIntf,
     Port,
     Vlan,
@@ -65,6 +67,8 @@ class IR:
     # ClientEnrichment). Evidence only: NOT walked by diff_ir, earns no
     # capability, never read by verdict logic. Defaulted: absence = no enrichment.
     client_enrichment: Mapping[str, ClientEnrichment] = _EMPTY_MAP  # type: ignore[assignment]
+    nacrules: tuple[NacRule, ...] = ()
+    nactags: tuple[NacTag, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -95,6 +99,10 @@ class IRBuilder:
         self._ap_wlan_unresolved: dict[str, list[str]] = {}
         self._client_enrichment: dict[str, ClientEnrichment] = {}
         self._wlans: list[Wlan] = []
+        self._nacrules: list[NacRule] = []
+        self._nacrule_ids: set[str] = set()
+        self._nactags: list[NacTag] = []
+        self._nactag_ids: set[str] = set()
 
     def add_device(self, device: Device) -> IRBuilder:
         if device.id in self._devices:
@@ -146,6 +154,20 @@ class IRBuilder:
         # no duplicate-id guard (unlike add_client etc.): WLANs are observational
         # lint inputs — a bad/duplicate WLAN must never fail the build.
         self._wlans.append(wlan)
+        return self
+
+    def add_nacrule(self, rule: NacRule) -> IRBuilder:
+        if rule.id in self._nacrule_ids:
+            raise IRValidationError(f"duplicate nacrule id {rule.id}")
+        self._nacrule_ids.add(rule.id)
+        self._nacrules.append(rule)
+        return self
+
+    def add_nactag(self, tag: NacTag) -> IRBuilder:
+        if tag.id in self._nactag_ids:
+            raise IRValidationError(f"duplicate nactag id {tag.id}")
+        self._nactag_ids.add(tag.id)
+        self._nactags.append(tag)
         return self
 
     def add_dhcp_scope(self, scope: DhcpScope) -> IRBuilder:
@@ -357,4 +379,6 @@ class IRBuilder:
                 {ap: tuple(r) for ap, r in self._ap_wlan_unresolved.items()}
             ),
             client_enrichment=MappingProxyType(dict(self._client_enrichment)),
+            nacrules=tuple(self._nacrules),
+            nactags=tuple(self._nactags),
         )
