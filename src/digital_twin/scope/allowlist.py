@@ -76,8 +76,8 @@ _DHCP_LEAVES: tuple[str, ...] = (
 _BGP_LEAVES: tuple[str, ...] = (
     "bgp_config.*.local_as",
     "bgp_config.*.type",
-    "bgp_config.*.neighbors.*.neighbor_as",
-    "bgp_config.*.neighbors.*.disabled",
+    "bgp_config.*.neighbors.**.neighbor_as",
+    "bgp_config.*.neighbors.**.disabled",
 )
 # Gateway BGP adds the transport selector `via` (lan|tunnel|vpn|wan); switches are
 # implicitly LAN and have no via.

@@ -10,8 +10,8 @@ from digital_twin.scope.allowlist import (
 _MODELED = {
     "bgp_config.*.local_as",
     "bgp_config.*.type",
-    "bgp_config.*.neighbors.*.neighbor_as",
-    "bgp_config.*.neighbors.*.disabled",
+    "bgp_config.*.neighbors.**.neighbor_as",
+    "bgp_config.*.neighbors.**.disabled",
 }
 _DENIED = {
     "bgp_config.*.auth_key",

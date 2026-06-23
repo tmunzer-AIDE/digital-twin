@@ -8,18 +8,20 @@ exactly this (a new network with only vlan_id is in scope; one that also sets
 isolation is not).
 
 matches(): allowlist entry syntax —
-  - '*' matches ONE OR MORE dot-separated path segments ('networks.*.vlan_id',
-    'bgp_config.*.neighbors.*.neighbor_as' where neighbor keys are IPs like
-    10.0.0.2 that contain literal dots and expand to multiple dot-path segments)
+  - '*' matches EXACTLY ONE dot-separated path segment ('networks.*.vlan_id')
+  - '**' matches ONE OR MORE dot-separated path segments, used ONLY where dict
+    keys contain literal dots — BGP neighbors are keyed by IP (e.g. '10.0.0.2'),
+    which the path walker joins with '.', expanding to four dot-segments, so the
+    neighbor position in an allowlist entry must use '**'
+    ('bgp_config.*.neighbors.**.neighbor_as')
   - a trailing '.*' matches the WHOLE subtree,
     including the root key itself              ('vars.*' allows vars and below)
   - bare entries match exactly                 ('name')
 
-Note on IP-address keys: Mist BGP neighbor dicts are keyed by IP (e.g.
-'10.0.0.2').  The `_walk` path-builder joins keys with '.' so such a key
-contributes FOUR dot-segments to the path.  '*' in an allowlist pattern must
-therefore be allowed to consume one OR MORE path segments — the `_matches_segs`
-helper implements backtracking to handle this.
+Safety invariant: '*' matches exactly one segment, so a pattern like
+'dhcpd_config.*.type' cannot cross nesting levels and match deeper paths such
+as 'dhcpd_config.corp.options.43.type'.  '**' is reserved for the neighbor-IP
+position and must NOT be used elsewhere.
 """
 
 from __future__ import annotations
@@ -75,31 +77,38 @@ def _normalized(value: Any) -> Any:
 
 
 def _matches_segs(entry_segs: list[str], path_segs: list[str]) -> bool:
-    """Backtracking segment match.  A '*' in the entry consumes ONE OR MORE path
-    segments so that IP-address dictionary keys (e.g. '10.0.0.2', which expands
-    to four dot-separated path segments) are still matched by a single '*'."""
-    ei, pi = 0, 0
-    while ei < len(entry_segs) and pi < len(path_segs):
-        if entry_segs[ei] == "*":
-            # try consuming 1..N path segments for this wildcard
+    """'*' matches EXACTLY ONE segment; '**' matches ONE OR MORE segments.
+    '**' exists for dict keys that contain literal dots (BGP neighbors are keyed
+    by IP, e.g. '10.0.0.2', expanding to multiple dot-path segments)."""
+    ei = pi = 0
+    while ei < len(entry_segs):
+        e = entry_segs[ei]
+        if e == "**":
+            if pi >= len(path_segs):
+                return False  # '**' requires at least one segment
             ei += 1
             for consume in range(1, len(path_segs) - pi + 1):
                 if _matches_segs(entry_segs[ei:], path_segs[pi + consume:]):
                     return True
             return False
-        if entry_segs[ei] != path_segs[pi]:
+        if pi >= len(path_segs):
+            return False
+        if e != "*" and e != path_segs[pi]:
             return False
         ei += 1
         pi += 1
-    return ei == len(entry_segs) and pi == len(path_segs)
+    return pi == len(path_segs)
 
 
 def matches(path: str, entry: str) -> bool:
-    """Safety invariant for greedy '*': no DENIED leaf may share a trailing leaf
-    name with an allowed pattern below the same prefix (e.g. 'bgp_config.*.networks'
-    must not appear in a denied path when 'bgp_config.*.neighbors.*.neighbor_as'
-    is allowed — the '*' in the allowed entry cannot over-match it because
-    'networks' never appears as a trailing leaf in any allowed bgp pattern)."""
+    """Match a concrete dot-path against an allowlist entry.
+
+    Tokens: '*' = exactly one segment; '**' = one or more segments (for
+    IP-address dict keys that expand to multiple dot-segments); trailing '.*'
+    = whole subtree including the root key; bare string = exact match.
+
+    Denied leaves stay denied because '*' never crosses nesting levels and
+    '**' is used only at the BGP neighbor-IP position."""
     if entry.endswith(".*"):
         root = entry[:-2]
         return path == root or path.startswith(root + ".")

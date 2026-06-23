@@ -1,22 +1,42 @@
-from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
+from digital_twin.scope.allowlist import (
+    EFFECTIVE_ALLOWLIST,
+    GATEWAY_EFFECTIVE_ALLOWLIST,
+    RAW_ALLOWLIST,
+)
 from digital_twin.scope.paths import allowed, changed_leaf_paths, matches
 
 
-def test_wildcard_matches_one_or_more_segments():
-    # Simple keys (no dots): '*' still matches one segment as before.
+def test_single_star_matches_exactly_one_segment():
+    # '*' matches exactly one segment — it must NOT cross nesting levels.
     assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
     assert not matches("networks.corp.isolation", "networks.*.vlan_id")
-    # IP-address keys contain literal dots: the path walker joins them with '.',
-    # so 'bgp_config.underlay.neighbors.10.0.0.2.neighbor_as' is the assembled
-    # path for the key '10.0.0.2' inside neighbors. '*' must consume 1+ segments
-    # to allow 'bgp_config.*.neighbors.*.neighbor_as' to pass the field gate.
+    # C1 regression: '*' must NOT over-match deeper-nested paths.
+    # 'dhcpd_config.*.type' must only match one level of nesting under dhcpd_config,
+    # NOT 'dhcpd_config.corp.options.43.type' (three levels deep).
+    assert not matches("networks.corp.sub.vlan_id", "networks.*.vlan_id")
+
+
+def test_double_star_matches_one_or_more_segments():
+    # '**' is the one-or-more wildcard, used ONLY at the BGP neighbor-IP position.
+    # IP-address keys contain literal dots: 'bgp_config.underlay.neighbors.10.0.0.2.neighbor_as'
+    # is assembled from the key '10.0.0.2' — '**' must consume 1+ segments.
     assert matches(
         "bgp_config.underlay.neighbors.10.0.0.2.neighbor_as",
-        "bgp_config.*.neighbors.*.neighbor_as",
+        "bgp_config.*.neighbors.**.neighbor_as",
     )
+    assert matches(
+        "bgp_config.underlay.neighbors.10.0.0.2.disabled",
+        "bgp_config.*.neighbors.**.disabled",
+    )
+    # '**' must NOT match zero segments.
+    assert not matches(
+        "bgp_config.underlay.neighbors.neighbor_as",
+        "bgp_config.*.neighbors.**.neighbor_as",
+    )
+    # '**' must not allow unrelated trailing leaves.
     assert not matches(
         "bgp_config.underlay.neighbors.10.0.0.2.auth_key",
-        "bgp_config.*.neighbors.*.neighbor_as",
+        "bgp_config.*.neighbors.**.neighbor_as",
     )
 
 
@@ -69,9 +89,33 @@ def test_allowed_checks_any_entry():
     assert not allowed("networks.corp.isolation", allowlist)
 
 
-def test_effective_allowlist_greedy_star_does_not_overmatch_bgp_denied_leaves():
-    # Guard against '*' backtracking silently allowing a DENIED BGP leaf.
-    # 'bgp_config.*.neighbors.*.neighbor_as' IS allowed; these adjacent paths
+def test_c1_overmatch_regression_gatewaytemplate():
+    """C1 regression: paths that were wrongly allowed by the old greedy '*' must now
+    be denied.  Under greedy '*', 'dhcpd_config.*.type' matched
+    'dhcpd_config.corp.options.43.type' (3 nesting levels); under '*' = exactly one
+    segment it does not.  Same for vendor_encapsulated and port_config.*.disabled."""
+    # dhcpd_config.<scope>.options.<n>.type — was wrongly SAFE, must be UNKNOWN
+    assert not allowed("dhcpd_config.corp.options.43.type", RAW_ALLOWLIST["gatewaytemplate"])
+    assert not allowed("dhcpd_config.corp.options.43.type", GATEWAY_EFFECTIVE_ALLOWLIST)
+    # dhcpd_config.<scope>.vendor_encapsulated.<n>.type — same shape
+    assert not allowed(
+        "dhcpd_config.corp.vendor_encapsulated.1.type", RAW_ALLOWLIST["gatewaytemplate"]
+    )
+    assert not allowed(
+        "dhcpd_config.corp.vendor_encapsulated.1.type", GATEWAY_EFFECTIVE_ALLOWLIST
+    )
+    # port_config.<port>.wan_source_nat.disabled — was wrongly SAFE, must be UNKNOWN
+    assert not allowed(
+        "port_config.ge-0/0/0.wan_source_nat.disabled", RAW_ALLOWLIST["gatewaytemplate"]
+    )
+    assert not allowed(
+        "port_config.ge-0/0/0.wan_source_nat.disabled", GATEWAY_EFFECTIVE_ALLOWLIST
+    )
+
+
+def test_bgp_denied_leaves_not_overmatched():
+    # Guard against '**' silently allowing a DENIED BGP leaf.
+    # 'bgp_config.*.neighbors.**.neighbor_as' IS allowed; these adjacent paths
     # with structurally similar prefixes or SAME trailing leaf names are NOT.
 
     # bgp_config.<vrf>.networks is NOT a modeled leaf (advertised-prefix list,
@@ -82,7 +126,7 @@ def test_effective_allowlist_greedy_star_does_not_overmatch_bgp_denied_leaves():
     assert not allowed("bgp_config.underlay.auth_key", EFFECTIVE_ALLOWLIST)
 
     # import_policy is not a modeled leaf — denied even though it sits under
-    # the neighbors subtree that the allowed 'neighbors.*.neighbor_as' touches
+    # the neighbors subtree that the allowed 'neighbors.**.neighbor_as' touches
     assert not allowed(
         "bgp_config.underlay.neighbors.10.0.0.2.import_policy", EFFECTIVE_ALLOWLIST
     )
