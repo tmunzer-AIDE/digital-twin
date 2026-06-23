@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 
 from digital_twin.contracts import Finding
+from digital_twin.verdict.org_nac_verdict import OrgNacVerdict
 from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
 from digital_twin.viz.markdown import to_markdown
@@ -138,6 +139,33 @@ def org_verdict_to_dict(ov: OrgVerdict) -> dict[str, Any]:
         ],
         "per_site": {sid: verdict_to_dict(v) for sid, v in ov.per_site.items()},
     }
+
+
+def org_nac_verdict_to_dict(v: OrgNacVerdict) -> dict[str, Any]:
+    return {
+        "decision": v.decision.value,
+        "decision_reasons": list(v.decision_reasons),
+        "changes": [
+            {"rule_id": c.rule_id, "name": c.name, "kind": c.kind,
+             "changed_fields": list(c.changed_fields)}
+            for c in v.changes
+        ],
+        "findings": [_plain(f) for r in v.check_results for f in r.findings],
+        "adapter_findings": [_plain(f) for f in v.adapter_findings],
+        "rejections": [{"stage": r.stage, "reasons": list(r.reasons)} for r in v.rejections],
+    }
+
+
+def render_org_nac_human(v: OrgNacVerdict) -> str:
+    changed = ", ".join(f"{c.kind} {c.rule_id}" for c in v.changes) or "(none)"
+    lines = [f"org-nac decision: {v.decision.name}  changes: {changed}"]
+    lines += [f"  reason: {r}" for r in v.decision_reasons[:10]]
+    for f in v.adapter_findings:
+        lines.append(_finding_line(f, "adapter"))
+    for res in v.check_results:
+        for f in res.findings:
+            lines.append(_finding_line(f))
+    return "\n".join(lines)
 
 
 def render_org_human(ov: OrgVerdict) -> str:

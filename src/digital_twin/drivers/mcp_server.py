@@ -14,13 +14,18 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from digital_twin.contracts import Rejection
-from digital_twin.drivers.cli import _is_org_plan
-from digital_twin.drivers.render import org_verdict_to_dict, verdict_to_dict
-from digital_twin.engine.pipeline import simulate, simulate_org_template
+from digital_twin.drivers.cli import _is_org_nac_plan, _is_org_plan
+from digital_twin.drivers.render import (
+    org_nac_verdict_to_dict,
+    org_verdict_to_dict,
+    verdict_to_dict,
+)
+from digital_twin.engine.pipeline import simulate, simulate_org_nac, simulate_org_template
 from digital_twin.ir import IRDiff
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.providers.base import StateProvider
 from digital_twin.verdict.decision import Decision, DecisionInputs
+from digital_twin.verdict.org_nac_verdict import OrgNacVerdict
 from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import assemble
 
@@ -33,6 +38,16 @@ def _provider(replay_fixture: str | None) -> StateProvider:
     from digital_twin.providers.mist_api import MistApiProvider
 
     return MistApiProvider()
+
+
+def _unknown_org_nac_dict(reason: str) -> dict[str, Any]:
+    """Well-formed UNKNOWN OrgNacVerdict dict for the MCP error envelope."""
+    v = OrgNacVerdict(
+        decision=Decision.UNKNOWN,
+        decision_reasons=(reason,),
+        changes=(), check_results=(), adapter_findings=(),
+        rejections=(Rejection(stage="driver", reasons=(reason,)),))
+    return org_nac_verdict_to_dict(v)
 
 
 def _unknown_org_dict(reason: str) -> dict[str, Any]:
@@ -55,6 +70,14 @@ def simulate_change(
     replay_fixture: str | None = None,
     l0_full_object: bool = False,
 ) -> dict[str, Any]:
+    if _is_org_nac_plan(change_plan):
+        try:
+            return org_nac_verdict_to_dict(simulate_org_nac(
+                change_plan, provider=_provider(replay_fixture),
+                l0_full_object=l0_full_object))
+        except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
+            return _unknown_org_nac_dict(f"internal error: {e}")
+
     if _is_org_plan(change_plan):
         try:
             org_verdict = simulate_org_template(

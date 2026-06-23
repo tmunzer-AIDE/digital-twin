@@ -34,6 +34,7 @@ _ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
     ("client", lambda ir: ir.clients),
     ("dhcp_scope", lambda ir: ir.dhcp_scopes),
     ("wlan", lambda ir: ir.wlans),
+    ("nacrule", lambda ir: ir.nacrules),
 ]
 
 

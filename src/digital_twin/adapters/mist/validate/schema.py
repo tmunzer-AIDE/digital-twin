@@ -39,6 +39,11 @@ _SCHEMA_FILES: dict[str, str] = {
     # L0-validates instead of fatal-rejecting; scoped L0 (changed roots) means a
     # partial WLAN update only validates the touched root.
     "wlan": "wlan.schema.json",
+    # thin/permissive nacrule schema (org NAC rules, GS34): types the modeled
+    # leaves so a nacrule op L0-validates; NO additionalProperties:false, so
+    # unmodeled fields pass L0 and the field gate (RAW_ALLOWLIST["nacrule"])
+    # owns them. Refresh via tools/extract_oas.py when the OAS snapshot is bumped.
+    "nacrule": "nacrule.schema.json",
 }
 _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
