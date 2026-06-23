@@ -14,7 +14,7 @@ from digital_twin.contracts import (
     ObjectRef,
     Severity,
 )
-from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff, NacRule
+from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRDiff, NacRule
 
 
 def is_provable(r: NacRule) -> bool:
@@ -102,7 +102,7 @@ class NacShadowingCheck:
     domain = "nac"
     default_severity = Severity.WARNING
 
-    def requires(self) -> frozenset[object]:
+    def requires(self) -> frozenset[Capability]:
         return frozenset()
 
     def applies_to(self, diff: IRDiff) -> bool:

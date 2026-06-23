@@ -3,6 +3,7 @@
 from .base import (
     FetchError,
     FetchFailure,
+    NacFetch,
     OrgScope,
     OrgTemplateContext,
     RawSiteState,
@@ -15,6 +16,7 @@ from .mist_api import MistApiProvider
 __all__ = [
     "FetchError",
     "FetchFailure",
+    "NacFetch",
     "OrgScope",
     "OrgTemplateContext",
     "RawSiteState",

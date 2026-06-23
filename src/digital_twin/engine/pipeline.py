@@ -704,8 +704,11 @@ def simulate_org_nac(
     diff = diff_ir(base_ir, prop_ir)
     ctx = CheckContext(baseline=AnalysisContext(base_ir),
                        proposed=AnalysisContext(prop_ir), diff=diff)
-    checks = (NacDeltaCheck(), NacShadowingCheck())
-    results = tuple(c.run(ctx) for c in checks if c.applies_to(diff))
+    # Run through CheckRegistry, NOT direct c.run(ctx): the registry isolates a
+    # crashing check to a CHECK_ERROR + OPERATIONAL finding (→ decide() floors
+    # REVIEW), gates applies_to (NOT_APPLICABLE when the diff doesn't touch nac),
+    # and resolves finding names centrally — so a check bug degrades, never escapes.
+    results = CheckRegistry([NacDeltaCheck(), NacShadowingCheck()]).run_all(ctx)
 
     decision, reasons = decide(DecisionInputs(
         rejections=(), l0_fatal=False, baseline_unavailable=False,

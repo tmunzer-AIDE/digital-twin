@@ -83,6 +83,7 @@ def test_plan2_public_api():
     from digital_twin.providers import (
         FetchError,
         MistApiProvider,
+        NacFetch,
         OrgScope,
         OrgTemplateContext,
         RawSiteState,
@@ -105,6 +106,7 @@ def test_plan2_public_api():
             OrgScope,
             OrgTemplateContext,
             StateProvider,
+            NacFetch,
         )
     )
 

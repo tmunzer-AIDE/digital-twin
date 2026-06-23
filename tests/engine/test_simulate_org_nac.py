@@ -150,3 +150,19 @@ def test_duplicate_baseline_id_no_phantom_diff():
     assert not any(c.rule_id == "a" for c in v.changes)          # no phantom diff on the dup
     assert any(f.code == "nac.ingest.duplicate" for f in v.adapter_findings)
     assert v.decision is Decision.REVIEW
+
+
+def test_crashing_nac_check_degrades_to_review_not_crash(monkeypatch):
+    # a buggy NAC check must be isolated by CheckRegistry to a CHECK_ERROR result
+    # (→ decide() floors REVIEW) — it must NOT escape simulate_org_nac as a traceback.
+    from digital_twin.checks.base import Status
+    from digital_twin.checks.nac.shadowing import NacShadowingCheck
+
+    def _boom(self, ctx):  # noqa: ANN001, ARG001
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(NacShadowingCheck, "run", _boom)
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("update", "b", {"order": 0})), provider=FakeProvider(nf))
+    assert v.decision is Decision.REVIEW
+    assert any(r.status is Status.CHECK_ERROR for r in v.check_results)
