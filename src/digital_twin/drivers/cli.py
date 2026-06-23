@@ -13,12 +13,14 @@ import sys
 from pathlib import Path
 
 from digital_twin.drivers.render import (
+    org_nac_verdict_to_dict,
     org_verdict_to_dict,
     render_human,
     render_org_human,
+    render_org_nac_human,
     verdict_to_dict,
 )
-from digital_twin.engine.pipeline import simulate, simulate_org_template
+from digital_twin.engine.pipeline import simulate, simulate_org_nac, simulate_org_template
 from digital_twin.engine.run_context import RunContext
 from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
 from digital_twin.providers.base import (
@@ -30,7 +32,7 @@ from digital_twin.providers.base import (
     SiteScope,
     StateProvider,
 )
-from digital_twin.scope.allowlist import ORG_OBJECT_TYPES
+from digital_twin.scope.allowlist import NAC_OBJECT_TYPES, ORG_OBJECT_TYPES
 from digital_twin.verdict.decision import Decision
 
 EXIT_CODES = {Decision.SAFE: 0, Decision.REVIEW: 10, Decision.UNSAFE: 20, Decision.UNKNOWN: 30}
@@ -68,6 +70,18 @@ class _RecordingProvider:
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         return self._inner.resolve_org_nac(scope)
+
+
+def _is_org_nac_plan(plan_data: object) -> bool:
+    if not isinstance(plan_data, dict):
+        return False
+    ops = plan_data.get("ops")
+    scope = plan_data.get("scope")
+    return (
+        isinstance(ops, list) and bool(ops)
+        and all(isinstance(o, dict) and o.get("object_type") in NAC_OBJECT_TYPES for o in ops)
+        and isinstance(scope, dict) and not scope.get("site_id")
+    )
 
 
 def _is_org_plan(plan_data: object) -> bool:
@@ -118,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     recording = _RecordingProvider(provider)
 
     run = RunContext()
+
+    if _is_org_nac_plan(plan_data):
+        nac_verdict = simulate_org_nac(
+            plan_data, provider=recording, run=run, l0_full_object=args.l0_full_object)
+        print(json.dumps(org_nac_verdict_to_dict(nac_verdict), indent=1)
+              if args.json else render_org_nac_human(nac_verdict))
+        return EXIT_CODES[nac_verdict.decision]
 
     if _is_org_plan(plan_data):
         # ORG (template) path — fan-out across all assigned sites
