@@ -1099,6 +1099,16 @@ def test_templated_disabled_baseline_removed_is_note_not_removed():
                _ir([]))
     assert "wired.l3.bgp_adjacency.peering_removed" not in _codes(res)
     assert res.coverage.notes
+
+
+def test_stable_fuzzy_peer_does_not_floor_unrelated_change():
+    # peer A is ambiguous in BOTH base and prop (identical -> NOT delta-touched);
+    # peer B changes its AS. Only B's finding fires; A emits NO note (relevance scope).
+    a = _peer("10.0.0.2", ambiguous=True, neighbor_as=65001)
+    res = _run(_ir([a, _peer("10.0.0.3", neighbor_as=65001)]),
+               _ir([a, _peer("10.0.0.3", neighbor_as=65002)]))
+    assert "wired.l3.bgp_adjacency.as_changed" in _codes(res)
+    assert not res.coverage.notes  # the stable ambiguous A did NOT floor to PARTIAL/REVIEW
 ```
 Confirm the real import path for building an `AnalysisContext` from an IR (the OSPF tests use the same harness — grep `tests/checks/wired/` for how an existing check test constructs `CheckContext`, and copy that exact helper/import).
 
@@ -1228,10 +1238,26 @@ class BgpAdjacencyCheck:
                 return True
             return False
 
+        # Relevance scope: process ONLY peers whose own bgp_peer entity was delta-touched
+        # (added / removed / modified). A STABLE pre-existing fuzzy peer (ambiguous /
+        # unresolved / templated-disabled, unchanged) must NEVER emit a note and floor an
+        # unrelated BGP change to REVIEW (spec §2: notes are relevance-scoped). Confident
+        # findings are already implicitly scoped — an unchanged peer is not in the diff and
+        # its base==prop attributes produce no add/remove/change — but the fuzzy notes are
+        # presence-based, so they need this explicit guard.
+        touched_ids = {
+            r.id
+            for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
+            if r.kind == "bgp_peer"
+        }
         all_keys = sorted(set(base) | set(prop))
         for key in all_keys:
             b, p = base.get(key), prop.get(key)
             did, nip = key
+            cur = b if b is not None else p
+            assert cur is not None
+            if cur.id not in touched_ids:
+                continue  # stable peer, not part of this change -> no compare, no note
             if _note_if_fuzzy(did, nip, b, p):
                 continue
             b_active = b is not None and _active(b)
