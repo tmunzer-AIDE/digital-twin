@@ -111,7 +111,6 @@ class NacShadowingCheck:
     def run(self, ctx: CheckContext) -> CheckResult:
         base = {r.id: r for r in ctx.baseline.ir.nacrules}
         prop = {r.id: r for r in ctx.proposed.ir.nacrules}
-        names = {t.id: t.name for t in ctx.proposed.ir.nactags}  # noqa: F841 (future labels)
         changed = _changed_ids(ctx.diff)
         changed_fields = {m.ref.id: m.changed_fields
                           for m in ctx.diff.modified if m.ref.kind == "nacrule"}
