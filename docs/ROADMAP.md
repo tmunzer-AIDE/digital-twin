@@ -146,6 +146,24 @@ isolation) correctly NOT flagged; ingest clean.
   unmodeled churn so GS33 runs; a pure auth change with no type change stays
   UNKNOWN. (Decide the psk→eap-reads-SAFE edge before building.)
 
+- 🔵 **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`,
+  proposed) — on a switch's effective config, if **at least one ASSIGNED port profile
+  uses 802.1X and/or MAC-auth (MAB)**, then **at least one RADIUS server OR Mist NAC
+  must be configured**; otherwise authenticating clients are denied/dropped (no
+  authenticator to reach). Single-state config-lint over the PROPOSED IR, **delta-
+  conditioned** via `run_delta_lint` (introduced = a profile gains dot1x/MAB while no
+  RADIUS/NAC exists, OR the last RADIUS/NAC is removed while a dot1x/MAB profile stays
+  assigned → WARNING/REVIEW; pre-existing → INFO context). **Assigned** is load-bearing:
+  a dot1x/MAB profile that no port uses must NOT fire (mirrors GS33's explicit-empty-scope
+  rule). Coverage note (PARTIAL → REVIEW, never false-SAFE) when the auth mode or the
+  RADIUS/NAC presence is unresolved (templated `{{var}}` server list / unparseable
+  profile). **Modeling gap to close first:** the IR does not yet carry port-profile auth
+  mode (dot1x / `enable_mac_auth`) nor the switch's authenticator config (site/template
+  `radius_config`/`auth_servers` + Mist-NAC enablement) — both need ingest + allowlist
+  leaves (secret-free: RADIUS shared secrets stay denied/redacted, presence-only). Severity
+  is REVIEW (config-certain misconfig, client-impact unconfirmed without observed auth
+  telemetry); a future telemetry layer (failed-auth events) could escalate.
+
 ### Routing & services tier (needs the L3/routing IR extension)
 
 Today every plan touching these resolves to UNKNOWN by default-deny (test
@@ -245,15 +263,34 @@ modeling" below.
   should read as telemetry-**blind** (no capability) for coverage honesty; (c) extract
   the telemetry layer (`run()` sections 7–8) into a `_apply_telemetry` helper.
   Spec/plan: `docs/superpowers/{specs,plans}/2026-06-22-gs27-ospf-transit-changes*.md`.
-- 🔵 **BGP adjacency break** (GS28, MVP: ROUTE-BGP) — `bgp_config` on SWITCHES
-  too, and NOT only in EVPN/campus-fabric deployments: a standalone L3 switch
-  can run plain BGP (peering to a router/firewall/upstream) with no fabric at
-  all. Cases: fabric underlay/overlay peers, standalone switch BGP, gateway
-  WAN peers. Removing a neighbor that carries the peering or the default
-  route → UNSAFE; with live telemetry: peer IPs vs predicted subnets. NOTE:
-  the committed `device_switch.schema.json` snapshot has
-  ospf_areas/ospf_config but NO `bgp_config` — refresh the OAS snapshot when
-  this lands, or switch-BGP plans will fail/act unvalidated at L0.
+- ✅ **BGP adjacency break** (GS28, ROUTE-BGP) — DONE 2026-06-23. Role-aware
+  `BgpPeer` IR entity minted for SWITCHES **and** gateways (switch via
+  site_setting/networktemplate/device-own; gateway via `gatewaytemplate` →
+  `gateway_effective` materialize). Check `wired.l3.bgp_adjacency`: six
+  structural codes (`.peering_removed`/`.peering_disabled`/`.peering_added`/
+  `.as_changed`/`.session_type_changed`/`.transport_changed`) at REVIEW, plus
+  an escalate-only telemetry layer (`BgpNeighbor` from `org_bgp`/`site_bgp`,
+  `BGP_TELEMETRY`) that raises a session-breaking change on a **baseline-
+  established** peer to UNSAFE via a DIRECT peer-IP set lookup (config carries
+  the neighbor IP — no subnet prediction). `auth_key` (secret) + `networks`
+  (advertised prefixes) + timers DENIED → UNKNOWN. The OAS-refresh NOTE was a
+  non-issue: every committed schema is top-level permissive and `gatewaytemplate`
+  defines `bgp_config`, so a bgp edit never fatals at L0.
+  Deferred follow-ups: advertised-prefix (`networks`) BGP checking; auth_key-
+  bearing-neighbor-removal sharpness (→ UNKNOWN today); VRF-scoped peer identity;
+  gateway device-op BGP (still UNKNOWN — M1 field-gate switch-only); refresh the
+  committed `device_switch.schema.json` to include `bgp_config` (L0 permissive
+  covers it for now); full live-simulate against a BGP-bearing org (test org has
+  zero live BGP — `site_bgp` returns cleanly empty, unlike OSPF's 404).
+  Also landed: `scope/paths.py` gained a `**` allowlist token (one-or-more path
+  segments) used ONLY in the two BGP neighbor patterns — BGP neighbors are keyed
+  by IP, whose literal dots expand to multiple path segments, so `*` (restored to
+  EXACTLY-one) couldn't match them; `**` is scoped to the neighbor-IP position so
+  no other domain over-matches (a final-review catch: a global greedy `*` had
+  over-matched real gatewaytemplate `dhcpd_config.*.options.*.type` /
+  `port_config.*.wan_source_nat.disabled` → false-SAFE; now denied, regression-
+  tested off the committed OAS). `compile/switch.py` `_DEVICE_OWN_FIELDS` gained
+  `bgp_config` (device-level switch BGP simulable, symmetric with OSPF).
 - 🔵 **WAN failover impact** (GS29, MVP: ROUTE-WAN) — WAN port removed from a
   gateway → redundancy/bandwidth reduction → REVIEW; the last one → UNSAFE.
 - ✅ **Org NAC rules** (GS34) — wired→nac: honest delta-reporting (`nac.rule.change`) + provable-superset shadowing (`nac.rule.shadowed`) via a dedicated `simulate_org_nac` path; decision range SAFE/REVIEW/UNKNOWN (no impact modeling yet).

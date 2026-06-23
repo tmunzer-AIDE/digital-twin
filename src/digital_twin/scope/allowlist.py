@@ -5,7 +5,8 @@ IR actually models are in scope — networks carry 7 OAS leaves but the IR model
 only vlan_id; port_usages carry 42 but the IR consumes only the four VLAN-
 semantics attributes. Allowing a whole subtree would let an unmodeled change
 (networks.*.isolation) simulate as falsely "in scope". Entry syntax is
-scope.paths.matches: '*' = one key segment, trailing
+scope.paths.matches: '*' = exactly one key segment, '**' = one or more segments
+(only for dict keys that contain literal dots, e.g. BGP neighbor IPs), trailing
 '.*' = whole subtree, bare = exact leaf.
 """
 
@@ -79,6 +80,21 @@ _DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.ip_end",
     "dhcpd_config.*.gateway",
 )
+# BGP peering the IR models AND acts on (GS28 wired.l3.bgp_adjacency): per-neighbor
+# AS + admin-state (the break signals), session local_as + type. EVERYTHING else
+# (auth_key=secret, networks=advertised prefixes [no v1 check], timers, policies,
+# bfd, multihop) stays DENIED -> UNKNOWN: allowlisting a leaf no check reasons
+# about is a false-SAFE.
+_BGP_LEAVES: tuple[str, ...] = (
+    "bgp_config.*.local_as",
+    "bgp_config.*.type",
+    "bgp_config.*.neighbors.**.neighbor_as",
+    "bgp_config.*.neighbors.**.disabled",
+)
+# Gateway BGP adds the transport selector `via` (lan|tunnel|vpn|wan); switches are
+# implicitly LAN and have no via.
+_BGP_GATEWAY_LEAVES: tuple[str, ...] = (*_BGP_LEAVES, "bgp_config.*.via")
+
 # Gateway modeled effective leaves: exactly what _gateway_ports_and_l3 + gateway
 # dhcp consume AND act on. NOT port_config.*.usage (inert -> Port.profile), NOT
 # networks (gateway namespace is org_networks, not the device's own networks).
@@ -96,7 +112,7 @@ _GATEWAY_DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.gateway",
 )
 _GATEWAY_LEAVES: tuple[str, ...] = (
-    *_GATEWAY_PORT_LEAVES, *_GATEWAY_L3_LEAVES, *_GATEWAY_DHCP_LEAVES,
+    *_GATEWAY_PORT_LEAVES, *_GATEWAY_L3_LEAVES, *_GATEWAY_DHCP_LEAVES, *_BGP_GATEWAY_LEAVES,
 )
 
 # Snooping intent (Device.dhcp_snooping, the wired.dhcp.snooping check):
@@ -156,6 +172,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_DHCP_LEAVES,
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
+        *_BGP_LEAVES,
         "vars.*",
     ),
     "device": (
@@ -166,6 +183,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_IRB_LEAVES,
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
+        *_BGP_LEAVES,
         "name",
         "notes",
     ),
@@ -234,6 +252,7 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_DHCP_LEAVES,
     *_SNOOPING_LEAVES,
     *_OSPF_LEAVES,
+    *_BGP_LEAVES,
     "vars.*",
 )
 
@@ -257,6 +276,6 @@ DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
     "switch": (
         *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
-        *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES,
+        *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
     ),
 }

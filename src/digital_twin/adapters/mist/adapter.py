@@ -18,6 +18,7 @@ from digital_twin.adapters.mist.apply import apply_plan
 from digital_twin.adapters.mist.compile.gateway import compile_gateway_device
 from digital_twin.adapters.mist.compile.switch import compile_device, compile_site
 from digital_twin.adapters.mist.ingest.base import IngestContext, Ingester
+from digital_twin.adapters.mist.ingest.bgp_neighbors import BgpNeighborIngester
 from digital_twin.adapters.mist.ingest.client_enrichment import ClientEnrichmentIngester
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
@@ -48,7 +49,7 @@ class MistAdapter:
             ingesters
             if ingesters is not None
             else [SwitchIngester(), LldpIngester(), ClientsIngester(), WlanIngester(),
-                  ClientEnrichmentIngester(), OspfNeighborIngester()]
+                  ClientEnrichmentIngester(), OspfNeighborIngester(), BgpNeighborIngester()]
         )
 
     def validate(
@@ -82,7 +83,7 @@ class MistAdapter:
                 # dhcpd_config from the site-level layers (sitetemplate /
                 # site_setting), so the gateway effective only carries the
                 # gatewaytemplate + device scopes.  There is no double-mint risk.
-                keys = ("port_config", "ip_configs", "dhcpd_config")
+                keys = ("port_config", "ip_configs", "dhcpd_config", "bgp_config")
                 return {**d, **{k: eff.get(k, {}) for k in keys}}
             return d
 

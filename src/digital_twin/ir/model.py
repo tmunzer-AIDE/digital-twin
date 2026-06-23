@@ -15,6 +15,8 @@ from types import MappingProxyType
 from .capabilities import Capability
 from .entities import (
     AttachKind,
+    BgpNeighbor,
+    BgpPeer,
     Client,
     ClientEnrichment,
     ClientKind,
@@ -74,6 +76,9 @@ class IR:
     # input only: NOT in diff_ir, no strict IR validation. Defaulted: absence = no telemetry.
     ospf_neighbors: tuple[OspfNeighbor, ...] = ()
     ospf_telemetry_unparsed_count: int = 0
+    bgp_peers: tuple[BgpPeer, ...] = ()
+    bgp_neighbors: tuple[BgpNeighbor, ...] = ()
+    bgp_telemetry_unparsed_count: int = 0
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -96,6 +101,10 @@ class IRBuilder:
         self._l3intf_ids: set[str] = set()
         self._ospf_intfs: list[OspfIntf] = []
         self._ospf_intf_ids: set[str] = set()
+        self._bgp_peers: list[BgpPeer] = []
+        self._bgp_peer_ids: set[str] = set()
+        self._bgp_neighbors: list[BgpNeighbor] = []
+        self._bgp_unparsed = 0
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
@@ -148,6 +157,13 @@ class IRBuilder:
             raise IRValidationError(f"duplicate ospf intf id {intf.id}")
         self._ospf_intf_ids.add(intf.id)
         self._ospf_intfs.append(intf)
+        return self
+
+    def add_bgp_peer(self, peer: BgpPeer) -> IRBuilder:
+        if peer.id in self._bgp_peer_ids:
+            raise IRValidationError(f"duplicate bgp peer id {peer.id}")
+        self._bgp_peer_ids.add(peer.id)
+        self._bgp_peers.append(peer)
         return self
 
     def add_client(self, client: Client) -> IRBuilder:
@@ -213,6 +229,15 @@ class IRBuilder:
         self._ospf_unparsed = unparsed_count
         return self
 
+    def set_bgp_neighbors(
+        self, neighbors: Iterable[BgpNeighbor], unparsed_count: int = 0
+    ) -> IRBuilder:
+        """Publish OBSERVATIONAL live BGP adjacencies atomically. NOT validated in
+        build() — a bad neighbor must never fail the IR (non-load-bearing)."""
+        self._bgp_neighbors = list(neighbors)
+        self._bgp_unparsed = unparsed_count
+        return self
+
     # -- lookups / mutation used by ingesters (pre-build) ----------------------
     def has_device(self, did: str) -> bool:
         return did in self._devices
@@ -243,6 +268,7 @@ class IRBuilder:
         errors += self._validate_links()
         errors += self._validate_l3intfs()
         errors += self._validate_ospf_intfs()
+        errors += self._validate_bgp_peers()
         errors += self._validate_clients()
         errors += self._validate_vc()
         errors += self._validate_wlan_reqs()
@@ -303,6 +329,13 @@ class IRBuilder:
                 errors.append(f"ospf intf {o.id} has empty network_name")
             if o.vlan_id is not None and o.vlan_id not in self._vlans:
                 errors.append(f"ospf intf {o.id} references unknown vlan {o.vlan_id}")
+        return errors
+
+    def _validate_bgp_peers(self) -> list[str]:
+        errors: list[str] = []
+        for p in self._bgp_peers:
+            if p.device_id not in self._devices:
+                errors.append(f"bgp peer {p.id} references unknown device {p.device_id}")
         return errors
 
     def _validate_clients(self) -> list[str]:
@@ -399,4 +432,7 @@ class IRBuilder:
             nactags=tuple(self._nactags),
             ospf_neighbors=tuple(self._ospf_neighbors),
             ospf_telemetry_unparsed_count=self._ospf_unparsed,
+            bgp_peers=tuple(self._bgp_peers),
+            bgp_neighbors=tuple(self._bgp_neighbors),
+            bgp_telemetry_unparsed_count=self._bgp_unparsed,
         )

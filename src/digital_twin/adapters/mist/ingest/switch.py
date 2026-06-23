@@ -7,7 +7,9 @@ device list for identity (mac/model/role). APs become leaf Device entities here
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from digital_twin.contracts import (
@@ -19,6 +21,7 @@ from digital_twin.contracts import (
     Severity,
 )
 from digital_twin.ir import (
+    BgpPeer,
     Confidence,
     ConfidenceLevel,
     Device,
@@ -78,6 +81,59 @@ def _literal_subnet(value: Any) -> str | None:
     if not value or "{{" in str(value):
         return None
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# GS28: BGP peer helpers
+# ---------------------------------------------------------------------------
+
+_BGP_TYPES = frozenset({"external", "internal"})
+_BGP_VIAS = frozenset({"lan", "tunnel", "vpn", "wan"})
+
+
+def _bgp_as_int(v: Any) -> tuple[int | None, str | None]:
+    """(parsed, unresolved_token). absent -> (None, None); present-unparseable -> (None, raw)."""
+    if v is None:
+        return None, None
+    try:
+        return int(v), None
+    except (TypeError, ValueError):
+        return None, str(v)
+
+
+def _bgp_enum(v: Any, allowed: frozenset[str]) -> tuple[str | None, str | None]:
+    if v is None:
+        return None, None
+    s = str(v)
+    return (s, None) if s in allowed else (None, s)
+
+
+def _bgp_disabled(v: Any) -> tuple[bool, str | None]:
+    if v is None:
+        return False, None                # schema default False
+    if isinstance(v, bool):
+        return v, None
+    return False, str(v)                  # templated/non-bool -> unresolved token
+
+
+def _is_literal_ip(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _bgp_attrs(p: BgpPeer) -> tuple[Any, ...]:
+    """Attr-key for ambiguity comparison: spans ALL modeled attrs including
+    admin-state and every *_unresolved token (diff-bearing)."""
+    return (
+        p.local_as, p.local_as_unresolved,
+        p.neighbor_as, p.neighbor_as_unresolved,
+        p.session_type, p.session_type_unresolved,
+        p.via, p.via_unresolved,
+        p.disabled, p.disabled_unresolved,
+    )
 
 
 def _org_vlan_map(ctx: IngestContext) -> dict[str, int | None]:
@@ -355,8 +411,10 @@ class SwitchIngester:
             if dev.get("type") == "switch":
                 self._switch_ports_and_l3(ctx, dev)
                 self._ospf(ctx, dev)
+                self._bgp(ctx, dev, DeviceRole.SWITCH)
             elif dev.get("type") == "gateway":
                 self._gateway_ports_and_l3(ctx, dev)
+                self._bgp(ctx, dev, DeviceRole.GATEWAY)
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def _devices(self, ctx: IngestContext) -> None:
@@ -795,6 +853,52 @@ class SwitchIngester:
                         unresolved=(vid is None),
                     )
                 )
+
+    def _bgp(self, ctx: IngestContext, dev: Mapping[str, Any], role: DeviceRole) -> None:
+        """GS28: switch/gateway BGP peerings. Switch reads device/site effective
+        config; gateway reads its materialized bgp_config off the raw device. One
+        BgpPeer per (device, neighbor_ip) — a neighbor IP claimed by 2+ sessions
+        with differing modeled attrs is marked ambiguous (never last-win)."""
+        did = device_id(str(dev["mac"]))
+        if role is DeviceRole.GATEWAY:
+            bgp = dev.get("bgp_config") or {}
+        else:
+            eff = ctx.device_effective.get(did) or ctx.site_effective
+            bgp = eff.get("bgp_config") or {}
+        if not bgp:
+            return
+        # accumulate per neighbor_ip; detect cross-session ambiguity
+        chosen: dict[str, BgpPeer] = {}
+        ambiguous: set[str] = set()
+        for sname, scfg in bgp.items():
+            scfg = scfg or {}
+            local_as, local_as_unresolved = _bgp_as_int(scfg.get("local_as"))
+            stype, stype_unresolved = _bgp_enum(scfg.get("type"), _BGP_TYPES)
+            via, via_unresolved = _bgp_enum(scfg.get("via"), _BGP_VIAS)
+            for nip, ncfg in (scfg.get("neighbors") or {}).items():
+                ncfg = ncfg or {}
+                nas, nas_unresolved = _bgp_as_int(ncfg.get("neighbor_as"))
+                disabled, disabled_unresolved = _bgp_disabled(ncfg.get("disabled"))
+                key = str(nip)
+                peer = BgpPeer(
+                    device_id=did, role=role, session_name=str(sname), neighbor_ip=key,
+                    local_as=local_as, neighbor_as=nas, session_type=stype,
+                    disabled=disabled, via=via,
+                    local_as_unresolved=local_as_unresolved,
+                    neighbor_as_unresolved=nas_unresolved,
+                    session_type_unresolved=stype_unresolved,
+                    via_unresolved=via_unresolved,
+                    disabled_unresolved=disabled_unresolved,
+                    unresolved=not _is_literal_ip(key),
+                )
+                if key in chosen and _bgp_attrs(chosen[key]) != _bgp_attrs(peer):
+                    ambiguous.add(key)     # differing modeled attrs -> ambiguous
+                else:
+                    chosen[key] = peer
+        for key, peer in chosen.items():
+            if key in ambiguous:
+                peer = replace(peer, ambiguous=True)
+            ctx.builder.add_bgp_peer(peer)
 
     @staticmethod
     def _meta_for(resolution: str, usage_name: str | None) -> FactMeta:

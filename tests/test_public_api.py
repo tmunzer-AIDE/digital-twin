@@ -184,7 +184,7 @@ def test_plan4_public_api():
     from digital_twin.verdict.decision import Decision, DecisionInputs, decide
     from digital_twin.verdict.verdict import Verdict, assemble
 
-    assert len(ALL_WIRED_CHECKS) == 19
+    assert len(ALL_WIRED_CHECKS) == 20
     assert all(callable(f) for f in (find_cycles, resolve_exit, decide, assemble))
     assert all(
         x is not None
@@ -250,3 +250,9 @@ def test_ospf_withdrawal_is_registered():
     from digital_twin.checks.wired import ALL_WIRED_CHECKS
 
     assert any(c.id == "wired.l3.ospf_withdrawal" for c in ALL_WIRED_CHECKS)
+
+
+def test_bgp_adjacency_is_registered():
+    from digital_twin.checks.wired import ALL_WIRED_CHECKS
+
+    assert any(c.id == "wired.l3.bgp_adjacency" for c in ALL_WIRED_CHECKS)

@@ -1685,3 +1685,268 @@ def ospf_op(doc: dict[str, Any], entries: dict[str, dict[str, Any]] | None, *,
         "action": "update", "order": order, "object_type": "device",
         "object_id": str(hub["id"]), "payload": _drop_nones(payload),
     }
+
+
+# ---------------------------------------------------------------------------
+# GS28: BGP adjacency-break goldens (switch + gateway)
+#
+# A MINIMAL single-switch site (no dynamic ports, no clients) whose effective
+# site_setting carries bgp_config. Switch BGP is minted from the site effective
+# config (compile_site -> site_effective -> bgp_config), so the op is a
+# site_setting update (NOT a device op — bgp_config is not in _DEVICE_OWN_FIELDS
+# and is not propagated through compile_device from the device dict).
+#
+# GS28_HUB_MAC / GS28_HUB_ID are used to match the live bgp_neighbors telemetry
+# row (device_id = normalised MAC). The bgp_minimal_doc places one switch with
+# that MAC so the peer key (device_id, neighbor_ip) resolves during escalation.
+#
+# Gateway golden: a separate single-site doc with a gateway device inheriting
+# bgp_config from a gatewaytemplate. The op is an org gatewaytemplate update
+# (uses _simulate_org), matching the existing GT golden envelope exactly.
+# ---------------------------------------------------------------------------
+
+GS28_ORG_ID = "org-gs28-tests"
+GS28_SITE_ID = "site-gs28-tests"
+GS28_HUB_MAC = "aa0028000001"
+GS28_HUB_ID = "sw-gs28-hub"
+
+GS28_GW_ORG_ID = "org-gs28-gw-tests"
+GS28_GW_SITE_ID = "site-gs28-gw"
+GS28_GT_ID = "gt-gs28-bgp"
+GS28_GW_MAC = "aa0028000099"
+GS28_GW_ID = "gw-gs28-hub"
+
+
+def bgp_minimal_doc(
+    bgp_config: dict[str, Any],
+    *,
+    bgp_neighbors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Synthetic single-switch site whose effective setting carries bgp_config
+    (mirrors ospf_minimal_doc). Earns BGP_TELEMETRY only when bgp_neighbors is
+    provided (appended to meta.fetched and set as doc["bgp_neighbors"]).
+
+    Switch BGP is read from site_effective (compile_site output), so bgp_config
+    lives in setting — NOT on the device dict.  The bgp_op companion uses a
+    site_setting update so the proposed effective picks up the change."""
+    fetched = [
+        "site", "setting", "devices", "device_stats", "port_stats",
+        "wireless_clients", "wired_clients",
+    ]
+    if bgp_neighbors is not None:
+        fetched.append("bgp_neighbors")
+    doc: dict[str, Any] = {
+        "redaction_version": 6,
+        "scope": {"org_id": GS28_ORG_ID, "site_id": GS28_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-23T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": fetched,
+            "failures": [],
+        },
+        "site": {
+            "id": GS28_SITE_ID, "org_id": GS28_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": None,
+        },
+        "setting": {"bgp_config": bgp_config, "networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GS28_HUB_MAC,
+                "id": GS28_HUB_ID,
+                "type": "switch",
+                "model": "EX2300-24P",
+                "port_config": {},
+            }
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+    if bgp_neighbors is not None:
+        doc["bgp_neighbors"] = list(bgp_neighbors)
+    return doc
+
+
+def bgp_op(
+    doc: dict[str, Any], proposed_bgp_config: dict[str, Any], *, order: int = 0
+) -> dict[str, Any]:
+    """A site_setting op that replaces bgp_config in the setting (MINIMAL payload).
+
+    Switch BGP is minted from site_effective (compile_site(nt, setting)), so the
+    correct op type is site_setting — NOT device.  bgp_config is NOT in
+    _DEVICE_OWN_FIELDS and is therefore NOT propagated from the device dict
+    through compile_device; a device op with bgp_config would leave the switch's
+    effective BGP config unchanged in both baseline and proposed.
+
+    The payload carries ONLY bgp_config so no other site_setting root is touched
+    (root-level Mist PUT: present roots replace wholesale, omitted roots persist).
+    """
+    site_id = doc["scope"]["site_id"]
+    return {
+        "action": "update", "order": order, "object_type": "site_setting",
+        "object_id": site_id,
+        "payload": {"bgp_config": proposed_bgp_config},
+    }
+
+
+def bgp_minimal_doc_device(
+    bgp_config: dict[str, Any],
+    *,
+    bgp_neighbors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Variant of bgp_minimal_doc that places bgp_config on the SWITCH DEVICE dict
+    (NOT on setting). Tests Fix 1: device-level bgp_config must flow through
+    compile_device (_DEVICE_OWN_FIELDS) so a device op produces a real IR diff.
+
+    The setting carries NO bgp_config; only the device dict does.  With Fix 1 in
+    place, compile_device overlays the device's bgp_config wholesale (device wins).
+    Without Fix 1 the device bgp_config is DROPPED — the effective is identical
+    before and after, the diff is empty, and the verdict is a false-SAFE."""
+    fetched = [
+        "site", "setting", "devices", "device_stats", "port_stats",
+        "wireless_clients", "wired_clients",
+    ]
+    if bgp_neighbors is not None:
+        fetched.append("bgp_neighbors")
+    doc: dict[str, Any] = {
+        "redaction_version": 6,
+        "scope": {"org_id": GS28_ORG_ID, "site_id": GS28_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-23T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": fetched,
+            "failures": [],
+        },
+        "site": {
+            "id": GS28_SITE_ID, "org_id": GS28_ORG_ID,
+            "networktemplate_id": None, "gatewaytemplate_id": None,
+            "sitetemplate_id": None,
+        },
+        # setting carries NO bgp_config — only the device dict does
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": None,
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GS28_HUB_MAC,
+                "id": GS28_HUB_ID,
+                "type": "switch",
+                "model": "EX2300-24P",
+                "bgp_config": bgp_config,
+                "port_config": {},
+            }
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+    if bgp_neighbors is not None:
+        doc["bgp_neighbors"] = list(bgp_neighbors)
+    return doc
+
+
+def bgp_device_op(
+    doc: dict[str, Any], proposed_bgp_config: dict[str, Any], *, order: int = 0
+) -> dict[str, Any]:
+    """A MINIMAL root-level device PUT that sets bgp_config on the switch device.
+    Mirror of ospf_op's envelope: carries ONLY the roots under test so no other
+    effective field changes (a full-object payload would reshape unrelated state).
+
+    Used with bgp_minimal_doc_device (device carries bgp_config) to prove that
+    device-level bgp_config edits flow through compile_device -> IR -> check."""
+    dev = doc["devices"][0]
+    return {
+        "action": "update", "order": order, "object_type": "device",
+        "object_id": str(dev["id"]),
+        "payload": {"type": dev.get("type", "switch"), "bgp_config": proposed_bgp_config},
+    }
+
+
+def _bgp_gw_template(bgp_config: dict[str, Any]) -> dict[str, Any]:
+    return {"id": GS28_GT_ID, "name": "gs28-bgp-gw-template", "bgp_config": bgp_config}
+
+
+def _bgp_gw_site_doc(bgp_config: dict[str, Any]) -> dict[str, Any]:
+    """Single-site doc with one gateway device inheriting bgp_config from a
+    gatewaytemplate.  Mirrors the DP/GT golden site shapes."""
+    return {
+        "redaction_version": 6,
+        "scope": {"org_id": GS28_GW_ORG_ID, "site_id": GS28_GW_SITE_ID},
+        "meta": {
+            "acquired_at": "2026-06-23T00:00:00+00:00",
+            "host": "api.mist.com",
+            "fetched": [
+                "site", "setting", "networktemplate", "devices",
+                "device_stats", "port_stats", "wireless_clients",
+                "wired_clients", "org_networks",
+            ],
+            "failures": [],
+        },
+        "site": {
+            "id": GS28_GW_SITE_ID, "org_id": GS28_GW_ORG_ID,
+            "networktemplate_id": None,
+            "gatewaytemplate_id": GS28_GT_ID,
+            "sitetemplate_id": None,
+        },
+        "setting": {"networks": {}, "port_usages": {}},
+        "networktemplate": None,
+        "gatewaytemplate": _bgp_gw_template(bgp_config),
+        "sitetemplate": None,
+        "derived_setting": None,
+        "devices": [
+            {
+                "mac": GS28_GW_MAC,
+                "id": GS28_GW_ID,
+                "type": "gateway",
+                "model": "SRX300",
+                "port_config": {},
+                "ip_configs": {},
+            }
+        ],
+        "device_stats": [],
+        "port_stats": [],
+        "wireless_clients": [],
+        "wired_clients": [],
+        "wlans": [],
+        "org_networks": [],
+    }
+
+
+def bgp_gateway_scenario(
+    base: dict[str, Any], proposed: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """GS28 gateway golden: a single-site org doc whose gatewaytemplate carries
+    bgp_config=`base`; the op changes it to `proposed`.
+
+    Uses the same org-multisite envelope as the GT/DP goldens: a 'templates' dict
+    keyed by object type, a 'sites' dict keyed by site_id, and 'fetch_failures'.
+    The plan is scope org-only (no site_id) with a gatewaytemplate update op."""
+    site_doc = _bgp_gw_site_doc(base)
+    doc: dict[str, Any] = {
+        "templates": {"gatewaytemplate": {GS28_GT_ID: _bgp_gw_template(base)}},
+        "sites": {GS28_GW_SITE_ID: site_doc},
+        "fetch_failures": [],
+    }
+    plan: dict[str, Any] = {
+        "source": "mist",
+        "scope": {"org_id": GS28_GW_ORG_ID},
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": GS28_GT_ID,
+            "payload": {"bgp_config": proposed},
+        }],
+    }
+    return doc, plan
