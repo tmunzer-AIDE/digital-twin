@@ -1,14 +1,14 @@
 """wired.l3.bgp_adjacency structural codes + coverage notes — Task 7.
 
-Task 8 will extend this file with telemetry-escalation tests; the structural
-tests here must remain passing after that extension.
+Task 8 extends this file with telemetry-escalation tests; the structural
+tests must remain passing after that extension.
 """
 
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
-from digital_twin.checks.wired.bgp_adjacency import BgpAdjacencyCheck
+from digital_twin.checks.wired.bgp_adjacency import BgpAdjacencyCheck, is_established
 from digital_twin.contracts import Severity
-from digital_twin.ir import BgpPeer, DeviceRole, IRBuilder, IRCapability, diff_ir
+from digital_twin.ir import BgpNeighbor, BgpPeer, DeviceRole, IRBuilder, IRCapability, diff_ir
 from digital_twin.ir.entities import Device
 
 
@@ -17,12 +17,21 @@ def _peer(nip: str = "10.0.0.2", **kw: object) -> BgpPeer:
                    neighbor_ip=nip, **kw)  # type: ignore[arg-type]
 
 
-def _ir(peers: list[BgpPeer], caps: tuple[IRCapability, ...] = (IRCapability.WIRED_L2,)):
+def _ir(
+    peers: list[BgpPeer],
+    caps: tuple[IRCapability, ...] = (IRCapability.WIRED_L2,),
+    neighbors: list[BgpNeighbor] | None = None,
+    telemetry: bool = False,
+):
     b = IRBuilder().add_device(Device(id="d1", role=DeviceRole.SWITCH, site="x"))
     for c in caps:
         b.with_capability(c)
+    if telemetry:
+        b.with_capability(IRCapability.BGP_TELEMETRY)
     for p in peers:
         b.add_bgp_peer(p)
+    if neighbors is not None:
+        b.set_bgp_neighbors(neighbors)
     return b.build()
 
 
@@ -143,9 +152,82 @@ def test_templated_disabled_baseline_removed_is_note_not_removed():
 
 def test_stable_fuzzy_peer_does_not_floor_unrelated_change():
     # peer A is ambiguous in BOTH base and prop (identical -> NOT delta-touched);
-    # peer B changes its AS. Only B's finding fires; A emits NO note (relevance scope).
+    # peer B changes its AS. Only B's finding fires; A emits NO ambiguity note (relevance
+    # scope). Note: the telemetry-blind note fires legitimately (as_changed is
+    # session-breaking + no telemetry) — the invariant is that A's ambiguity is silent,
+    # not that zero notes exist.
     a = _peer("10.0.0.2", ambiguous=True, neighbor_as=65001)
     res = _run(_ir([a, _peer("10.0.0.3", neighbor_as=65001)]),
                _ir([a, _peer("10.0.0.3", neighbor_as=65002)]))
     assert "wired.l3.bgp_adjacency.as_changed" in _codes(res)
-    assert not res.coverage.notes  # the stable ambiguous A did NOT floor to PARTIAL/REVIEW
+    assert not any("ambiguous" in n or "differing" in n for n in res.coverage.notes)
+
+
+# ---------------------------------------------------------------------------
+# Task 8: telemetry escalation (baseline-established join) + notes
+# ---------------------------------------------------------------------------
+
+def test_is_established_by_state_or_up_flag():
+    assert is_established(BgpNeighbor(device_id="d1", peer_ip="x", state="Established"))
+    assert is_established(BgpNeighbor(device_id="d1", peer_ip="x", state="", up=True))
+    assert not is_established(BgpNeighbor(device_id="d1", peer_ip="x", state="Idle"))
+
+
+def test_removed_established_peer_escalates_to_error():
+    base = _ir(
+        [_peer()],
+        neighbors=[BgpNeighbor(device_id="d1", peer_ip="10.0.0.2", state="Established",
+                               neighbor_as=65001, vrf="default")],
+        telemetry=True,
+    )
+    prop = _ir([], neighbors=[], telemetry=True)
+    res = _run(base, prop)
+    f = next(f for f in res.findings if f.code.endswith(".peering_removed"))
+    assert f.severity is Severity.ERROR and res.status is Status.FAIL
+    assert f.evidence["broken_peers"] == ["10.0.0.2"]
+    assert f.evidence["baseline_neighbor_as"] == 65001 and f.evidence["vrf"] == "default"
+
+
+def test_up_flag_only_peer_escalates():
+    base = _ir(
+        [_peer()],
+        neighbors=[BgpNeighbor(device_id="d1", peer_ip="10.0.0.2", state="", up=True)],
+        telemetry=True,
+    )
+    prop = _ir([], neighbors=[], telemetry=True)
+    assert _run(base, prop).status is Status.FAIL
+
+
+def test_added_peer_does_not_escalate():
+    base = _ir([], neighbors=[], telemetry=True)
+    prop = _ir(
+        [_peer()],
+        neighbors=[BgpNeighbor(device_id="d1", peer_ip="10.0.0.2", state="Established")],
+        telemetry=True,
+    )
+    res = _run(base, prop)
+    assert all(f.severity is Severity.WARNING for f in res.findings)
+
+
+def test_telemetry_blind_note_when_no_capability_and_session_breaking():
+    res = _run(_ir([_peer()]), _ir([]))   # no BGP_TELEMETRY
+    assert any("telemetry unavailable" in n.lower() for n in res.coverage.notes)
+
+
+def test_established_peer_not_in_config_note():
+    # a live peer with no config BgpPeer on a delta-touched device -> note
+    base = _ir(
+        [_peer("10.0.0.2")],
+        neighbors=[BgpNeighbor(device_id="d1", peer_ip="10.0.0.9", state="Established")],
+        telemetry=True,
+    )
+    prop = _ir(
+        [],
+        neighbors=[BgpNeighbor(device_id="d1", peer_ip="10.0.0.9", state="Established")],
+        telemetry=True,
+    )
+    res = _run(base, prop)
+    assert any(
+        "not found in" in n.lower() or "not modeled" in n.lower()
+        for n in res.coverage.notes
+    )

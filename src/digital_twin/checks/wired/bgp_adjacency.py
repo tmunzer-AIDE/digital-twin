@@ -26,11 +26,13 @@ from digital_twin.contracts import (
     Severity,
 )
 from digital_twin.ir import (
+    BgpNeighbor,
     BgpPeer,
     Capability,
     Confidence,
     ConfidenceLevel,
     DeviceRole,
+    IRCapability,
     IRDiff,
     min_confidence,
 )
@@ -44,6 +46,22 @@ _UNVERIFIED = Confidence(
         "the twin does not model may still carry these routes",
     ),
 )
+
+# Session-breaking sub-codes: the structural change is certain to drop the session.
+# .peering_added is deliberately excluded — a new peering cannot be session-BREAKING
+# (it doesn't break an existing session), so telemetry escalation never applies to it.
+_SESSION_BREAKING: frozenset[str] = frozenset({
+    "peering_removed",
+    "peering_disabled",
+    "as_changed",
+    "session_type_changed",
+    "transport_changed",
+})
+
+
+def is_established(n: BgpNeighbor) -> bool:
+    """Return True if the BgpNeighbor was established in the observed baseline."""
+    return n.up is True or n.state.strip().lower() == "established"
 
 
 def _active(p: BgpPeer) -> bool:
@@ -237,6 +255,72 @@ class BgpAdjacencyCheck:
                 # (admin-state-unresolved is handled UP FRONT by _note_if_fuzzy, which
                 # abstains before active-state classification — so a retained peer that
                 # reaches here has resolved admin-state on both sides.)
+
+        # Telemetry escalation (escalate-only; BASELINE telemetry). The structural
+        # findings ARE the breaks; baseline telemetry confirms which were live.
+        telemetry_known = IRCapability.BGP_TELEMETRY in base_ir.capabilities
+        has_unparsed = base_ir.bgp_telemetry_unparsed_count > 0
+        session_breaking_codes = frozenset(f"{self.id}.{c}" for c in _SESSION_BREAKING)
+        has_session_breaking = any(f.code in session_breaking_codes for f in findings)
+
+        if telemetry_known:
+            established = {
+                (n.device_id, n.peer_ip): n
+                for n in base_ir.bgp_neighbors
+                if is_established(n)
+            }
+            for i, f in enumerate(findings):
+                if f.code not in session_breaking_codes:
+                    continue
+                ev = f.evidence or {}
+                dev = ev.get("device")
+                nip_key = ev.get("neighbor_ip")
+                if not isinstance(dev, str) or not isinstance(nip_key, str):
+                    continue
+                n = established.get((dev, nip_key))
+                if n is None:
+                    continue
+                findings[i] = Finding(
+                    source=f.source, category=f.category, code=f.code, subject=f.subject,
+                    severity=Severity.ERROR, confidence=_HIGH,
+                    message=(
+                        f"{f.message} | telemetry: this peer was ESTABLISHED in baseline "
+                        "— this change is session-breaking, so the peering would drop"
+                    ),
+                    affected_entities=f.affected_entities,
+                    evidence={
+                        **ev,
+                        "broken_peers": [n.peer_ip],
+                        "baseline_state": n.state,
+                        "baseline_neighbor_as": n.neighbor_as,
+                        "vrf": n.vrf,
+                    },
+                    caused_by=f.caused_by,
+                )
+            # established live peer with no config BgpPeer, on a delta-touched device -> note
+            touched_devices = {
+                r.id.split(":")[0]
+                for r in (
+                    *ctx.diff.added,
+                    *ctx.diff.removed,
+                    *(m.ref for m in ctx.diff.modified),
+                )
+                if r.kind == "bgp_peer"
+            }
+            config_keys = set(base) | set(prop)
+            for (did, pip), _n in established.items():
+                if did in touched_devices and (did, pip) not in config_keys:
+                    notes.append(
+                        f"BGP peer {pip} on {did} is established in telemetry but "
+                        "not found in the modeled config — the twin is blind for it"
+                    )
+
+        # telemetry-blind note: only when a session-breaking finding exists
+        if (not telemetry_known or has_unparsed) and has_session_breaking:
+            notes.append(
+                "BGP neighbor telemetry unavailable/partial — confirmed-break "
+                "detection is blind for the changed peering(s)"
+            )
 
         return self._finish(findings, notes)
 
