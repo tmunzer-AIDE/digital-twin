@@ -15,6 +15,7 @@ from types import MappingProxyType
 from .capabilities import Capability
 from .entities import (
     AttachKind,
+    BgpNeighbor,
     BgpPeer,
     Client,
     ClientEnrichment,
@@ -72,6 +73,8 @@ class IR:
     ospf_neighbors: tuple[OspfNeighbor, ...] = ()
     ospf_telemetry_unparsed_count: int = 0
     bgp_peers: tuple[BgpPeer, ...] = ()
+    bgp_neighbors: tuple[BgpNeighbor, ...] = ()
+    bgp_telemetry_unparsed_count: int = 0
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -96,6 +99,8 @@ class IRBuilder:
         self._ospf_intf_ids: set[str] = set()
         self._bgp_peers: list[BgpPeer] = []
         self._bgp_peer_ids: set[str] = set()
+        self._bgp_neighbors: list[BgpNeighbor] = []
+        self._bgp_unparsed = 0
         self._clients: list[Client] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
@@ -200,6 +205,15 @@ class IRBuilder:
         build() — a bad neighbor must never fail the IR (non-load-bearing)."""
         self._ospf_neighbors = list(neighbors)
         self._ospf_unparsed = unparsed_count
+        return self
+
+    def set_bgp_neighbors(
+        self, neighbors: Iterable[BgpNeighbor], unparsed_count: int = 0
+    ) -> IRBuilder:
+        """Publish OBSERVATIONAL live BGP adjacencies atomically. NOT validated in
+        build() — a bad neighbor must never fail the IR (non-load-bearing)."""
+        self._bgp_neighbors = list(neighbors)
+        self._bgp_unparsed = unparsed_count
         return self
 
     # -- lookups / mutation used by ingesters (pre-build) ----------------------
@@ -395,4 +409,6 @@ class IRBuilder:
             ospf_neighbors=tuple(self._ospf_neighbors),
             ospf_telemetry_unparsed_count=self._ospf_unparsed,
             bgp_peers=tuple(self._bgp_peers),
+            bgp_neighbors=tuple(self._bgp_neighbors),
+            bgp_telemetry_unparsed_count=self._bgp_unparsed,
         )

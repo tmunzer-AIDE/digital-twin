@@ -344,6 +344,27 @@ class BgpPeer:
 
 
 @dataclass(frozen=True)
+class BgpNeighbor:
+    """OBSERVATIONAL live BGP adjacency (org_bgp/site_bgp stats). Evidence/
+    escalation input only: NOT in diff_ir, no IR validation. Both `state` and
+    `up` are represented so liveness conveyed via the boolean (not the string)
+    still escalates."""
+
+    device_id: str
+    peer_ip: str
+    state: str = ""                   # raw BGP state, e.g. "Established"
+    up: bool | None = None
+    neighbor_as: int | None = None
+    vrf: str | None = None
+    meta: FactMeta = OBSERVED_META
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            object.__setattr__(self, "id", f"{self.device_id}:bgpnbr:{self.peer_ip}")
+
+
+@dataclass(frozen=True)
 class Client:
     mac: str
     kind: ClientKind

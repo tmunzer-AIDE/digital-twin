@@ -25,3 +25,4 @@ class IRCapability(StrEnum):
     L3_EXITS = "l3.exits"
     WLAN_CONFIG = "wlan.config"  # AP VLAN requirements known from WLAN config
     OSPF_TELEMETRY = "ospf.telemetry"  # site_ospf neighbor stats fetched (peer-break layer)
+    BGP_TELEMETRY = "bgp.telemetry"  # org_bgp/site_bgp neighbor stats fetched (peer-break layer)
