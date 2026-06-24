@@ -3,8 +3,8 @@
 Usage:
   uv run python tools/extract_oas.py /path/to/mist.openapi.json|yaml
 
-Source spec: https://github.com/tmunzer/mist_openapi (pin the version you use in
-oas/VERSION). Writes small, fully-$ref-resolved JSON schema files into
+Source spec: https://github.com/mistsys/mist_openapi (official; pin the version
+you use in oas/VERSION). Writes small, fully-$ref-resolved JSON schema files into
 src/digital_twin/adapters/mist/oas/. Re-run when bumping the OAS version.
 """
 

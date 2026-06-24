@@ -1,4 +1,8 @@
 <mist_openapi @ 2026-06-09, github tmunzer/mist_openapi master>
+OFFICIAL SOURCE (going forward): github mistsys/mist_openapi — committed extracts
+are stale vs it; a re-extract is pending and should add (at least): bgp_config to
+device_switch + networktemplate, and ae_lacp_force_up to the switch port_config
+entry. `disabled` is NOT a switch port_config field (correctly absent).
 gatewaytemplate.schema.json + sitetemplate.schema.json extracted 2026-06-15 from
 github tmunzer/mist_openapi master (components: gateway_template, site_template).
 NOTE: the OAS `site_template` component is incomplete (auto_upgrade/name/vars only);
