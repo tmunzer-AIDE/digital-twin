@@ -6,7 +6,7 @@ import dataclasses
 from enum import Enum
 from typing import Any
 
-from digital_twin.contracts import Finding
+from digital_twin.contracts import Finding, ObjectConfigDiff
 from digital_twin.verdict.org_nac_verdict import OrgNacVerdict
 from digital_twin.verdict.org_verdict import OrgVerdict
 from digital_twin.verdict.verdict import Verdict
@@ -74,6 +74,35 @@ def _impact_lines(f: Finding) -> list[str]:
     return lines
 
 
+_MAX_DIFF_LEAVES = 25
+
+
+def _fmt_val(v: Any) -> str:
+    return "∅" if v is None else repr(v)
+
+
+def _render_config_diffs(diffs: tuple[ObjectConfigDiff, ...]) -> list[str]:
+    """Human 'config changes:' block — one group per object, ~/+/- per leaf,
+    capped at _MAX_DIFF_LEAVES with an explicit '(+k more)' (no silent truncation)."""
+    if not diffs:
+        return []
+    lines = ["config changes:"]
+    for d in diffs:
+        who = f'"{d.name}"' if d.name else d.object_id
+        lines.append(f"  {d.object_type} {who} ({d.action}):")
+        for c in d.changes[:_MAX_DIFF_LEAVES]:
+            if c.kind == "changed":
+                lines.append(f"    ~ {c.path}: {_fmt_val(c.before)} → {_fmt_val(c.after)}")
+            elif c.kind == "added":
+                lines.append(f"    + {c.path}: {_fmt_val(c.after)}")
+            else:  # removed
+                lines.append(f"    - {c.path}: {_fmt_val(c.before)}")
+        extra = len(d.changes) - _MAX_DIFF_LEAVES
+        if extra > 0:
+            lines.append(f"    ... (+{extra} more)")
+    return lines
+
+
 def _plain(obj: Any) -> Any:
     if isinstance(obj, Enum):
         return obj.value
@@ -111,6 +140,7 @@ def render_human(verdict: Verdict) -> str:
         lines.extend(_impact_lines(f))
     for d in verdict.diagrams:
         lines.append(f"  diagram: {d.title}")
+    lines += _render_config_diffs(verdict.config_diffs)
     if verdict.state_meta:
         lines.append(
             f"  state: {verdict.state_meta.host} @ {verdict.state_meta.state_acquired_at}"
@@ -138,6 +168,7 @@ def org_verdict_to_dict(ov: OrgVerdict) -> dict[str, Any]:
             {"stage": r.stage, "reasons": list(r.reasons)} for r in ov.org_rejections
         ],
         "per_site": {sid: verdict_to_dict(v) for sid, v in ov.per_site.items()},
+        "config_diffs": [_plain(d) for d in ov.config_diffs],
     }
 
 
@@ -153,6 +184,7 @@ def org_nac_verdict_to_dict(v: OrgNacVerdict) -> dict[str, Any]:
         "findings": [_plain(f) for r in v.check_results for f in r.findings],
         "adapter_findings": [_plain(f) for f in v.adapter_findings],
         "rejections": [{"stage": r.stage, "reasons": list(r.reasons)} for r in v.rejections],
+        "config_diffs": [_plain(d) for d in v.config_diffs],
     }
 
 
@@ -165,6 +197,7 @@ def render_org_nac_human(v: OrgNacVerdict) -> str:
     for res in v.check_results:
         for f in res.findings:
             lines.append(_finding_line(f))
+    lines += _render_config_diffs(v.config_diffs)
     return "\n".join(lines)
 
 
@@ -188,4 +221,5 @@ def render_org_human(ov: OrgVerdict) -> str:
     if ov.site_failures:
         failure_parts = ", ".join(f"{sid}({err})" for sid, err in ov.site_failures.items())
         lines.append(f"  site failures: {failure_parts}")
+    lines += _render_config_diffs(ov.config_diffs)
     return "\n".join(lines)

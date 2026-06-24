@@ -340,6 +340,7 @@ def simulate(
     # object (Mist root-level update semantics: present roots replace, omitted
     # roots persist, "-attr" deletes), L0-validate it, field-gate it, apply.
     proposed_raw = raw
+    site_diffs: list[ObjectConfigDiff] = []
     with trace.stage("l0+scope.post+apply", note=f"{len(plan.ops)} op(s)"):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
@@ -394,6 +395,10 @@ def simulate(
                     run=run,
                     state_meta=state_meta,
                 )
+            site_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=current.get("name"), action=op.action,
+                before=current, after=effective))
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return _unknown(
@@ -436,12 +441,15 @@ def simulate(
                 state_meta=state_meta, baseline_unavailable=True,
             )
 
-    return _simulate_site_state(
+    verdict = _simulate_site_state(
         raw, proposed_raw,
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
         profile_proposed=profile_proposed,
     )
+    if verdict.decision is not Decision.UNKNOWN:
+        verdict = replace(verdict, config_diffs=tuple(site_diffs))
+    return verdict
 
 
 def simulate_org_plan(
@@ -496,6 +504,7 @@ def simulate_org_plan(
     org_scope = OrgScope(org_id=plan.scope.org_id)
     overlays: list[OrgOverlay] = []
     template_findings: list[Finding] = []
+    org_diffs: list[ObjectConfigDiff] = []
     for i, op in enumerate(plan.ops):
         resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
         # P3: thread template_findings through EVERY short-circuit so earlier ops'
@@ -533,6 +542,10 @@ def simulate_org_plan(
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
             baseline=snapshot, proposed=proposed,
         ))
+        org_diffs.append(object_config_diff(
+            object_type=op.object_type, object_id=op.object_id,
+            name=snapshot.get("name"), action=op.action,
+            before=snapshot, after=proposed))
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
@@ -544,7 +557,8 @@ def simulate_org_plan(
         )
         return OrgVerdict(decision=decision, decision_reasons=reasons, changes=tuple(changes),
             per_site={}, driving_sites=driving, site_failures={},
-            template_findings=tf, org_rejections=())
+            template_findings=tf, org_rejections=(),
+            config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else ())
 
     raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
@@ -588,6 +602,7 @@ def simulate_org_plan(
         decision=decision, decision_reasons=reasons, changes=tuple(changes),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
         template_findings=tf, org_rejections=(),
+        config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else (),
     )
 
 
@@ -601,6 +616,8 @@ from digital_twin.adapters.mist.ingest.nac import build_nac_ir  # noqa: E402
 from digital_twin.adapters.mist.validate import validate_payload  # noqa: E402
 from digital_twin.checks.nac.delta import NacDeltaCheck  # noqa: E402
 from digital_twin.checks.nac.shadowing import NacShadowingCheck  # noqa: E402
+from digital_twin.config_diff import object_config_diff  # noqa: E402
+from digital_twin.contracts import ObjectConfigDiff  # noqa: E402
 from digital_twin.providers.base import FetchError  # noqa: E402
 from digital_twin.verdict.decision import decide  # noqa: E402
 from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
@@ -649,6 +666,7 @@ def simulate_org_nac(
             baseline_raw[str(rid)] = dict(r)
     proposed_raw: dict[str, dict[str, Any]] = dict(baseline_raw)
     adapter_findings: tuple[Finding, ...] = ()
+    nac_diffs: list[ObjectConfigDiff] = []
 
     for op in sorted(plan.ops, key=lambda o: o.order):
         exists = op.object_id in baseline_raw
@@ -661,6 +679,10 @@ def simulate_org_nac(
                 f"ops[order={op.order}]: nacrule id {op.object_id!r} already exists",)),
                 adapter_findings=adapter_findings)
         if op.action == "delete":
+            nac_diffs.append(object_config_diff(
+                object_type="nacrule", object_id=op.object_id,
+                name=baseline_raw[op.object_id].get("name"),
+                action="delete", before=baseline_raw[op.object_id], after={}))
             proposed_raw.pop(op.object_id, None)
             continue
         if update_conflicts(op.payload):
@@ -684,6 +706,12 @@ def simulate_org_nac(
         fg = screen_op("nacrule", current, effective)
         if fg:
             return _org_nac_unknown(fg, adapter_findings=adapter_findings)
+        nac_diffs.append(object_config_diff(
+            object_type="nacrule", object_id=op.object_id,
+            # create's `current` is only {"id": ...}; the new name lives in `effective`
+            name=effective.get("name") if op.action == "create" else current.get("name"),
+            action=op.action,
+            before={} if op.action == "create" else current, after=effective))
         proposed_raw[op.object_id] = effective
 
     # Build the baseline IR from the RAW fetch.rules (not the id-keyed baseline_raw) so
@@ -715,5 +743,8 @@ def simulate_org_nac(
         check_results=results, adapter_findings=adapter_findings))
     base_map = {r.id: r for r in base_ir.nacrules}
     prop_map = {r.id: r for r in prop_ir.nacrules}
-    return OrgNacVerdict(decision, reasons, nac_changes(diff, base_map, prop_map),
-                         results, adapter_findings, ())
+    return OrgNacVerdict(
+        decision, reasons, nac_changes(diff, base_map, prop_map),
+        results, adapter_findings, (),
+        tuple(nac_diffs) if decision is not Decision.UNKNOWN else (),
+    )

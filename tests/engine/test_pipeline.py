@@ -271,3 +271,32 @@ def test_simulate_rejects_org_plan_with_unknown_not_crash():
     v = simulate(plan, provider=_AnyProvider())  # guarded before fetch — never touches provider
     assert v.decision is Decision.UNKNOWN
     assert any("simulate_org_template" in r for r in v.decision_reasons)
+
+
+def test_site_update_carries_config_diff():
+    new = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    v = simulate(_plan([_op(payload=new)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert SITE in cds and cds[SITE].object_type == "site_setting" and cds[SITE].action == "update"
+    by = {c.path: c for c in cds[SITE].changes}
+    assert by["networks.voice.vlan_id"].kind == "changed"
+    assert by["networks.voice.vlan_id"].before == 30 and by["networks.voice.vlan_id"].after == 31
+
+
+def test_pre_apply_unknown_drops_config_diffs():
+    bad = {**SETTING, "dhcpd_config": {"corp": {"ip": "9.9.9.9"}}}
+    v = simulate(_plan([_op(payload=bad)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    assert v.config_diffs == ()
+
+
+def test_post_apply_unknown_drops_config_diffs():
+    # vars ripple passes the field gate (vars.* allowlisted) then fails the DERIVED
+    # gate inside _simulate_site_state — a post-apply UNKNOWN. The decision gate must
+    # still drop diffs (P2b), proving it keys off the final decision, not the path.
+    ripple = {**SETTING, "vars": {"dhcp_ip": "10.9.9.9"}}
+    v = simulate(_plan([_op(payload=ripple)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    assert any("derived_gate" in r for r in v.decision_reasons)
+    assert v.config_diffs == ()

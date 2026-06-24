@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from digital_twin.checks.base import CheckResult
-from digital_twin.contracts import Finding, Rejection
+from digital_twin.contracts import Finding, ObjectConfigDiff, Rejection
 from digital_twin.ir import IRDiff
 from digital_twin.verdict.decision import Decision
 
@@ -27,6 +27,7 @@ class OrgNacVerdict:
     check_results: tuple[CheckResult, ...]
     adapter_findings: tuple[Finding, ...]
     rejections: tuple[Rejection, ...]
+    config_diffs: tuple[ObjectConfigDiff, ...] = ()  # raw before→after of the touched nacrules
 
 
 def nac_changes(diff: IRDiff, baseline: Mapping[str, object],

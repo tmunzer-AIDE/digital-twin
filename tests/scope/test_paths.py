@@ -3,7 +3,7 @@ from digital_twin.scope.allowlist import (
     GATEWAY_EFFECTIVE_ALLOWLIST,
     RAW_ALLOWLIST,
 )
-from digital_twin.scope.paths import allowed, changed_leaf_paths, matches
+from digital_twin.scope.paths import allowed, changed_leaf_paths, leaf_changes, matches
 
 
 def test_single_star_matches_exactly_one_segment():
@@ -145,3 +145,36 @@ def test_bgp_denied_leaves_not_overmatched():
     # Dotless key baseline: simple one-segment key still works
     assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
     assert not matches("networks.corp.isolation", "networks.*.vlan_id")
+
+
+def test_leaf_changes_added_removed_changed():
+    cur = {"a": 1, "b": 2, "d": {"x": 1}}
+    new = {"a": 1, "b": 3, "c": 9, "d": {}}
+    by = {d.path: d for d in leaf_changes(cur, new)}
+    assert by["b"].kind == "changed" and by["b"].before == 2 and by["b"].after == 3
+    assert by["c"].kind == "added" and by["c"].before is None and by["c"].after == 9
+    assert by["d.x"].kind == "removed" and by["d.x"].before == 1 and by["d.x"].after is None
+
+
+def test_leaf_changes_list_is_atomic():
+    by = {d.path: d for d in leaf_changes({"t": [1, 2]}, {"t": [1, 2, 3]})}
+    assert set(by) == {"t"}
+    assert by["t"].before == [1, 2] and by["t"].after == [1, 2, 3]
+
+
+def test_leaf_changes_null_equals_absent():
+    assert leaf_changes({"a": None}, {}) == ()
+    assert leaf_changes({}, {"a": None}) == ()
+
+
+def test_leaf_changes_ignore_top():
+    paths = [d.path for d in leaf_changes(
+        {"meta": 1, "a": 1}, {"meta": 2, "a": 2}, ignore_top=("meta",))]
+    assert paths == ["a"]
+
+
+def test_changed_leaf_paths_parity_with_leaf_changes():
+    cur = {"a": 1, "b": {"x": 2}, "c": [1]}
+    new = {"a": 9, "b": {"x": 2, "y": 3}, "c": [1, 2]}
+    assert changed_leaf_paths(cur, new) == tuple(d.path for d in leaf_changes(cur, new))
+    assert changed_leaf_paths(cur, new) == ("a", "b.y", "c")  # sorted, unchanged behavior

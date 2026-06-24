@@ -349,6 +349,18 @@ modeling" below.
   Two Tier-2 items observed consistent (gateway DICT_MERGE; gateway-device vars
   resolve). Spec/plan:
   docs/superpowers/{specs,plans}/2026-06-15-gateway-site-template-object-types*.md.
+- ✅ **Configuration diff in results** (`ObjectConfigDiff`) — done 2026-06-23.
+  Every success verdict now carries `config_diffs: tuple[ObjectConfigDiff, ...]`
+  (empty on `Decision.UNKNOWN` — honesty gate). Each `ObjectConfigDiff` holds
+  a `FieldChange` per changed leaf: `path`, `before`, `after`, `kind`
+  (`added`/`removed`/`changed`), with secrets and sensitive-parent values
+  **redacted inline** (full-path `STRIP` via the schema allowlist). Assembly:
+  `leaf_changes(before, after)` walks the raw config trees, lists are compared
+  atomically (not expanded), and `null == absent` so a leaf vanishing via a
+  delete overlay appears as `kind="removed"`. Populated on all three verdict
+  types: `Verdict` (site path), `OrgVerdict` (org-template/delete-ripple path),
+  and `OrgNacVerdict` (NAC path). Spec:
+  `docs/superpowers/specs/2026-06-23-config-diff-in-results-design.md`.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true

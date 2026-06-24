@@ -23,6 +23,7 @@ import jsonschema
 from digital_twin.adapters.mist.oas import load_schema
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel
+from digital_twin.redaction import STRIP_KEY_PARTS
 
 _SCHEMA_FILES: dict[str, str] = {
     "site_setting": "site_setting.schema.json",
@@ -49,19 +50,9 @@ _MAX_FINDINGS = 50
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 
 # Violations on secret-bearing keys are SUPPRESSED: the twin never stores or
-# simulates secrets (replay fixtures strip them by design — see the redaction
-# manifest in observability/replay/redaction.py, kept in sync), and Mist's own
-# API still validates real payloads at apply time.
-_SECRET_KEY_PARTS: tuple[str, ...] = (
-    "psk",
-    "password",
-    "passphrase",
-    "secret",
-    "token",
-    "community",
-    "private_key",
-    "cert",
-)
+# simulates secrets. The key list is the SHARED STRIP_KEY_PARTS from
+# digital_twin.redaction (single source — config-diff redaction uses the same),
+# and Mist's own API still validates real payloads at apply time.
 
 
 def _without_nulls(obj: Any) -> Any:
@@ -78,7 +69,7 @@ def _without_nulls(obj: Any) -> Any:
 def _touches_secret(err: jsonschema.ValidationError) -> bool:
     path_keys = [str(p).lower() for p in err.absolute_path]
     blob = " ".join((*path_keys, err.message.lower()))
-    return any(part in blob for part in _SECRET_KEY_PARTS)
+    return any(part in blob for part in STRIP_KEY_PARTS)
 
 
 def _in_scope(err: jsonschema.ValidationError, scope_roots: Collection[str] | None) -> bool:

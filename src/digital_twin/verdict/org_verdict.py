@@ -11,7 +11,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from digital_twin.contracts import Finding, FindingCategory, ObjectRef, Rejection, Severity
+from digital_twin.contracts import (
+    Finding,
+    FindingCategory,
+    ObjectConfigDiff,
+    ObjectRef,
+    Rejection,
+    Severity,
+)
 from digital_twin.verdict.decision import Decision
 from digital_twin.verdict.verdict import Verdict
 
@@ -35,6 +42,7 @@ class OrgVerdict:
     site_failures: Mapping[str, str]
     template_findings: tuple[Finding, ...]  # NON-fatal template L0 Findings only (REVIEW floor)
     org_rejections: tuple[Rejection, ...]  # short-circuit causes: gate/conflict/lookup/fatal-L0
+    config_diffs: tuple[ObjectConfigDiff, ...] = ()  # raw before→after of the touched org objects
 
 
 def decide_org(

@@ -330,3 +330,34 @@ def test_site_scoped_plan_rejected():
     ov = simulate_org_plan(site_plan, provider=prov)
     assert ov.decision is Decision.UNKNOWN
     assert any("simulate" in r.lower() for r in ov.decision_reasons)
+
+
+def test_org_update_carries_config_diff_on_org_verdict():
+    st_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    ov = simulate_org_plan(_plan(_upd("sitetemplate", "st1", st_drop)),
+                           provider=_two_op_provider())
+    assert ov.decision is not Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds
+    assert cds["st1"].object_type == "sitetemplate" and cds["st1"].action == "update"
+    by = {c.path: c for c in cds["st1"].changes}
+    assert by["port_usages.trunkB.networks"].before == ["corp"]
+    assert by["port_usages.trunkB.networks"].after == []
+
+
+def test_org_delete_lists_removed_leaves():
+    ov = simulate_org_plan(_plan(_del("networktemplate", "nt1")),
+                           provider=_single_delete_provider())
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "nt1" in cds and cds["nt1"].action == "delete"
+    assert {c.kind for c in cds["nt1"].changes} == {"removed"}
+    assert "networks.corp.vlan_id" in {c.path for c in cds["nt1"].changes}
+
+
+def test_org_unknown_drops_config_diffs():
+    # non-empty delete payload → object_gate UNKNOWN → no diffs
+    ov = simulate_org_plan(
+        _plan(_del("networktemplate", "nt1", payload={"networks": {}})),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    assert ov.config_diffs == ()
