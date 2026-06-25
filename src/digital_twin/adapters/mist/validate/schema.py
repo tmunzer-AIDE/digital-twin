@@ -125,10 +125,28 @@ def _absorb_nullable(node: Any) -> None:
             _absorb_nullable(item)
 
 
+def _strip_closed(node: Any) -> None:
+    """In place: drop every `additionalProperties: false` so the jsonschema
+    validator stays PERMISSIVE about extra keys. Closedness ("not in the OAS")
+    is owned solely by the unknown-attribute walker, which reads the faithful
+    (unstripped) schema and reports WARNING/REVIEW — never a jsonschema ERROR on
+    the GET-only fields the EFFECTIVE object carries (device status, etc.).
+    Map-valued `additionalProperties` (dynamic-key schemas) are kept untouched."""
+    if isinstance(node, dict):
+        if node.get("additionalProperties") is False:
+            del node["additionalProperties"]
+        for value in node.values():
+            _strip_closed(value)
+    elif isinstance(node, list):
+        for item in node:
+            _strip_closed(item)
+
+
 @cache
 def _validator(object_type: str) -> jsonschema.Draft202012Validator:
     schema = load_schema(_SCHEMA_FILES[object_type])
     _absorb_nullable(schema)
+    _strip_closed(schema)  # jsonschema is permissive on extra keys; the walker owns closedness
     return jsonschema.Draft202012Validator(schema)
 
 

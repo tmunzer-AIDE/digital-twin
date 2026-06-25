@@ -193,10 +193,10 @@ def test_conflicting_set_and_delete_is_unknown():
 
 
 def _switch_with_extra_routes():
-    # extra_routes.*.via is typed `string` in the committed OAS but Mist stores an
-    # ARRAY of next-hops — a live, already-accepted config the twin must not flag.
+    # extra_routes.*.via is typed (array of next-hops) in the refreshed OAS; an int
+    # is a real L0 TYPE violation on a persisted root the op below does not touch.
     return {**SWITCH, "id": "dev-er", "mac": "aa0000000099",
-            "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}}}
+            "extra_routes": {"1.2.3.4/32": {"via": 123}}}
 
 
 def test_l0_scopes_to_changed_roots_by_default():

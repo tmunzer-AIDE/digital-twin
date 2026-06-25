@@ -1,8 +1,14 @@
-<mist_openapi @ 2026-06-09, github tmunzer/mist_openapi master>
-OFFICIAL SOURCE (going forward): github mistsys/mist_openapi — committed extracts
-are stale vs it; a re-extract is pending and should add (at least): bgp_config to
-device_switch + networktemplate, and ae_lacp_force_up to the switch port_config
-entry. `disabled` is NOT a switch port_config field (correctly absent).
+<mist_openapi: device_switch @ github mistsys/mist_openapi master (2026-06-25);
+ all OTHER schemas @ 2026-06-09 github tmunzer/mist_openapi master (device-only v1)>
+device_switch.schema.json was re-extracted 2026-06-25 from the official
+mistsys/mist_openapi (adds bgp_config, port_config.*.ae_lacp_force_up/networks;
+`disabled` correctly absent from the switch port_config entry).
+LOCAL PATCH applied before extraction: `switch_bgp_config_neighbor` gained
+`disabled` (boolean) to match its sibling `bgp_config_neighbors` — a real BGP
+neighbor admin-state field the twin's GS28 check acts on. UPSTREAM PR REQUIRED in
+mistsys/mist_openapi (add `disabled` to `switch_bgp_config_neighbor`) so the next
+re-extract is reproducible. The other schemas stay pinned (device-only scope);
+refresh them from mistsys when widening enforcement beyond `device`.
 gatewaytemplate.schema.json + sitetemplate.schema.json extracted 2026-06-15 from
 github tmunzer/mist_openapi master (components: gateway_template, site_template).
 NOTE: the OAS `site_template` component is incomplete (auto_upgrade/name/vars only);

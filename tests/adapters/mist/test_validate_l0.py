@@ -75,14 +75,13 @@ def test_secret_key_violations_are_suppressed():
 
 
 def test_scope_roots_suppresses_violations_on_untouched_roots():
-    # The EFFECTIVE object carries PERSISTED roots Mist already accepted. When a
-    # committed-OAS type disagrees with Mist reality (here extra_routes.*.via is
-    # typed string, but Mist stores an array of next-hops), a violation on a root
-    # the op never touched must NOT surface — Mist re-validates only the roots in
-    # the change (root-level-merge PUT).
+    # The EFFECTIVE object carries PERSISTED roots Mist already accepted. A real L0
+    # type violation on a root the op never touched (here extra_routes.*.via is an
+    # int, but the OAS types it as an array of next-hops) must NOT surface — Mist
+    # re-validates only the roots in the change (root-level-merge PUT).
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"], "discard": False}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123, "discard": False}},
         "port_config": {"ge-0/0/10": {"usage": "srv"}},
     }
     res = validate_payload("device", effective, scope_roots={"port_config"})
@@ -92,7 +91,7 @@ def test_scope_roots_suppresses_violations_on_untouched_roots():
 def test_scope_roots_keeps_violations_on_changed_roots():
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123}},
     }
     res = validate_payload("device", effective, scope_roots={"extra_routes"})
     assert any("extra_routes" in str(f.evidence.get("path")) for f in res.findings)
@@ -110,7 +109,7 @@ def test_scope_roots_none_validates_whole_object():
     # violation surfaces, including on untouched persisted roots
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123}},
         "port_config": {"ge-0/0/10": {"usage": "srv"}},
     }
     res = validate_payload("device", effective)  # default: no scoping
