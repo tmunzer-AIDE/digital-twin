@@ -193,10 +193,10 @@ def test_conflicting_set_and_delete_is_unknown():
 
 
 def _switch_with_extra_routes():
-    # extra_routes.*.via is typed `string` in the committed OAS but Mist stores an
-    # ARRAY of next-hops — a live, already-accepted config the twin must not flag.
+    # extra_routes.*.via is typed (array of next-hops) in the refreshed OAS; an int
+    # is a real L0 TYPE violation on a persisted root the op below does not touch.
     return {**SWITCH, "id": "dev-er", "mac": "aa0000000099",
-            "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}}}
+            "extra_routes": {"1.2.3.4/32": {"via": 123}}}
 
 
 def test_l0_scopes_to_changed_roots_by_default():
@@ -241,6 +241,23 @@ def test_partial_device_payload_passes_l0_required():
     )
     assert not any("'type' is a required property" in f.message for f in v.findings)
     assert v.decision is not Decision.UNKNOWN
+
+
+def test_unknown_attribute_on_switch_port_config_surfaces_and_is_unknown():
+    # the motivating case: an agent proposes `disabled` on a SWITCH port_config entry
+    # — a field the switch OAS does not document (it is gateway-only). The walker flags
+    # it precisely (l0.schema.unknown_attribute), and since `disabled` is also an
+    # unmodeled leaf the field gate floors to UNKNOWN. UNKNOWN wins, but the "not in
+    # the OAS" finding rides along to tell the operator WHICH attribute is bogus.
+    payload = {"port_config": {"ge-0/0/10": {"usage": "office", "disabled": True}}}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(),
+    )
+    hits = [f for f in v.findings if f.code == "l0.schema.unknown_attribute"]
+    assert hits, v.findings
+    assert any("disabled" in f.evidence.get("path", "") for f in hits)
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
 
 
 def test_normal_verdict_carries_diagrams():

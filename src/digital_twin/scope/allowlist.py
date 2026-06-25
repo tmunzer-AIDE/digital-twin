@@ -139,17 +139,20 @@ _USAGE_LEAVES: tuple[str, ...] = tuple(
 # Device/site-level STP: bridge priority feeds Device.stp_priority (root
 # election, wired.stp.root_change).
 _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
-# Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map:
-# port_config and local_port_config take usage + the usage-override attrs +
-# dynamic_usage (the runtime-profile pointer, ingest.dynamic_usage);
-# port_config_overwrite is honored for port_network + poe_disabled ONLY
-# (_OVERWRITE_ATTRS).
-_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"port_config.*.{a}" for a in ("usage", "dynamic_usage", *_MODELED_USAGE_ATTRS)
+# Inline attrs the resolver honors (ingest.ports resolve_effective_ports), per map.
+# Narrowed to match the refreshed (closed, additionalProperties:false) device_switch
+# OAS, which documents these usage-override attrs on DIFFERENT inline maps:
+#   - port_config: usage + dynamic_usage + port_network/networks/poe_disabled/mtu
+#     (NOT mode/all_networks/allow_dhcpd — those live on local_port_config/port_usages)
+#   - local_port_config: the full usage-override set + stp_edge, but NOT dynamic_usage
+#     (dynamic_usage is a port_config-only runtime-profile pointer)
+# port_config_overwrite is honored for port_network + poe_disabled ONLY.
+_PORT_CONFIG_ATTRS: tuple[str, ...] = (
+    "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
 )
+_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(f"port_config.*.{a}" for a in _PORT_CONFIG_ATTRS)
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}"
-    for a in ("usage", "dynamic_usage", "stp_edge", *_MODELED_USAGE_ATTRS)
+    f"local_port_config.*.{a}" for a in ("usage", "stp_edge", *_MODELED_USAGE_ATTRS)
 )
 _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",

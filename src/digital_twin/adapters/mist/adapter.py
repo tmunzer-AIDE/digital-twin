@@ -14,6 +14,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from digital_twin.adapters.base import UNSET_SCOPE, UnsetScope
 from digital_twin.adapters.mist.apply import apply_plan
 from digital_twin.adapters.mist.compile.gateway import compile_gateway_device
 from digital_twin.adapters.mist.compile.switch import compile_device, compile_site
@@ -53,9 +54,16 @@ class MistAdapter:
         )
 
     def validate(
-        self, op: ChangeOp, *, scope_roots: Collection[str] | None = None
+        self,
+        op: ChangeOp,
+        *,
+        scope_roots: Collection[str] | None = None,
+        unknown_scope_roots: Collection[str] | None | UnsetScope = UNSET_SCOPE,
     ) -> L0Result:
-        return validate_payload(op.object_type, op.payload, scope_roots=scope_roots)
+        return validate_payload(
+            op.object_type, op.payload,
+            scope_roots=scope_roots, unknown_scope_roots=unknown_scope_roots,
+        )
 
     def ingest(self, raw: RawSiteState) -> IngestOutcome:
         nt = dict(raw.networktemplate) if raw.networktemplate else None

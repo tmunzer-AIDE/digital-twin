@@ -361,6 +361,28 @@ modeling" below.
   types: `Verdict` (site path), `OrgVerdict` (org-template/delete-ripple path),
   and `OrgNacVerdict` (NAC path). Spec:
   `docs/superpowers/specs/2026-06-23-config-diff-in-results-design.md`.
+- ✅ **OAS unknown-attribute check (L0 validity)** — done 2026-06-25. L0 now flags
+  any payload attribute NOT documented in the committed Mist OAS
+  (`l0.schema.unknown_attribute`, WARNING → floors REVIEW), derived from the OAS —
+  no hand-maintained allowlist for THIS. A composition/map-aware walker
+  (`adapters/mist/validate/unknown_keys.py`) reads the FAITHFUL closed schema as the
+  sole "not in OAS" finder; the jsonschema validator path strips
+  `additionalProperties:false` (`_strip_closed`) so L0 stays permissive on the
+  GET-only fields the EFFECTIVE object carries — closedness is owned solely by the
+  walker (via `_raw_schema`). It is SEPARATE from the field-gate modeled-surface
+  allowlist (merging the two would be a false-SAFE): an unknown attr that is also
+  unmodeled → UNKNOWN wins, with the precise finding riding along (e.g. switch
+  `port_config.*.disabled`, a gateway-only field). **Split scope:** the walker
+  validates the CHANGE (`unknown_scope_roots` = roots with actual value deltas via
+  `changed_paths`), not the whole persisted full-object PUT, so it never re-flags
+  pre-existing fields the closed OAS omits (e.g. nested `mist_nac.*`);
+  `--l0-full-object` audits everything. **Device-only v1** (templates skip-listed via
+  `OAS_UNKNOWN_KEY_SKIP`); server-managed device GET-only roots skipped
+  device-scoped (`_SERVER_MANAGED_ROOTS_BY_TYPE`), keeping the global
+  `IGNORED_RAW_FIELDS` (field gate) minimal. OAS extracts refreshed from the
+  officially-supported `mistsys/mist_openapi`. **Owed upstream:** land `disabled` on
+  `switch_bgp_config_neighbor` in mistsys (recorded in `oas/VERSION`). Spec/plan:
+  `docs/superpowers/{specs,plans}/2026-06-24-oas-unknown-attribute-check*.md`.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true

@@ -20,7 +20,9 @@ from typing import Any
 
 import jsonschema
 
+from digital_twin.adapters.base import UNSET_SCOPE, UnsetScope
 from digital_twin.adapters.mist.oas import load_schema
+from digital_twin.adapters.mist.validate.unknown_keys import unknown_attribute_findings
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel
 from digital_twin.redaction import STRIP_KEY_PARTS
@@ -125,11 +127,37 @@ def _absorb_nullable(node: Any) -> None:
             _absorb_nullable(item)
 
 
+def _strip_closed(node: Any) -> None:
+    """In place: drop every `additionalProperties: false` so the jsonschema
+    validator stays PERMISSIVE about extra keys. Closedness ("not in the OAS")
+    is owned solely by the unknown-attribute walker, which reads the faithful
+    (unstripped) schema and reports WARNING/REVIEW — never a jsonschema ERROR on
+    the GET-only fields the EFFECTIVE object carries (device status, etc.).
+    Map-valued `additionalProperties` (dynamic-key schemas) are kept untouched."""
+    if isinstance(node, dict):
+        if node.get("additionalProperties") is False:
+            del node["additionalProperties"]
+        for value in node.values():
+            _strip_closed(value)
+    elif isinstance(node, list):
+        for item in node:
+            _strip_closed(item)
+
+
 @cache
 def _validator(object_type: str) -> jsonschema.Draft202012Validator:
     schema = load_schema(_SCHEMA_FILES[object_type])
     _absorb_nullable(schema)
+    _strip_closed(schema)  # jsonschema is permissive on extra keys; the walker owns closedness
     return jsonschema.Draft202012Validator(schema)
+
+
+@cache
+def _raw_schema(object_type: str) -> dict[str, Any]:
+    """Faithful committed schema (additionalProperties:false intact) for the
+    unknown-attribute walker, which — unlike the jsonschema validator — OWNS
+    closedness. Read-only; the walker never mutates it."""
+    return load_schema(_SCHEMA_FILES[object_type])
 
 
 def validate_payload(
@@ -137,7 +165,13 @@ def validate_payload(
     payload: Mapping[str, Any],
     *,
     scope_roots: Collection[str] | None = None,
+    unknown_scope_roots: Collection[str] | None | UnsetScope = UNSET_SCOPE,
 ) -> L0Result:
+    # `scope_roots`  -> jsonschema/L0 scope: the roots Mist re-validates on a PUT.
+    # `unknown_scope_roots` -> the unknown-attribute walker scope: roots whose values
+    #   actually CHANGED (so the walker validates the change, not the whole persisted
+    #   object). OMITTED -> reuse scope_roots (preserves the scoped-L0 contract for
+    #   direct callers); explicit None -> audit the whole object.
     if object_type not in _SCHEMA_FILES:
         return L0Result(
             findings=(
@@ -157,12 +191,13 @@ def validate_payload(
             ),
             fatal=True,
         )
+    cleaned = _without_nulls(dict(payload))
     errors = (
         err
-        for err in _validator(object_type).iter_errors(_without_nulls(dict(payload)))
+        for err in _validator(object_type).iter_errors(cleaned)
         if not _touches_secret(err) and _in_scope(err, scope_roots)
     )
-    findings = tuple(
+    violations = tuple(
         _finding(
             "l0.schema.violation",
             err.message,
@@ -170,4 +205,11 @@ def validate_payload(
         )
         for _, err in zip(range(_MAX_FINDINGS), errors, strict=False)
     )
-    return L0Result(findings=findings, fatal=False)
+    walker_scope: Collection[str] | None = (
+        scope_roots if isinstance(unknown_scope_roots, UnsetScope) else unknown_scope_roots
+    )
+    unknown = unknown_attribute_findings(
+        _raw_schema(object_type), cleaned,
+        object_type=object_type, scope_roots=walker_scope,
+    )
+    return L0Result(findings=violations + unknown, fatal=False)

@@ -1,8 +1,8 @@
 """Org-level rollup over per-site Verdicts (multisite design §7).
 
 decision = worst under UNKNOWN > UNSAFE > REVIEW > SAFE over (every per-site
-Verdict's decision) AND (template_findings: an operational ERROR/CRITICAL floors
-REVIEW). org_rejections (short-circuit causes) are handled by the engine BEFORE
+Verdict's decision) AND (template_findings: an operational ERROR/CRITICAL, or any
+WARNING, floors REVIEW). org_rejections (short-circuit causes) are handled by the engine BEFORE
 fan-out; when present the engine builds an UNKNOWN OrgVerdict directly.
 """
 
@@ -56,11 +56,14 @@ def decide_org(
             f"[{r.stage}] {reason}" for r in org_rejections for reason in r.reasons
         )
         return Decision.UNKNOWN, rejection_reasons, ()
-    # template-level operational ERROR/CRITICAL floors REVIEW (computed FIRST, so
-    # it still applies when there are zero assigned sites)
+    # a WARNING, or an operational ERROR/CRITICAL, template-level finding floors
+    # REVIEW (computed FIRST, so it still applies with zero assigned sites). Mirrors
+    # decide(): any WARNING -> REVIEW (e.g. an l0.schema.unknown_attribute on a
+    # template that does not also trip the field gate).
     template_floor = Decision.REVIEW if any(
-        f.category is FindingCategory.OPERATIONAL
-        and f.severity in (Severity.ERROR, Severity.CRITICAL)
+        f.severity is Severity.WARNING
+        or (f.category is FindingCategory.OPERATIONAL
+            and f.severity in (Severity.ERROR, Severity.CRITICAL))
         for f in template_findings
     ) else Decision.SAFE
     if not per_site:

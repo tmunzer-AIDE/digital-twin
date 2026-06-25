@@ -239,19 +239,37 @@ def test_gs25_dhcp_lint_leaves_in_scope():
     assert screen_op("device", cur_d, eff_d) is None
 
 
-def test_usage_allow_dhcpd_in_scope_on_all_three_surfaces():
-    # allow_dhcpd must be allowed wherever mode/mtu already are: port_usages
-    # (site_setting + device) and the inline port_config/local_port_config
-    # maps (device only — site_setting carries no port maps in the allowlist)
+def test_usage_allow_dhcpd_in_scope_on_port_usages_and_local_port_config():
+    # allow_dhcpd is modeled on port_usages (site_setting + device) and inline
+    # local_port_config — but NOT inline port_config (the refreshed closed
+    # device_switch OAS documents allow_dhcpd on local_port_config/port_usages,
+    # not on the port_config entry; the narrowing is pinned below).
     cur = {"port_usages": {"u": {"mode": "trunk"}}}
     eff = {"port_usages": {"u": {"mode": "trunk", "allow_dhcpd": False}}}
     assert screen_op("site_setting", cur, eff) is None
     dev_eff = {
         **SWITCH_CUR,
         "port_usages": {"u": {"mode": "trunk", "allow_dhcpd": False}},
-        "port_config": {"ge-0": {"usage": "u", "allow_dhcpd": True}},
+        "local_port_config": {"ge-0": {"usage": "u", "allow_dhcpd": True}},
     }
     assert screen_op("device", {**SWITCH_CUR, **cur}, dev_eff) is None
+
+
+def test_narrowed_inline_port_config_attrs_out_of_scope():
+    # OAS-refresh narrowing: the refreshed (closed) device_switch port_config entry
+    # does NOT document mode/all_networks/allow_dhcpd (those are on local_port_config
+    # / port_usages), and local_port_config does NOT document dynamic_usage. Editing
+    # those inline leaves is now out-of-scope -> the field gate rejects (UNKNOWN).
+    for leaf, val in (("mode", "access"), ("all_networks", True), ("allow_dhcpd", True)):
+        eff = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "office", leaf: val}}}
+        rej = screen_op("device", SWITCH_CUR, eff)
+        assert rej is not None, leaf
+        assert f"port_config.ge-0/0/0.{leaf}" in rej.reasons[0], (leaf, rej.reasons)
+    lpc_eff = {**SWITCH_CUR,
+               "local_port_config": {"ge-0/0/0": {"usage": "office", "dynamic_usage": "x"}}}
+    rej = screen_op("device", SWITCH_CUR, lpc_eff)
+    assert rej is not None
+    assert "local_port_config.ge-0/0/0.dynamic_usage" in rej.reasons[0]
 
 
 def test_mtu_is_in_scope():

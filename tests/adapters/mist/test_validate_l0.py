@@ -75,14 +75,13 @@ def test_secret_key_violations_are_suppressed():
 
 
 def test_scope_roots_suppresses_violations_on_untouched_roots():
-    # The EFFECTIVE object carries PERSISTED roots Mist already accepted. When a
-    # committed-OAS type disagrees with Mist reality (here extra_routes.*.via is
-    # typed string, but Mist stores an array of next-hops), a violation on a root
-    # the op never touched must NOT surface — Mist re-validates only the roots in
-    # the change (root-level-merge PUT).
+    # The EFFECTIVE object carries PERSISTED roots Mist already accepted. A real L0
+    # type violation on a root the op never touched (here extra_routes.*.via is an
+    # int, but the OAS types it as an array of next-hops) must NOT surface — Mist
+    # re-validates only the roots in the change (root-level-merge PUT).
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"], "discard": False}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123, "discard": False}},
         "port_config": {"ge-0/0/10": {"usage": "srv"}},
     }
     res = validate_payload("device", effective, scope_roots={"port_config"})
@@ -92,7 +91,7 @@ def test_scope_roots_suppresses_violations_on_untouched_roots():
 def test_scope_roots_keeps_violations_on_changed_roots():
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123}},
     }
     res = validate_payload("device", effective, scope_roots={"extra_routes"})
     assert any("extra_routes" in str(f.evidence.get("path")) for f in res.findings)
@@ -110,7 +109,7 @@ def test_scope_roots_none_validates_whole_object():
     # violation surfaces, including on untouched persisted roots
     effective = {
         "type": "switch",
-        "extra_routes": {"1.2.3.4/32": {"via": ["1.1.1.1"]}},
+        "extra_routes": {"1.2.3.4/32": {"via": 123}},
         "port_config": {"ge-0/0/10": {"usage": "srv"}},
     }
     res = validate_payload("device", effective)  # default: no scoping
@@ -134,6 +133,8 @@ def test_networktemplate_l0_schema_registered():
     from digital_twin.adapters.mist.validate import validate_payload
     res = validate_payload("networktemplate", {"id": "nt1", "ospf_config": {"enabled": True}})
     assert res.fatal is False  # a valid template body validates
+    # device-only v1 skip-lists networktemplate, so the walker emits nothing here
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in res.findings)
 
 
 def test_gatewaytemplate_schema_registered_and_validates():
@@ -182,3 +183,105 @@ def test_nacrule_unmodeled_field_passes_l0_permissive():
     res = validate_payload("nacrule", {"name": "r", "action": "allow",
                                        "guest_auth_state": "whatever"})
     assert not res.fatal and res.findings == ()
+
+
+# --- unknown-attribute walker integration (device-only v1) ---
+
+def test_unknown_attribute_flagged_on_device_port_config():
+    res = validate_payload(
+        "device",
+        {"type": "switch", "port_config": {"ge-0/0/10": {"usage": "srv", "disabled": True}}},
+    )
+    hits = [f for f in res.findings if f.code == "l0.schema.unknown_attribute"]
+    assert len(hits) == 1
+    assert hits[0].severity is Severity.WARNING
+    assert hits[0].evidence["path"] == "port_config.ge-0/0/10.disabled"
+
+
+def test_unknown_attribute_skipped_for_thin_schema():
+    res = validate_payload("wlan", {"isolation": True, "totally_made_up": 1})
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in res.findings)
+
+
+def test_unknown_attribute_respects_unknown_scope_roots():
+    # the walker is scoped by unknown_scope_roots (the changed-value roots), NOT by
+    # the jsonschema scope_roots
+    payload = {"type": "switch",
+               "port_config": {"ge-0/0/10": {"usage": "srv", "disabled": True}}}
+    flagged = validate_payload("device", payload, unknown_scope_roots={"port_config"})
+    assert any(f.code == "l0.schema.unknown_attribute" for f in flagged.findings)
+    ignored = validate_payload("device", payload, unknown_scope_roots={"name"})
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in ignored.findings)
+
+
+def test_unknown_scope_roots_omitted_reuses_scope_roots():
+    # back-compat: OMITTING unknown_scope_roots reuses scope_roots, so a direct
+    # scoped-L0 caller does NOT get whole-object unknown findings on untouched roots.
+    payload = {"type": "switch",
+               "port_config": {"ge-0/0/10": {"usage": "srv", "disabled": True}},
+               "totally_unknown_root": {"x": 1}}
+    scoped = validate_payload("device", payload, scope_roots={"port_config"})
+    paths = {f.evidence["path"] for f in scoped.findings
+             if f.code == "l0.schema.unknown_attribute"}
+    assert paths == {"port_config.ge-0/0/10.disabled"}  # NOT totally_unknown_root
+    # explicit scope_roots=None (unknown omitted -> reuse -> None) audits everything
+    whole = validate_payload("device", payload)
+    wpaths = {f.evidence["path"] for f in whole.findings
+              if f.code == "l0.schema.unknown_attribute"}
+    assert {"totally_unknown_root", "port_config.ge-0/0/10.disabled"} <= wpaths
+
+
+def test_clean_device_payload_has_no_unknown_attribute_findings():
+    res = validate_payload(
+        "device", {"type": "switch", "port_config": {"ge-0/0/0": {"usage": "office"}}})
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in res.findings)
+
+
+def test_refreshed_oas_recognizes_real_switch_fields():
+    # post-refresh: bgp_config + port_config.*.ae_lacp_force_up are real switch
+    # fields the OAS now documents -> NOT flagged as unknown attributes.
+    res = validate_payload("device", {
+        "type": "switch",
+        "bgp_config": {"sess": {"local_as": 65000}},
+        "port_config": {"ge-0/0/0": {"usage": "office", "ae_lacp_force_up": True}},
+    })
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in res.findings)
+
+
+def test_refreshed_oas_recognizes_template_modeled_roots():
+    # device-only v1: templates are skip-listed, so they never produce unknown-attr
+    # findings (the walker short-circuits) — the skip-set governs scope.
+    nt = validate_payload("networktemplate", {"ospf_config": {"enabled": True}})
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in nt.findings)
+    ss = validate_payload("site_setting", {"networks": {"corp": {"vlan_id": 10}},
+                                           "dhcpd_config": {"corp": {"type": "local"}}})
+    assert not any(f.code == "l0.schema.unknown_attribute" for f in ss.findings)
+
+
+def test_no_modeled_allowlist_leaf_is_flagged():
+    # leaf-level coverage gate (map-aware, via the real walker): every modeled
+    # (allowlisted) leaf at its real nesting must be documented -> ZERO unknown
+    # findings per ENFORCED (non-skip) type.
+    from digital_twin.adapters.mist.validate.unknown_keys import OAS_UNKNOWN_KEY_SKIP
+    from digital_twin.scope.allowlist import RAW_ALLOWLIST
+
+    def payload_from(patterns):
+        d: dict = {}
+        for pat in patterns:
+            cur = d
+            segs = pat.split(".")
+            for i, s in enumerate(segs):
+                key = "k" if s == "*" else "10.0.0.1" if s == "**" else s
+                if i == len(segs) - 1:
+                    cur[key] = 1
+                else:
+                    cur = cur.setdefault(key, {})
+        return d
+
+    for ot in ("device", "networktemplate", "site_setting", "gatewaytemplate"):
+        if ot in OAS_UNKNOWN_KEY_SKIP:
+            continue
+        res = validate_payload(ot, payload_from(RAW_ALLOWLIST[ot]))
+        bad = sorted(f.evidence["path"] for f in res.findings
+                     if f.code == "l0.schema.unknown_attribute")
+        assert not bad, f"{ot}: modeled leaves flagged as unknown: {bad}"

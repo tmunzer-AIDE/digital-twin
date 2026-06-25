@@ -154,3 +154,20 @@ def test_precedence_unknown_beats_unsafe():
         _inputs(rejections=(Rejection(stage="envelope", reasons=("bad",)),), check_results=(res,))
     )
     assert d is Decision.UNKNOWN
+
+
+def test_unknown_attribute_finding_alone_floors_to_review():
+    # a lone WARNING adapter finding (l0.schema.unknown_attribute) floors to REVIEW —
+    # never silently SAFE, never UNSAFE (operational, not NETWORK)
+    f = Finding(
+        source=FindingSource.ADAPTER,
+        category=FindingCategory.OPERATIONAL,
+        code="l0.schema.unknown_attribute",
+        severity=Severity.WARNING,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message="attribute 'port_config.ge-0/0/1.disabled' is not documented",
+    )
+    d, _ = decide(DecisionInputs(
+        rejections=(), l0_fatal=False, baseline_unavailable=False,
+        check_results=(), adapter_findings=(f,)))
+    assert d is Decision.REVIEW

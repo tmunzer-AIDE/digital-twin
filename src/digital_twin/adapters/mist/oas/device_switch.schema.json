@@ -1,16 +1,21 @@
 {
+ "additionalProperties": false,
  "description": "You can configure `port_usages` and `networks` settings at the device level, but most of the time it's better use the Site Setting to achieve better consistency and be able to re-use the same settings across switches entries defined here will \"replace\" those defined in Site Setting/Network Template\nIn addition it is possible to use the `port_config_overwrite` to overwrite some attributes of the port_usage without having to create a new port_usage.",
  "properties": {
   "acl_policies": {
+   "description": "List of ACL policy definitions",
    "items": {
+    "additionalProperties": false,
     "description": "ACL Policy:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
     "properties": {
      "actions": {
       "description": "ACL Policy Actions:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
       "items": {
+       "additionalProperties": false,
+       "description": "Action applied to traffic that matches a destination ACL tag",
        "properties": {
         "action": {
-         "description": "enum: `allow`, `deny`",
+         "description": "Policy action value that either allows or denies matching traffic. enum: `allow`, `deny`",
          "enum": [
           "allow",
           "deny"
@@ -18,7 +23,10 @@
          "type": "string"
         },
         "dst_tag": {
-         "example": "corp",
+         "description": "Destination ACL tag matched by this policy action",
+         "examples": [
+          "corp"
+         ],
          "type": "string"
         }
        },
@@ -30,13 +38,18 @@
       "type": "array"
      },
      "name": {
-      "example": "guest access",
+      "description": "Display name of the ACL policy",
+      "examples": [
+       "guest access"
+      ],
       "type": "string"
      },
      "src_tags": {
       "description": "ACL Policy Source Tags:\n  - for GBP-based policy, all src_tags and dst_tags have to be gbp-based\n  - for ACL-based policy, `network` is required in either the source or destination so that we know where to attach the policy to",
       "items": {
-       "example": "macs",
+       "examples": [
+        "macs"
+       ],
        "type": "string"
       },
       "type": "array"
@@ -48,13 +61,14 @@
   },
   "acl_tags": {
    "additionalProperties": {
+    "additionalProperties": false,
     "description": "Resource tags (`type`==`resource` or `type`==`gbp_resource`) can only be used in `dst_tags`",
     "properties": {
      "ether_types": {
       "default": [
        "any"
       ],
-      "description": "Can only be used under dst tags.",
+      "description": "ARP / IPv6. Default is `any`",
       "items": {
        "type": "string"
       },
@@ -76,7 +90,7 @@
       "type": "string"
      },
      "port_usage": {
-      "description": "Required if `type`==`port_usage`",
+      "description": "Required if `type`==`port_usage`. Switch port usage name matched by this ACL tag",
       "type": "string"
      },
      "radius_group": {
@@ -86,6 +100,8 @@
      "specs": {
       "description": "If `type`==`resource`, `type`==`radius_group`, `type`==`port_usage` or `type`==`gbp_resource`. Empty means unrestricted, i.e. any",
       "items": {
+       "additionalProperties": false,
+       "description": "Layer 4 protocol and destination-port match constraint for an ACL tag",
        "properties": {
         "port_range": {
          "default": "0",
@@ -138,61 +154,83 @@
    "description": "additional CLI commands to append to the generated Junos config. **Note**: no check is done",
    "items": {
     "description": "JUNOS \"set\" command to add to the generated configuration",
-    "example": "set snmp community public",
+    "examples": [
+     "set snmp community public"
+    ],
     "type": "string"
    },
    "type": "array"
   },
   "aggregate_routes": {
    "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Aggregate route configuration for a network or routing instance",
     "properties": {
      "discard": {
       "default": false,
+      "description": "Whether to install the aggregate route as a discard route",
       "type": "boolean"
      },
      "metric": {
+      "description": "Routing metric assigned to the aggregate route",
       "maximum": 4294967295,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "preference": {
+      "description": "Route preference assigned to the aggregate route",
       "maximum": 4294967295,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      }
     },
     "type": "object"
    },
    "description": "Property key is the destination subnet (e.g. \"172.16.3.0/24\")",
-   "example": {
-    "172.16.3.0/24": {
-     "discard": false,
-     "metric": null,
-     "preference": 30
+   "examples": [
+    {
+     "172.16.3.0/24": {
+      "discard": false,
+      "metric": null,
+      "preference": 30
+     }
     }
-   },
+   ],
    "type": "object"
   },
   "aggregate_routes6": {
    "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Aggregate route configuration for a network or routing instance",
     "properties": {
      "discard": {
       "default": false,
+      "description": "Whether to install the aggregate route as a discard route",
       "type": "boolean"
      },
      "metric": {
+      "description": "Routing metric assigned to the aggregate route",
       "maximum": 4294967295,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "preference": {
+      "description": "Route preference assigned to the aggregate route",
       "maximum": 4294967295,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      }
     },
     "type": "object"
@@ -207,20 +245,178 @@
    },
    "type": "object"
   },
+  "bgp_config": {
+   "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Switch BGP configuration for a routing instance",
+    "properties": {
+     "auth_key": {
+      "description": "Authentication key used for BGP neighbor sessions, when configured",
+      "type": "string"
+     },
+     "bfd_minimum_interval": {
+      "description": "Minimum interval in milliseconds for BFD hello packets. A neighbor is considered failed when the device stops receiving replies after the specified interval. Value must be between 1 and 255000.",
+      "maximum": 255000,
+      "minimum": 1,
+      "type": "integer"
+     },
+     "export_policy": {
+      "description": "Export policy must match one of the policy names defined in the `routing_policies` property.",
+      "type": "string"
+     },
+     "hold_time": {
+      "description": "Hold time is three times the interval at which keepalive messages are sent. It indicates to the peer the length of time that it should consider the sender valid. Must be 0 or a number in the range 3-65535.",
+      "oneOf": [
+       {
+        "description": "BGP hold time value of 0",
+        "enum": [
+         0
+        ],
+        "type": "integer"
+       },
+       {
+        "description": "BGP hold time value from 3 to 65535 seconds",
+        "maximum": 65535,
+        "minimum": 3,
+        "type": "integer"
+       }
+      ]
+     },
+     "import_policy": {
+      "description": "Import policy must match one of the policy names defined in the `routing_policies` property.",
+      "type": "string"
+     },
+     "local_as": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "maximum": 4294967294,
+        "minimum": 1,
+        "type": "integer"
+       }
+      ],
+      "description": "BGP AS, value in range 1-4294967294. Can be a Variable (e.g. `{{bgp_as}}` )",
+      "examples": [
+       65000
+      ]
+     },
+     "neighbors": {
+      "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Per-neighbor switch BGP session settings",
+       "properties": {
+        "disabled": {
+         "default": false,
+         "description": "If true, the BGP session to this neighbor will be administratively disabled/shutdown",
+         "type": "boolean"
+        },
+        "export_policy": {
+         "description": "Export policy must match one of the policy names defined in the `routing_policies` property.",
+         "type": "string"
+        },
+        "hold_time": {
+         "description": "Hold time is three times the interval at which keepalive messages are sent. It indicates to the peer the length of time that it should consider the sender valid. Must be 0 or a number in the range 3-65535.",
+         "oneOf": [
+          {
+           "description": "BGP hold time value of 0",
+           "enum": [
+            0
+           ],
+           "type": "integer"
+          },
+          {
+           "description": "BGP hold time value from 3 to 65535 seconds",
+           "maximum": 65535,
+           "minimum": 3,
+           "type": "integer"
+          }
+         ]
+        },
+        "import_policy": {
+         "description": "Import policy must match one of the policy names defined in the `routing_policies` property.",
+         "type": "string"
+        },
+        "multihop_ttl": {
+         "description": "Time-to-live value for multihop BGP sessions to this neighbor",
+         "maximum": 255,
+         "minimum": 1,
+         "type": "integer"
+        },
+        "neighbor_as": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "maximum": 4294967294,
+           "minimum": 1,
+           "type": "integer"
+          }
+         ],
+         "description": "BGP AS, value in range 1-4294967294. Can be a Variable (e.g. `{{bgp_as}}` )",
+         "examples": [
+          65000
+         ]
+        }
+       },
+       "required": [
+        "neighbor_as"
+       ],
+       "type": "object"
+      },
+      "description": "Switch BGP neighbor settings keyed by neighbor IP address",
+      "type": "object"
+     },
+     "networks": {
+      "description": "List of network names for BGP configuration. When a network is specified, a BGP group will be added to the VRF that network is part of.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "type": {
+      "description": "BGP session type for this switch BGP configuration. enum: `external`, `internal`",
+      "enum": [
+       "external",
+       "internal"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "type",
+     "local_as"
+    ],
+    "type": "object"
+   },
+   "description": "BGP routing configuration for this switch. Property key is the BGP session name",
+   "type": "object"
+  },
   "created_time": {
    "description": "When the object has been created, in epoch",
    "format": "double",
    "readOnly": true,
    "type": "number"
   },
+  "default_port_usage": {
+   "default": "default",
+   "description": "Port usage to assign to switch ports without any port usage assigned. Default: `default` to preserve default behavior",
+   "type": "string"
+  },
   "deviceprofile_id": {
+   "description": "Device profile associated with this switch",
    "format": "uuid",
    "readOnly": true,
    "type": "string"
   },
   "dhcp_snooping": {
+   "additionalProperties": false,
+   "description": "DHCP snooping security settings",
    "properties": {
     "all_networks": {
+     "description": "Whether DHCP snooping applies to all configured networks",
      "type": "boolean"
     },
     "enable_arp_spoof_check": {
@@ -232,6 +428,7 @@
      "type": "boolean"
     },
     "enabled": {
+     "description": "Whether DHCP snooping is enabled",
      "type": "boolean"
     },
     "networks": {
@@ -246,13 +443,17 @@
   },
   "dhcpd_config": {
    "additionalProperties": {
-    "description": "the Property key is the network name. In case of DHCP relay, it's common for many networks to use the same dhcp relay, comma-separated network names can be used here (e.g. \"net1,net2\")",
+    "additionalProperties": false,
+    "description": "DHCP server or relay configuration for one switch network. The property key is the network name. In case of DHCP relay, it's common for many networks to use the same dhcp relay, comma-separated network names can be used here (e.g. \"net1,net2\")",
     "properties": {
      "dns_servers": {
       "description": "If `type`==`server` or `type6`==`server` - optional, if not defined, system one will be used",
-      "example": [
-       "8.8.8.8",
-       "4.4.4.4"
+      "examples": [
+       [
+        "8.8.8.8",
+        "4.4.4.4",
+        "2001:4860:4860::8888"
+       ]
       ],
       "items": {
        "type": "string"
@@ -261,9 +462,11 @@
      },
      "dns_suffix": {
       "description": "If `type`==`server` or `type6`==`server` - optional, if not defined, system one will be used",
-      "example": [
-       ".mist.local",
-       ".mist.com"
+      "examples": [
+       [
+        ".mist.local",
+        ".mist.com"
+       ]
       ],
       "items": {
        "type": "string"
@@ -272,53 +475,74 @@
      },
      "fixed_bindings": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Static DHCP binding for a client MAC address",
        "properties": {
         "ip": {
-         "example": "192.168.70.35",
+         "description": "Reserved IPv4 address for this fixed DHCP binding",
+         "examples": [
+          "192.168.70.35"
+         ],
          "type": "string"
         },
         "ip6": {
-         "example": "2607:f8b0:4005:808::2",
+         "description": "Reserved IPv6 address for this fixed DHCP binding",
+         "examples": [
+          "2607:f8b0:4005:808::2"
+         ],
          "type": "string"
         },
         "name": {
+         "description": "Friendly name for this fixed DHCP binding",
          "type": "string"
         }
        },
        "type": "object"
       },
-      "description": "If `type`==`server` or `type6`==`server`. Property key is the MAC Address. Format is `[0-9a-f]{12}` (e.g. \"5684dae9ac8b\")",
-      "example": {
-       "5684dae9ac8b": {
-        "ip": "192.168.70.35",
-        "name": "John"
+      "description": "If `type`==`server` or `type6`==`server`. Property key is the MAC address. Format is `[0-9a-f]{12}` (e.g. \"5684dae9ac8b\")",
+      "examples": [
+       {
+        "5684dae9ac8b": {
+         "ip": "192.168.70.35",
+         "name": "John"
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "gateway": {
-      "description": "If `type`==`server`  - optional, `ip` will be used if not provided",
-      "example": "192.168.70.1",
+      "description": "If `type`==`server` - optional, `ip` will be used if not provided",
+      "examples": [
+       "192.168.70.1"
+      ],
       "type": "string"
      },
      "ip_end": {
-      "description": "If `type`==`server`",
-      "example": "192.168.70.200",
+      "description": "If `type`==`server`, ending IPv4 address for the DHCP lease pool",
+      "examples": [
+       "192.168.70.200"
+      ],
       "type": "string"
      },
      "ip_end6": {
-      "description": "If `type6`==`server`",
-      "example": "2607:f8b0:4005:808::ff",
+      "description": "If `type6`==`server`, ending IPv6 address for the DHCP lease pool",
+      "examples": [
+       "2607:f8b0:4005:808::ff"
+      ],
       "type": "string"
      },
      "ip_start": {
-      "description": "If `type`==`server`",
-      "example": "192.168.70.100",
+      "description": "If `type`==`server`, starting IPv4 address for the DHCP lease pool",
+      "examples": [
+       "192.168.70.100"
+      ],
       "type": "string"
      },
      "ip_start6": {
-      "description": "If `type6`==`server`",
-      "example": "2607:f8b0:4005:808::2",
+      "description": "If `type6`==`server`, starting IPv6 address for the DHCP lease pool",
+      "examples": [
+       "2607:f8b0:4005:808::2"
+      ],
       "type": "string"
      },
      "lease_time": {
@@ -330,6 +554,8 @@
      },
      "options": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Custom DHCP option value",
        "properties": {
         "type": {
          "description": "enum: `boolean`, `hex`, `int16`, `int32`, `ip`, `string`, `uint16`, `uint32`",
@@ -346,6 +572,7 @@
          "type": "string"
         },
         "value": {
+         "description": "Option value to send for this DHCP option",
          "type": "string"
         }
        },
@@ -360,9 +587,11 @@
       "type": "boolean"
      },
      "servers": {
-      "description": "If `type`==`relay`",
-      "example": [
-       "11.2.3.4"
+      "description": "If `type`==`relay`, upstream IPv4 DHCP servers",
+      "examples": [
+       [
+        "11.2.3.4"
+       ]
       ],
       "items": {
        "type": "string"
@@ -370,9 +599,11 @@
       "type": "array"
      },
      "servers6": {
-      "description": "If `type6`==`relay`",
-      "example": [
-       "2607:f8b0:4005:808::64"
+      "description": "If `type6`==`relay`, upstream IPv6 DHCP servers",
+      "examples": [
+       [
+        "2607:f8b0:4005:808::64"
+       ]
       ],
       "items": {
        "type": "string"
@@ -400,6 +631,8 @@
      },
      "vendor_encapsulated": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Vendor-encapsulated DHCP option value",
        "properties": {
         "type": {
          "description": "enum: `boolean`, `hex`, `int16`, `int32`, `ip`, `string`, `uint16`, `uint32`",
@@ -416,6 +649,7 @@
          "type": "string"
         },
         "value": {
+         "description": "Option value to send for this vendor option",
          "type": "string"
         }
        },
@@ -427,10 +661,11 @@
     },
     "type": "object"
    },
+   "description": "Switch DHCP server or relay configuration keyed by network name",
    "properties": {
     "enabled": {
      "default": false,
-     "description": "If set to `true`, enable the DHCP server",
+     "description": "Whether switch DHCP server or relay configuration is enabled",
      "type": "boolean"
     }
    },
@@ -456,16 +691,19 @@
    "type": "array"
   },
   "evpn_config": {
-   "description": "EVPN Junos settings",
+   "additionalProperties": false,
+   "description": "EVPN configuration settings applied to a Junos switch",
    "properties": {
     "enabled": {
+     "description": "Whether EVPN configuration is enabled on the switch",
      "readOnly": true,
      "type": "boolean"
     },
     "role": {
-     "description": "enum: `access`, `collapsed-core`, `core`, `distribution`, `esilag-access`, `none`",
+     "description": "enum: `access`, `border`, `collapsed-core`, `core`, `distribution`, `esilag-access`, `none`",
      "enum": [
       "access",
+      "border",
       "collapsed-core",
       "core",
       "distribution",
@@ -481,153 +719,249 @@
   },
   "extra_routes": {
    "additionalProperties": {
+    "additionalProperties": false,
+    "description": "IPv4 static route settings for a destination prefix",
     "properties": {
      "discard": {
       "default": false,
-      "description": "This takes precedence",
+      "description": "Whether to install a discard route; this takes precedence over next-hop settings",
       "type": "boolean"
      },
      "metric": {
-      "example": null,
+      "description": "Route metric for the IPv4 static route",
+      "examples": [
+       null
+      ],
       "maximum": 2147483647,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "next_qualified": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Qualified next-hop attributes for an IPv4 static route",
        "properties": {
         "metric": {
-         "nullable": true,
-         "type": "integer"
+         "description": "Route metric for this qualified IPv4 next hop",
+         "type": [
+          "integer",
+          "null"
+         ]
         },
         "preference": {
-         "nullable": true,
-         "type": "integer"
+         "description": "Route preference for this qualified IPv4 next hop",
+         "type": [
+          "integer",
+          "null"
+         ]
         }
        },
        "type": "object"
       },
-      "example": {
-       "10.3.1.1": {
-        "metric": null,
-        "preference": 40
+      "description": "Qualified next-hop settings keyed by IPv4 next-hop address",
+      "examples": [
+       {
+        "10.3.1.1": {
+         "metric": null,
+         "preference": 40
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "no_resolve": {
       "default": false,
+      "description": "Whether to prevent recursive next-hop resolution for the IPv4 static route",
       "type": "boolean"
      },
      "preference": {
-      "example": 30,
+      "description": "Route preference for the IPv4 static route",
+      "examples": [
+       30
+      ],
       "maximum": 2147483647,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "via": {
-      "description": "Next-hop IP Address",
-      "example": "10.2.1.1",
-      "type": "string"
+      "description": "Next-hop IP address. Can be a single IP address or an array of IP addresses for ECMP (Equal-Cost Multi-Path) load balancing across multiple next-hops.",
+      "examples": [
+       "10.2.1.1",
+       [
+        "10.2.1.1",
+        "10.2.1.2"
+       ]
+      ],
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      ]
      }
     },
     "type": "object"
    },
    "description": "Property key is the destination CIDR (e.g. \"10.0.0.0/8\")",
-   "example": {
-    "0.0.0.0/0": {
-     "via": "192.168.1.10"
+   "examples": [
+    {
+     "0.0.0.0/0": {
+      "via": "192.168.1.10"
+     }
     }
-   },
+   ],
    "type": "object"
   },
   "extra_routes6": {
    "additionalProperties": {
+    "additionalProperties": false,
+    "description": "IPv6 static route settings for a destination prefix",
     "properties": {
      "discard": {
       "default": false,
-      "description": "This takes precedence",
+      "description": "Whether to install a discard route; this takes precedence over next-hop settings",
       "type": "boolean"
      },
      "metric": {
-      "example": null,
+      "description": "Route metric for the IPv6 static route",
+      "examples": [
+       null
+      ],
       "maximum": 2147483647,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "next_qualified": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Qualified next-hop attributes for an IPv6 static route",
        "properties": {
         "metric": {
-         "nullable": true,
-         "type": "integer"
+         "description": "Route metric for this qualified IPv6 next hop",
+         "type": [
+          "integer",
+          "null"
+         ]
         },
         "preference": {
-         "nullable": true,
-         "type": "integer"
+         "description": "Route preference for this qualified IPv6 next hop",
+         "type": [
+          "integer",
+          "null"
+         ]
         }
        },
        "type": "object"
       },
-      "example": {
-       "2a02:1234:200a::100": {
-        "metric": null,
-        "preference": 40
+      "description": "Qualified next-hop settings keyed by IPv6 next-hop address",
+      "examples": [
+       {
+        "2a02:1234:200a::100": {
+         "metric": null,
+         "preference": 40
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "no_resolve": {
       "default": false,
+      "description": "Whether to prevent recursive next-hop resolution for the IPv6 static route",
       "type": "boolean"
      },
      "preference": {
-      "example": 30,
+      "description": "Route preference for the IPv6 static route",
+      "examples": [
+       30
+      ],
       "maximum": 2147483647,
       "minimum": 0,
-      "nullable": true,
-      "type": "integer"
+      "type": [
+       "integer",
+       "null"
+      ]
      },
      "via": {
-      "description": "Next-hop IP Address",
-      "example": "2a02:1234:200a::100",
-      "type": "string"
+      "description": "Next-hop IP address. Can be a single IP address or an array of IP addresses for ECMP (Equal-Cost Multi-Path) load balancing across multiple next-hops.",
+      "examples": [
+       "10.2.1.1",
+       [
+        "10.2.1.1",
+        "10.2.1.2"
+       ]
+      ],
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      ]
      }
     },
     "type": "object"
    },
    "description": "Property key is the destination CIDR (e.g. \"2a02:1234:420a:10c9::/64\")",
-   "example": {
-    "2a02:1234:420a:10c9::/64": {
-     "via": "2a02:1234:200a::100"
+   "examples": [
+    {
+     "2a02:1234:420a:10c9::/64": {
+      "via": "2a02:1234:200a::100"
+     }
     }
-   },
+   ],
    "type": "object"
   },
   "id": {
    "description": "Unique ID of the object instance in the Mist Organization",
-   "example": "53f10664-3ce8-4c27-b382-0ef66432349f",
+   "examples": [
+    "53f10664-3ce8-4c27-b382-0ef66432349f"
+   ],
    "format": "uuid",
    "readOnly": true,
    "type": "string"
   },
   "image1_url": {
-   "nullable": true,
-   "type": "string"
+   "description": "First custom image URL associated with the switch",
+   "type": [
+    "string",
+    "null"
+   ]
   },
   "image2_url": {
-   "nullable": true,
-   "type": "string"
+   "description": "Second custom image URL associated with the switch",
+   "type": [
+    "string",
+    "null"
+   ]
   },
   "image3_url": {
-   "nullable": true,
-   "type": "string"
+   "description": "Third custom image URL associated with the switch",
+   "type": [
+    "string",
+    "null"
+   ]
   },
   "iot_config": {
    "additionalProperties": {
+    "additionalProperties": false,
     "description": "Switch IOT port configuration",
     "properties": {
      "alarm_class": {
@@ -641,6 +975,7 @@
      },
      "enabled": {
       "default": false,
+      "description": "Whether this switch IOT port is enabled",
       "type": "boolean"
      },
      "input_src": {
@@ -653,6 +988,7 @@
       "type": "string"
      },
      "name": {
+      "description": "Display name for the switch IOT port",
       "type": "string"
      }
     },
@@ -662,9 +998,11 @@
    "type": "object"
   },
   "ip_config": {
-   "description": "Junos IP Config",
+   "additionalProperties": false,
+   "description": "Junos management IP configuration",
    "properties": {
     "dns": {
+     "description": "Unique string values returned or accepted by this schema",
      "items": {
       "type": "string"
      },
@@ -672,6 +1010,7 @@
      "uniqueItems": true
     },
     "dns_suffix": {
+     "description": "Unique string values returned or accepted by this schema",
      "items": {
       "type": "string"
      },
@@ -679,9 +1018,11 @@
      "uniqueItems": true
     },
     "gateway": {
+     "description": "Default gateway IPv4 address for this Junos IP configuration",
      "type": "string"
     },
     "ip": {
+     "description": "Configured IPv4 address for this Junos IP configuration",
      "type": "string"
     },
     "netmask": {
@@ -689,17 +1030,19 @@
      "type": "string"
     },
     "network": {
-     "description": "Network where this mgmt IP reside, this will be used as default network for outbound-ssh, dns, ntp, dns, tacplus, radius, syslog, snmp",
+     "description": "Management network for this IP configuration; used as the default source network for outbound SSH, DNS, NTP, TACACS+, RADIUS, syslog, and SNMP",
      "type": "string"
     },
     "type": {
      "default": "dhcp",
-     "description": "enum: `dhcp`, `static`",
+     "description": "IP address assignment mode, either DHCP or static. enum: `dhcp`, `static`",
      "enum": [
       "dhcp",
       "static"
      ],
-     "example": "static",
+     "examples": [
+      "static"
+     ],
      "type": "string"
     }
    },
@@ -707,7 +1050,8 @@
   },
   "local_port_config": {
    "additionalProperties": {
-    "description": "Switch port config",
+    "additionalProperties": false,
+    "description": "Per-port Switch Port Operator (SPO) override configuration used in `local_port_config` to customize settings inherited from `port_config`",
     "properties": {
      "all_networks": {
       "default": false,
@@ -715,11 +1059,12 @@
       "type": "boolean"
      },
      "allow_dhcpd": {
-      "description": "If DHCP snooping is enabled, whether DHCP server is allowed on the interfaces with. All the interfaces from port configs using this port usage are effected. Please notice that allow_dhcpd is a tri_state. When it is not defined, it means using the system's default setting which depends on whether the port is an access or trunk port.",
+      "description": "Controls whether DHCP server traffic is allowed on ports using this configuration if DHCP snooping is enabled. This is a tri-state setting; `true`: ports become trusted ports allowing DHCP server traffic, `false`: ports become untrusted blocking DHCP server traffic, undefined: use system defaults (access ports default to untrusted, trunk ports default to trusted).",
       "type": "boolean"
      },
      "allow_multiple_supplicants": {
       "default": false,
+      "description": "Whether multiple supplicants may authenticate on the port",
       "type": "boolean"
      },
      "bypass_auth_when_server_down": {
@@ -733,6 +1078,7 @@
       "type": "boolean"
      },
      "description": {
+      "description": "Human-readable description for this local port configuration",
       "type": "string"
      },
      "disable_autoneg": {
@@ -757,9 +1103,11 @@
      },
      "dynamic_vlan_networks": {
       "description": "Only if `port_auth`==`dot1x`, if dynamic vlan is used, specify the possible networks/vlans RADIUS can return",
-      "example": [
-       "corp",
-       "user"
+      "examples": [
+       [
+        "corp",
+        "user"
+       ]
       ],
       "items": {
        "type": "string"
@@ -773,20 +1121,23 @@
      },
      "enable_qos": {
       "default": false,
+      "description": "Whether QoS is enabled on ports using this local configuration",
       "type": "boolean"
      },
      "guest_network": {
       "description": "Only if `port_auth`==`dot1x` which network to put the device into if the device cannot do dot1x. default is null (i.e. not allowed)",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "inter_switch_link": {
       "default": false,
-      "description": "inter_switch_link is used together with \"isolation\" under networks. NOTE: inter_switch_link works only between Juniper device. This has to be applied to both ports connected together",
+      "description": "Used together with \"isolation\" under networks for links between Juniper devices; must be applied to both connected ports",
       "type": "boolean"
      },
      "mac_auth_only": {
-      "description": "Only if `enable_mac_auth`==`true`",
+      "description": "Only if `enable_mac_auth`==`true`, whether to use MAC authentication without 802.1X",
       "type": "boolean"
      },
      "mac_auth_preferred": {
@@ -805,7 +1156,7 @@
      },
      "mac_limit": {
       "default": 0,
-      "description": "Max number of mac addresses, default is 0 for unlimited, otherwise range is 1 or higher, with upper bound constrained by platform",
+      "description": "Max number of MAC addresses, default is 0 for unlimited, otherwise range is 1 or higher, with upper bound constrained by platform",
       "minimum": 0,
       "type": "integer"
      },
@@ -831,7 +1182,9 @@
      },
      "note": {
       "description": "Additional note for the port config override",
-      "example": "force 100M for camera",
+      "examples": [
+       "force 100M for camera"
+      ],
       "type": "string"
      },
      "persist_mac": {
@@ -849,8 +1202,10 @@
       "enum": [
        "dot1x"
       ],
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "port_network": {
       "description": "Native network/vlan for untagged traffic",
@@ -868,17 +1223,21 @@
         "type": "string"
        }
       ],
-      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600)"
+      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600). Set to 0 to disable reauthentication (no-reauthentication)."
      },
      "server_fail_network": {
       "description": "Only if `port_auth`==`dot1x` sets server fail fallback vlan",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "server_reject_network": {
-      "description": "Only if `port_auth`==`dot1x` when radius server reject / fails",
-      "nullable": true,
-      "type": "string"
+      "description": "Only if `port_auth`==`dot1x` when RADIUS server reject / fails",
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "speed": {
       "default": "auto",
@@ -898,7 +1257,8 @@
       "type": "string"
      },
      "storm_control": {
-      "description": "Switch storm control",
+      "additionalProperties": false,
+      "description": "Storm-control settings for this local port configuration",
       "properties": {
        "disable_port": {
         "default": false,
@@ -942,14 +1302,16 @@
      },
      "stp_no_root_port": {
       "default": false,
+      "description": "Whether STP should prevent this port from becoming a root port",
       "type": "boolean"
      },
      "stp_p2p": {
       "default": false,
+      "description": "Whether STP treats this port as a point-to-point link",
       "type": "boolean"
      },
      "usage": {
-      "description": "Port usage name.",
+      "description": "Port usage profile name for this local port configuration",
       "type": "string"
      },
      "use_vstp": {
@@ -967,39 +1329,49 @@
     ],
     "type": "object"
    },
-   "description": "Local port override, overriding the port configuration from `port_config`. Property key is the port name or range (e.g. \"ge-0/0/0-10\")",
+   "description": "Per-port Switch Port Operator (SPO) override, overriding the port configuration from `port_config`. Property key is the port name or range (e.g. \"ge-0/0/0-10\")",
    "type": "object"
   },
   "mac": {
-   "description": "Device MAC address",
+   "description": "Switch MAC address used to identify the device",
    "readOnly": true,
    "type": "string"
   },
   "managed": {
    "default": false,
-   "description": "An adopted switch/gateway will not be managed/configured by Mist by default. Setting this parameter to `true` enables the adopted switch/gateway to be managed/configured by Mist.",
+   "deprecated": true,
+   "description": "An adopted switch/gateway will not be managed/configured by Mist by default. Setting this parameter to `true` enables the adopted switch/gateway to be managed/configured by Mist. Deprecated in favour of mist_configured, which is more intuitive and can be used for both adopted and claimed devices.",
    "type": "boolean"
   },
   "map_id": {
    "description": "Map where the device belongs to",
-   "example": "63eda950-c6da-11e4-a628-60f81dd250cc",
+   "examples": [
+    "63eda950-c6da-11e4-a628-60f81dd250cc"
+   ],
    "format": "uuid",
    "type": "string"
   },
+  "mist_configured": {
+   "description": "whether the device can be configured by Mist or not. This deprecates `managed` (for adopted device) and `disable_auto_config` for claimed device)",
+   "type": "boolean"
+  },
   "mist_nac": {
-   "description": "Enable mist_nac to use RadSec",
+   "additionalProperties": false,
+   "description": "Mist NAC RadSec settings for a switch",
    "properties": {
     "enabled": {
+     "description": "Whether Mist NAC RadSec is enabled for the switch",
      "type": "boolean"
     },
     "network": {
+     "description": "Switch network used for Mist NAC RadSec connectivity",
      "type": "string"
     }
    },
    "type": "object"
   },
   "model": {
-   "description": "Device Model",
+   "description": "Switch model reported for the device",
    "readOnly": true,
    "type": "string"
   },
@@ -1010,10 +1382,12 @@
    "type": "number"
   },
   "name": {
+   "description": "Friendly display name assigned to the switch",
    "type": "string"
   },
   "networks": {
    "additionalProperties": {
+    "additionalProperties": false,
     "description": "A network represents a network segment. It can either represent a VLAN (then usually ties to a L3 subnet), optionally associate it with a subnet which can later be used to create addition routes. Used for ports doing `family ethernet-switching`. It can also be a pure L3-subnet that can then be used against a port that with `family inet`.",
     "properties": {
      "gateway": {
@@ -1030,7 +1404,10 @@
       "type": "boolean"
      },
      "isolation_vlan_id": {
-      "example": "3070",
+      "description": "Required when `isolation`==`true`. Unique VLAN ID used for client isolation",
+      "examples": [
+       "3070"
+      ],
       "type": "string"
      },
      "subnet": {
@@ -1042,6 +1419,7 @@
       "type": "string"
      },
      "vlan_id": {
+      "description": "VLAN ID, either numeric or expressed as a template variable string",
       "oneOf": [
        {
         "type": "string"
@@ -1063,6 +1441,7 @@
    "type": "object"
   },
   "notes": {
+   "description": "Free-form administrative notes for this switch",
    "type": "string"
   },
   "ntp_servers": {
@@ -1073,12 +1452,15 @@
    "type": "array"
   },
   "oob_ip_config": {
+   "additionalProperties": false,
    "description": "Switch OOB IP Config:\n  - If HA configuration: key parameter will be nodeX (eg: node1)\n  - If there are 2 routing engines, re1 mgmt IP has to be set separately (if desired): key parameter = `re1`",
    "properties": {
     "gateway": {
+     "description": "Default gateway for the out-of-band management interface when `type`==`static`",
      "type": "string"
     },
     "ip": {
+     "description": "Static IPv4 address for the out-of-band management interface when `type`==`static`",
      "type": "string"
     },
     "netmask": {
@@ -1091,12 +1473,14 @@
     },
     "type": {
      "default": "dhcp",
-     "description": "enum: `dhcp`, `static`",
+     "description": "IP address assignment mode, either DHCP or static. enum: `dhcp`, `static`",
      "enum": [
       "dhcp",
       "static"
      ],
-     "example": "static",
+     "examples": [
+      "static"
+     ],
      "type": "string"
     },
     "use_mgmt_vrf": {
@@ -1113,21 +1497,27 @@
    "type": "object"
   },
   "org_id": {
-   "example": "a97c1b22-a4e9-411e-9bfd-d8695a0f9e61",
+   "description": "Unique identifier of a Mist organization",
+   "examples": [
+    "a97c1b22-a4e9-411e-9bfd-d8695a0f9e61"
+   ],
    "format": "uuid",
    "readOnly": true,
    "type": "string"
   },
   "ospf_areas": {
    "additionalProperties": {
+    "additionalProperties": false,
     "description": "Property key is the OSPF Area (Area should be a number (0-255) / IP address)",
     "properties": {
      "include_loopback": {
       "default": false,
+      "description": "Whether loopback interfaces are included in this OSPF area",
       "type": "boolean"
      },
      "networks": {
       "additionalProperties": {
+       "additionalProperties": false,
        "description": "Property key is the network name. Networks to participate in an OSPF area",
        "properties": {
         "auth_keys": {
@@ -1135,14 +1525,18 @@
           "type": "string"
          },
          "description": "Required if `auth_type`==`md5`. Property key is the key number",
-         "example": {
-          "1": "auth-key-1"
-         },
+         "examples": [
+          {
+           "1": "auth-key-1"
+          }
+         ],
          "type": "object"
         },
         "auth_password": {
          "description": "Required if `auth_type`==`password`, the password, max length is 8",
-         "example": "simple",
+         "examples": [
+          "simple"
+         ],
          "type": "string"
         },
         "auth_type": {
@@ -1153,32 +1547,47 @@
           "none",
           "password"
          ],
-         "example": "md5",
+         "examples": [
+          "md5"
+         ],
          "type": "string"
         },
         "bfd_minimum_interval": {
-         "example": 500,
+         "description": "Minimum BFD interval for this OSPF network, in milliseconds",
+         "examples": [
+          500
+         ],
          "maximum": 255000,
          "minimum": 1,
          "type": "integer"
         },
         "dead_interval": {
-         "example": 40,
+         "description": "OSPF dead interval for this network, in seconds",
+         "examples": [
+          40
+         ],
          "maximum": 65535,
          "minimum": 1,
          "type": "integer"
         },
         "export_policy": {
-         "example": "export_policy",
+         "description": "Routing policy used to export routes from this OSPF network",
+         "examples": [
+          "export_policy"
+         ],
          "type": "string"
         },
         "hello_interval": {
+         "description": "OSPF hello interval for this network, in seconds",
          "maximum": 255,
          "minimum": 1,
          "type": "integer"
         },
         "import_policy": {
-         "example": "import_policy",
+         "description": "Routing policy used to import routes for this OSPF network",
+         "examples": [
+          "import_policy"
+         ],
          "type": "string"
         },
         "interface_type": {
@@ -1193,11 +1602,16 @@
          "type": "string"
         },
         "metric": {
-         "example": 10000,
+         "description": "OSPF metric assigned to this network",
+         "examples": [
+          10000
+         ],
          "maximum": 65535,
          "minimum": 1,
-         "nullable": true,
-         "type": "integer"
+         "type": [
+          "integer",
+          "null"
+         ]
         },
         "no_readvertise_to_overlay": {
          "default": false,
@@ -1212,22 +1626,25 @@
        },
        "type": "object"
       },
-      "example": {
-       "corp": {
-        "auth_keys": {
-         "1": "auth-key-1"
+      "description": "OSPF network settings keyed by network name",
+      "examples": [
+       {
+        "corp": {
+         "auth_keys": {
+          "1": "auth-key-1"
+         },
+         "auth_type": "md5",
+         "bfd_minimum_interval": 500,
+         "dead_interval": 40,
+         "hello_interval": 10,
+         "interface_type": "nbma",
+         "metric": 10000
         },
-        "auth_type": "md5",
-        "bfd_minimum_interval": 500,
-        "dead_interval": 40,
-        "hello_interval": 10,
-        "interface_type": "nbma",
-        "metric": 10000
-       },
-       "guest": {
-        "passive": true
+        "guest": {
+         "passive": true
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "type": {
@@ -1238,7 +1655,9 @@
        "nssa",
        "stub"
       ],
-      "example": "default",
+      "examples": [
+       "default"
+      ],
       "type": "string"
      }
     },
@@ -1248,9 +1667,11 @@
    "type": "object"
   },
   "ospf_config": {
+   "description": "OSPF routing configuration for a Junos switch",
    "properties": {
     "areas": {
      "additionalProperties": {
+      "description": "Settings for a single OSPF area on a switch",
       "properties": {
        "no_summary": {
         "default": false,
@@ -1285,47 +1706,60 @@
       }
      ],
      "description": "Reference bandwidth. Integer(100000) or String (10g)",
-     "example": 100000
+     "examples": [
+      100000
+     ]
     }
    }
   },
   "other_ip_configs": {
    "additionalProperties": {
-    "description": "Optional, if it's required to have switch's L3 presence on a network/vlan",
+    "additionalProperties": false,
+    "description": "Optional switch L3 presence on an additional network or VLAN",
     "properties": {
      "evpn_anycast": {
       "default": false,
-      "description": "For EVPN, if anycast is desired",
+      "description": "For EVPN, whether anycast is desired",
       "type": "boolean"
      },
      "ip": {
-      "description": "Required if `type`==`static`",
-      "example": "10.3.3.1",
+      "description": "Required if `type`==`static`; IPv4 address for the additional Junos L3 presence",
+      "examples": [
+       "10.3.3.1"
+      ],
       "type": "string"
      },
      "ip6": {
-      "description": "Required if `type6`==`static`",
-      "example": "fdad:b0bc:f29e::3d16",
+      "description": "Required if `type6`==`static`; IPv6 address for the additional Junos L3 presence",
+      "examples": [
+       "fdad:b0bc:f29e::3d16"
+      ],
       "type": "string"
      },
      "netmask": {
-      "description": "Optional, `subnet` from `network` definition will be used if defined",
-      "example": "255.255.255.0",
+      "description": "Optional IPv4 netmask; `subnet` from `network` definition will be used if defined",
+      "examples": [
+       "255.255.255.0"
+      ],
       "type": "string"
      },
      "netmask6": {
-      "description": "Optional, `subnet` from `network` definition will be used if defined",
-      "example": "/64",
+      "description": "Optional IPv6 prefix length; `subnet` from `network` definition will be used if defined",
+      "examples": [
+       "/64"
+      ],
       "type": "string"
      },
      "type": {
       "default": "dhcp",
-      "description": "enum: `dhcp`, `static`",
+      "description": "IP address assignment mode, either DHCP or static. enum: `dhcp`, `static`",
       "enum": [
        "dhcp",
        "static"
       ],
-      "example": "static",
+      "examples": [
+       "static"
+      ],
       "type": "string"
      },
      "type6": {
@@ -1337,7 +1771,9 @@
        "disabled",
        "static"
       ],
-      "example": "static",
+      "examples": [
+       "static"
+      ],
       "type": "string"
      }
     },
@@ -1348,7 +1784,8 @@
   },
   "port_config": {
    "additionalProperties": {
-    "description": "Switch port config",
+    "additionalProperties": false,
+    "description": "Junos switch port configuration",
     "properties": {
      "ae_disable_lacp": {
       "description": "To disable LACP support for the AE interface",
@@ -1358,12 +1795,23 @@
       "description": "Users could force to use the designated AE name",
       "type": "integer"
      },
+     "ae_lacp_force_up": {
+      "default": false,
+      "description": "If `aggregated`==`true`, sets the state of the interface as UP when the peer has limited LACP capability. Use case: When a device connected to this AE port is ZTPing for the first time, it will not have LACP configured on the other end. **Note:** Turning this on will enable force-up on one of the interfaces in the bundle only",
+      "type": "boolean"
+     },
+     "ae_lacp_passive": {
+      "default": false,
+      "description": "If `aggregated`==`true`, sets LACP to passive mode on this AE interface; by default, active (fast) mode is used",
+      "type": "boolean"
+     },
      "ae_lacp_slow": {
-      "description": "To use fast timeout",
+      "description": "To use slow timeout",
       "type": "boolean"
      },
      "aggregated": {
       "default": false,
+      "description": "Whether this port is configured as an aggregated Ethernet member",
       "type": "boolean"
      },
      "critical": {
@@ -1372,6 +1820,7 @@
       "type": "boolean"
      },
      "description": {
+      "description": "Human-readable description for this Junos port",
       "type": "string"
      },
      "disable_autoneg": {
@@ -1391,16 +1840,26 @@
      },
      "dynamic_usage": {
       "description": "Enable dynamic usage for this port. Set to `dynamic` to enable.",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "esilag": {
+      "description": "Whether this Junos port participates in an ESI-LAG",
       "type": "boolean"
      },
      "mtu": {
       "default": 1514,
       "description": "Media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation",
       "type": "integer"
+     },
+     "networks": {
+      "description": "List of network names. Required if `usage`==`inet`",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
      },
      "no_local_overwrite": {
       "default": true,
@@ -1409,6 +1868,7 @@
      },
      "poe_disabled": {
       "default": false,
+      "description": "Whether PoE capabilities are disabled for this Junos port",
       "type": "boolean"
      },
      "port_network": {
@@ -1447,9 +1907,11 @@
   },
   "port_config_overwrite": {
    "additionalProperties": {
-    "description": "Switch port config",
+    "additionalProperties": false,
+    "description": "Switch port configuration overrides",
     "properties": {
      "description": {
+      "description": "Administrative description applied to the switch port override",
       "type": "string"
      },
      "disabled": {
@@ -1470,6 +1932,7 @@
      "mac_limit": {
       "anyOf": [
        {
+        "default": 0,
         "maximum": 16383,
         "minimum": 0,
         "type": "integer"
@@ -1478,12 +1941,16 @@
         "type": "string"
        }
       ],
-      "default": 0,
-      "description": "Max number of mac addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
+      "description": "Max number of MAC addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
      },
      "poe_disabled": {
       "default": false,
       "description": "Whether PoE capabilities are disabled for a port",
+      "type": "boolean"
+     },
+     "poe_keep_state_when_reboot": {
+      "default": false,
+      "description": "Whether Perpetual PoE is enabled; keeps PoE state across reboots",
       "type": "boolean"
      },
      "port_network": {
@@ -1515,11 +1982,15 @@
   },
   "port_mirroring": {
    "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Input and output settings for one switch port mirroring session",
     "properties": {
      "input_networks_ingress": {
       "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
       "items": {
-       "example": "corp",
+       "examples": [
+        "corp"
+       ],
        "type": "string"
       },
       "type": "array"
@@ -1527,7 +1998,9 @@
      "input_port_ids_egress": {
       "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
       "items": {
-       "example": "ge-0/0/3",
+       "examples": [
+        "ge-0/0/3"
+       ],
        "type": "string"
       },
       "type": "array"
@@ -1535,24 +2008,32 @@
      "input_port_ids_ingress": {
       "description": "At least one of the `input_port_ids_ingress`, `input_port_ids_egress` or `input_networks_ingress ` should be specified",
       "items": {
-       "example": "ge-0/0/3",
+       "examples": [
+        "ge-0/0/3"
+       ],
        "type": "string"
       },
       "type": "array"
      },
      "output_ip_address": {
       "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
-      "example": "1.2.3.4",
+      "examples": [
+       "1.2.3.4"
+      ],
       "type": "string"
      },
      "output_network": {
       "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
-      "example": "analyze",
+      "examples": [
+       "analyze"
+      ],
       "type": "string"
      },
      "output_port_id": {
       "description": "Exactly one of the `output_ip_address`, `output_port_id` or `output_network` should be provided",
-      "example": "ge-0/0/5",
+      "examples": [
+       "ge-0/0/5"
+      ],
       "type": "string"
      }
     },
@@ -1563,7 +2044,8 @@
   },
   "port_usages": {
    "additionalProperties": {
-    "description": "Junos port usages",
+    "additionalProperties": false,
+    "description": "Junos switch port usage template and authentication settings",
     "properties": {
      "all_networks": {
       "default": false,
@@ -1571,7 +2053,7 @@
       "type": "boolean"
      },
      "allow_dhcpd": {
-      "description": "Only if `mode`!=`dynamic`. If DHCP snooping is enabled, whether DHCP server is allowed on the interfaces with. All the interfaces from port configs using this port usage are effected. Please notice that allow_dhcpd is a tri_state. When it is not defined, it means using the system's default setting which depends on whether the port is an access or trunk port.",
+      "description": "Only applies when `mode`!=`dynamic`. Controls whether DHCP server traffic is allowed on ports using this configuration if DHCP snooping is enabled. This is a tri-state setting; `true`: ports become trusted ports allowing DHCP server traffic, `false`: ports become untrusted blocking DHCP server traffic, undefined: use system defaults (access ports default to untrusted, trunk ports default to trusted).",
       "type": "boolean"
      },
      "allow_multiple_supplicants": {
@@ -1587,6 +2069,11 @@
      "bypass_auth_when_server_down_for_unknown_client": {
       "default": false,
       "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x`. Bypass auth for all (including unknown clients) if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "bypass_auth_when_server_down_for_voip": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Bypass auth for VOIP if set to true when RADIUS server is down",
       "type": "boolean"
      },
      "community_vlan_id": {
@@ -1619,9 +2106,11 @@
      },
      "dynamic_vlan_networks": {
       "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`, if dynamic vlan is used, specify the possible networks/vlans RADIUS can return",
-      "example": [
-       "corp",
-       "user"
+      "examples": [
+       [
+        "corp",
+        "user"
+       ]
       ],
       "items": {
        "type": "string"
@@ -1640,17 +2129,19 @@
      },
      "guest_network": {
       "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Which network to put the device into if the device cannot do dot1x. default is null (i.e. not allowed)",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "inter_isolation_network_link": {
       "default": false,
-      "description": "Only if `mode`!=`dynamic`. `inter_switch_link` is used together with `isolation` under networks. NOTE: `inter_switch_link` works only between Juniper device. This has to be applied to both ports connected together",
+      "description": "Only if `mode`!=`dynamic`. `inter_isolation_network_link` is used together with `isolation` under networks, signaling that this port connects to isolated networks",
       "type": "boolean"
      },
      "inter_switch_link": {
       "default": false,
-      "description": "Only if `mode`!=`dynamic`. `inter_switch_link` is used together with `isolation` under networks. NOTE: inter_switch_link works only between Juniper device. This has to be applied to both ports connected together",
+      "description": "Only if `mode`!=`dynamic`. `inter_switch_link` is used together with `isolation` under networks. NOTE: `inter_switch_link` works only between Juniper devices. This has to be applied to both ports connected together",
       "type": "boolean"
      },
      "mac_auth_only": {
@@ -1674,6 +2165,7 @@
      "mac_limit": {
       "anyOf": [
        {
+        "default": 0,
         "maximum": 16383,
         "minimum": 0,
         "type": "integer"
@@ -1682,8 +2174,7 @@
         "type": "string"
        }
       ],
-      "default": 0,
-      "description": "Only if `mode`!=`dynamic`, max number of mac addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
+      "description": "Only if `mode`!=`dynamic`, max number of MAC addresses, default is 0 for unlimited, otherwise range is 1 to 16383 (upper bound constrained by platform)"
      },
      "mode": {
       "description": "`mode`==`dynamic` must only be used if the port usage name is `dynamic`. enum: `access`, `dynamic`, `inet`, `trunk`",
@@ -1704,10 +2195,12 @@
        },
        {
         "type": "string"
+       },
+       {
+        "type": "null"
        }
       ],
-      "description": "Only if `mode`!=`dynamic` media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation. The default value is 1514.",
-      "nullable": true
+      "description": "Only if `mode`!=`dynamic` media maximum transmission unit (MTU) is the largest data unit that can be forwarded without fragmentation. The default value is 1514."
      },
      "networks": {
       "description": "Only if `mode`==`trunk`, the list of network/vlans",
@@ -1726,13 +2219,28 @@
       "description": "Only if `mode`!=`dynamic`. Whether PoE capabilities are disabled for a port",
       "type": "boolean"
      },
+     "poe_keep_state_when_reboot": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. Whether Perpetual PoE is enabled; keeps PoE state across reboots",
+      "type": "boolean"
+     },
+     "poe_priority": {
+      "description": "PoE priority. enum: `low`, `high`",
+      "enum": [
+       "low",
+       "high"
+      ],
+      "type": "string"
+     },
      "port_auth": {
       "description": "Only if `mode`!=`dynamic`. If dot1x is desired, set to dot1x. enum: `dot1x`",
       "enum": [
        "dot1x"
       ],
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "port_network": {
       "description": "Only if `mode`!=`dynamic`. Native network/vlan for untagged traffic",
@@ -1750,7 +2258,7 @@
         "type": "string"
        }
       ],
-      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600)"
+      "description": "Only if `mode`!=`dynamic` and `port_auth`=`dot1x` reauthentication interval range (min: 10, max: 65535, default: 3600). Set to 0 to disable reauthentication (no-reauthentication)."
      },
      "reset_default_when": {
       "default": "link_down",
@@ -1759,14 +2267,23 @@
        "link_down",
        "none"
       ],
-      "example": "link_down",
+      "examples": [
+       "link_down"
+      ],
       "type": "string"
      },
      "rules": {
-      "description": "Only if `mode`==`dynamic`",
+      "description": "Only if `mode`==`dynamic`. Dynamic matching rules that select the port usage to apply",
       "items": {
+       "additionalProperties": false,
+       "description": "Dynamic port usage rule evaluated against LLDP, RADIUS, or peer MAC attributes",
        "properties": {
+        "description": {
+         "description": "Optional description of the rule",
+         "type": "string"
+        },
         "equals": {
+         "description": "Exact value that the selected source attribute must match",
          "type": "string"
         },
         "equals_any": {
@@ -1781,7 +2298,7 @@
          "type": "string"
         },
         "src": {
-         "description": "enum: `link_peermac`, `lldp_chassis_id`, `lldp_hardware_revision`, `lldp_manufacturer_name`, `lldp_oui`, `lldp_serial_number`, `lldp_system_name`, `radius_dynamicfilter`, `radius_usermac`, `radius_username`",
+         "description": "enum: `link_peermac`, `lldp_chassis_id`, `lldp_hardware_revision`, `lldp_manufacturer_name`, `lldp_oui`, `lldp_serial_number`, `lldp_system_description`, `lldp_system_name`, `radius_dynamicfilter`, `radius_usermac`, `radius_username`",
          "enum": [
           "link_peermac",
           "lldp_chassis_id",
@@ -1789,6 +2306,7 @@
           "lldp_manufacturer_name",
           "lldp_oui",
           "lldp_serial_number",
+          "lldp_system_description",
           "lldp_system_name",
           "radius_dynamicfilter",
           "radius_usermac",
@@ -1797,7 +2315,7 @@
          "type": "string"
         },
         "usage": {
-         "description": "`port_usage` name",
+         "description": "Port usage name to apply when this dynamic rule matches",
          "type": "string"
         }
        },
@@ -1810,13 +2328,24 @@
      },
      "server_fail_network": {
       "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Sets server fail fallback vlan",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "server_fail_retry_interval": {
+      "default": 120,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Interval, in seconds. Sets the wait time before retrying authentication after RADIUS failure to reduce client flapping. Range 120-65535",
+      "maximum": 65535,
+      "minimum": 120,
+      "type": "integer"
      },
      "server_reject_network": {
-      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. When radius server reject / fails",
-      "nullable": true,
-      "type": "string"
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. When RADIUS server reject / fails",
+      "type": [
+       "string",
+       "null"
+      ]
      },
      "speed": {
       "default": "auto",
@@ -1836,6 +2365,7 @@
       "type": "string"
      },
      "storm_control": {
+      "additionalProperties": false,
       "description": "Switch storm control. Only if `mode`!=`dynamic`",
       "properties": {
        "disable_port": {
@@ -1910,8 +2440,10 @@
      },
      "voip_network": {
       "description": "Only if `mode`!=`dynamic`. Network/vlan for voip traffic, must also set port_network. to authenticate device, set port_auth",
-      "nullable": true,
-      "type": "string"
+      "type": [
+       "string",
+       "null"
+      ]
      }
     },
     "type": "object"
@@ -1920,31 +2452,39 @@
    "type": "object"
   },
   "radius_config": {
-   "description": "Junos Radius config",
+   "additionalProperties": false,
+   "description": "Switch RADIUS authentication and accounting configuration",
    "properties": {
     "acct_immediate_update": {
+     "description": "Whether immediate RADIUS accounting updates are sent",
      "type": "boolean"
     },
     "acct_interim_interval": {
      "default": 0,
-     "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the radius server, 600 and up is recommended when enabled",
+     "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the RADIUS server, 600 and up is recommended when enabled",
      "maximum": 65535,
      "minimum": 0,
      "type": "integer"
     },
     "acct_servers": {
+     "description": "List of RADIUS accounting servers",
      "items": {
+      "additionalProperties": false,
+      "description": "RADIUS accounting server settings",
       "properties": {
        "host": {
-        "description": "IP/ hostname of RADIUS server",
-        "example": "1.2.3.4",
+        "description": "Address or hostname of the RADIUS accounting server",
+        "examples": [
+         "1.2.3.4"
+        ],
         "type": "string"
        },
        "keywrap_enabled": {
+        "description": "Whether RADIUS keywrap is enabled for messages sent to this accounting server",
         "type": "boolean"
        },
        "keywrap_format": {
-        "description": "enum: `ascii`, `hex`",
+        "description": "Encoding format for RADIUS keywrap KEK and MACK values. enum: `ascii`, `hex`",
         "enum": [
          "ascii",
          "hex"
@@ -1952,11 +2492,17 @@
         "type": "string"
        },
        "keywrap_kek": {
-        "example": "1122334455",
+        "description": "RADIUS keywrap key encryption key (KEK)",
+        "examples": [
+         "1122334455"
+        ],
         "type": "string"
        },
        "keywrap_mack": {
-        "example": "1122334455",
+        "description": "RADIUS keywrap message authentication code key (MACK)",
+        "examples": [
+         "1122334455"
+        ],
         "type": "string"
        },
        "port": {
@@ -1970,11 +2516,14 @@
           "type": "string"
          }
         ],
-        "description": "Radius Auth Port, value from 1 to 65535, default is 1813"
+        "description": "RADIUS Auth Port, value from 1 to 65535, default is 1813"
        },
        "secret": {
-        "description": "Secret of RADIUS server",
-        "example": "testing123",
+        "description": "Shared secret used with this RADIUS accounting server",
+        "examples": [
+         "testing123"
+        ],
+        "format": "password",
         "type": "string"
        }
       },
@@ -1989,7 +2538,7 @@
     },
     "auth_server_selection": {
      "default": "ordered",
-     "description": "enum: `ordered`, `unordered`",
+     "description": "Selection strategy for RADIUS authentication servers. enum: `ordered`, `unordered`",
      "enum": [
       "ordered",
       "unordered"
@@ -1997,19 +2546,24 @@
      "type": "string"
     },
     "auth_servers": {
+     "description": "List of RADIUS authentication servers",
      "items": {
-      "description": "Authentication Server",
+      "additionalProperties": false,
+      "description": "RADIUS authentication server settings",
       "properties": {
        "host": {
-        "description": "IP/ hostname of RADIUS server",
-        "example": "1.2.3.4",
+        "description": "Address or hostname of the RADIUS authentication server",
+        "examples": [
+         "1.2.3.4"
+        ],
         "type": "string"
        },
        "keywrap_enabled": {
+        "description": "Whether RADIUS keywrap is enabled for messages sent to this authentication server",
         "type": "boolean"
        },
        "keywrap_format": {
-        "description": "enum: `ascii`, `hex`",
+        "description": "Encoding format for RADIUS keywrap KEK and MACK values. enum: `ascii`, `hex`",
         "enum": [
          "ascii",
          "hex"
@@ -2017,11 +2571,17 @@
         "type": "string"
        },
        "keywrap_kek": {
-        "example": "1122334455",
+        "description": "RADIUS keywrap key encryption key (KEK)",
+        "examples": [
+         "1122334455"
+        ],
         "type": "string"
        },
        "keywrap_mack": {
-        "example": "1122334455",
+        "description": "RADIUS keywrap message authentication code key (MACK)",
+        "examples": [
+         "1122334455"
+        ],
         "type": "string"
        },
        "port": {
@@ -2035,7 +2595,7 @@
           "type": "string"
          }
         ],
-        "description": "Radius Auth Port, value from 1 to 65535, default is 1812"
+        "description": "RADIUS Auth Port, value from 1 to 65535, default is 1812"
        },
        "require_message_authenticator": {
         "default": false,
@@ -2043,8 +2603,11 @@
         "type": "boolean"
        },
        "secret": {
-        "description": "Secret of RADIUS server",
-        "example": "testing123",
+        "description": "Shared secret used with this RADIUS authentication server",
+        "examples": [
+         "testing123"
+        ],
+        "format": "password",
         "type": "string"
        }
       },
@@ -2059,16 +2622,17 @@
     },
     "auth_servers_retries": {
      "default": 3,
-     "description": "Radius auth session retries",
+     "description": "RADIUS auth session retries",
      "type": "integer"
     },
     "auth_servers_timeout": {
      "default": 5,
-     "description": "Radius auth session timeout",
+     "description": "RADIUS auth session timeout",
      "type": "integer"
     },
     "coa_enabled": {
      "default": false,
+     "description": "Whether RADIUS Change of Authorization (CoA) is enabled",
      "type": "boolean"
     },
     "coa_port": {
@@ -2082,10 +2646,11 @@
        "type": "string"
       }
      ],
-     "description": "Radius CoA Port, value from 1 to 65535, default is 3799"
+     "description": "RADIUS CoA Port, value from 1 to 65535, default is 3799"
     },
     "fast_dot1x_timers": {
      "default": false,
+     "description": "Whether fast 802.1X timers are enabled for RADIUS authentication",
      "type": "boolean"
     },
     "network": {
@@ -2093,15 +2658,19 @@
      "type": "string"
     },
     "source_ip": {
-     "description": "Use `network`or `source_ip`",
+     "description": "Use `network` or `source_ip`. Explicit source IP address for RADIUS traffic",
      "type": "string"
     }
    },
    "type": "object"
   },
   "remote_syslog": {
+   "additionalProperties": false,
+   "description": "Remote syslog forwarding settings",
    "properties": {
     "archive": {
+     "additionalProperties": false,
+     "description": "Syslog file archive retention settings",
      "properties": {
       "files": {
        "anyOf": [
@@ -2112,19 +2681,28 @@
          "type": "integer"
         }
        ],
-       "example": 20
+       "description": "Number of archived syslog files to retain",
+       "examples": [
+        20
+       ]
       },
       "size": {
-       "example": "5m",
+       "description": "Maximum size of each archived syslog file, such as 5m",
+       "examples": [
+        "5m"
+       ],
        "type": "string"
       }
      },
      "type": "object"
     },
     "cacerts": {
-     "example": [
-      "-----BEGIN CERTIFICATE-----\\nMIIFZjCCA06gAwIBAgIIP61/1qm/uDowDQYJKoZIhvcNAQELBQE\\n-----END CERTIFICATE-----",
-      "-----BEGIN CERTIFICATE-----\\nBhMCRVMxFDASBgNVBAoMC1N0YXJ0Q29tIENBMSwwKgYDVn-----END CERTIFICATE-----"
+     "description": "CA certificates used to verify TLS syslog servers",
+     "examples": [
+      [
+       "-----BEGIN CERTIFICATE-----\\nMIIFZjCCA06gAwIBAgIIP61/1qm/uDowDQYJKoZIhvcNAQELBQE\\n-----END CERTIFICATE-----",
+       "-----BEGIN CERTIFICATE-----\\nBhMCRVMxFDASBgNVBAoMC1N0YXJ0Q29tIENBMSwwKgYDVn-----END CERTIFICATE-----"
+      ]
      ],
      "items": {
       "type": "string"
@@ -2132,9 +2710,14 @@
      "type": "array"
     },
     "console": {
+     "additionalProperties": false,
+     "description": "Console log forwarding filters for remote syslog",
      "properties": {
       "contents": {
+       "description": "List of syslog content selectors",
        "items": {
+        "additionalProperties": false,
+        "description": "Syslog message content selector for remote logging",
         "properties": {
          "facility": {
           "default": "any",
@@ -2157,7 +2740,9 @@
            "security",
            "user"
           ],
-          "example": "config",
+          "examples": [
+           "config"
+          ],
           "type": "string"
          },
          "severity": {
@@ -2185,12 +2770,18 @@
     },
     "enabled": {
      "default": false,
+     "description": "Whether remote syslog forwarding is enabled",
      "type": "boolean"
     },
     "files": {
+     "description": "Generated syslog file output definitions",
      "items": {
+      "additionalProperties": false,
+      "description": "Generated syslog file output settings",
       "properties": {
        "archive": {
+        "additionalProperties": false,
+        "description": "Syslog file archive retention settings",
         "properties": {
          "files": {
           "anyOf": [
@@ -2201,17 +2792,26 @@
             "type": "integer"
            }
           ],
-          "example": 20
+          "description": "Number of archived syslog files to retain",
+          "examples": [
+           20
+          ]
          },
          "size": {
-          "example": "5m",
+          "description": "Maximum size of each archived syslog file, such as 5m",
+          "examples": [
+           "5m"
+          ],
           "type": "string"
          }
         },
         "type": "object"
        },
        "contents": {
+        "description": "List of syslog content selectors",
         "items": {
+         "additionalProperties": false,
+         "description": "Syslog message content selector for remote logging",
          "properties": {
           "facility": {
            "default": "any",
@@ -2234,7 +2834,9 @@
             "security",
             "user"
            ],
-           "example": "config",
+           "examples": [
+            "config"
+           ],
            "type": "string"
           },
           "severity": {
@@ -2258,21 +2860,29 @@
         "type": "array"
        },
        "enable_tls": {
-        "description": "Only if `protocol`==`tcp`",
+        "description": "Only if `protocol`==`tcp`, enable TLS for this syslog file destination",
         "type": "boolean"
        },
        "explicit_priority": {
+        "description": "Whether to include explicit syslog priority values in file output",
         "type": "boolean"
        },
        "file": {
-        "example": "file-name",
+        "description": "Generated syslog file name",
+        "examples": [
+         "file-name"
+        ],
         "type": "string"
        },
        "match": {
-        "example": "!alarm|ntp|errors.crc_error[chan]",
+        "description": "Expression used to filter log messages written to this file",
+        "examples": [
+         "!alarm|ntp|errors.crc_error[chan]"
+        ],
         "type": "string"
        },
        "structured_data": {
+        "description": "Whether to include structured syslog data in file output",
         "type": "boolean"
        }
       },
@@ -2281,29 +2891,40 @@
      "type": "array"
     },
     "network": {
-     "description": "If source_address is configured, will use the vlan firstly otherwise use source_ip",
-     "example": "default",
+     "description": "Source network used for syslog traffic. If `source_address` is configured, Mist uses the VLAN first; otherwise it uses `source_ip`",
+     "examples": [
+      "default"
+     ],
      "type": "string"
     },
     "send_to_all_servers": {
      "default": false,
+     "description": "Whether each log entry is sent to all configured remote syslog servers",
      "type": "boolean"
     },
     "servers": {
-     "example": [
-      {
-       "facility": "config",
-       "host": "syslogd.internal",
-       "port": 514,
-       "protocol": "udp",
-       "severity": "info",
-       "tag": ""
-      }
+     "description": "Remote syslog server destination list",
+     "examples": [
+      [
+       {
+        "facility": "config",
+        "host": "syslogd.internal",
+        "port": 514,
+        "protocol": "udp",
+        "severity": "info",
+        "tag": ""
+       }
+      ]
      ],
      "items": {
+      "additionalProperties": false,
+      "description": "Remote syslog server destination settings",
       "properties": {
        "contents": {
+        "description": "List of syslog content selectors",
         "items": {
+         "additionalProperties": false,
+         "description": "Syslog message content selector for remote logging",
          "properties": {
           "facility": {
            "default": "any",
@@ -2326,7 +2947,9 @@
             "security",
             "user"
            ],
-           "example": "config",
+           "examples": [
+            "config"
+           ],
            "type": "string"
           },
           "severity": {
@@ -2350,6 +2973,7 @@
         "type": "array"
        },
        "explicit_priority": {
+        "description": "Whether to include explicit syslog priority values in messages sent to this server",
         "type": "boolean"
        },
        "facility": {
@@ -2373,20 +2997,29 @@
          "security",
          "user"
         ],
-        "example": "config",
+        "examples": [
+         "config"
+        ],
         "type": "string"
        },
        "host": {
-        "example": "syslogd.internal",
+        "description": "Address or hostname of the remote syslog server",
+        "examples": [
+         "syslogd.internal"
+        ],
         "type": "string"
        },
        "match": {
-        "example": "!alarm|ntp|errors.crc_error[chan]",
+        "description": "Expression used to filter log messages sent to this server",
+        "examples": [
+         "!alarm|ntp|errors.crc_error[chan]"
+        ],
         "type": "string"
        },
        "port": {
         "anyOf": [
          {
+          "default": 514,
           "maximum": 65545,
           "minimum": 1,
           "type": "integer"
@@ -2395,12 +3028,11 @@
           "type": "string"
          }
         ],
-        "default": 514,
         "description": "Syslog Service Port, value from 1 to 65535"
        },
        "protocol": {
         "default": "udp",
-        "description": "enum: `tcp`, `udp`",
+        "description": "Transport protocol used for this remote syslog server. enum: `tcp`, `udp`",
         "enum": [
          "tcp",
          "udp"
@@ -2408,12 +3040,17 @@
         "type": "string"
        },
        "routing_instance": {
-        "example": "routing-instance-name",
+        "description": "Routing instance used to reach this remote syslog server",
+        "examples": [
+         "routing-instance-name"
+        ],
         "type": "string"
        },
        "server_name": {
-        "description": "Name of the server",
-        "example": "syslogd.internal",
+        "description": "TLS server name used when verifying the remote syslog server certificate",
+        "examples": [
+         "syslogd.internal"
+        ],
         "type": "string"
        },
        "severity": {
@@ -2432,13 +3069,15 @@
         "type": "string"
        },
        "source_address": {
-        "description": "If source_address is configured, will use the vlan firstly otherwise use source_ip",
+        "description": "Source address for syslog traffic. If configured, Mist uses the VLAN first; otherwise it uses `source_ip`",
         "type": "string"
        },
        "structured_data": {
+        "description": "Whether to include structured syslog data in messages sent to this server",
         "type": "boolean"
        },
        "tag": {
+        "description": "Syslog tag value added to messages sent to this server",
         "type": "string"
        }
       },
@@ -2453,14 +3092,22 @@
       "year",
       "year millisecond"
      ],
-     "example": "millisecond",
+     "examples": [
+      "millisecond"
+     ],
      "type": "string"
     },
     "users": {
+     "description": "User-specific syslog logging rules",
      "items": {
+      "additionalProperties": false,
+      "description": "User-specific syslog logging rule",
       "properties": {
        "contents": {
+        "description": "List of syslog content selectors",
         "items": {
+         "additionalProperties": false,
+         "description": "Syslog message content selector for remote logging",
          "properties": {
           "facility": {
            "default": "any",
@@ -2483,7 +3130,9 @@
             "security",
             "user"
            ],
-           "example": "config",
+           "examples": [
+            "config"
+           ],
            "type": "string"
           },
           "severity": {
@@ -2507,11 +3156,17 @@
         "type": "array"
        },
        "match": {
-        "example": "\"!alarm|ntp|errors.crc_error[chan]\"",
+        "description": "Expression used to filter user log messages",
+        "examples": [
+         "\"!alarm|ntp|errors.crc_error[chan]\""
+        ],
         "type": "string"
        },
        "user": {
-        "example": "*",
+        "description": "Account name or wildcard matched by this syslog rule",
+        "examples": [
+         "*"
+        ],
         "type": "string"
        }
       },
@@ -2523,36 +3178,190 @@
    "type": "object"
   },
   "role": {
+   "description": "Deployment role label for this switch",
    "type": "string"
   },
   "router_id": {
    "description": "Used for OSPF / BGP / EVPN",
-   "example": "10.2.1.10",
+   "examples": [
+    "10.2.1.10"
+   ],
    "type": "string"
   },
+  "routing_policies": {
+   "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Switch routing policy made of ordered match-action terms",
+    "properties": {
+     "terms": {
+      "description": "Ordered switch routing policy terms; at least one term is required",
+      "items": {
+       "additionalProperties": false,
+       "description": "Switch routing policy term with match criteria and actions",
+       "properties": {
+        "actions": {
+         "additionalProperties": false,
+         "description": "Actions applied to routes matched by a switch routing policy term",
+         "properties": {
+          "accept": {
+           "description": "Whether to accept routes that match this term",
+           "type": "boolean"
+          },
+          "community": {
+           "description": "When used as export policy, optional",
+           "items": {
+            "examples": [
+             "3900190"
+            ],
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "local_preference": {
+           "anyOf": [
+            {
+             "type": "string"
+            },
+            {
+             "maximum": 4294967295,
+             "minimum": 1,
+             "type": "integer"
+            }
+           ],
+           "description": "Optional, for an import policy, local_preference can be changed, value in range 1-4294967294. Can be a Variable (e.g. `{{bgp_as}}`)"
+          },
+          "prepend_as_path": {
+           "description": "When used as export policy, optional. By default, the local AS will be prepended, to change it. Can be a Variable (e.g. `{{as_path}}`)",
+           "items": {
+            "examples": [
+             "65000 400"
+            ],
+            "type": "string"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        },
+        "matching": {
+         "additionalProperties": false,
+         "description": "Route match criteria for a switch routing policy term; all specified criteria must match",
+         "properties": {
+          "as_path": {
+           "description": "BGP AS path values used as routing-policy match criteria",
+           "items": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "maximum": 4294967294,
+              "minimum": 1,
+              "type": "integer"
+             }
+            ],
+            "description": "BGP AS, value in range 1-4294967294. Can be a Variable (e.g. `{{bgp_as}}` )",
+            "examples": [
+             65000
+            ]
+           },
+           "type": "array"
+          },
+          "community": {
+           "description": "BGP community values used as routing-policy match criteria",
+           "items": {
+            "examples": [
+             "3900062"
+            ],
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "prefix": {
+           "description": "zero or more criteria/filter can be specified to match the term, all criteria have to be met",
+           "items": {
+            "examples": [
+             "192.168.0.0/16-30"
+            ],
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "protocol": {
+           "description": "Routing protocols that can match a switch routing policy term",
+           "items": {
+            "description": "enum: `bgp`, `direct`, `evpn`, `ospf`, `static`",
+            "enum": [
+             "bgp",
+             "direct",
+             "evpn",
+             "ospf",
+             "static"
+            ],
+            "type": "string"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        },
+        "name": {
+         "description": "Display name of the switch routing policy term",
+         "type": "string"
+        }
+       },
+       "required": [
+        "name"
+       ],
+       "type": "object"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+     }
+    },
+    "type": "object"
+   },
+   "description": "Switch routing policies keyed by routing policy name",
+   "type": "object"
+  },
   "serial": {
-   "description": "Device Serial",
+   "description": "Manufacturer serial number for the switch",
    "readOnly": true,
    "type": "string"
   },
   "site_id": {
-   "example": "441a1214-6928-442a-8e92-e1d34b8ec6a6",
+   "description": "Unique identifier of a Mist site",
+   "examples": [
+    "441a1214-6928-442a-8e92-e1d34b8ec6a6"
+   ],
    "format": "uuid",
    "readOnly": true,
    "type": "string"
   },
   "snmp_config": {
+   "additionalProperties": false,
+   "description": "SNMP configuration for managed network devices",
    "properties": {
     "client_list": {
+     "description": "SNMP client allowlists that can be referenced by communities",
      "items": {
+      "additionalProperties": false,
+      "description": "SNMP client allowlist definition",
       "properties": {
        "client_list_name": {
-        "example": "clist-1",
+        "description": "Name of the SNMP client list",
+        "examples": [
+         "clist-1"
+        ],
         "type": "string"
        },
        "clients": {
+        "description": "SNMP client IP addresses or CIDR ranges allowed by a client list",
         "items": {
-         "example": "151.140.101.218/32",
+         "examples": [
+          "151.140.101.218/32"
+         ],
          "type": "string"
         },
         "type": "array"
@@ -2563,24 +3372,32 @@
      "type": "array"
     },
     "contact": {
-     "example": "cns@juniper.net",
+     "description": "Administrative contact string advertised through SNMP",
+     "examples": [
+      "cns@juniper.net"
+     ],
      "type": "string"
     },
     "description": {
-     "example": "Juniper QFX Series Switch - 1K_5LA",
+     "description": "Device description string advertised through SNMP",
+     "examples": [
+      "Juniper QFX Series Switch - 1K_5LA"
+     ],
      "type": "string"
     },
     "enabled": {
      "default": true,
+     "description": "Whether SNMP is enabled",
      "type": "boolean"
     },
     "engine_id": {
+     "description": "SNMP engine ID value used for SNMPv3",
      "maxLength": 27,
      "type": "string"
     },
     "engine_id_type": {
      "default": "local",
-     "description": "enum: `local`, `use_mac_address`",
+     "description": "Method used to derive the SNMP engine ID. enum: `local`, `use_mac_address`",
      "enum": [
       "local",
       "use_mac_address"
@@ -2588,35 +3405,53 @@
      "type": "string"
     },
     "location": {
-     "example": "Las Vegas, NV",
+     "description": "Physical location string advertised through SNMP",
+     "examples": [
+      "Las Vegas, NV"
+     ],
      "type": "string"
     },
     "name": {
-     "example": "TGH-1K-QFX10K",
+     "description": "System name advertised through SNMP",
+     "examples": [
+      "TGH-1K-QFX10K"
+     ],
      "type": "string"
     },
     "network": {
      "default": "default",
+     "description": "Management network used for SNMP traffic",
      "type": "string"
     },
     "trap_groups": {
+     "description": "SNMP trap group definitions",
      "items": {
+      "additionalProperties": false,
+      "description": "SNMP trap group definition",
       "properties": {
        "categories": {
+        "description": "Trap categories included in an SNMP trap group",
         "items": {
-         "example": "authentication",
+         "examples": [
+          "authentication"
+         ],
          "type": "string"
         },
         "type": "array"
        },
        "group_name": {
-        "description": "Categories list can refer to https://www.juniper.net/documentation/software/topics/task/configuration/snmp_trap-groups-configuring-junos-nm.html",
-        "example": "profiler",
+        "description": "Trap group name for this SNMP trap group",
+        "examples": [
+         "profiler"
+        ],
         "type": "string"
        },
        "targets": {
+        "description": "Trap target addresses for an SNMP trap group",
         "items": {
-         "example": "172.29.158.19",
+         "examples": [
+          "172.29.158.19"
+         ],
          "type": "string"
         },
         "type": "array"
@@ -2637,24 +3472,37 @@
      "type": "array"
     },
     "v2c_config": {
+     "description": "SNMPv2c community configuration entries for this SNMP profile",
      "items": {
+      "additionalProperties": false,
+      "description": "SNMPv2c community configuration entry",
       "properties": {
        "authorization": {
-        "example": "read-only",
+        "description": "Access level for the SNMPv2c community",
+        "examples": [
+         "read-only"
+        ],
         "type": "string"
        },
        "client_list_name": {
-        "description": "Client_list_name here should refer to client_list above",
-        "example": "clist-1",
+        "description": "SNMP client list name referenced by this community",
+        "examples": [
+         "clist-1"
+        ],
         "type": "string"
        },
        "community_name": {
-        "example": "abc123",
+        "description": "SNMPv2c community string name",
+        "examples": [
+         "abc123"
+        ],
         "type": "string"
        },
        "view": {
-        "description": "View name here should be defined in views above",
-        "example": "all",
+        "description": "SNMP view name that must be defined in the views list",
+        "examples": [
+         "all"
+        ],
         "type": "string"
        }
       },
@@ -2663,18 +3511,25 @@
      "type": "array"
     },
     "v3_config": {
+     "additionalProperties": false,
+     "description": "SNMPv3 notification, target, USM, and VACM configuration",
      "properties": {
       "notify": {
+       "description": "SNMPv3 notification definitions used for traps and informs",
        "items": {
+        "additionalProperties": false,
+        "description": "SNMPv3 notification definition for traps or informs",
         "properties": {
          "name": {
+          "description": "Identifier for this SNMPv3 notification definition",
           "type": "string"
          },
          "tag": {
+          "description": "Notification tag used to select target addresses",
           "type": "string"
          },
          "type": {
-          "description": "enum: `inform`, `trap`",
+          "description": "Delivery mode for this SNMPv3 notification, such as trap or inform. enum: `inform`, `trap`",
           "enum": [
            "inform",
            "trap"
@@ -2687,16 +3542,26 @@
        "type": "array"
       },
       "notify_filter": {
+       "description": "SNMPv3 notification filter profiles",
        "items": {
+        "additionalProperties": false,
+        "description": "SNMPv3 notification filter profile",
         "properties": {
          "contents": {
+          "description": "OID filter rules in an SNMPv3 notification filter profile",
           "items": {
+           "additionalProperties": false,
+           "description": "OID filter rule for an SNMPv3 notification profile",
            "properties": {
             "include": {
+             "description": "Whether the matching OID subtree is included",
              "type": "boolean"
             },
             "oid": {
-             "example": "1.3.6.1.4.1",
+             "description": "Matched OID subtree for this notification filter rule",
+             "examples": [
+              "1.3.6.1.4.1"
+             ],
              "type": "string"
             }
            },
@@ -2705,6 +3570,7 @@
           "type": "array"
          },
          "profile_name": {
+          "description": "Notification filter profile name",
           "type": "string"
          }
         },
@@ -2713,31 +3579,46 @@
        "type": "array"
       },
       "target_address": {
+       "description": "SNMPv3 notification target addresses",
        "items": {
+        "additionalProperties": false,
+        "description": "SNMPv3 notification target address entry",
         "properties": {
          "address": {
-          "example": "10.11.0.2",
+          "description": "IP address or hostname of the SNMP target",
+          "examples": [
+           "10.11.0.2"
+          ],
           "type": "string"
          },
          "address_mask": {
-          "example": "255.255.255.0",
+          "description": "Mask applied to the SNMP target address",
+          "examples": [
+           "255.255.255.0"
+          ],
           "type": "string"
          },
          "port": {
           "default": "161",
-          "nullable": true,
-          "type": "string"
+          "description": "UDP port used by the SNMP target",
+          "type": [
+           "string",
+           "null"
+          ]
          },
          "tag_list": {
-          "description": "Refer to notify tag, can be multiple with blank",
+          "description": "Set of notification tags for this target address; use spaces between multiple tags",
           "type": "string"
          },
          "target_address_name": {
-          "example": "target_address_name",
+          "description": "Name of the SNMP target address entry",
+          "examples": [
+           "target_address_name"
+          ],
           "type": "string"
          },
          "target_parameters": {
-          "description": "Refer to notify target parameters name",
+          "description": "Target parameter profile referenced by this target address",
           "type": "string"
          }
         },
@@ -2746,7 +3627,10 @@
        "type": "array"
       },
       "target_parameters": {
+       "description": "SNMPv3 target parameter profiles",
        "items": {
+        "additionalProperties": false,
+        "description": "SNMPv3 target parameter profile",
         "properties": {
          "message_processing_model": {
           "description": "enum: `v1`, `v2c`, `v3`",
@@ -2758,10 +3642,11 @@
           "type": "string"
          },
          "name": {
+          "description": "Target parameter profile name",
           "type": "string"
          },
          "notify_filter": {
-          "description": "Refer to profile-name in notify_filter",
+          "description": "Notification filter profile referenced by this target parameter profile",
           "type": "string"
          },
          "security_level": {
@@ -2783,8 +3668,10 @@
           "type": "string"
          },
          "security_name": {
-          "description": "Refer to security_name in usm",
-          "example": "m01620",
+          "description": "USM security name referenced by this target parameter profile",
+          "examples": [
+           "m01620"
+          ],
           "type": "string"
          }
         },
@@ -2793,10 +3680,13 @@
        "type": "array"
       },
       "usm": {
+       "description": "SNMPv3 USM engine configurations",
        "items": {
+        "additionalProperties": false,
+        "description": "SNMPv3 User-based Security Model configuration",
         "properties": {
          "engine_type": {
-          "description": "enum: `local_engine`, `remote_engine`",
+          "description": "SNMP engine type used for this USM configuration. enum: `local_engine`, `remote_engine`",
           "enum": [
            "local_engine",
            "remote_engine"
@@ -2805,11 +3695,16 @@
          },
          "remote_engine_id": {
           "description": "Required only if `engine_type`==`remote_engine`",
-          "example": "00:00:00:0b:00:00:70:10:6f:08:b6:3f",
+          "examples": [
+           "00:00:00:0b:00:00:70:10:6f:08:b6:3f"
+          ],
           "type": "string"
          },
          "users": {
+          "description": "SNMPv3 USM user definitions",
           "items": {
+           "additionalProperties": false,
+           "description": "SNMPv3 USM user definition",
            "properties": {
             "authentication_password": {
              "description": "Not required if `authentication_type`==`authentication-none`. Include alphabetic, numeric, and special characters, but it cannot include control characters.",
@@ -2845,6 +3740,7 @@
              "type": "string"
             },
             "name": {
+             "description": "Username for the SNMPv3 USM user",
              "type": "string"
             }
            },
@@ -2858,29 +3754,44 @@
        "type": "array"
       },
       "vacm": {
+       "additionalProperties": false,
+       "description": "SNMPv3 View-based Access Control Model configuration",
        "properties": {
         "access": {
+         "description": "VACM access rules for SNMPv3",
          "items": {
+          "additionalProperties": false,
+          "description": "VACM access rule for an SNMP group",
           "properties": {
            "group_name": {
+            "description": "SNMP VACM group name",
             "type": "string"
            },
            "prefix_list": {
+            "description": "Context prefix rules for a VACM access entry",
             "items": {
+             "additionalProperties": false,
+             "description": "Context prefix rule for a VACM access entry",
              "properties": {
               "context_prefix": {
-               "description": "Only required if `type`==`context_prefix`",
-               "example": "iil",
+               "description": "Context prefix for this VACM access rule. Required only if `type`==`context_prefix`",
+               "examples": [
+                "iil"
+               ],
                "type": "string"
               },
               "notify_view": {
-               "description": "Refer to view name",
-               "example": "all",
+               "description": "Notify view name referenced by this VACM access rule",
+               "examples": [
+                "all"
+               ],
                "type": "string"
               },
               "read_view": {
-               "description": "Refer to view name",
-               "example": "all",
+               "description": "Read view name referenced by this VACM access rule",
+               "examples": [
+                "all"
+               ],
                "type": "string"
               },
               "security_level": {
@@ -2903,7 +3814,7 @@
                "type": "string"
               },
               "type": {
-               "description": "enum: `context_prefix`, `default_context_prefix`",
+               "description": "VACM context matching type for this access rule. enum: `context_prefix`, `default_context_prefix`",
                "enum": [
                 "context_prefix",
                 "default_context_prefix"
@@ -2911,8 +3822,10 @@
                "type": "string"
               },
               "write_view": {
-               "description": "Refer to view name",
-               "example": "all",
+               "description": "Write view name referenced by this VACM access rule",
+               "examples": [
+                "all"
+               ],
                "type": "string"
               }
              },
@@ -2926,15 +3839,21 @@
          "type": "array"
         },
         "security_to_group": {
+         "additionalProperties": false,
+         "description": "VACM security-name to group mapping configuration",
          "properties": {
           "content": {
+           "description": "VACM security-name to group mapping entries",
            "items": {
+            "additionalProperties": false,
+            "description": "VACM security-name to group mapping entry",
             "properties": {
              "group": {
-              "description": "Refer to group_name under access",
+              "description": "VACM group name referenced by this mapping",
               "type": "string"
              },
              "security_name": {
+              "description": "Name of the SNMP security principal mapped to a VACM group",
               "type": "string"
              }
             },
@@ -2961,18 +3880,27 @@
      "type": "object"
     },
     "views": {
+     "description": "SNMP MIB view definitions",
      "items": {
+      "additionalProperties": false,
+      "description": "SNMP MIB view definition",
       "properties": {
        "include": {
-        "description": "If the root oid configured is included",
+        "description": "Whether the root OID is included in this SNMP view",
         "type": "boolean"
        },
        "oid": {
-        "example": "1.3.6.1",
+        "description": "Root OID for this SNMP view",
+        "examples": [
+         "1.3.6.1"
+        ],
         "type": "string"
        },
        "view_name": {
-        "example": "all",
+        "description": "Name of the SNMP MIB view definition",
+        "examples": [
+         "all"
+        ],
         "type": "string"
        }
       },
@@ -2984,27 +3912,34 @@
    "type": "object"
   },
   "stp_config": {
+   "additionalProperties": false,
+   "description": "Switch spanning-tree protocol configuration",
    "properties": {
     "bridge_priority": {
      "default": "32k",
      "description": "Switch STP priority. Range [0, 4k, 8k.. 60k] in steps of 4k. Bridge priority applies to both VSTP and RSTP.",
-     "example": "40k",
+     "examples": [
+      "40k"
+     ],
      "type": "string"
     }
    },
    "type": "object"
   },
   "switch_mgmt": {
-   "description": "Switch settings",
+   "additionalProperties": false,
+   "description": "Switch management-plane access and proxy settings",
    "properties": {
     "ap_affinity_threshold": {
      "default": 10,
-     "description": "AP_affinity_threshold ap_affinity_threshold can be added as a field under site/setting. By default, this value is set to 12. If the field is set in both site/setting and org/setting, the value from site/setting will be used.",
+     "description": "AP affinity threshold for switch management. If set in both site settings and organization settings, the site setting value is used.",
      "type": "integer"
     },
     "cli_banner": {
      "description": "Set Banners for switches. Allows markup formatting",
-     "example": "\\t\\tWELCOME!",
+     "examples": [
+      "\\t\\tWELCOME!"
+     ],
      "type": "string"
     },
     "cli_idle_timeout": {
@@ -3026,17 +3961,25 @@
      "type": "boolean"
     },
     "disable_oob_down_alarm": {
+     "description": "Whether to suppress alarms when the switch out-of-band management interface is down",
      "type": "boolean"
     },
     "fips_enabled": {
      "default": false,
+     "description": "Whether FIPS mode is enabled on the switch",
      "type": "boolean"
     },
     "local_accounts": {
      "additionalProperties": {
+      "additionalProperties": false,
+      "description": "Local switch user account credentials and access role",
       "properties": {
        "password": {
-        "example": "Juniper123",
+        "description": "Local password for the switch user account",
+        "examples": [
+         "Juniper123"
+        ],
+        "format": "password",
         "type": "string"
        },
        "role": {
@@ -3057,12 +4000,13 @@
      "type": "object"
     },
     "mxedge_proxy_host": {
-     "description": "IP Address or FQDN of the Mist Edge used to proxy the switch management traffic to the Mist Cloud",
+     "description": "IP address or FQDN of the Mist Edge used to proxy the switch management traffic to the Mist Cloud",
      "type": "string"
     },
     "mxedge_proxy_port": {
      "anyOf": [
       {
+       "default": 2222,
        "maximum": 65535,
        "minimum": 1,
        "type": "integer"
@@ -3071,20 +4015,22 @@
        "type": "string"
       }
      ],
-     "default": 2222,
      "description": "Mist Edge port used to proxy the switch management traffic to the Mist Cloud. Value in range 1-65535"
     },
     "protect_re": {
+     "additionalProperties": false,
      "description": "Restrict inbound-traffic to host\nwhen enabled, all traffic that is not essential to our operation will be dropped \ne.g. ntp / dns / traffic to mist will be allowed by default, if dhcpd is enabled, we'll make sure it works",
      "properties": {
       "allowed_services": {
-       "description": "Optionally, services we'll allow",
-       "example": [
-        "icmp",
-        "ssh"
+       "description": "Built-in services explicitly allowed by the Protect RE policy",
+       "examples": [
+        [
+         "icmp",
+         "ssh"
+        ]
        ],
        "items": {
-        "description": "enum: `icmp`, `ssh`",
+        "description": "Services allowed through protect-RE filters. enum: `icmp`, `ssh`",
         "enum": [
          "icmp",
          "ssh"
@@ -3094,13 +4040,17 @@
        "type": "array"
       },
       "custom": {
+       "description": "Custom Protect RE ACL entries",
        "items": {
-        "description": "Custom acls",
+        "additionalProperties": false,
+        "description": "Custom Protect RE ACL entry",
         "properties": {
          "port_range": {
           "default": "0",
           "description": "Matched dst port, \"0\" means any",
-          "example": "80,1035-1040",
+          "examples": [
+           "80,1035-1040"
+          ],
           "type": "string"
          },
          "protocol": {
@@ -3115,8 +4065,11 @@
           "type": "string"
          },
          "subnets": {
+          "description": "Source subnets matched by a custom Protect RE ACL",
           "items": {
-           "example": "10.1.2.0/24",
+           "examples": [
+            "10.1.2.0/24"
+           ],
            "type": "string"
           },
           "type": "array"
@@ -3137,9 +4090,11 @@
        "type": "boolean"
       },
       "trusted_hosts": {
-       "description": "host/subnets we'll allow traffic to/from",
+       "description": "Host or subnet entries allowed by the Protect RE policy",
        "items": {
-        "example": "10.242.3.0/24",
+        "examples": [
+         "10.242.3.0/24"
+        ],
         "type": "string"
        },
        "type": "array"
@@ -3148,37 +4103,47 @@
      "type": "object"
     },
     "radius": {
-     "description": "By default, `radius_config` will be used. if a different one has to be used set `use_different_radius",
+     "additionalProperties": false,
+     "description": "Switch RADIUS override settings. By default, the switch `radius_config` is used; set `use_different_radius` to use alternate RADIUS settings.",
      "properties": {
       "enabled": {
+       "description": "Whether RADIUS is enabled for switch management authentication",
        "type": "boolean"
       },
       "radius_config": {
-       "description": "Junos Radius config",
+       "additionalProperties": false,
+       "description": "Switch RADIUS authentication and accounting configuration",
        "properties": {
         "acct_immediate_update": {
+         "description": "Whether immediate RADIUS accounting updates are sent",
          "type": "boolean"
         },
         "acct_interim_interval": {
          "default": 0,
-         "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the radius server, 600 and up is recommended when enabled",
+         "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the RADIUS server, 600 and up is recommended when enabled",
          "maximum": 65535,
          "minimum": 0,
          "type": "integer"
         },
         "acct_servers": {
+         "description": "List of RADIUS accounting servers",
          "items": {
+          "additionalProperties": false,
+          "description": "RADIUS accounting server settings",
           "properties": {
            "host": {
-            "description": "IP/ hostname of RADIUS server",
-            "example": "1.2.3.4",
+            "description": "Address or hostname of the RADIUS accounting server",
+            "examples": [
+             "1.2.3.4"
+            ],
             "type": "string"
            },
            "keywrap_enabled": {
+            "description": "Whether RADIUS keywrap is enabled for messages sent to this accounting server",
             "type": "boolean"
            },
            "keywrap_format": {
-            "description": "enum: `ascii`, `hex`",
+            "description": "Encoding format for RADIUS keywrap KEK and MACK values. enum: `ascii`, `hex`",
             "enum": [
              "ascii",
              "hex"
@@ -3186,11 +4151,17 @@
             "type": "string"
            },
            "keywrap_kek": {
-            "example": "1122334455",
+            "description": "RADIUS keywrap key encryption key (KEK)",
+            "examples": [
+             "1122334455"
+            ],
             "type": "string"
            },
            "keywrap_mack": {
-            "example": "1122334455",
+            "description": "RADIUS keywrap message authentication code key (MACK)",
+            "examples": [
+             "1122334455"
+            ],
             "type": "string"
            },
            "port": {
@@ -3204,11 +4175,14 @@
               "type": "string"
              }
             ],
-            "description": "Radius Auth Port, value from 1 to 65535, default is 1813"
+            "description": "RADIUS Auth Port, value from 1 to 65535, default is 1813"
            },
            "secret": {
-            "description": "Secret of RADIUS server",
-            "example": "testing123",
+            "description": "Shared secret used with this RADIUS accounting server",
+            "examples": [
+             "testing123"
+            ],
+            "format": "password",
             "type": "string"
            }
           },
@@ -3223,7 +4197,7 @@
         },
         "auth_server_selection": {
          "default": "ordered",
-         "description": "enum: `ordered`, `unordered`",
+         "description": "Selection strategy for RADIUS authentication servers. enum: `ordered`, `unordered`",
          "enum": [
           "ordered",
           "unordered"
@@ -3231,19 +4205,24 @@
          "type": "string"
         },
         "auth_servers": {
+         "description": "List of RADIUS authentication servers",
          "items": {
-          "description": "Authentication Server",
+          "additionalProperties": false,
+          "description": "RADIUS authentication server settings",
           "properties": {
            "host": {
-            "description": "IP/ hostname of RADIUS server",
-            "example": "1.2.3.4",
+            "description": "Address or hostname of the RADIUS authentication server",
+            "examples": [
+             "1.2.3.4"
+            ],
             "type": "string"
            },
            "keywrap_enabled": {
+            "description": "Whether RADIUS keywrap is enabled for messages sent to this authentication server",
             "type": "boolean"
            },
            "keywrap_format": {
-            "description": "enum: `ascii`, `hex`",
+            "description": "Encoding format for RADIUS keywrap KEK and MACK values. enum: `ascii`, `hex`",
             "enum": [
              "ascii",
              "hex"
@@ -3251,11 +4230,17 @@
             "type": "string"
            },
            "keywrap_kek": {
-            "example": "1122334455",
+            "description": "RADIUS keywrap key encryption key (KEK)",
+            "examples": [
+             "1122334455"
+            ],
             "type": "string"
            },
            "keywrap_mack": {
-            "example": "1122334455",
+            "description": "RADIUS keywrap message authentication code key (MACK)",
+            "examples": [
+             "1122334455"
+            ],
             "type": "string"
            },
            "port": {
@@ -3269,7 +4254,7 @@
               "type": "string"
              }
             ],
-            "description": "Radius Auth Port, value from 1 to 65535, default is 1812"
+            "description": "RADIUS Auth Port, value from 1 to 65535, default is 1812"
            },
            "require_message_authenticator": {
             "default": false,
@@ -3277,8 +4262,11 @@
             "type": "boolean"
            },
            "secret": {
-            "description": "Secret of RADIUS server",
-            "example": "testing123",
+            "description": "Shared secret used with this RADIUS authentication server",
+            "examples": [
+             "testing123"
+            ],
+            "format": "password",
             "type": "string"
            }
           },
@@ -3293,16 +4281,17 @@
         },
         "auth_servers_retries": {
          "default": 3,
-         "description": "Radius auth session retries",
+         "description": "RADIUS auth session retries",
          "type": "integer"
         },
         "auth_servers_timeout": {
          "default": 5,
-         "description": "Radius auth session timeout",
+         "description": "RADIUS auth session timeout",
          "type": "integer"
         },
         "coa_enabled": {
          "default": false,
+         "description": "Whether RADIUS Change of Authorization (CoA) is enabled",
          "type": "boolean"
         },
         "coa_port": {
@@ -3316,10 +4305,11 @@
            "type": "string"
           }
          ],
-         "description": "Radius CoA Port, value from 1 to 65535, default is 3799"
+         "description": "RADIUS CoA Port, value from 1 to 65535, default is 3799"
         },
         "fast_dot1x_timers": {
          "default": false,
+         "description": "Whether fast 802.1X timers are enabled for RADIUS authentication",
          "type": "boolean"
         },
         "network": {
@@ -3327,13 +4317,14 @@
          "type": "string"
         },
         "source_ip": {
-         "description": "Use `network`or `source_ip`",
+         "description": "Use `network` or `source_ip`. Explicit source IP address for RADIUS traffic",
          "type": "string"
         }
        },
        "type": "object"
       },
       "use_different_radius": {
+       "description": "Selector for alternate RADIUS settings instead of the default switch `radius_config`",
        "type": "string"
       }
      },
@@ -3345,24 +4336,36 @@
      "type": "boolean"
     },
     "root_password": {
+     "description": "Root password for local switch access",
+     "format": "password",
      "type": "string"
     },
     "tacacs": {
+     "additionalProperties": false,
+     "description": "TACACS+ settings for switch management authentication and accounting",
      "properties": {
       "acct_servers": {
+       "description": "List of TACACS+ accounting servers",
        "items": {
+        "additionalProperties": false,
+        "description": "TACACS+ accounting server settings",
         "properties": {
          "host": {
+          "description": "Address or hostname of the TACACS+ accounting server",
           "type": "string"
          },
          "port": {
+          "description": "TCP port used by the TACACS+ accounting server",
           "type": "string"
          },
          "secret": {
+          "description": "Shared secret used with this TACACS+ accounting server",
+          "format": "password",
           "type": "string"
          },
          "timeout": {
           "default": 10,
+          "description": "TACACS+ accounting server timeout, in seconds",
           "type": "integer"
          }
         },
@@ -3382,26 +4385,35 @@
        "type": "string"
       },
       "enabled": {
+       "description": "Whether TACACS+ is enabled for switch management authentication",
        "type": "boolean"
       },
       "network": {
-       "description": "Which network the TACACS server resides",
+       "description": "Source network used for connectivity to the TACACS+ servers",
        "type": "string"
       },
       "tacplus_servers": {
+       "description": "List of TACACS+ authentication servers",
        "items": {
+        "additionalProperties": false,
+        "description": "TACACS+ authentication server settings",
         "properties": {
          "host": {
+          "description": "Address or hostname of the TACACS+ authentication server",
           "type": "string"
          },
          "port": {
+          "description": "TCP port used by the TACACS+ authentication server",
           "type": "string"
          },
          "secret": {
+          "description": "Shared secret used with this TACACS+ authentication server",
+          "format": "password",
           "type": "string"
          },
          "timeout": {
           "default": 10,
+          "description": "TACACS+ authentication server timeout, in seconds",
           "type": "integer"
          }
         },
@@ -3413,7 +4425,7 @@
      "type": "object"
     },
     "use_mxedge_proxy": {
-     "description": "To use mxedge as proxy",
+     "description": "Whether to use Mist Edge as a proxy for switch management traffic",
      "type": "boolean"
     }
    },
@@ -3437,25 +4449,33 @@
     "type": "string"
    },
    "description": "Dictionary of name->value, the vars can then be used in Wlans. This can overwrite those from Site Vars",
-   "example": {
-    "RADIUS_IP1": "172.31.2.5",
-    "RADIUS_SECRET": "11s64632d"
-   },
+   "examples": [
+    {
+     "RADIUS_IP1": "172.31.2.5",
+     "RADIUS_SECRET": "11s64632d"
+    }
+   ],
    "type": "object"
   },
   "virtual_chassis": {
+   "additionalProperties": false,
    "description": "Required for preprovisioned Virtual Chassis",
    "properties": {
     "members": {
      "description": "List of Virtual Chassis members",
      "items": {
+      "additionalProperties": false,
+      "description": "Virtual Chassis member identified by MAC address and role",
       "properties": {
        "mac": {
-        "description": "fpc0, same as the mac of device_id",
-        "example": "aff827549235",
+        "description": "Virtual Chassis member MAC address; for FPC0 this matches the device ID MAC",
+        "examples": [
+         "aff827549235"
+        ],
         "type": "string"
        },
        "member_id": {
+        "description": "Virtual Chassis member identifier",
         "type": "integer"
        },
        "vc_role": {
@@ -3486,6 +4506,8 @@
    "type": "object"
   },
   "vrf_config": {
+   "additionalProperties": false,
+   "description": "VRF enablement settings applied when supported on the device",
    "properties": {
     "enabled": {
      "description": "Whether to enable VRF (when supported on the device)",
@@ -3496,67 +4518,91 @@
   },
   "vrf_instances": {
    "additionalProperties": {
-    "example": {
-     "extra_routes": {
-      "0.0.0.0/0": {
-       "via": "192.168.31.1"
-      }
-     },
-     "networks": [
-      "guest"
-     ]
-    },
+    "additionalProperties": false,
+    "description": "Switch VRF instance routing and network membership settings",
+    "examples": [
+     {
+      "extra_routes": {
+       "0.0.0.0/0": {
+        "via": "192.168.31.1"
+       }
+      },
+      "networks": [
+       "guest"
+      ]
+     }
+    ],
     "properties": {
      "aggregate_routes": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Aggregate route configuration for a network or routing instance",
        "properties": {
         "discard": {
          "default": false,
+         "description": "Whether to install the aggregate route as a discard route",
          "type": "boolean"
         },
         "metric": {
+         "description": "Routing metric assigned to the aggregate route",
          "maximum": 4294967295,
          "minimum": 0,
-         "nullable": true,
-         "type": "integer"
+         "type": [
+          "integer",
+          "null"
+         ]
         },
         "preference": {
+         "description": "Route preference assigned to the aggregate route",
          "maximum": 4294967295,
          "minimum": 0,
-         "nullable": true,
-         "type": "integer"
+         "type": [
+          "integer",
+          "null"
+         ]
         }
        },
        "type": "object"
       },
       "description": "Property key is the destination subnet (e.g. \"172.16.3.0/24\")",
-      "example": {
-       "172.16.3.0/24": {
-        "discard": false,
-        "metric": null,
-        "preference": 30
+      "examples": [
+       {
+        "172.16.3.0/24": {
+         "discard": false,
+         "metric": null,
+         "preference": 30
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "aggregate_routes6": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Aggregate route configuration for a network or routing instance",
        "properties": {
         "discard": {
          "default": false,
+         "description": "Whether to install the aggregate route as a discard route",
          "type": "boolean"
         },
         "metric": {
+         "description": "Routing metric assigned to the aggregate route",
          "maximum": 4294967295,
          "minimum": 0,
-         "nullable": true,
-         "type": "integer"
+         "type": [
+          "integer",
+          "null"
+         ]
         },
         "preference": {
+         "description": "Route preference assigned to the aggregate route",
          "maximum": 4294967295,
          "minimum": 0,
-         "nullable": true,
-         "type": "integer"
+         "type": [
+          "integer",
+          "null"
+         ]
         }
        },
        "type": "object"
@@ -3572,17 +4618,23 @@
       "type": "object"
      },
      "evpn_auto_loopback_subnet": {
-      "example": "100.101.0.0/24",
+      "description": "IPv4 subnet used for automatic EVPN loopback addresses in this VRF instance",
+      "examples": [
+       "100.101.0.0/24"
+      ],
       "type": "string"
      },
      "evpn_auto_loopback_subnet6": {
+      "description": "IPv6 subnet used for automatic EVPN loopback addresses in this VRF instance",
       "type": "string"
      },
      "extra_routes": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Additional IPv4 static route for a VRF instance",
        "properties": {
         "via": {
-         "description": "Next-hop address",
+         "description": "IPv4 next-hop address for this VRF extra route",
          "format": "ipv4",
          "type": "string"
         }
@@ -3590,18 +4642,22 @@
        "type": "object"
       },
       "description": "Property key is the destination CIDR (e.g. \"10.0.0.0/8\")",
-      "example": {
-       "0.0.0.0/0": {
-        "via": "192.168.1.10"
+      "examples": [
+       {
+        "0.0.0.0/0": {
+         "via": "192.168.1.10"
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "extra_routes6": {
       "additionalProperties": {
+       "additionalProperties": false,
+       "description": "Additional IPv6 static route for a VRF instance",
        "properties": {
         "via": {
-         "description": "Next-hop address",
+         "description": "IPv6 next-hop address for this VRF extra route",
          "format": "ipv6",
          "type": "string"
         }
@@ -3609,14 +4665,17 @@
        "type": "object"
       },
       "description": "Property key is the destination CIDR (e.g. \"2a02:1234:420a:10c9::/64\")",
-      "example": {
-       "2a02:1234:420a:10c9::/64": {
-        "via": "2a02:1234:200a::100"
+      "examples": [
+       {
+        "2a02:1234:420a:10c9::/64": {
+         "via": "2a02:1234:200a::100"
+        }
        }
-      },
+      ],
       "type": "object"
      },
      "networks": {
+      "description": "Unique string values returned or accepted by this schema",
       "items": {
        "type": "string"
       },
@@ -3627,28 +4686,34 @@
     "type": "object"
    },
    "description": "Property key is the network name",
-   "example": {
-    "guest": {
-     "extra_routes": {
-      "0.0.0.0/0": {
-       "via": "192.168.31.1"
-      }
-     },
-     "networks": [
-      "guest"
-     ]
+   "examples": [
+    {
+     "guest": {
+      "extra_routes": {
+       "0.0.0.0/0": {
+        "via": "192.168.31.1"
+       }
+      },
+      "networks": [
+       "guest"
+      ]
+     }
     }
-   },
+   ],
    "type": "object"
   },
   "vrrp_config": {
-   "description": "Junos VRRP config",
+   "additionalProperties": false,
+   "description": "Junos VRRP configuration applied to a switch or switch profile",
    "properties": {
     "enabled": {
+     "description": "Whether VRRP configuration is enabled",
      "type": "boolean"
     },
     "groups": {
      "additionalProperties": {
+      "additionalProperties": false,
+      "description": "VRRP group behavior settings",
       "properties": {
        "preempt": {
         "default": false,
@@ -3656,6 +4721,7 @@
         "type": "boolean"
        },
        "priority": {
+        "description": "VRRP priority for this router in the group",
         "type": "integer"
        }
       },
@@ -3668,14 +4734,18 @@
    "type": "object"
   },
   "x": {
-   "description": "X in pixel",
-   "example": 53.5,
+   "description": "Horizontal map position of the switch, in pixels",
+   "examples": [
+    53.5
+   ],
    "format": "double",
    "type": "number"
   },
   "y": {
-   "description": "Y in pixel",
-   "example": 173.1,
+   "description": "Vertical map position of the switch, in pixels",
+   "examples": [
+    173.1
+   ],
    "format": "double",
    "type": "number"
   }
