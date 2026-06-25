@@ -152,11 +152,12 @@ _PORT_CONFIG_ATTRS: tuple[str, ...] = (
 )
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(f"port_config.*.{a}" for a in _PORT_CONFIG_ATTRS)
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}" for a in ("usage", "stp_edge", *_MODELED_USAGE_ATTRS)
+    f"local_port_config.*.{a}" for a in ("usage", "stp_edge", "disabled", *_MODELED_USAGE_ATTRS)
 )
 _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",
     "port_config_overwrite.*.poe_disabled",
+    "port_config_overwrite.*.disabled",
 )
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,
