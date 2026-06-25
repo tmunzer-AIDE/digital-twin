@@ -105,8 +105,8 @@ def test_l1_config_sets_port_fields_and_normalizes_auto():
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py -k l1 tests/adapters/mist/test_ingest_switch.py -k l1_config -q`
-Expected: FAIL (`Port` has no `autoneg_disabled`; resolver drops speed/duplex/disable_autoneg).
+Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py tests/adapters/mist/test_ingest_switch.py -k l1 -q`
+Expected: FAIL (`Port` has no `autoneg_disabled`; resolver drops speed/duplex/disable_autoneg). (Both files' new tests contain `l1` in their names, so one `-k l1` across both paths selects them all.)
 
 - [ ] **Step 3: Replace the IR `speed` field and add the L1 fields**
 
@@ -344,9 +344,9 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.l1_param_mismatch import L1ParamMismatchCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
+from digital_twin.ir import IRBuilder, IRCapability, Port, PortMode, diff_ir
 from digital_twin.ir.provenance import Provenance, fact_meta
-from tests.factories import ap, link, sw
+from tests.factories import link, sw
 
 
 def _p(pid, *, speed=None, duplex=None, autoneg_disabled=False,
@@ -371,10 +371,6 @@ def _ir(pa, pb):
 def _run(base, prop):
     return L1ParamMismatchCheck().run(CheckContext(
         baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)))
-
-
-_AUTO_A = ("S:ge-0/0/1",)
-_AUTO_B = ("T:ge-0/0/1",)
 
 
 def _forced(pid, speed="1g", duplex="full"):
@@ -431,10 +427,8 @@ def test_introduced_mismatch_not_upgraded_by_baseline_observed_half():
 
 
 def test_preexisting_conflict_clean_negotiation_suppressed():
-    # same forced-vs-forced-different config in baseline AND both observed full at same
+    # same forced-vs-auto config in baseline AND both observed full at the same
     # speed -> hardware negotiated a working link -> suppressed
-    a = _forced("S:ge-0/0/1", "1g")
-    bport = _p("T:ge-0/0/1", speed="1g", duplex="full")  # not forced
     base = _ir(_p("S:ge-0/0/1", speed="1g", duplex="full", autoneg_disabled=True,
                   observed_speed="1g", observed_duplex="full"),
                _p("T:ge-0/0/1", observed_speed="1g", observed_duplex="full"))
@@ -457,6 +451,20 @@ def test_preexisting_unverified_suppressed():
     blind = _p("T:ge-0/0/1", blind=True)
     base = _ir(forced, blind)
     assert _run(base, base).findings == ()  # baseline-parity suppression
+
+
+def test_unknown_peer_becoming_config_stated_auto_is_not_demoted():
+    # baseline: forced vs NO-CONFIG peer (.unverified). proposed: same L1 tuple
+    # (None/None/False) but the peer is now CONFIG-STATED -> .autoneg_mismatch.
+    # The endpoint-class change means this is NOT pre-existing: it must surface as
+    # WARNING, not be demoted to INFO/suppressed by the parity check.
+    base = _ir(_forced("S:ge-0/0/1"), _p("T:ge-0/0/1", blind=True))
+    prop = _ir(_forced("S:ge-0/0/1"), _p("T:ge-0/0/1"))  # peer now config-stated
+    r = _run(base, prop)
+    assert r.status is Status.WARN
+    f = r.findings[0]
+    assert f.code == "wired.l1.link_param_mismatch.autoneg_mismatch"
+    assert f.severity is Severity.WARNING  # NOT preexisting/INFO
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -543,14 +551,24 @@ def _l1(p: Port) -> tuple[str | None, str | None, bool]:
     return p.speed, p.duplex, p.autoneg_disabled
 
 
+def _l1_sig(p: Port) -> tuple[str | None, str | None, bool, bool]:
+    """Parity signature = the L1 tuple PLUS the endpoint class (config_stated).
+    The L1 tuple alone is identical for a config-stated autonegotiating port and a
+    no-config unknown peer ((None, None, False) both) — but they classify
+    differently (.autoneg_mismatch vs .unverified), so config_stated MUST be part
+    of the signature or a peer becoming config-stated would be wrongly demoted."""
+    return (*_l1(p), config_stated(p))
+
+
 def _same_l1(base_pair: tuple[Port, Port] | None, pa: Port, pb: Port) -> bool:
-    """The same config L1 on both ends already lived on the baseline boundary
-    (matched by port id) — so the mismatch is pre-existing, not delta-caused."""
+    """The same config L1 AND endpoint class on both ends already lived on the
+    baseline boundary (matched by port id) — so the mismatch is pre-existing, not
+    delta-caused."""
     if base_pair is None:
         return False
     by_id = {p.id: p for p in base_pair}
     ba, bb = by_id.get(pa.id), by_id.get(pb.id)
-    return ba is not None and bb is not None and _l1(ba) == _l1(pa) and _l1(bb) == _l1(pb)
+    return ba is not None and bb is not None and _l1_sig(ba) == _l1_sig(pa) and _l1_sig(bb) == _l1_sig(pb)
 
 
 def _clean_negotiation(base_pair: tuple[Port, Port]) -> bool:
@@ -745,12 +763,14 @@ def test_overwrite_has_no_disable_autoneg():
 
 def test_usage_l1_in_scope():
     from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
-    assert "port_usages.*.speed" in set(EFFECTIVE_ALLOWLIST) or True  # usages flow via effective
-    # device-profile switch + raw site both carry port_usages leaves:
-    assert "port_usages.*.disable_autoneg" in set(RAW_ALLOWLIST["site_setting"])
+    site = set(RAW_ALLOWLIST["site_setting"])
+    eff = set(EFFECTIVE_ALLOWLIST)
+    for a in ("speed", "duplex", "disable_autoneg"):
+        assert f"port_usages.*.{a}" in site, a
+        assert f"port_usages.*.{a}" in eff, a
 ```
 
-NOTE: verify which collection holds `port_usages.*` leaves in this codebase (`_USAGE_LEAVES` is composed into `site_setting`/`networktemplate` raw allowlists and `EFFECTIVE_ALLOWLIST`). Assert membership against the collection that actually contains `_USAGE_LEAVES`; adjust the third test to the real container if `RAW_ALLOWLIST["site_setting"]` is not it (read the file's `RAW_ALLOWLIST` assembly first).
+NOTE (verified): `_USAGE_LEAVES` is composed into `RAW_ALLOWLIST["site_setting"]`, `RAW_ALLOWLIST["device"]`, and `EFFECTIVE_ALLOWLIST` (allowlist.py lines ~174/184/252). The `test_usage_l1_in_scope` assertions above target `site_setting` + `EFFECTIVE_ALLOWLIST` accordingly — both genuinely contain `port_usages.*`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -898,6 +918,12 @@ EOF
 - §6 no standalone observed-only → enforced by `_classify` requiring a forced end (observed never originates a finding) — covered by `test_introduced_mismatch_not_upgraded_by_baseline_observed_half` + the silence tests. ✓
 - Testing (canonicalizer/up-gating, resolver+normalization, check matrix incl. config_stated split + time-honesty + suppression, public API, e2e, goldens) → Tasks 1–5. ✓
 
-**Placeholder scan:** No TBD/TODO. Three "NOTE" blocks point at *existing* scaffolds/containers to mirror (the `raw_site` stats kwarg, the `_USAGE_LEAVES` container for the port_usages assertion, the SP1 pipeline e2e helper) — necessary because those exact names live in files not fully quoted; surrounding code is complete.
+**Placeholder scan:** No TBD/TODO, no `assert ... or True`. Two "NOTE" blocks point at *existing* scaffolds to mirror (the `raw_site` stats kwarg, the SP1 pipeline e2e helper); the `_USAGE_LEAVES` container NOTE is now resolved/verified. No unused imports or locals in the test code (dropped `ConfidenceLevel`/`ap` and the dead `_AUTO_*` / `a` / `bport`) — clean under ruff `F`.
 
-**Type consistency:** `Port.speed/duplex: str | None`, `autoneg_disabled: bool`, `observed_speed/observed_duplex: str | None` used identically across ingest, check, and tests; `_forced`/`_classify`/`_same_l1`/`_clean_negotiation`/`_observed_half` signatures consistent; finding codes `wired.l1.link_param_mismatch.{speed_conflict,duplex_conflict,autoneg_mismatch,unverified,preexisting}` match between impl and tests; `ALL_WIRED_CHECKS` 21→22 matches the verified current count; `_l1_config`/`_l1_observed` return shapes match their call sites.
+**Type consistency:** `Port.speed/duplex: str | None`, `autoneg_disabled: bool`, `observed_speed/observed_duplex: str | None` used identically across ingest, check, and tests; `_forced`/`_classify`/`_l1`/`_l1_sig`/`_same_l1`/`_clean_negotiation`/`_observed_half` signatures consistent; finding codes `wired.l1.link_param_mismatch.{speed_conflict,duplex_conflict,autoneg_mismatch,unverified,preexisting}` match between impl and tests; `ALL_WIRED_CHECKS` 21→22 matches the verified current count; `_l1_config`/`_l1_observed` return shapes match their call sites.
+
+**Review-round fixes (round 2):**
+- **P1** — pre-existing parity now keys on `_l1_sig` = `(speed, duplex, autoneg_disabled, config_stated)`, so a no-config peer becoming config-stated-autonegotiating (same `None/None/False` tuple) is NOT demoted to INFO; regression `test_unknown_peer_becoming_config_stated_auto_is_not_demoted` pins WARNING.
+- **P2** — Task 4 `test_usage_l1_in_scope` asserts `port_usages.*.{speed,duplex,disable_autoneg}` in both `site_setting` and `EFFECTIVE_ALLOWLIST` (no tautology).
+- **P2** — check test drops unused `ConfidenceLevel`/`ap` imports and `a`/`bport`/`_AUTO_*` (ruff-`F`-clean before impl).
+- **P3** — Task 1 verify-failure uses a single `-k l1` across both files.
