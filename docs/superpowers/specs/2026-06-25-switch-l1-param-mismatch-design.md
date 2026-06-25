@@ -67,15 +67,26 @@ Replace the dormant `Port.speed: int | None` and add (mirroring the
 config-intent / observed split already used for PoE — `poe` vs `poe_draw`):
 
 - **Config intent** (resolved through the port-config layering):
-  - `speed: str | None` — configured speed enum; `None` ⇒ unset (⇒ `auto`).
-  - `duplex: str | None` — `full` / `half`; `None` ⇒ unset (⇒ `auto`).
+  - `speed: str | None` — a **concrete** speed enum (`10m…100g`); `None` ⇒ unset
+    or `auto`. **IR invariant: `"auto"` is never stored** — ingest normalizes
+    config `"auto"` (and absent) to `None`, so `None` is the single
+    "not-pinned-to-a-concrete-speed" value.
+  - `duplex: str | None` — strictly `"full"` / `"half"`; `None` ⇒ unset or `auto`
+    (same normalization — `"auto"` is never stored).
   - `autoneg_disabled: bool = False` — from `disable_autoneg`.
 - **Observed** (baseline `port_stats`, canonicalized — see §2):
   - `observed_speed: str | None`, `observed_duplex: str | None` (`full`/`half`).
 
-A port is **forced** ⇔ `autoneg_disabled and speed not in (None, "auto") and
-duplex not in (None, "auto")` (per the OAS "meaningful only when speed+duplex
-set"). Otherwise the port is **autonegotiating**.
+Because `"auto"`/absent normalize to `None`, the predicates are simply:
+- **forced** ⇔ `autoneg_disabled and speed is not None and duplex is not None`
+  (per the OAS "meaningful only when speed+duplex set").
+- **autonegotiating** ⇔ `config_stated(port) and not forced(port)` — i.e. the
+  port has CONFIG facts and is not forced. A port with **no config facts**
+  (an AP / LLDP / stat-ensured end — `config_stated(port) is False`) is neither
+  forced nor "autonegotiating"; it is an **unknown peer** (handled by the
+  `.unverified` path in §3, NOT `.autoneg_mismatch`). This split matters because
+  the new fields default to `None`/`False`, so a no-facts peer would otherwise be
+  misread as "autonegotiating" and draw the wrong (too-specific) code.
 
 ### 2. Ingest (`ingest/ports.py` + `ingest/switch.py`)
 
@@ -86,8 +97,10 @@ set"). Otherwise the port is **autonegotiating**.
   `_LOCAL_ATTRS` (= `*_USAGE_OVERRIDE_ATTRS, "disabled"`) picks them up
   automatically. `port_config_overwrite` never carries `disable_autoneg`.
 - `ingest/switch.py` builds `Port.speed` / `duplex` / `autoneg_disabled` from the
-  resolved effective attrs, and `observed_speed` / `observed_duplex` from the
-  stat row via a new `_l1_observed(row)` helper (sibling to `_poe_draw`):
+  resolved effective attrs — **normalizing config `"auto"` and absent to `None`**
+  for both `speed` and `duplex` (the IR invariant from §1; `"auto"` is never
+  stored), and `observed_speed` / `observed_duplex` from the stat row via a new
+  `_l1_observed(row)` helper (sibling to `_poe_draw`):
   - **Speed canonicalizer**: numeric Mbps → config enum string
     (`10→"10m"`, `100→"100m"`, `1000→"1g"`, `2500→"2.5g"`, `5000→"5g"`,
     `10000→"10g"`, `25000→"25g"`, `40000→"40g"`, `100000→"100g"`). Unknown /
@@ -105,20 +118,26 @@ on every Ethernet link, so AP uplinks are evaluated and the AP end is an unknown
 (no config facts); VC-internal links never fire; baseline parity via the same
 `BoundaryView` on the baseline IR.
 
-**Config compatibility** per evaluable boundary `(pa, pb)`:
+**Config compatibility** per evaluable boundary `(pa, pb)`. Classify each end as
+**forced**, **autonegotiating** (`config_stated and not forced`), or **unknown
+peer** (`not config_stated` — no config facts), per §1:
 
-| Both ends (config) | Verdict | Code |
+| Ends (config) | Verdict | Code |
 |---|---|---|
-| forced, **different speed** | ERROR — no common speed, link won't establish | `.speed_conflict` |
-| forced, same speed, **different duplex** | ERROR — duplex conflict | `.duplex_conflict` |
-| **one forced / one autonegotiating** | WARNING — duplex-mismatch risk (auto side → half-duplex; 1g+ may not link) | `.autoneg_mismatch` |
-| both autonegotiating, or forced-identical | silent | — |
+| both forced, **different speed** | ERROR — no common speed, link won't establish | `.speed_conflict` |
+| both forced, same speed, **different duplex** | ERROR — duplex conflict | `.duplex_conflict` |
+| one **forced** / one **autonegotiating** | WARNING — duplex-mismatch risk (auto side → half-duplex; 1g+ may not link) | `.autoneg_mismatch` |
+| one **forced** / one **unknown peer** (no config facts) | WARNING/MEDIUM — cannot rule out a mismatch | `.unverified` |
+| both autonegotiating, both unknown, or forced-identical | silent | — |
+
+The **forced-vs-unknown-peer** row is distinct from forced-vs-autonegotiating:
+because the new fields default to `None`/`False`, a no-facts AP/LLDP/stat-ensured
+end would naively look "autonegotiating" — the `config_stated` predicate (§1)
+routes it to the honest `.unverified` code instead of the over-specific
+`.autoneg_mismatch`. (Mirrors `mtu_mismatch`'s explicit-vs-`config_stated` split.)
 
 Severity downgrades to WARNING when confidence is below HIGH (per the
-`min_confidence(pa, pb, link)` rail), exactly as `mtu_mismatch`. A config end
-with no facts (AP/LLDP/stat-ensured peer) → the boundary is evaluated but a
-one-sided forced setting vs a no-facts peer is `.unverified` WARNING/MEDIUM
-(mirrors `mtu_mismatch.unverified`).
+`min_confidence(pa, pb, link)` rail), exactly as `mtu_mismatch`.
 
 **Attribution (delta-conditioned, honest about time):**
 
@@ -137,6 +156,12 @@ one-sided forced setting vs a no-facts peer is `.unverified` WARNING/MEDIUM
     `mtu_mismatch.preexisting`); if a baseline end is `observed_duplex == "half"`,
     annotate it as a live symptom in the message/evidence, but it stays INFO
     (does not floor — it is not this delta's doing).
+- **Pre-existing `.unverified` suppression** (the `forced`-vs-unknown-peer case):
+  when the *same* uncertainty was already live on the *same* baseline boundary —
+  same forced end with the same `speed`/`duplex`, same no-config peer — the
+  `.unverified` finding is **suppressed entirely** (not even INFO). Mirrors
+  `mtu_mismatch.unverified`'s baseline-parity guard; without it, an unrelated
+  delta would re-surface stale AP/no-facts uncertainty on every run.
 
 ### 4. Field gate (`scope/allowlist.py`)
 
@@ -169,16 +194,22 @@ respective maps; the L0 unknown-attribute walker already accepts them.
 - **Speed canonicalizer / observed up-gating unit**: numeric→enum mapping;
   `up:false` → `observed_* = None`; `up:true, full_duplex:false` → `"half"`;
   unknown speed → `None`.
-- **Resolver unit**: `speed`/`duplex`/`disable_autoneg` resolve through
-  port_config / overwrite (speed+duplex only) / local (gated) / port_usages, with
-  SP1 precedence intact.
+- **Resolver / IR-normalization unit**: `speed`/`duplex`/`disable_autoneg` resolve
+  through port_config / overwrite (speed+duplex only) / local (gated) /
+  port_usages, with SP1 precedence intact; **explicit config `"auto"` (and absent)
+  normalize to `Port.speed/duplex == None`** — `"auto"` is never stored (guards the
+  §1 invariant against a future regression to a concrete value).
 - **Check unit** (`tests/checks/test_l1_param_mismatch.py`): forced-vs-forced
   different speed → ERROR; forced same-speed different duplex → ERROR;
   forced-vs-auto → WARNING; both-auto / forced-identical → silent; one-forced
-  vs no-facts peer → `.unverified` WARNING; confidence downgrade; VC-internal
-  silent; **introduced mismatch with baseline observed half does NOT upgrade to
-  HIGH** (time-honesty); **pre-existing mismatch + baseline clean negotiation →
-  suppressed**; **pre-existing mismatch (no clean obs) → INFO**, half annotated.
+  vs no-facts peer → `.unverified` WARNING (and **forced-vs-no-facts-peer is
+  `.unverified`, NOT `.autoneg_mismatch`** — the `config_stated` split);
+  confidence downgrade; VC-internal silent; **introduced mismatch with baseline
+  observed half does NOT upgrade to HIGH** (time-honesty); **pre-existing mismatch
+  + baseline clean negotiation → suppressed**; **pre-existing mismatch (no clean
+  obs) → INFO**, half annotated; **pre-existing `.unverified` (same forced end,
+  same no-facts peer in baseline) → suppressed** (baseline-parity guard, mirrors
+  `mtu_mismatch`).
 - **e2e pipeline**: a device PUT pinning a forced speed/duplex on one end of a
   trunk uplink whose peer autonegotiates → not UNKNOWN; `l1.link_param_mismatch.
   autoneg_mismatch` present; verdict REVIEW.
