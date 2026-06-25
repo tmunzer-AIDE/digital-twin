@@ -116,7 +116,12 @@ class Port:
     mode: PortMode
     native_vlan: int | None = None
     tagged_vlans: tuple[int, ...] = ()
-    speed: int | None = None
+    # CONFIG intent (L1, SP2): concrete speed enum / duplex. None = unset/auto —
+    # the IR NEVER stores "auto" (ingest normalizes "auto"/absent to None), so
+    # forced ⇔ autoneg_disabled and speed is not None and duplex is not None.
+    speed: str | None = None
+    duplex: str | None = None  # "full" | "half" | None
+    autoneg_disabled: bool = False  # from disable_autoneg
     # CONFIG intent: explicit interface MTU; None = no explicit MTU (platform
     # default) OR the usage is blind — consumers disambiguate via `meta`
     mtu: int | None = None
@@ -124,6 +129,10 @@ class Port:
     # OBSERVED: port currently delivering power (stats `poe_on`); None = the
     # powered state is UNKNOWABLE (no stat row, or an UP port without the stat)
     poe_draw: bool | None = None
+    # OBSERVED (L1, SP2): negotiated speed/duplex from port_stats, UP ports only;
+    # None = down / no telemetry. Speed canonicalized to the config enum (Task 2).
+    observed_speed: str | None = None
+    observed_duplex: str | None = None
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     # CONFIG intent (usage stp_edge / stp_disable): an edge port does not

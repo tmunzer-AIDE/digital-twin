@@ -1401,3 +1401,61 @@ def test_device_name_populated_from_raw():
     )
     SwitchIngester().ingest(ctx)
     assert ctx.builder.build().device("aa0000000001").name == "core-sw-1"
+
+
+def test_l1_config_sets_port_fields_and_normalizes_auto():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "forced": {"mode": "access", "port_network": "corp", "speed": "1g",
+                       "duplex": "full", "disable_autoneg": True},
+            "autoport": {"mode": "access", "port_network": "corp", "speed": "auto",
+                         "duplex": "auto"},
+        },
+        "port_config": {"ge-0/0/1": {"usage": "forced"}, "ge-0/0/2": {"usage": "autoport"}},
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff, device_effective={"aa0000000001": eff}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    forced = ir.ports["aa0000000001:ge-0/0/1"]
+    assert (forced.speed, forced.duplex, forced.autoneg_disabled) == ("1g", "full", True)
+    auto = ir.ports["aa0000000001:ge-0/0/2"]
+    # "auto" is NEVER stored — normalized to None
+    assert (auto.speed, auto.duplex, auto.autoneg_disabled) == (None, None, False)
+
+
+def test_observed_l1_canonicalized_and_up_gated():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {"u": {"mode": "access", "port_network": "corp"}},
+        "port_config": {"ge-0/0/1": {"usage": "u"}, "ge-0/0/2": {"usage": "u"},
+                        "ge-0/0/3": {"usage": "u"}},
+    }
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/1", "up": True, "speed": 1000,
+         "full_duplex": True},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/2", "up": True, "speed": 100,
+         "full_duplex": False},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/3", "up": False, "speed": 0,
+         "full_duplex": False},
+    ]
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},),
+                     port_stats=tuple(stats)),
+        site_effective=eff, device_effective={"aa0000000001": eff}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    p1 = ir.ports["aa0000000001:ge-0/0/1"]
+    assert (p1.observed_speed, p1.observed_duplex) == ("1g", "full")
+    p2 = ir.ports["aa0000000001:ge-0/0/2"]
+    assert (p2.observed_speed, p2.observed_duplex) == ("100m", "half")
+    p3 = ir.ports["aa0000000001:ge-0/0/3"]  # down port: never spurious half
+    assert (p3.observed_speed, p3.observed_duplex) == (None, None)

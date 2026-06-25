@@ -33,11 +33,14 @@ _USAGE_OVERRIDE_ATTRS = (
     "mtu",
     "allow_dhcpd",
     "stp_edge",  # schema: inline on local_port_config only (gate enforces)
+    "speed",
+    "duplex",
+    "disable_autoneg",
 )
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the
-# poe.disconnect check). disabled/speed et al. remain unmodeled -> out of scope.
-_OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled")
+# poe.disconnect check). disable_autoneg is NOT on overwrite per OAS.
+_OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled", "speed", "duplex")
 
 # local_port_config may additionally carry the admin-down boolean (OAS).
 _LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled")

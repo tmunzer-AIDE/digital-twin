@@ -337,3 +337,34 @@ def test_port_config_overwrite_disable_is_simulated_not_unknown():
     codes = {f.code for f in v.findings}
     assert "wired.port.admin_disable.impact" in codes, codes
     assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
+
+
+def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
+    # pinning one end of a trunk uplink to a forced speed/duplex while the peer
+    # autonegotiates must SIMULATE (REVIEW via autoneg_mismatch), not UNKNOWN.
+    # The L1 check walks BoundaryView, so a REAL link is required — build a second
+    # switch + two-sided LLDP port_stats. Both ends use the EXPLICIT `uplink`
+    # usage (SETTING defines it) so the peer is config-stated (-> .autoneg_mismatch,
+    # not .unverified).
+    sw_a = {**SWITCH, "port_config": {**SWITCH["port_config"], "ge-0/0/47": {"usage": "uplink"}}}
+    sw_b = {
+        "mac": "bb0000000002", "id": "dev-b", "type": "switch", "model": "EX4100-48P",
+        "name": "sw-b", "port_config": {"ge-0/0/47": {"usage": "uplink"}},
+    }
+    lldp = (  # two-sided LLDP -> link dev-a:ge-0/0/47 <-> dev-b:ge-0/0/47 (HIGH)
+        {"mac": "aa0000000001", "port_id": "ge-0/0/47", "up": True,
+         "neighbor_mac": "bb0000000002", "neighbor_port_desc": "ge-0/0/47"},
+        {"mac": "bb0000000002", "port_id": "ge-0/0/47", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/47"},
+    )
+    raw = dc_replace(_raw(), devices=(sw_a, sw_b), port_stats=lldp)
+    payload = {"port_config": {"ge-0/0/47": {"usage": "uplink", "speed": "1g",
+                                             "duplex": "full", "disable_autoneg": True}}}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.l1.link_param_mismatch.autoneg_mismatch" in codes, codes
+    assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
