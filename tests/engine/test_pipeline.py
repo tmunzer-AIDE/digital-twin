@@ -243,6 +243,23 @@ def test_partial_device_payload_passes_l0_required():
     assert v.decision is not Decision.UNKNOWN
 
 
+def test_unknown_attribute_on_switch_port_config_surfaces_and_is_unknown():
+    # the motivating case: an agent proposes `disabled` on a SWITCH port_config entry
+    # — a field the switch OAS does not document (it is gateway-only). The walker flags
+    # it precisely (l0.schema.unknown_attribute), and since `disabled` is also an
+    # unmodeled leaf the field gate floors to UNKNOWN. UNKNOWN wins, but the "not in
+    # the OAS" finding rides along to tell the operator WHICH attribute is bogus.
+    payload = {"port_config": {"ge-0/0/10": {"usage": "office", "disabled": True}}}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(),
+    )
+    hits = [f for f in v.findings if f.code == "l0.schema.unknown_attribute"]
+    assert hits, v.findings
+    assert any("disabled" in f.evidence.get("path", "") for f in hits)
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
+
+
 def test_normal_verdict_carries_diagrams():
     payload = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
     v = simulate(_plan([_op(payload=payload)]), provider=FakeProvider())
