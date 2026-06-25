@@ -130,26 +130,40 @@ delta-attributed, confidence/severity rails, crash-isolated).
 
 - `id = "wired.port.admin_disable"`, `domain = "wired.port"`,
   `requires() = {WIRED_L2}`, `applies_to(diff) = diff.touches("port")`.
-- Detect ports the delta **newly disables**: `base.disabled is False and
-  prop.disabled is True` (source-agnostic — catches inline boolean *and*
-  `usage:"disabled"` reassignment). Pre-existing-disabled and re-enable: not
-  flagged.
+- **Iterate proposed ports** (NOT `base_ir.ports` — the overwrite-only-member
+  case may have *no* baseline `Port`, so a baseline-driven loop like
+  poe_disconnect's would skip it and read SAFE/contextless, breaking the bug-fix
+  promise). A port is **newly disabled** when `prop.disabled is True and
+  (base_port is None or base_port.disabled is False)` (source-agnostic — catches
+  the inline boolean *and* `usage:"disabled"` reassignment). Pre-existing-disabled
+  (`base_port.disabled is True`) and re-enable: not flagged.
 - Classify on the **baseline** IR; severity = max over applicable conditions:
 
   | Condition (baseline) | Detection | Severity → verdict |
   |---|---|---|
-  | AP-connected | `_ap_uplink_ports(base_ir)` (peer is AP) | ERROR if observed clients / HIGH link; WARNING if MEDIUM link → UNSAFE/REVIEW |
+  | AP-connected | `_ap_uplink_ports(base_ir)` (peer is AP) | **ERROR only when the port↔AP uplink tie is HIGH-confidence** (config / bidirectional LLDP); a MEDIUM/one-sided tie → WARNING — observed wireless clients raise *consequence*, not the *tie* confidence → UNSAFE/REVIEW |
   | Non-AP managed LLDP peer (inter-switch/gateway) **or** `mode is TRUNK` | base links with a non-AP managed peer; `base_port.mode` | WARNING → REVIEW |
   | Active wired clients on the port | `clients_by_port(base_ir)[pid]` non-empty | WARNING → REVIEW |
+  | Baseline `Port` missing (prop-only port) with **no** tied baseline evidence | `base_ir.ports[pid]` absent AND no baseline link/client for `pid` | INFO → context (blast radius unattributable) |
   | Bare edge (none of the above) | — | INFO → context |
 
+  When the baseline `Port` is missing but baseline evidence *does* tie a
+  device/client to `pid` (a baseline link endpoint or `clients_by_port`), classify
+  by that evidence using the rows above rather than defaulting to INFO.
 - Complementary to `wired.l2.blackhole`: this flags the **action** (port shut
   down); blackhole flags the **consequence** (downstream stranded). Both may
   fire on the same delta.
-- Attribution via `ctx.delta_index.cause("port", pid)`. Register in
-  `ALL_WIRED_CHECKS` (`checks/wired/__init__.py`).
-- Confidence: HIGH for observed clients / direct facts; the link's confidence for
-  LLDP-peer-based classification (mirroring poe_disconnect's rails).
+- Attribution via `ctx.delta_index.cause("port", pid)`. **Registration (full
+  local pattern):** import the class in `checks/wired/__init__.py`, append
+  `AdminDisableCheck()` to `ALL_WIRED_CHECKS`, add the class name to `__all__`,
+  **and bump the hard-coded `len(ALL_WIRED_CHECKS) == 20 → 21` in
+  `tests/test_public_api.py`** (else a trivial red gate).
+- **Confidence rail (matches `decide()`):** `decide()` floors UNSAFE on any
+  network ERROR *before* confidence is consulted, so ERROR is emitted **only when
+  the exact impact evidence is HIGH** — the port↔peer tie is HIGH-confidence
+  (config / bidirectional LLDP). A MEDIUM/one-sided tie → WARNING (→ REVIEW),
+  never ERROR, even with observed wireless clients on the AP. Bare-edge and
+  baseline-missing → INFO. Mirrors poe_disconnect's `_BLIND_INTENT` caps.
 
 ### 4. Field gate (`scope/allowlist.py`)
 
@@ -183,10 +197,17 @@ unknown-attribute walker already accepts them. No OAS or L0 changes.
   default-discard; explicit-`false` applies; standalone-local applies;
   overwrite-only `disabled` member yields a disabled `Port` (the bug-report
   shape); usage reassignment via local respects the gate.
-- **Check unit** (`tests/checks/wired/test_admin_disable.py`): AP-connected →
-  ERROR/UNSAFE; trunk and non-AP-peer → WARNING/REVIEW; active wired client →
-  WARNING/REVIEW; bare edge → INFO/context; pre-existing-disabled and re-enable
-  not flagged; baseline classification (peer present in baseline, not proposed).
+- **Check unit** (`tests/checks/wired/test_admin_disable.py`): AP-connected with
+  HIGH tie → ERROR/UNSAFE; AP-connected with MEDIUM/one-sided tie → WARNING even
+  with observed wireless clients (never ERROR); trunk and non-AP-peer →
+  WARNING/REVIEW; active wired client → WARNING/REVIEW; bare edge → INFO/context;
+  **prop-only port with no baseline `Port` and no tied baseline evidence → INFO**
+  (the overwrite-only-member shape — must not be skipped); prop-only port WITH
+  tied baseline evidence → classified by that evidence; pre-existing-disabled and
+  re-enable not flagged; baseline classification (peer present in baseline, not
+  proposed).
+- **Public API** (`tests/test_public_api.py`): bump `len(ALL_WIRED_CHECKS) == 20
+  → 21` as part of registration (currently exactly 20).
 - **e2e pipeline** (`tests/engine/test_pipeline.py`): the exact reported payload
   (`port_config_overwrite.{mge-0/0/0..3}.disabled = true`) → no longer UNKNOWN;
   `admin_disable` fires (+ `l2.blackhole` if it strands anything); verdict
