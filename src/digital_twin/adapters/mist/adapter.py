@@ -53,9 +53,16 @@ class MistAdapter:
         )
 
     def validate(
-        self, op: ChangeOp, *, scope_roots: Collection[str] | None = None
+        self,
+        op: ChangeOp,
+        *,
+        scope_roots: Collection[str] | None = None,
+        unknown_scope_roots: Collection[str] | None = None,
     ) -> L0Result:
-        return validate_payload(op.object_type, op.payload, scope_roots=scope_roots)
+        return validate_payload(
+            op.object_type, op.payload,
+            scope_roots=scope_roots, unknown_scope_roots=unknown_scope_roots,
+        )
 
     def ingest(self, raw: RawSiteState) -> IngestOutcome:
         nt = dict(raw.networktemplate) if raw.networktemplate else None

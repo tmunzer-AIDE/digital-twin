@@ -241,22 +241,6 @@ IGNORED_RAW_FIELDS: tuple[str, ...] = (
     "sku",
     "image1_url",
     "simplifiedName",
-    # more GET-only device status / inventory / map-placement roots a real Mist
-    # device GET carries but the (closed) device PUT schema does not document — so
-    # they are server-managed, never config intent. The unknown-attribute walker
-    # also skips these top-level roots (e.g. --l0-full-object audit). (Deliberately
-    # NOT added — could be real config on some object type, and this set is global:
-    # evpn_scope, optic_port_config, radio_config, st_ip_base,
-    # uses_description_from_port_usage.)
-    "bundled_mac",
-    "evpntopo_id",
-    "height",
-    "locating",
-    "orientation",
-    "tag_id",
-    "tag_uuid",
-    "x_m",
-    "y_m",
 )
 
 # Effective-config LEAVES the IR consumes (post-compile derived gate): any other

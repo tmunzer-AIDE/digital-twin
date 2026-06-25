@@ -15,11 +15,11 @@ every extra key even with no `properties`. Composition is resolved conservativel
 sub-schemas across branches are COMPOSED, not overwritten, so a nested key
 documented in any branch is accepted.
 
-Server-managed / GET-only top-level roots (`IGNORED_RAW_FIELDS`: device status,
-map placement, inventory) are skipped at the ROOT only — never per-segment, so a
-nested unknown like `networks.foo.id` still surfaces. Secret-bearing paths are
-never surfaced. Input is expected null-stripped by the caller; the walk also skips
-None defensively.
+Server-managed / GET-only top-level roots are skipped at the ROOT only, per object
+type (the global `IGNORED_RAW_FIELDS` plus, for `device`, the device GET-only roots
+the closed PUT schema omits) — never per-segment, so a nested unknown like
+`networks.foo.id` still surfaces. Secret-bearing paths are never surfaced. Input is
+expected null-stripped by the caller; the walk also skips None defensively.
 """
 
 from __future__ import annotations
@@ -38,6 +38,23 @@ from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS
 OAS_UNKNOWN_KEY_SKIP: frozenset[str] = frozenset(
     {"wlan", "nacrule", "sitetemplate", "networktemplate", "site_setting", "gatewaytemplate"}
 )
+
+# Top-level roots a real Mist device GET returns but the (closed) device PUT schema
+# does NOT document — server-managed / effective / status, never device config. The
+# walker skips these for the OBJECT TYPE only (device-scoped) — they are NOT added
+# to the global IGNORED_RAW_FIELDS, because some are real config on OTHER object
+# types (radio_config / uses_description_from_port_usage on site_setting, evpn_scope
+# on templates), and global-ignoring them would risk a false-SAFE in those gates. On
+# device_switch they are not documented as PUT config (mistsys OAS) and appear only
+# in GETs.
+_DEVICE_GET_ONLY_ROOTS: frozenset[str] = frozenset({
+    "bundled_mac", "evpn_scope", "evpntopo_id", "height", "locating",
+    "optic_port_config", "orientation", "radio_config", "st_ip_base",
+    "tag_id", "tag_uuid", "uses_description_from_port_usage", "x_m", "y_m",
+})
+_SERVER_MANAGED_ROOTS_BY_TYPE: dict[str, frozenset[str]] = {
+    "device": frozenset(IGNORED_RAW_FIELDS) | _DEVICE_GET_ONLY_ROOTS,
+}
 
 _MAX_FINDINGS = 50  # same cap as schema.py L0 violations — don't flood the verdict
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -175,7 +192,8 @@ def unknown_attribute_findings(
     walk to those top-level roots (None = whole object, the --l0-full-object mode)."""
     if object_type in OAS_UNKNOWN_KEY_SKIP or not isinstance(payload, Mapping):
         return ()
-    payload = {k: v for k, v in payload.items() if k not in IGNORED_RAW_FIELDS}
+    skip_roots = _SERVER_MANAGED_ROOTS_BY_TYPE.get(object_type, frozenset(IGNORED_RAW_FIELDS))
+    payload = {k: v for k, v in payload.items() if k not in skip_roots}
     if scope_roots is not None:
         payload = {k: v for k, v in payload.items() if k in scope_roots}
     out: list[Finding] = []

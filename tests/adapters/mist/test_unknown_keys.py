@@ -181,15 +181,28 @@ def test_scope_roots_limits_to_changed_roots():
     assert _paths(full) == {"port_config.ge-0/0/1.disabled", "other.weird"}
 
 
-def test_ignored_raw_fields_skipped_at_top_level_only():
-    # server-managed GET-only roots (IGNORED_RAW_FIELDS, e.g. x_m/tag_id) are skipped
-    # at the TOP LEVEL, but a same-named key NESTED under a documented map still surfaces
+def test_device_server_managed_roots_skipped_top_level_only():
+    # device server-managed / GET-only roots (e.g. x_m/tag_id, device-scoped) are
+    # skipped at the TOP LEVEL, but a same-named key NESTED under a documented map
+    # still surfaces — the skip is root-level only, never segment-wide.
     schema = {"type": "object", "properties": {
         "networks": {"type": "object", "additionalProperties":
                      {"type": "object", "properties": {"vlan_id": {}}}}}}
     payload = {"x_m": 12.5, "tag_id": "t", "bogus": 1,
                "networks": {"corp": {"vlan_id": 10, "x_m": 9}}}
     out = unknown_attribute_findings(schema, payload, object_type="device", scope_roots=None)
-    # x_m/tag_id skipped at root; bogus (root, not ignored) flagged; networks.corp.x_m
-    # (nested) flagged — the skip is root-level only
+    # x_m/tag_id skipped at root; bogus (root, not server-managed) flagged;
+    # networks.corp.x_m (nested) flagged — the skip is root-level only
     assert _paths(out) == {"bogus", "networks.corp.x_m"}
+
+
+def test_device_get_only_roots_not_flagged_against_real_schema():
+    # full-object device payload carrying the real GET-only roots the closed PUT
+    # schema omits -> ZERO unknown-attribute findings (device-scoped skip).
+    from digital_twin.adapters.mist.oas import load_schema
+    from digital_twin.adapters.mist.validate.unknown_keys import _DEVICE_GET_ONLY_ROOTS
+    payload: dict = {"type": "switch", "port_config": {"ge-0/0/0": {"usage": "office"}}}
+    payload.update({r: {} for r in _DEVICE_GET_ONLY_ROOTS})
+    out = unknown_attribute_findings(load_schema("device_switch.schema.json"), payload,
+                                     object_type="device", scope_roots=None)
+    assert out == ()

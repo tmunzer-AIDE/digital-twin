@@ -59,7 +59,7 @@ from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT
 from digital_twin.scope.derived_gate import check_derived
 from digital_twin.scope.device_profile_gate import device_profile_rejection
 from digital_twin.scope.envelope import parse_change_plan
-from digital_twin.scope.field_gate import screen_op
+from digital_twin.scope.field_gate import changed_paths, screen_op
 from digital_twin.scope.object_gate import check_objects
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
@@ -373,9 +373,17 @@ def simulate(
                     state_meta=state_meta,
                 )
             effective = effective_update(current, op.payload)
+            # The unknown-attribute walker validates the CHANGE, not the whole persisted
+            # object: scope it to roots with actual value deltas. Full-object PUTs echo
+            # every persisted root, which the closed OAS does not fully document; auditing
+            # them all would false-flag pre-existing fields. l0_full_object audits all.
+            unknown_roots = frozenset(
+                p.split(".", 1)[0] for p in changed_paths(current, effective)
+            )
             result = adapter.validate(
                 replace(op, payload=effective),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload),
+                unknown_scope_roots=None if l0_full_object else unknown_roots,
             )
             subject = ObjectRef(op.object_type, op.object_id, name=current.get("name"))
             adapter_findings += _stamp(result.findings, subject)
