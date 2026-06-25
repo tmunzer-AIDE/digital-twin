@@ -69,3 +69,18 @@ def test_org_rejections_short_circuit_unknown():
     )
     assert decision is Decision.UNKNOWN and driving == ()
     assert any("l0" in reason for reason in reasons)
+
+
+def test_decide_org_floors_warning_template_finding():
+    # a WARNING template finding (e.g. l0.schema.unknown_attribute that did not also
+    # trip the field gate) floors the rollup to REVIEW — not SAFE (matches decide())
+    wf = Finding(
+        source=FindingSource.ADAPTER,
+        category=FindingCategory.OPERATIONAL,
+        code="l0.schema.unknown_attribute",
+        severity=Severity.WARNING,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message="attribute 'x.y' is not documented",
+    )
+    decision, _, _ = decide_org({}, template_findings=(wf,), org_rejections=())
+    assert decision is Decision.REVIEW
