@@ -317,3 +317,23 @@ def test_post_apply_unknown_drops_config_diffs():
     assert v.decision is Decision.UNKNOWN
     assert any("derived_gate" in r for r in v.decision_reasons)
     assert v.config_diffs == ()
+
+
+def test_port_config_overwrite_disable_is_simulated_not_unknown():
+    # the reported bug: disabling ports via port_config_overwrite must simulate
+    # (admin_disable + blackhole), not return UNKNOWN. Baseline gives ge-0/0/47 a
+    # trunk uplink so the blast radius is real (REVIEW or UNSAFE, never INFO/SAFE).
+    switch_with_trunk = {
+        **SWITCH,
+        "port_config": {**SWITCH["port_config"], "ge-0/0/47": {"usage": "uplink"}},
+    }
+    raw = dc_replace(_raw(), devices=(switch_with_trunk,))
+    payload = {"port_config_overwrite": {"ge-0/0/47": {"disabled": True}}}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.port.admin_disable.impact" in codes, codes
+    assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
