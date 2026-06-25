@@ -137,19 +137,20 @@ delta-attributed, confidence/severity rails, crash-isolated).
   (base_port is None or base_port.disabled is False)` (source-agnostic — catches
   the inline boolean *and* `usage:"disabled"` reassignment). Pre-existing-disabled
   (`base_port.disabled is True`) and re-enable: not flagged.
-- Classify on the **baseline** IR; severity = max over applicable conditions:
+- Classify on the **baseline** IR. If `base_port is None` (prop-only port — e.g.
+  an overwrite-only member with no baseline `Port`) → **INFO/context**: the blast
+  radius is unattributable, and a valid IR *cannot* tie a baseline link or wired
+  client to a pid with no `Port` (IR validation rejects links/clients referencing
+  unknown ports — `ir/model.py:294,348`), so there is no baseline evidence to
+  classify by. Otherwise (`base_port` present) severity = max over applicable
+  conditions:
 
   | Condition (baseline) | Detection | Severity → verdict |
   |---|---|---|
   | AP-connected | `_ap_uplink_ports(base_ir)` (peer is AP) | **ERROR only when the port↔AP uplink tie is HIGH-confidence** (config / bidirectional LLDP); a MEDIUM/one-sided tie → WARNING — observed wireless clients raise *consequence*, not the *tie* confidence → UNSAFE/REVIEW |
   | Non-AP managed LLDP peer (inter-switch/gateway) **or** `mode is TRUNK` | base links with a non-AP managed peer; `base_port.mode` | WARNING → REVIEW |
   | Active wired clients on the port | `clients_by_port(base_ir)[pid]` non-empty | WARNING → REVIEW |
-  | Baseline `Port` missing (prop-only port) with **no** tied baseline evidence | `base_ir.ports[pid]` absent AND no baseline link/client for `pid` | INFO → context (blast radius unattributable) |
   | Bare edge (none of the above) | — | INFO → context |
-
-  When the baseline `Port` is missing but baseline evidence *does* tie a
-  device/client to `pid` (a baseline link endpoint or `clients_by_port`), classify
-  by that evidence using the rows above rather than defaulting to INFO.
 - Complementary to `wired.l2.blackhole`: this flags the **action** (port shut
   down); blackhole flags the **consequence** (downstream stranded). Both may
   fire on the same delta.
@@ -201,17 +202,19 @@ unknown-attribute walker already accepts them. No OAS or L0 changes.
   HIGH tie → ERROR/UNSAFE; AP-connected with MEDIUM/one-sided tie → WARNING even
   with observed wireless clients (never ERROR); trunk and non-AP-peer →
   WARNING/REVIEW; active wired client → WARNING/REVIEW; bare edge → INFO/context;
-  **prop-only port with no baseline `Port` and no tied baseline evidence → INFO**
-  (the overwrite-only-member shape — must not be skipped); prop-only port WITH
-  tied baseline evidence → classified by that evidence; pre-existing-disabled and
-  re-enable not flagged; baseline classification (peer present in baseline, not
-  proposed).
+  **prop-only port with no baseline `Port` → INFO** (the overwrite-only-member
+  shape — must not be skipped, blast radius unattributable); pre-existing-disabled
+  and re-enable not flagged; baseline classification (peer present in baseline,
+  not proposed).
 - **Public API** (`tests/test_public_api.py`): bump `len(ALL_WIRED_CHECKS) == 20
   → 21` as part of registration (currently exactly 20).
 - **e2e pipeline** (`tests/engine/test_pipeline.py`): the exact reported payload
-  (`port_config_overwrite.{mge-0/0/0..3}.disabled = true`) → no longer UNKNOWN;
-  `admin_disable` fires (+ `l2.blackhole` if it strands anything); verdict
-  REVIEW/UNSAFE per blast radius.
+  (`port_config_overwrite.{mge-0/0/0..3}.disabled = true`) → no longer UNKNOWN.
+  The fixture gives those ports a **baseline `Port`** (e.g. a trunk/AP uplink) so
+  `admin_disable` fires (+ `l2.blackhole` if it strands anything) and the verdict
+  is **REVIEW/UNSAFE per observed blast radius**. (A truly baseline-absent port
+  would resolve to INFO/SAFE — the unattributable case, covered by the check
+  unit.)
 - **Goldens:** re-pin affected switch goldens; add a golden for the bug-report
   scenario if one fits the existing fixture set.
 - **Full gate** after each task: `pytest && ruff check . && mypy src`.
