@@ -214,6 +214,23 @@ def test_unknown_attribute_respects_unknown_scope_roots():
     assert not any(f.code == "l0.schema.unknown_attribute" for f in ignored.findings)
 
 
+def test_unknown_scope_roots_omitted_reuses_scope_roots():
+    # back-compat: OMITTING unknown_scope_roots reuses scope_roots, so a direct
+    # scoped-L0 caller does NOT get whole-object unknown findings on untouched roots.
+    payload = {"type": "switch",
+               "port_config": {"ge-0/0/10": {"usage": "srv", "disabled": True}},
+               "totally_unknown_root": {"x": 1}}
+    scoped = validate_payload("device", payload, scope_roots={"port_config"})
+    paths = {f.evidence["path"] for f in scoped.findings
+             if f.code == "l0.schema.unknown_attribute"}
+    assert paths == {"port_config.ge-0/0/10.disabled"}  # NOT totally_unknown_root
+    # explicit scope_roots=None (unknown omitted -> reuse -> None) audits everything
+    whole = validate_payload("device", payload)
+    wpaths = {f.evidence["path"] for f in whole.findings
+              if f.code == "l0.schema.unknown_attribute"}
+    assert {"totally_unknown_root", "port_config.ge-0/0/10.disabled"} <= wpaths
+
+
 def test_clean_device_payload_has_no_unknown_attribute_findings():
     res = validate_payload(
         "device", {"type": "switch", "port_config": {"ge-0/0/0": {"usage": "office"}}})

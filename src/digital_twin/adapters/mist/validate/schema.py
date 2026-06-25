@@ -20,6 +20,7 @@ from typing import Any
 
 import jsonschema
 
+from digital_twin.adapters.base import UNSET_SCOPE, UnsetScope
 from digital_twin.adapters.mist.oas import load_schema
 from digital_twin.adapters.mist.validate.unknown_keys import unknown_attribute_findings
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
@@ -164,12 +165,13 @@ def validate_payload(
     payload: Mapping[str, Any],
     *,
     scope_roots: Collection[str] | None = None,
-    unknown_scope_roots: Collection[str] | None = None,
+    unknown_scope_roots: Collection[str] | None | UnsetScope = UNSET_SCOPE,
 ) -> L0Result:
     # `scope_roots`  -> jsonschema/L0 scope: the roots Mist re-validates on a PUT.
     # `unknown_scope_roots` -> the unknown-attribute walker scope: roots whose values
     #   actually CHANGED (so the walker validates the change, not the whole persisted
-    #   object). Both default None = whole object. They are independent on purpose.
+    #   object). OMITTED -> reuse scope_roots (preserves the scoped-L0 contract for
+    #   direct callers); explicit None -> audit the whole object.
     if object_type not in _SCHEMA_FILES:
         return L0Result(
             findings=(
@@ -203,8 +205,11 @@ def validate_payload(
         )
         for _, err in zip(range(_MAX_FINDINGS), errors, strict=False)
     )
+    walker_scope: Collection[str] | None = (
+        scope_roots if isinstance(unknown_scope_roots, UnsetScope) else unknown_scope_roots
+    )
     unknown = unknown_attribute_findings(
         _raw_schema(object_type), cleaned,
-        object_type=object_type, scope_roots=unknown_scope_roots,
+        object_type=object_type, scope_roots=walker_scope,
     )
     return L0Result(findings=violations + unknown, fatal=False)
