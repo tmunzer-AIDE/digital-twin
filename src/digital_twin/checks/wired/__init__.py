@@ -7,6 +7,7 @@ from .bgp_adjacency import BgpAdjacencyCheck
 from .client_impact import ClientImpactCheck
 from .dhcp_path import DhcpPathCheck
 from .gateway_gap import GatewayGapCheck
+from .l1_param_mismatch import L1ParamMismatchCheck
 from .l2_blackhole import L2BlackholeCheck
 from .l2_isolation import L2IsolationCheck
 from .l2_loop import L2LoopCheck
@@ -31,6 +32,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     L2VlanSegmentationCheck(),
     NativeVlanMismatchCheck(),
     MtuMismatchCheck(),
+    L1ParamMismatchCheck(),
     StpEdgeOnUplinkCheck(),
     StpRootChangeCheck(),
     GatewayGapCheck(),
@@ -59,6 +61,7 @@ __all__ = [
     "DhcpScopeLintCheck",
     "DhcpSnoopingCheck",
     "GatewayGapCheck",
+    "L1ParamMismatchCheck",
     "L2BlackholeCheck",
     "L2IsolationCheck",
     "L2LoopCheck",
