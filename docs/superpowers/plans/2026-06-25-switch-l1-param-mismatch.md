@@ -33,7 +33,7 @@
 - **Modify** `tests/test_public_api.py` — bump `len(ALL_WIRED_CHECKS) == 21 → 22`. (Task 3)
 - **Modify** `src/digital_twin/scope/allowlist.py` — allowlist the leaves. (Task 4)
 - **Modify** `tests/engine/test_pipeline.py` (e2e), `docs/ROADMAP.md`. (Task 5)
-- **Tests:** `tests/adapters/mist/test_ingest_ports.py`, `tests/adapters/mist/test_ingest_switch.py`, `tests/checks/test_l1_param_mismatch.py` (new), `tests/scope/test_allowlist.py`.
+- **Tests:** `tests/adapters/mist/test_ingest_ports.py`, `tests/adapters/mist/test_ingest_switch.py`, `tests/checks/test_l1_param_mismatch.py` (new), `tests/scope/test_allowlist.py`, `tests/scope/test_field_gate.py` (reconcile overwrite-`speed` assertions, Task 4).
 
 ---
 
@@ -415,6 +415,13 @@ def test_forced_vs_no_config_peer_is_unverified_not_autoneg():
 def test_both_autonegotiating_is_silent():
     assert _run(_ir(_p("S:ge-0/0/1"), _p("T:ge-0/0/1")),
                 _ir(_p("S:ge-0/0/1"), _p("T:ge-0/0/1"))).findings == ()
+
+
+def test_forced_identical_is_silent():
+    # both ends forced to the SAME speed+duplex -> compatible -> silent
+    base = _ir(_p("S:ge-0/0/1"), _p("T:ge-0/0/1"))
+    prop = _ir(_forced("S:ge-0/0/1", "1g", "full"), _forced("T:ge-0/0/1", "1g", "full"))
+    assert _run(base, prop).findings == ()
 
 
 def test_introduced_mismatch_not_upgraded_by_baseline_observed_half():
@@ -814,17 +821,39 @@ _OVERWRITE_LEAVES: tuple[str, ...] = (
 )
 ```
 
-- [ ] **Step 4: Run tests + gate**
+- [ ] **Step 4: Reconcile existing tests that pinned overwrite `speed` OUT of scope**
+
+Two existing tests assert pre-SP2 behavior (overwrite `speed` rejected) and will now fail — update them (the change is correct: `speed`/`duplex` are now resolver-honored + modeled). Pick attrs still genuinely out of scope on overwrite — `mac_limit`/`description` (OAS-present but unmodeled).
+
+In `tests/scope/test_allowlist.py` (~line 32) change the rejection assertion to acceptance plus a still-unmodeled leaf:
+```python
+    assert "port_config_overwrite.*.port_network" in device
+    assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
+    assert "port_config_overwrite.*.mac_limit" not in device  # still unmodeled
+```
+
+In `tests/scope/test_field_gate.py`, `test_unmodeled_overwrite_leaf_still_rejects` (~line 101) — swap `speed` for a still-unmodeled overwrite attr:
+```python
+def test_unmodeled_overwrite_leaf_still_rejects():
+    # the resolver honors port_network/poe_disabled/disabled/speed/duplex from
+    # port_config_overwrite — mac_limit et al. stay out of scope (leaf-tightened)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"mac_limit": 5}}}
+    r = screen_op("device", SWITCH_CUR, payload)
+    assert isinstance(r, Rejection)
+    assert any("port_config_overwrite.ge-0/0/0.mac_limit" in reason for reason in r.reasons)
+```
+
+- [ ] **Step 5: Run tests + gate**
 
 Run: `uv run pytest tests/scope/ -q`
-Expected: PASS.
+Expected: PASS (new + reconciled).
 Run: `uv run pytest -q && uv run ruff check . && uv run mypy src`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/digital_twin/scope/allowlist.py tests/scope/test_allowlist.py
+git add src/digital_twin/scope/allowlist.py tests/scope/test_allowlist.py tests/scope/test_field_gate.py
 git commit -m "$(cat <<'EOF'
 feat(scope): allowlist L1 speed/duplex/disable_autoneg (overwrite: speed+duplex only)
 
@@ -855,16 +884,35 @@ Add to `tests/engine/test_pipeline.py`, mirroring SP1's switch device-update e2e
 def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
     # pinning one end of a trunk uplink to a forced speed/duplex while the peer
     # autonegotiates must SIMULATE (REVIEW via autoneg_mismatch), not UNKNOWN.
+    # The L1 check walks BoundaryView, so a REAL link is required — build a second
+    # switch + two-sided LLDP port_stats. Both ends use the EXPLICIT `uplink`
+    # usage (SETTING defines it) so the peer is config-stated (-> .autoneg_mismatch,
+    # not .unverified).
+    sw_a = {**SWITCH, "port_config": {**SWITCH["port_config"], "ge-0/0/47": {"usage": "uplink"}}}
+    sw_b = {
+        "mac": "bb0000000002", "id": "dev-b", "type": "switch", "model": "EX4100-48P",
+        "name": "sw-b", "port_config": {"ge-0/0/47": {"usage": "uplink"}},
+    }
+    lldp = (  # two-sided LLDP -> link dev-a:ge-0/0/47 <-> dev-b:ge-0/0/47 (HIGH)
+        {"mac": "aa0000000001", "port_id": "ge-0/0/47", "up": True,
+         "neighbor_mac": "bb0000000002", "neighbor_port_desc": "ge-0/0/47"},
+        {"mac": "bb0000000002", "port_id": "ge-0/0/47", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/47"},
+    )
+    raw = dc_replace(_raw(), devices=(sw_a, sw_b), port_stats=lldp)
     payload = {"port_config": {"ge-0/0/47": {"usage": "uplink", "speed": "1g",
                                              "duplex": "full", "disable_autoneg": True}}}
-    result = _simulate_switch_update(payload)  # use this file's real e2e helper/scaffold
-    assert result.decision is not Decision.UNKNOWN
-    codes = {f.code for f in result.findings}
-    assert "wired.l1.link_param_mismatch.autoneg_mismatch" in codes
-    assert result.decision in (Decision.REVIEW, Decision.UNSAFE)
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.l1.link_param_mismatch.autoneg_mismatch" in codes, codes
+    assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
 ```
 
-NOTE: use this file's actual helper names/scaffold (SP1 added `test_port_config_overwrite_disable_is_simulated_not_unknown` — copy its baseline fixture, which already wires `ge-0/0/47` as a trunk uplink with a peer; here the peer must remain autonegotiating, i.e. no forced L1 on the far end). Confirm the baseline peer port exists and is config-stated + not forced so the classification is `.autoneg_mismatch` (not `.unverified`).
+NOTE: this mirrors SP1's `test_port_config_overwrite_disable_is_simulated_not_unknown` for the harness (`dc_replace`, `_raw`, `_plan`, `_op`, `simulate`, `FakeProvider`, `Decision`) but — unlike SP1 — MUST add the second switch and the two-sided LLDP `port_stats` so a real link exists (SP1's scaffold has one switch and `port_stats=()`, which would give the BoundaryView-walking L1 check nothing to evaluate). The LLDP row shape is from `tests/adapters/mist/test_ingest_lldp.py`. The peer's `disable_autoneg` is left unset (autonegotiating); observed L1 is omitted (an introduced mismatch ignores observation).
 
 - [ ] **Step 2: Run to verify it fails for the right reason**
 
@@ -921,6 +969,11 @@ EOF
 **Placeholder scan:** No TBD/TODO, no `assert ... or True`. Two "NOTE" blocks point at *existing* scaffolds to mirror (the `raw_site` stats kwarg, the SP1 pipeline e2e helper); the `_USAGE_LEAVES` container NOTE is now resolved/verified. No unused imports or locals in the test code (dropped `ConfidenceLevel`/`ap` and the dead `_AUTO_*` / `a` / `bport`) — clean under ruff `F`.
 
 **Type consistency:** `Port.speed/duplex: str | None`, `autoneg_disabled: bool`, `observed_speed/observed_duplex: str | None` used identically across ingest, check, and tests; `_forced`/`_classify`/`_l1`/`_l1_sig`/`_same_l1`/`_clean_negotiation`/`_observed_half` signatures consistent; finding codes `wired.l1.link_param_mismatch.{speed_conflict,duplex_conflict,autoneg_mismatch,unverified,preexisting}` match between impl and tests; `ALL_WIRED_CHECKS` 21→22 matches the verified current count; `_l1_config`/`_l1_observed` return shapes match their call sites.
+
+**Review-round fixes (round 3):**
+- **P1** — Task 5 e2e builds a real link (second switch + two-sided LLDP `port_stats`, both ends explicit `uplink` so the peer is config-stated) — SP1's link-less scaffold would give the BoundaryView check nothing.
+- **P2** — Task 4 reconciles the two existing tests that pinned overwrite `speed` out of scope (`test_allowlist.py`, `test_field_gate.py`), retargeting the still-unmodeled assertion to `mac_limit`.
+- **P3** — added `test_forced_identical_is_silent` to pin that compatibility-table row.
 
 **Review-round fixes (round 2):**
 - **P1** — pre-existing parity now keys on `_l1_sig` = `(speed, duplex, autoneg_disabled, config_stated)`, so a no-config peer becoming config-stated-autonegotiating (same `None/None/False` tuple) is NOT demoted to INFO; regression `test_unknown_peer_becoming_config_stated_auto_is_not_demoted` pins WARNING.
