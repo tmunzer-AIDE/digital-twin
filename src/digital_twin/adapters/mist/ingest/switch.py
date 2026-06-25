@@ -384,6 +384,18 @@ def unresolved_dhcp_range_findings(
     return findings
 
 
+def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
+    """(speed, duplex, autoneg_disabled) from effective usage attrs. "auto" and
+    absent normalize to None for speed & duplex — the IR never stores "auto"."""
+    def _norm(v: Any) -> str | None:
+        # string-gated: keeps mypy-strict happy (no Any return) and drops
+        # malformed non-string values; "auto"/"" -> None ("auto" never stored)
+        if isinstance(v, str) and v not in ("", "auto"):
+            return v
+        return None
+    return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
+
+
 def _poe_draw(row: _Json | None) -> bool | None:
     """Observed power delivery — honest about missing telemetry (real rows lack
     `poe_on` on some ports): no stat row -> UNKNOWN; `poe_on` present -> the
@@ -786,6 +798,7 @@ class SwitchIngester:
             native, tagged = usage_vlans(usage, networks)
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
             row = stat_rows.get(member)
+            l1_speed, l1_duplex, l1_autoneg = _l1_config(usage)
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -795,6 +808,9 @@ class SwitchIngester:
                     native_vlan=native,
                     tagged_vlans=tagged,
                     profile=usage_name,
+                    speed=l1_speed,
+                    duplex=l1_duplex,
+                    autoneg_disabled=l1_autoneg,
                     # explicit MTU only; null == absent (PUT semantics) == platform default
                     mtu=int(usage["mtu"]) if usage.get("mtu") else None,
                     # config PoE intent: None when the usage is blind/unresolved

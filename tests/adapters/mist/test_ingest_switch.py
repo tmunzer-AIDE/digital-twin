@@ -1401,3 +1401,29 @@ def test_device_name_populated_from_raw():
     )
     SwitchIngester().ingest(ctx)
     assert ctx.builder.build().device("aa0000000001").name == "core-sw-1"
+
+
+def test_l1_config_sets_port_fields_and_normalizes_auto():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "forced": {"mode": "access", "port_network": "corp", "speed": "1g",
+                       "duplex": "full", "disable_autoneg": True},
+            "autoport": {"mode": "access", "port_network": "corp", "speed": "auto",
+                         "duplex": "auto"},
+        },
+        "port_config": {"ge-0/0/1": {"usage": "forced"}, "ge-0/0/2": {"usage": "autoport"}},
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff, device_effective={"aa0000000001": eff}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    forced = ir.ports["aa0000000001:ge-0/0/1"]
+    assert (forced.speed, forced.duplex, forced.autoneg_disabled) == ("1g", "full", True)
+    auto = ir.ports["aa0000000001:ge-0/0/2"]
+    # "auto" is NEVER stored — normalized to None
+    assert (auto.speed, auto.duplex, auto.autoneg_disabled) == (None, None, False)

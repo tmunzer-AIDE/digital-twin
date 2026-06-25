@@ -271,3 +271,23 @@ def test_port_config_disabled_is_ignored():
     # disabled is NOT valid on port_config (OAS) -> the resolver must not honor it
     eff = _eff(port_config={"ge-0/0/6": {"usage": "office", "disabled": True}})
     assert _resolved(eff)["ge-0/0/6"][0].get("disabled") is None
+
+
+def test_l1_attrs_resolve_through_layers():
+    eff = _eff(
+        port_config={"ge-0/0/1": {"usage": "office", "speed": "1g", "duplex": "full",
+                                  "disable_autoneg": True}},
+    )
+    usage, _name = _resolved(eff)["ge-0/0/1"]
+    assert usage.get("speed") == "1g" and usage.get("duplex") == "full"
+    assert usage.get("disable_autoneg") is True
+
+
+def test_l1_overwrite_carries_speed_duplex_not_autoneg():
+    # port_config_overwrite has speed+duplex but NOT disable_autoneg (OAS)
+    eff = _eff(
+        port_config={"ge-0/0/2": {"usage": "office"}},
+        port_config_overwrite={"ge-0/0/2": {"speed": "10g", "duplex": "full"}},
+    )
+    usage, _name = _resolved(eff)["ge-0/0/2"]
+    assert usage.get("speed") == "10g" and usage.get("duplex") == "full"
