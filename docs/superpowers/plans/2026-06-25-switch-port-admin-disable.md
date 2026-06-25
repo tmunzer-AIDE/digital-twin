@@ -236,7 +236,10 @@ Expected: all PASS. Any *other* failure is almost certainly another test encodin
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/digital_twin/adapters/mist/ingest/ports.py tests/adapters/mist/test_ingest_ports.py
+git add src/digital_twin/adapters/mist/ingest/ports.py \
+  tests/adapters/mist/test_ingest_ports.py \
+  tests/test_plan3_flow.py \
+  tests/adapters/mist/test_ingest_switch.py
 git commit -m "$(cat <<'EOF'
 fix(ports): rework port-config precedence — local_port_config highest, no_local_overwrite gated
 
