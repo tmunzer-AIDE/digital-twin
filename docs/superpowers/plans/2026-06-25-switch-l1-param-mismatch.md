@@ -160,7 +160,11 @@ def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
     """(speed, duplex, autoneg_disabled) from effective usage attrs. "auto" and
     absent normalize to None for speed & duplex — the IR never stores "auto"."""
     def _norm(v: Any) -> str | None:
-        return v if v not in (None, "", "auto") else None
+        # string-gated: keeps mypy-strict happy (no Any return) and drops
+        # malformed non-string values; "auto"/"" -> None ("auto" never stored)
+        if isinstance(v, str) and v not in ("", "auto"):
+            return v
+        return None
     return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
 ```
 In the switch `Port(...)` construction (the `_switch_ports_and_l3` loop, the `add_port(Port(...))` call), compute before the call and pass the fields. Add just before `ctx.builder.add_port(`:
@@ -575,7 +579,12 @@ def _same_l1(base_pair: tuple[Port, Port] | None, pa: Port, pb: Port) -> bool:
         return False
     by_id = {p.id: p for p in base_pair}
     ba, bb = by_id.get(pa.id), by_id.get(pb.id)
-    return ba is not None and bb is not None and _l1_sig(ba) == _l1_sig(pa) and _l1_sig(bb) == _l1_sig(pb)
+    return (
+        ba is not None
+        and bb is not None
+        and _l1_sig(ba) == _l1_sig(pa)
+        and _l1_sig(bb) == _l1_sig(pb)
+    )
 
 
 def _clean_negotiation(base_pair: tuple[Port, Port]) -> bool:
