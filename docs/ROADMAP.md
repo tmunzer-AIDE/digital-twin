@@ -384,6 +384,7 @@ modeling" below.
   `switch_bgp_config_neighbor` in mistsys (recorded in `oas/VERSION`). Spec/plan:
   `docs/superpowers/{specs,plans}/2026-06-24-oas-unknown-attribute-check*.md`.
 - ✅ Switch port admin-disable + port-config precedence rework (SP1 of the port-config attribute-modeling program) — done 2026-06-25
+- ✅ Switch L1 link-parameter mismatch — speed/duplex/autoneg (SP2 of the port-config attribute-modeling program) — done 2026-06-25
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
