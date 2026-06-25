@@ -712,7 +712,7 @@ def test_stp_config_flags_and_bridge_priority():
         "port_config": {
             "ge-0/0/1": {"usage": "nostp"},
             "ge-0/0/2": {"usage": "edge"},
-            "ge-0/0/3": {"usage": "plain"},
+            "ge-0/0/3": {"usage": "plain", "no_local_overwrite": False},
         },
         "local_port_config": {"ge-0/0/3": {"usage": "plain", "stp_edge": True}},
     }

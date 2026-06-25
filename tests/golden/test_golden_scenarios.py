@@ -791,9 +791,13 @@ def _gs25b_target(doc):
 def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
     # enable snooping for vlan2 on the gateway-facing switch AND explicitly
     # distrust the gateway-facing port (allow_dhcpd=false beats trunk):
-    # the SRX is vlan 2's only modeled source -> offers drop -> REVIEW
+    # the SRX is vlan 2's only modeled source -> offers drop -> REVIEW.
+    # The fixture has no_local_overwrite=true on the gw port; set it false
+    # in the doc (pre-baseline) so local_port_config is permitted in both
+    # baseline and proposed without introducing a port_config delta.
     doc = _gs25_doc()
     sw, gw_port = _gs25b_target(doc)
+    sw["port_config"][gw_port]["no_local_overwrite"] = False  # allow local override
     op = {
         "action": "update", "order": 0, "object_type": "device",
         "object_id": sw["id"],

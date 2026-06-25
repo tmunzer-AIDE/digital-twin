@@ -96,15 +96,29 @@ def _expand_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _overridable(pc_member: dict[str, Any] | None) -> bool:
+    """local_port_config applies to a member ONLY when there is no port_config
+    entry to protect, or that entry explicitly allows it. `no_local_overwrite`
+    defaults to true (OAS) -> local is DISCARDED by default."""
+    if pc_member is None:
+        return True
+    return not pc_member.get("no_local_overwrite", True)
+
+
 def resolve_port_bases(eff: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """member -> merged port_config attrs: port_config <- local_port_config (per
-    member). The usage assignment + flags (e.g. dynamic_usage) BEFORE the named
-    port_usages profile is applied. A port present only in local_port_config is
-    included (a local override can stand alone)."""
-    base = _expand_map(eff.get("port_config") or {})
+    """member -> merged base attrs (usage, dynamic_usage, inline) with real Mist
+    precedence: port_config <- local_port_config, per member, ONLY when locally
+    overridable (`no_local_overwrite == false` or no port_config entry). The base
+    the named port_usages profile is then applied to. port_config_overwrite is
+    NOT merged here (it tweaks effective attrs in resolve_effective_ports and
+    carries no usage/dynamic_usage). A port present only in local_port_config is
+    included."""
+    pc = _expand_map(eff.get("port_config") or {})
+    out: dict[str, dict[str, Any]] = {m: dict(a) for m, a in pc.items()}
     for member, attrs in _expand_map(eff.get("local_port_config") or {}).items():
-        base[member] = {**base.get(member, {}), **attrs}  # local override wins per member
-    return base
+        if _overridable(pc.get(member)):
+            out[member] = {**out.get(member, {}), **attrs}
+    return out
 
 
 def resolve_effective_ports(
@@ -112,29 +126,35 @@ def resolve_effective_ports(
 ) -> Iterator[tuple[str, dict[str, Any], str | None, str]]:
     """Yield (member, effective_usage, usage_name, resolution) per configured port.
 
-    Layers port_config + local_port_config + port_config_overwrite onto the named
-    port_usages profile (see module docstring). `resolution` states WHERE the
-    usage definition came from — the honesty marker consumers turn into
-    confidence: "explicit" (a port_usages map), "system" (Mist system-defined
-    defaults — semantics inferred from docs), "unresolved" (a name with NO
-    definition: carriage UNKNOWN, never silently empty), "none" (no usage name;
-    inline attrs only).
+    Layers (lowest -> highest precedence): named port_usages profile <- inline
+    port_config attrs <- port_config_overwrite attrs <- local_port_config attrs
+    (highest, applied only when the member is locally overridable). The member
+    set is the union of all three maps, so an overwrite-only or local-only port
+    still yields a port (resolution "none" when no usage name resolves).
+    `resolution` states where the usage came from: "explicit"/"system"/
+    "unresolved" (see usage_definition) or "none" (no usage name).
     """
+    pc = _expand_map(eff.get("port_config") or {})
     overwrite = _expand_map(eff.get("port_config_overwrite") or {})
-    for member, attrs in resolve_port_bases(eff).items():
-        usage_name = attrs.get("usage")
+    local = _expand_map(eff.get("local_port_config") or {})
+    bases = resolve_port_bases(eff)
+    for member in sorted(set(bases) | set(overwrite)):
+        usage_name = (bases.get(member) or {}).get("usage")
         effective: dict[str, Any]
         if usage_name is None:
             effective, resolution = {}, "none"
         else:
             effective, resolution = usage_definition(eff, str(usage_name))
-        for key in _USAGE_OVERRIDE_ATTRS:
-            if key in attrs:
-                effective[key] = attrs[key]
-        for key in _OVERWRITE_ATTRS:
-            ow = overwrite.get(member, {})
-            if key in ow:
-                effective[key] = ow[key]
+        for key in _USAGE_OVERRIDE_ATTRS:  # port_config inline
+            if key in pc.get(member, {}):
+                effective[key] = pc[member][key]
+        for key in _OVERWRITE_ATTRS:  # port_config_overwrite
+            if key in overwrite.get(member, {}):
+                effective[key] = overwrite[member][key]
+        if _overridable(pc.get(member)):  # local_port_config (highest, gated)
+            for key in _USAGE_OVERRIDE_ATTRS:
+                if key in local.get(member, {}):
+                    effective[key] = local[member][key]
         yield member, effective, (str(usage_name) if usage_name is not None else None), resolution
 
 
