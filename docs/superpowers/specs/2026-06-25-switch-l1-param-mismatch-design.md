@@ -139,6 +139,13 @@ routes it to the honest `.unverified` code instead of the over-specific
 Severity downgrades to WARNING when confidence is below HIGH (per the
 `min_confidence(pa, pb, link)` rail), exactly as `mtu_mismatch`.
 
+**Registration (mechanical, same pattern as SP1's `admin_disable`):** import the
+class in `src/digital_twin/checks/wired/__init__.py`, append
+`L1ParamMismatchCheck()` to `ALL_WIRED_CHECKS`, add the class name to `__all__`,
+and bump the hard-coded `len(ALL_WIRED_CHECKS) == 21 → 22` in
+`tests/test_public_api.py` (currently exactly 21). Without this the check exists
+and passes its unit tests but never runs in the default registry.
+
 **Attribution (delta-conditioned, honest about time):**
 
 - **Introduced / changed mismatch** (the boundary's config mismatch is new, or
@@ -210,9 +217,11 @@ respective maps; the L0 unknown-attribute walker already accepts them.
   obs) → INFO**, half annotated; **pre-existing `.unverified` (same forced end,
   same no-facts peer in baseline) → suppressed** (baseline-parity guard, mirrors
   `mtu_mismatch`).
+- **Public API** (`tests/test_public_api.py`): bump `len(ALL_WIRED_CHECKS) == 21
+  → 22` as part of registration (currently exactly 21).
 - **e2e pipeline**: a device PUT pinning a forced speed/duplex on one end of a
-  trunk uplink whose peer autonegotiates → not UNKNOWN; `l1.link_param_mismatch.
-  autoneg_mismatch` present; verdict REVIEW.
+  trunk uplink whose peer autonegotiates → not UNKNOWN;
+  `wired.l1.link_param_mismatch.autoneg_mismatch` present; verdict REVIEW.
 - **Goldens**: run full golden suite; `site.json` has internal half-duplex
   telemetry (`cbp0`) — confirm the no-standalone-observed rule keeps it silent and
   no golden churns. Re-pin only with justification.
