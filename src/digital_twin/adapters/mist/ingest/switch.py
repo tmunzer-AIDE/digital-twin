@@ -396,6 +396,26 @@ def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
     return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
 
 
+# Observed negotiated speed (port_stats numeric Mbps) -> config speed enum.
+_SPEED_MBPS: dict[int, str] = {
+    10: "10m", 100: "100m", 1000: "1g", 2500: "2.5g", 5000: "5g",
+    10000: "10g", 25000: "25g", 40000: "40g", 100000: "100g",
+}
+
+
+def _l1_observed(row: _Json | None) -> tuple[str | None, str | None]:
+    """(observed_speed, observed_duplex) from a port_stats row, UP ports only.
+    Numeric Mbps -> config enum (unknown/0 -> None); duplex from full_duplex.
+    A down port (or no row) yields (None, None) — never a spurious 'half'."""
+    if row is None or not row.get("up"):
+        return None, None
+    spd = row.get("speed")
+    speed = _SPEED_MBPS.get(spd) if isinstance(spd, int) else None
+    fd = row.get("full_duplex")
+    duplex = ("full" if fd else "half") if isinstance(fd, bool) else None
+    return speed, duplex
+
+
 def _poe_draw(row: _Json | None) -> bool | None:
     """Observed power delivery — honest about missing telemetry (real rows lack
     `poe_on` on some ports): no stat row -> UNKNOWN; `poe_on` present -> the
@@ -799,6 +819,7 @@ class SwitchIngester:
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
             row = stat_rows.get(member)
             l1_speed, l1_duplex, l1_autoneg = _l1_config(usage)
+            obs_speed, obs_duplex = _l1_observed(row)
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -816,6 +837,8 @@ class SwitchIngester:
                     # config PoE intent: None when the usage is blind/unresolved
                     poe=None if not usage else not bool(usage.get("poe_disabled")),
                     poe_draw=_poe_draw(row),
+                    observed_speed=obs_speed,
+                    observed_duplex=obs_duplex,
                     disabled=bool(usage.get("disabled")),
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),
