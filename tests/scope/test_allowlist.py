@@ -84,3 +84,25 @@ def test_gateway_effective_allowlist_includes_disabled_ip_and_vars():
     gw = set(GATEWAY_EFFECTIVE_ALLOWLIST)
     assert {"port_config.*.disabled", "ip_configs.*.ip", "vars.*"} <= gw
     assert "port_config.*.disabled" not in set(EFFECTIVE_ALLOWLIST)  # switch lacks it
+
+
+def test_disabled_in_scope_on_overwrite_and_local():
+    dev = set(RAW_ALLOWLIST["device"])
+    assert "port_config_overwrite.*.disabled" in dev
+    assert "local_port_config.*.disabled" in dev
+    assert "port_config_overwrite.*.disabled" in set(EFFECTIVE_ALLOWLIST)
+
+
+def test_disabled_not_in_scope_on_port_config():
+    assert "port_config.*.disabled" not in set(RAW_ALLOWLIST["device"])
+
+
+def test_no_local_overwrite_stays_out_of_scope():
+    # a lone no_local_overwrite flip could activate unmodeled local leaves -> UNKNOWN
+    assert "port_config.*.no_local_overwrite" not in set(RAW_ALLOWLIST["device"])
+
+
+def test_local_dynamic_usage_still_out_of_scope():
+    # P1 regression: adding `disabled` must NOT reintroduce local dynamic_usage,
+    # which PR #14 deliberately narrowed out (it's a port_config-only pointer)
+    assert "local_port_config.*.dynamic_usage" not in set(RAW_ALLOWLIST["device"])

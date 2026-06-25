@@ -81,7 +81,7 @@ def test_inline_port_network_overrides_the_usage_vlan():
 
 def test_local_port_config_reassigns_usage():
     eff = _eff(
-        port_config={"ge-0/0/7": {"usage": "office"}},
+        port_config={"ge-0/0/7": {"usage": "office", "no_local_overwrite": False}},
         local_port_config={"ge-0/0/7": {"usage": "uplink"}},
     )
     usage, name = _resolved(eff)["ge-0/0/7"]
@@ -90,7 +90,7 @@ def test_local_port_config_reassigns_usage():
 
 def test_local_override_targets_one_member_of_a_range():
     eff = _eff(
-        port_config={"ge-0/0/0-3": {"usage": "office"}},
+        port_config={"ge-0/0/0-3": {"usage": "office", "no_local_overwrite": False}},
         local_port_config={"ge-0/0/2": {"usage": "uplink"}},
     )
     r = _resolved(eff)
@@ -125,7 +125,7 @@ def test_resolve_port_bases_merges_local_over_port_config_and_keeps_dynamic_flag
     eff = {
         "port_config": {
             "ge-0/0/0": {"usage": "office", "dynamic_usage": "dynamic"},
-            "ge-0/0/1-2": {"usage": "office"},
+            "ge-0/0/1-2": {"usage": "office", "no_local_overwrite": False},
         },
         "local_port_config": {"ge-0/0/1": {"usage": "uplink"}},
     }
@@ -201,3 +201,73 @@ def test_disabled_system_defined_list_disables_one():
     out = _resolution(eff)
     assert out["ge-0/0/46"][2] == "unresolved"
     assert out["ge-0/0/43"][2] == "system"
+
+
+# -- no_local_overwrite gate (Task 1) -------------------------------------------
+
+
+def test_local_discarded_when_no_local_overwrite_defaults_true():
+    # port_config present, no_local_overwrite absent (OAS default true) -> local DISCARDED
+    eff = _eff(
+        port_config={"ge-0/0/7": {"usage": "office"}},
+        local_port_config={"ge-0/0/7": {"usage": "uplink"}},
+    )
+    assert _resolved(eff)["ge-0/0/7"][1] == "office"  # local ignored
+
+
+def test_local_applies_when_no_local_overwrite_false():
+    eff = _eff(
+        port_config={"ge-0/0/7": {"usage": "office", "no_local_overwrite": False}},
+        local_port_config={"ge-0/0/7": {"usage": "uplink"}},
+    )
+    assert _resolved(eff)["ge-0/0/7"][1] == "uplink"
+
+
+def test_standalone_local_applies_without_port_config_entry():
+    eff = _eff(local_port_config={"ge-0/0/8": {"usage": "uplink"}})
+    assert _resolved(eff)["ge-0/0/8"][1] == "uplink"
+
+
+def test_local_outranks_port_config_overwrite():
+    # both set port_network; local is the highest layer -> local wins
+    eff = _eff(
+        port_config={"ge-0/0/9": {"usage": "office", "no_local_overwrite": False}},
+        port_config_overwrite={"ge-0/0/9": {"port_network": "voice"}},
+        local_port_config={"ge-0/0/9": {"port_network": "corp"}},
+    )
+    usage, _name = _resolved(eff)["ge-0/0/9"]
+    assert usage["port_network"] == "corp"
+
+
+def test_overwrite_only_member_is_resolved():
+    # a port present ONLY in port_config_overwrite still yields a resolved port
+    eff = _eff(port_config_overwrite={"ge-0/0/12": {"port_network": "voice"}})
+    res = _resolved(eff)
+    assert "ge-0/0/12" in res
+    assert res["ge-0/0/12"][0]["port_network"] == "voice"
+    assert res["ge-0/0/12"][1] is None  # no usage name resolves
+
+
+# -- disabled attribute (Task 2) -----------------------------------------------
+
+
+def test_overwrite_disabled_marks_effective_disabled():
+    # the bug-report shape: overwrite-only members carry disabled with no port_config entry
+    eff = _eff(port_config_overwrite={"mge-0/0/0-3": {"disabled": True}})
+    res = _resolved(eff)
+    assert res["mge-0/0/0"][0].get("disabled") is True
+    assert res["mge-0/0/3"][0].get("disabled") is True
+
+
+def test_local_disabled_honored_when_overridable():
+    eff = _eff(
+        port_config={"ge-0/0/5": {"usage": "office", "no_local_overwrite": False}},
+        local_port_config={"ge-0/0/5": {"disabled": True}},
+    )
+    assert _resolved(eff)["ge-0/0/5"][0].get("disabled") is True
+
+
+def test_port_config_disabled_is_ignored():
+    # disabled is NOT valid on port_config (OAS) -> the resolver must not honor it
+    eff = _eff(port_config={"ge-0/0/6": {"usage": "office", "disabled": True}})
+    assert _resolved(eff)["ge-0/0/6"][0].get("disabled") is None
