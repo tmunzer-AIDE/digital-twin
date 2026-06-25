@@ -29,7 +29,32 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     # leaf-tightened to exactly what the resolver honors
     assert "local_port_config.*.usage" in device
     assert "port_config_overwrite.*.port_network" in device
-    assert "port_config_overwrite.*.speed" not in device  # not resolver-honored
+    assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
+    assert "port_config_overwrite.*.mac_limit" not in device  # still unmodeled
+
+
+def test_l1_attrs_in_scope():
+    dev = set(RAW_ALLOWLIST["device"])
+    for leaf in (
+        "port_config.*.speed", "port_config.*.duplex", "port_config.*.disable_autoneg",
+        "local_port_config.*.speed", "local_port_config.*.duplex",
+        "local_port_config.*.disable_autoneg",
+        "port_config_overwrite.*.speed", "port_config_overwrite.*.duplex",
+    ):
+        assert leaf in dev, leaf
+
+
+def test_overwrite_has_no_disable_autoneg():
+    # OAS: port_config_overwrite carries speed+duplex but NOT disable_autoneg
+    assert "port_config_overwrite.*.disable_autoneg" not in set(RAW_ALLOWLIST["device"])
+
+
+def test_usage_l1_in_scope():
+    site = set(RAW_ALLOWLIST["site_setting"])
+    eff = set(EFFECTIVE_ALLOWLIST)
+    for a in ("speed", "duplex", "disable_autoneg"):
+        assert f"port_usages.*.{a}" in site, a
+        assert f"port_usages.*.{a}" in eff, a
 
 
 def test_effective_allowlist_is_leaf_level():

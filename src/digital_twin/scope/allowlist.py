@@ -41,6 +41,9 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "poe_disabled",
     "mtu",
     "allow_dhcpd",
+    "speed",
+    "duplex",
+    "disable_autoneg",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
@@ -149,6 +152,7 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # port_config_overwrite is honored for port_network + poe_disabled ONLY.
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
     "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
+    "speed", "duplex", "disable_autoneg",
 )
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(f"port_config.*.{a}" for a in _PORT_CONFIG_ATTRS)
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
@@ -158,6 +162,8 @@ _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",
     "port_config_overwrite.*.poe_disabled",
     "port_config_overwrite.*.disabled",
+    "port_config_overwrite.*.speed",
+    "port_config_overwrite.*.duplex",
 )
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,

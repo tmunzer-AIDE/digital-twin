@@ -60,15 +60,15 @@ def test_unmodeled_leaf_inside_allowed_subtree_rejects():
 
 
 def test_unmodeled_usage_leaf_rejects():
-    # speed is one of the ~35 usage attrs the IR does NOT consume (GS25 moved
-    # allow_dhcpd into scope — the leaf-tightening principle still holds)
+    # mac_limit is one of the usage attrs the IR does NOT consume (SP2 moved
+    # speed/duplex/disable_autoneg into scope — the leaf-tightening principle holds)
     payload = {
         **CURRENT,
-        "port_usages": {"office": {"mode": "access", "port_network": "corp", "speed": "10g"}},
+        "port_usages": {"office": {"mode": "access", "port_network": "corp", "mac_limit": 5}},
     }
     r = screen_op("site_setting", CURRENT, payload)
     assert isinstance(r, Rejection)
-    assert any("speed" in reason for reason in r.reasons)
+    assert any("mac_limit" in reason for reason in r.reasons)
 
 
 def test_whole_subtree_removal_of_allowed_field_passes():
@@ -99,12 +99,12 @@ def test_modeled_port_config_overwrite_leaf_passes():
 
 
 def test_unmodeled_overwrite_leaf_still_rejects():
-    # the resolver honors ONLY port_network + poe_disabled from
-    # port_config_overwrite — speed et al. stay out of scope (leaf-tightened)
-    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"speed": "10g"}}}
+    # the resolver honors port_network/poe_disabled/disabled/speed/duplex from
+    # port_config_overwrite — mac_limit et al. stay out of scope (leaf-tightened)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"mac_limit": 5}}}
     r = screen_op("device", SWITCH_CUR, payload)
     assert isinstance(r, Rejection)
-    assert any("port_config_overwrite.ge-0/0/0.speed" in reason for reason in r.reasons)
+    assert any("port_config_overwrite.ge-0/0/0.mac_limit" in reason for reason in r.reasons)
 
 
 def test_device_status_fields_are_ignored():
