@@ -431,3 +431,42 @@ unknown-attribute findings (guards against making existing goldens noisy).
   enforcement on for them.
 - Deriving the modeled-leaf set from checks/ingesters (replaces the maintained
   field-gate allowlist file with code-declared leaves) — separate refactor.
+
+## 12. As-built amendments (2026-06-25)
+
+Decisions made during the build that SUPERSEDE the design above. Recorded here for
+fidelity; the code is the source of truth.
+
+1. **Closedness owned by the walker; jsonschema stays permissive (`_strip_closed`).**
+   The refreshed OAS extracts are kept FAITHFUL (closed, `additionalProperties:false`
+   intact). The jsonschema validator path strips that keyword (`_strip_closed`) so L0
+   never ERRORs on the GET-only fields the EFFECTIVE object carries; the walker reads
+   the faithful schema (`_raw_schema`) and is the SOLE "not in OAS" finder. (The
+   original draft implied the extract itself would be permissive — closedness instead
+   moved entirely into the walker.)
+
+2. **Split scope — `unknown_scope_roots` (SUPERSEDES §4 scope + §8 "pre-existing"
+   promise).** ChangePlan ops are full-object PUTs, so `_changed_roots` = *every*
+   root; scoping the walker to that made it re-audit the whole persisted object and
+   false-flag pre-existing fields the closed OAS omits — top-level GET-only roots AND
+   nested gaps (e.g. `mist_nac.*`). `validate_payload` now takes a SEPARATE
+   `unknown_scope_roots` = roots with actual value deltas (`changed_paths(current,
+   effective)`); `scope_roots` still governs the jsonschema/L0 scope unchanged. The
+   honest contract: **default mode flags undocumented attrs only on roots whose
+   VALUES changed; `--l0-full-object` flags all present.** §8's "catch a pre-existing
+   undocumented field in an untouched root" is DROPPED — under full-object PUTs that
+   promise *was* the noise source. The motivating case (an attr introduced on a
+   changed root, e.g. `port_config.*.disabled`) is still caught.
+
+3. **Device-scoped server-managed skip (`_SERVER_MANAGED_ROOTS_BY_TYPE`).** Rather
+   than expand the global `IGNORED_RAW_FIELDS`, the walker skips top-level roots per
+   object type: `device` = `IGNORED_RAW_FIELDS | _DEVICE_GET_ONLY_ROOTS`
+   (`optic_port_config`, `evpn_scope`, `radio_config`, `st_ip_base`,
+   `uses_description_from_port_usage`, plus map-placement / inventory roots). These
+   are real config on OTHER object types, so a global ignore would be a false-SAFE
+   there; the skip is device-scoped and ROOT-level only (a nested `networks.foo.id`
+   still surfaces). Global `IGNORED_RAW_FIELDS` (the field gate) stays minimal.
+
+4. **OAS source + upstream debt.** Extracts refreshed from the officially-supported
+   `mistsys/mist_openapi`. `switch_bgp_config_neighbor.disabled` is patched locally
+   pending an upstream PR (recorded in `src/digital_twin/adapters/mist/oas/VERSION`).
