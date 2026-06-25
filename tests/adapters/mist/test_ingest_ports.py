@@ -246,3 +246,28 @@ def test_overwrite_only_member_is_resolved():
     assert "ge-0/0/12" in res
     assert res["ge-0/0/12"][0]["port_network"] == "voice"
     assert res["ge-0/0/12"][1] is None  # no usage name resolves
+
+
+# -- disabled attribute (Task 2) -----------------------------------------------
+
+
+def test_overwrite_disabled_marks_effective_disabled():
+    # the bug-report shape: overwrite-only members carry disabled with no port_config entry
+    eff = _eff(port_config_overwrite={"mge-0/0/0-3": {"disabled": True}})
+    res = _resolved(eff)
+    assert res["mge-0/0/0"][0].get("disabled") is True
+    assert res["mge-0/0/3"][0].get("disabled") is True
+
+
+def test_local_disabled_honored_when_overridable():
+    eff = _eff(
+        port_config={"ge-0/0/5": {"usage": "office", "no_local_overwrite": False}},
+        local_port_config={"ge-0/0/5": {"disabled": True}},
+    )
+    assert _resolved(eff)["ge-0/0/5"][0].get("disabled") is True
+
+
+def test_port_config_disabled_is_ignored():
+    # disabled is NOT valid on port_config (OAS) -> the resolver must not honor it
+    eff = _eff(port_config={"ge-0/0/6": {"usage": "office", "disabled": True}})
+    assert _resolved(eff)["ge-0/0/6"][0].get("disabled") is None

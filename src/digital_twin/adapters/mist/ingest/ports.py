@@ -37,7 +37,10 @@ _USAGE_OVERRIDE_ATTRS = (
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the
 # poe.disconnect check). disabled/speed et al. remain unmodeled -> out of scope.
-_OVERWRITE_ATTRS = ("port_network", "poe_disabled")
+_OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled")
+
+# local_port_config may additionally carry the admin-down boolean (OAS).
+_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled")
 
 # Mist SYSTEM-DEFINED port usages: referenced by port_config but defined in NO
 # config object (template/site/device — not even getSiteSettingDerived exposes
@@ -152,7 +155,7 @@ def resolve_effective_ports(
             if key in overwrite.get(member, {}):
                 effective[key] = overwrite[member][key]
         if _overridable(pc.get(member)):  # local_port_config (highest, gated)
-            for key in _USAGE_OVERRIDE_ATTRS:
+            for key in _LOCAL_ATTRS:
                 if key in local.get(member, {}):
                     effective[key] = local[member][key]
         yield member, effective, (str(usage_name) if usage_name is not None else None), resolution

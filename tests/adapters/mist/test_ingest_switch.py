@@ -100,6 +100,34 @@ def test_disabled_usage_marks_port_disabled():
     assert ir.ports["aa0000000001:ge-0/0/2"].disabled is True  # system 'disabled'
 
 
+def test_inline_disabled_via_overwrite_marks_port_disabled():
+    # overwrite-only port with disabled:true -> Port.disabled True (the bug shape)
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {"office": {"mode": "access", "port_network": "corp"}},
+        "port_config": {"ge-0/0/1": {"usage": "office"}},
+        "port_config_overwrite": {"mge-0/0/0": {"disabled": True}},
+    }
+    device = {
+        **SWITCH_A,
+        "port_config": eff["port_config"],
+        "port_config_overwrite": eff["port_config_overwrite"],
+    }
+    ctx = IngestContext(
+        raw=raw_site(devices=(device,)),
+        site_effective=eff,
+        device_effective={"aa0000000001": eff},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert ir.ports["aa0000000001:mge-0/0/0"].disabled is True
+    assert ir.ports["aa0000000001:ge-0/0/1"].disabled is False
+
+
 # -- dynamic port profiles: runtime usage from rules + observed LLDP ------------
 
 _DYN_EFF = {
