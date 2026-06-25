@@ -28,7 +28,7 @@
 - **Modify** `src/digital_twin/checks/wired/__init__.py` — register the check. (Task 3)
 - **Modify** `tests/test_public_api.py` — bump `len(ALL_WIRED_CHECKS) == 20 → 21`. (Task 3)
 - **Modify** `src/digital_twin/scope/allowlist.py` — add `disabled` leaves. (Task 4)
-- **Modify** existing tests that encode the OLD unconditional-local behavior: `tests/adapters/mist/test_ingest_ports.py`. (Task 1)
+- **Modify** existing tests that encode the OLD unconditional-local behavior: `tests/adapters/mist/test_ingest_ports.py`, `tests/test_plan3_flow.py`, `tests/adapters/mist/test_ingest_switch.py` (+ any straggler the full-suite run surfaces). (Task 1)
 - **Create** `tests/checks/test_admin_disable.py`. (Task 3)
 - **Modify** `tests/engine/test_pipeline.py` (e2e), `docs/ROADMAP.md`. (Task 5)
 
@@ -98,29 +98,9 @@ def test_overwrite_only_member_is_resolved():
 Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py -k "no_local_overwrite or outranks or overwrite_only or standalone_local" -q`
 Expected: FAIL (gate not implemented; overwrite-only member dropped; local applied unconditionally).
 
-- [ ] **Step 3: Rework the attr tuples**
+- [ ] **Step 3: (No attr-tuple change in Task 1)**
 
-Replace `ports.py:25-40` (`_USAGE_OVERRIDE_ATTRS` and `_OVERWRITE_ATTRS`) with:
-
-```python
-# Inline attrs port_config / local_port_config may carry to override the named
-# usage. stp_edge is schema-valid inline on local_port_config ONLY; disabled
-# (Task 2) is valid on local_port_config + port_config_overwrite ONLY.
-_USAGE_OVERRIDE_ATTRS = (
-    "mode",
-    "port_network",
-    "networks",
-    "all_networks",
-    "voip_network",
-    "poe_disabled",
-    "mtu",
-    "allow_dhcpd",
-)
-# Per-layer attr eligibility, applied lowest -> highest precedence:
-_PC_INLINE_ATTRS = _USAGE_OVERRIDE_ATTRS  # port_config inline (no stp_edge, no disabled)
-_OVERWRITE_ATTRS = ("port_network", "poe_disabled")  # port_config_overwrite (Task 2 adds disabled)
-_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "stp_edge")  # local_port_config (Task 2 adds disabled)
-```
+Leave `ports.py:25-40` (`_USAGE_OVERRIDE_ATTRS` incl `stp_edge`; `_OVERWRITE_ATTRS = ("port_network", "poe_disabled")`) **exactly as they are in the worktree**. The worktree resolver is unchanged by PR #14 — only the *field gate* (`allowlist.py`) was narrowed per-map. This sub-project's precedence fix is purely in the layering (Steps 4–5); the per-map `disabled` attr is added in Task 2. (Applying `_USAGE_OVERRIDE_ATTRS` from both the port_config and local layers preserves today's behavior; the field gate, not the resolver, decides which inline leaves are in scope.)
 
 - [ ] **Step 4: Add the `_overridable` gate and rework `resolve_port_bases`**
 
@@ -181,22 +161,24 @@ def resolve_effective_ports(
             effective, resolution = {}, "none"
         else:
             effective, resolution = usage_definition(eff, str(usage_name))
-        for key in _PC_INLINE_ATTRS:
+        for key in _USAGE_OVERRIDE_ATTRS:  # port_config inline
             if key in pc.get(member, {}):
                 effective[key] = pc[member][key]
-        for key in _OVERWRITE_ATTRS:
+        for key in _OVERWRITE_ATTRS:  # port_config_overwrite
             if key in overwrite.get(member, {}):
                 effective[key] = overwrite[member][key]
-        if _overridable(pc.get(member)):
-            for key in _LOCAL_ATTRS:
+        if _overridable(pc.get(member)):  # local_port_config (highest, gated)
+            for key in _USAGE_OVERRIDE_ATTRS:
                 if key in local.get(member, {}):
                     effective[key] = local[member][key]
         yield member, effective, (str(usage_name) if usage_name is not None else None), resolution
 ```
 
-- [ ] **Step 6: Update existing tests that encoded the OLD unconditional-local behavior**
+- [ ] **Step 6: Reconcile existing tests that encoded the OLD unconditional-local behavior**
 
-These three tests assumed `local_port_config` always wins; under real Mist they need `no_local_overwrite: false` (the resolver was wrong before — this is the fix). In `tests/adapters/mist/test_ingest_ports.py`:
+Several tests across the suite assumed `local_port_config` always wins; under real Mist an override needs `no_local_overwrite: false` on the port_config entry, or a standalone port (no port_config entry). This is the fix, not a regression. Apply the known sites below, then run the FULL suite (next step) to catch any straggler — reconcile each by the same pattern (add `no_local_overwrite: false`, or make the port standalone).
+
+**(A) In `tests/adapters/mist/test_ingest_ports.py`:**
 
 `test_local_port_config_reassigns_usage` — change the `port_config` entry:
 ```python
@@ -225,12 +207,31 @@ These three tests assumed `local_port_config` always wins; under real Mist they 
     }
 ```
 
-- [ ] **Step 7: Run the full ports test file + gate**
+**(B) In `tests/test_plan3_flow.py`, `test_local_port_config_override_flows_through_to_proposed_ir` (~line 177):** the override targets `ge-0/0/1`, which is inside `SWITCH`'s `port_config` range `ge-0/0/0-1` (no `no_local_overwrite`). Adding the flag to the shared `SWITCH` fixture would ripple into other tests (a later port_config-replacing PUT would drop the flag → a `no_local_overwrite` change → UNKNOWN). Instead, retarget the override to a **standalone** port not in `port_config` (applies unconditionally), and update the assertion's port id to match:
 
-Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py -q`
-Expected: PASS (new + updated tests).
+```python
+    new_device = {**SWITCH, "local_port_config": {"ge-0/0/5": {"usage": "uplink"}}}
+    # ... and update the proposed-IR assertion below to check port "ge-0/0/5"
+    #     (e.g. the port_id helper "<mac>:ge-0/0/5") instead of ge-0/0/1.
+```
+
+**(C) In `tests/adapters/mist/test_ingest_switch.py` (~line 717, the local-`stp_edge` test):** the `local_port_config` entry for `ge-0/0/3` reassigns inline `stp_edge` but `port_config["ge-0/0/3"]` has no flag — local would now be discarded. Add the flag to that inline `port_config` entry (self-contained `eff` dict, no fixture ripple):
+
+```python
+        "port_config": {
+            "ge-0/0/1": {"usage": "nostp"},
+            "ge-0/0/2": {"usage": "edge"},
+            "ge-0/0/3": {"usage": "plain", "no_local_overwrite": False},
+        },
+        "local_port_config": {"ge-0/0/3": {"usage": "plain", "stp_edge": True}},
+```
+
+- [ ] **Step 7: Run the affected suites + full gate (catch any straggler)**
+
+Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py tests/test_plan3_flow.py tests/adapters/mist/test_ingest_switch.py -q`
+Expected: PASS (new + reconciled tests).
 Run: `uv run pytest -q && uv run ruff check . && uv run mypy src`
-Expected: all PASS. (If a golden churns unexpectedly, STOP — `site.json` should be unchanged; investigate before re-pinning.)
+Expected: all PASS. Any *other* failure is almost certainly another test encoding the old unconditional-local behavior — reconcile it with the same pattern (add `no_local_overwrite: false`, or make the port standalone). (If a golden churns, STOP — `site.json` has no `local_port_config` and should be unchanged; investigate before re-pinning.)
 
 - [ ] **Step 8: Commit**
 
@@ -292,13 +293,27 @@ def test_port_config_disabled_is_ignored():
 Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py -k "disabled" -q`
 Expected: FAIL (`disabled` not yet in the overwrite/local attr sets).
 
-- [ ] **Step 3: Add `disabled` to the overwrite + local attr tuples**
+- [ ] **Step 3: Honor `disabled` on the overwrite + local layers**
 
-In `ports.py`, edit:
+`disabled` is OAS-valid on `port_config_overwrite` + `local_port_config` only (NOT `port_config`). In `ports.py`:
+
+(a) add `disabled` to `_OVERWRITE_ATTRS`:
 ```python
 _OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled")
-_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "stp_edge", "disabled")
 ```
+(b) add a local-only attr tuple just below `_OVERWRITE_ATTRS` (`_USAGE_OVERRIDE_ATTRS` already includes `stp_edge`):
+```python
+# local_port_config may additionally carry the admin-down boolean (OAS).
+_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled")
+```
+(c) in `resolve_effective_ports`, change the local layer to iterate `_LOCAL_ATTRS` (it currently iterates `_USAGE_OVERRIDE_ATTRS`):
+```python
+        if _overridable(pc.get(member)):  # local_port_config (highest, gated)
+            for key in _LOCAL_ATTRS:
+                if key in local.get(member, {}):
+                    effective[key] = local[member][key]
+```
+`disabled` is NOT added to the port_config layer (`_USAGE_OVERRIDE_ATTRS`), so `port_config.*.disabled` stays unhonored — matching the OAS and `test_port_config_disabled_is_ignored`.
 
 - [ ] **Step 4: Write the ingest end-to-end test (resolver → Port.disabled)**
 
@@ -432,6 +447,25 @@ def test_disabling_a_trunk_edge_port_is_review():
     assert r.findings[0].severity is Severity.WARNING
 
 
+def test_nonap_peer_uses_link_confidence_not_high():
+    # an inter-switch ACCESS port with a one-sided LLDP peer -> WARNING, but the
+    # finding's confidence is the LINK's (LOW), not overstated HIGH (P3)
+    def ir(disabled):
+        b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
+        b.add_port(Port(id="S:ge-0/0/3", device_id="S", name="ge-0/0/3",
+                        mode=PortMode.ACCESS, disabled=disabled))
+        b.add_port(Port(id="T:ge-0/0/3", device_id="T", name="ge-0/0/3", mode=PortMode.ACCESS))
+        b.add_link(link("S:ge-0/0/3", "T:ge-0/0/3", prov=Provenance.LLDP_ONE_SIDED))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    r = _run(ir(False), ir(True))
+    assert r.status is Status.WARN
+    f = r.findings[0]
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.LOW  # link confidence, not HIGH
+
+
 def test_disabling_a_port_with_active_wired_clients_is_review():
     r = _run(_edge_ir(disabled=False, with_client=True),
              _edge_ir(disabled=True, with_client=True))
@@ -500,18 +534,29 @@ from __future__ import annotations
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.checks.wired.poe_disconnect import _ap_uplink_ports
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
-from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff, min_confidence
-from digital_twin.ir.entities import DeviceRole, PortMode
+from digital_twin.ir import (
+    Capability,
+    Confidence,
+    ConfidenceLevel,
+    IRCapability,
+    IRDiff,
+    Link,
+    min_confidence,
+)
+from digital_twin.ir.entities import Client, DeviceRole, Port, PortMode
 from digital_twin.ir.indexes import clients_by_ap, clients_by_port
 from digital_twin.ir.model import IR
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
+# (severity, confidence, finding code, message, headline subject)
+_Verdict = tuple[Severity, Confidence, str, str, ObjectRef]
 
 
-def _nonap_peer_ports(ir: IR) -> set[str]:
-    """switch-port ids whose baseline link peer is a managed NON-AP device
-    (inter-switch / gateway uplink)."""
-    out: set[str] = set()
+def _nonap_peer_links(ir: IR) -> dict[str, Link]:
+    """switch-port id -> the baseline link to a managed NON-AP peer (inter-switch
+    / gateway uplink). Carries the LINK so classification can use its confidence —
+    a one-sided LLDP peer is weaker evidence than a two-sided one."""
+    out: dict[str, Link] = {}
     for lk in ir.links:
         pa, pb = ir.ports.get(lk.a_port), ir.ports.get(lk.b_port)
         if pa is None or pb is None:
@@ -519,8 +564,8 @@ def _nonap_peer_ports(ir: IR) -> set[str]:
         a_ap = ir.devices[pa.device_id].role is DeviceRole.AP
         b_ap = ir.devices[pb.device_id].role is DeviceRole.AP
         if not a_ap and not b_ap:
-            out.add(pa.id)
-            out.add(pb.id)
+            out[pa.id] = lk
+            out[pb.id] = lk
     return out
 
 
@@ -539,7 +584,7 @@ class AdminDisableCheck:
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         ap_ports = _ap_uplink_ports(base_ir)
-        nonap_peers = _nonap_peer_ports(base_ir)
+        nonap_peers = _nonap_peer_links(base_ir)
         wired = clients_by_port(base_ir)
         ap_clients = clients_by_ap(base_ir)
         findings: list[Finding] = []
@@ -567,7 +612,16 @@ class AdminDisableCheck:
             reasoning="compared per-port admin-disable state baseline vs proposed",
         )
 
-    def _finding(self, ctx, pid, base_port, ap_ports, nonap_peers, wired, ap_clients):
+    def _finding(
+        self,
+        ctx: CheckContext,
+        pid: str,
+        base_port: Port | None,
+        ap_ports: dict[str, tuple[str, Link]],
+        nonap_peers: dict[str, Link],
+        wired: dict[str, list[Client]],
+        ap_clients: dict[str, list[Client]],
+    ) -> Finding:
         severity, confidence, code, message, subject = self._classify(
             pid, base_port, ap_ports, nonap_peers, wired, ap_clients
         )
@@ -584,7 +638,15 @@ class AdminDisableCheck:
             caused_by=tuple(c for c in (ctx.delta_index.cause("port", pid),) if c is not None),
         )
 
-    def _classify(self, pid, base_port, ap_ports, nonap_peers, wired, ap_clients):
+    def _classify(
+        self,
+        pid: str,
+        base_port: Port | None,
+        ap_ports: dict[str, tuple[str, Link]],
+        nonap_peers: dict[str, Link],
+        wired: dict[str, list[Client]],
+        ap_clients: dict[str, list[Client]],
+    ) -> _Verdict:
         port_ref = ObjectRef("port", pid)
         if base_port is None:
             return (
@@ -613,10 +675,19 @@ class AdminDisableCheck:
                 "disconnect",
                 port_ref,
             )
-        if base_port.mode is PortMode.TRUNK or pid in nonap_peers:
+        if base_port.mode is PortMode.TRUNK:
+            # config trunk is a HIGH fact
             return (
                 Severity.WARNING, _HIGH, "wired.port.admin_disable.impact",
-                f"port {pid} administratively disabled — a trunk / inter-switch link goes down",
+                f"port {pid} administratively disabled — a trunk link goes down",
+                port_ref,
+            )
+        peer_lk = nonap_peers.get(pid)
+        if peer_lk is not None:
+            # peer-only tie: confidence is the LINK's (a one-sided LLDP peer is weak)
+            return (
+                Severity.WARNING, peer_lk.meta.confidence, "wired.port.admin_disable.impact",
+                f"port {pid} administratively disabled — an inter-switch / gateway link goes down",
                 port_ref,
             )
         return (
@@ -629,7 +700,7 @@ class AdminDisableCheck:
 - [ ] **Step 4: Run the check tests**
 
 Run: `uv run pytest tests/checks/test_admin_disable.py -q`
-Expected: PASS. (If `_classify`'s positional call trips mypy on `tests/`, ignore — mypy is not enforced on tests; but `mypy src` must be clean.)
+Expected: PASS. (`mypy src` must be clean — `_finding`/`_classify`/`_nonap_peer_links` are fully annotated and `_Verdict` is the shared return alias; mypy is not enforced on `tests/`.)
 
 - [ ] **Step 5: Register the check**
 
@@ -710,6 +781,12 @@ def test_disabled_not_in_scope_on_port_config():
 def test_no_local_overwrite_stays_out_of_scope():
     # a lone no_local_overwrite flip could activate unmodeled local leaves -> UNKNOWN
     assert "port_config.*.no_local_overwrite" not in set(RAW_ALLOWLIST["device"])
+
+
+def test_local_dynamic_usage_still_out_of_scope():
+    # P1 regression: adding `disabled` must NOT reintroduce local dynamic_usage,
+    # which PR #14 deliberately narrowed out (it's a port_config-only pointer)
+    assert "local_port_config.*.dynamic_usage" not in set(RAW_ALLOWLIST["device"])
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -719,14 +796,18 @@ Expected: FAIL (leaves not present).
 
 - [ ] **Step 3: Add the `disabled` leaves**
 
-In `src/digital_twin/scope/allowlist.py`, edit `_LOCAL_PORT_CONFIG_LEAVES` (line ~150) to add `disabled` to the attr list:
+The worktree's current `_LOCAL_PORT_CONFIG_LEAVES` (line ~154) is
+`("usage", "stp_edge", *_MODELED_USAGE_ATTRS)` — PR #14 deliberately dropped
+`dynamic_usage` from local (it is a port_config-only pointer; pinned out-of-scope
+by `tests/scope/test_field_gate.py`). **Add ONLY `disabled`; do NOT reintroduce
+`dynamic_usage`:**
 ```python
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
     f"local_port_config.*.{a}"
-    for a in ("usage", "dynamic_usage", "stp_edge", "disabled", *_MODELED_USAGE_ATTRS)
+    for a in ("usage", "stp_edge", "disabled", *_MODELED_USAGE_ATTRS)
 )
 ```
-And edit `_OVERWRITE_LEAVES` (line ~154):
+And edit `_OVERWRITE_LEAVES` (line ~157):
 ```python
 _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",
@@ -844,4 +925,11 @@ EOF
 
 **Placeholder scan:** No TBD/TODO. Two "NOTE to implementer" blocks point at *existing* harness/helpers to mirror (the sibling switch-ingest test and the pipeline e2e helper) rather than leaving code blank — necessary because those helpers' exact names live in files not fully quoted here; the surrounding test code is complete.
 
-**Type consistency:** `resolve_effective_ports` 4-tuple shape unchanged; `_overridable(pc_member)` used identically in `resolve_port_bases` and `resolve_effective_ports`; check uses `_ap_uplink_ports` (imported) and `clients_by_port`/`clients_by_ap`/`_nonap_peer_ports` consistently; finding codes `wired.port.admin_disable.{impact,edge,unattributable}` match between impl and tests; `ALL_WIRED_CHECKS` count 20→21 matches the verified current value.
+**Type consistency:** `resolve_effective_ports` 4-tuple shape unchanged; `_overridable(pc_member)` used identically in `resolve_port_bases` and `resolve_effective_ports`; check uses `_ap_uplink_ports` (imported) and `clients_by_port`/`clients_by_ap`/`_nonap_peer_links` (dict, P3) consistently; `_finding`/`_classify` fully annotated returning the `_Verdict` alias (P2b); finding codes `wired.port.admin_disable.{impact,edge,unattributable}` match between impl and tests; `ALL_WIRED_CHECKS` count 20→21 matches the verified current value.
+
+**Review-round corrections (baselined against the worktree `origin/main`, post-PR#14):**
+- **P1** — Task 4 adds ONLY `disabled` to `_LOCAL_PORT_CONFIG_LEAVES` (`("usage", "stp_edge", "disabled", *_MODELED_USAGE_ATTRS)`); `dynamic_usage` stays out (regression-pinned). The worktree resolver (`ports.py`) is unchanged by PR#14, so Task 1 keeps `_USAGE_OVERRIDE_ATTRS` as-is.
+- **P2** — Task 1 reconciles the cross-file old-behavior tests (`test_plan3_flow.py` → standalone port; `test_ingest_switch.py:717` → `no_local_overwrite: false`) plus a full-suite straggler sweep.
+- **P2b** — all `admin_disable.py` helpers are typed (`mypy src` strict-clean).
+- **P3** — `_nonap_peer_links` carries the `Link`; peer-only classification uses the link's confidence (one-sided LLDP → LOW), trunk uses HIGH config confidence; regression test added.
+- **OAS** — re-verified against the refreshed worktree OAS: `disabled` present on overwrite/local (closed), absent on port_config; `no_local_overwrite` on port_config. L0 unchanged. ✓
