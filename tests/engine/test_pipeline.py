@@ -386,6 +386,42 @@ def test_voip_removal_flags_active_phone_e2e():
     assert v.decision is Decision.REVIEW
 
 
+def test_mac_limit_lowered_below_clients_is_review():
+    # a port with 2 observed wired clients; lowering mac_limit to 1 -> REVIEW.
+    # CLIENTS_ACTIVE requires BOTH client keys in meta.fetched (ingest/clients.py);
+    # _raw() ships fetched=("devices",), so widen it or this hits .unverified.
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    raw0 = _raw()
+    raw = dc_replace(
+        raw0, devices=(sw_a,),
+        wired_clients=(
+            {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c1", "vlan": 10},
+            {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c2", "vlan": 10},
+        ),
+        meta=dc_replace(raw0.meta, fetched=("devices", "wired_clients", "wireless_clients")),
+    )
+    payload = {"local_port_config": {"ge-0/0/0": {"mac_limit": 1}}}
+    v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+                 provider=FakeProvider(raw=raw))
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.port.mac_limit_exceeded.exceeded" in codes, codes
+    assert v.decision is Decision.REVIEW
+
+
+def test_enable_qos_change_is_review_not_unknown():
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    raw = dc_replace(_raw(), devices=(sw_a,))
+    payload = {"local_port_config": {"ge-0/0/0": {"enable_qos": True}}}
+    v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+                 provider=FakeProvider(raw=raw))
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    assert any(c.startswith("wired.port.unmodeled_change") for c in {f.code for f in v.findings})
+    assert v.decision is Decision.REVIEW
+
+
 def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
     # pinning one end of a trunk uplink to a forced speed/duplex while the peer
     # autonegotiates must SIMULATE (REVIEW via autoneg_mismatch), not UNKNOWN.
