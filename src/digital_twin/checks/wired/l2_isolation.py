@@ -1,23 +1,24 @@
 """wired.l2.isolation — PHYSICAL severance of a member-bearing segment.
 
 Found in real use (2026-06-10): disabling a switch's only uplink blackholes the
-switch and everything on it, yet no per-vlan check could say so — the site had
-no modeled L3 exits (no IRBs; L3 on an SRX the LLDP view never linked in), so
-the exit-centric blackhole had nothing to anchor on. The severance itself needs
-no exit: it is a structural fact on the PHYSICAL L2 multigraph.
+switch and everything on it, yet no per-vlan check could say so.
 
 Per baseline connected component: a proposed component that is a STRICT subset
-of its baseline component (its reach shrank) and holds occupants — config
-member access ports, observed clients (wired or wireless), or WLAN-requiring
-APs — has been cut off from the rest of its former domain by the delta.
+of its baseline component (its reach shrank) and holds occupants — config member
+access ports, observed clients (wired or wireless), or WLAN-requiring APs — is a
+candidate. It is reported as severed UNLESS it still contains an exit anchor
+(`exit_anchor_nodes`: a gateway-role device or a routed IRB/SVI in the proposed
+state) — such a fragment keeps a real L3 exit and is not L2-isolated. When NO
+fragment of a split component retains an anchor (an exit-less domain, or one whose
+only exit the delta removed), every occupied strict-subset is flagged — the
+conservative, never-false-SAFE direction. Suppression is grounded-only: there is
+no size/majority heuristic, so the surviving majority is dropped only when it
+demonstrably keeps an exit.
 
-- Severity is terminal here (this layer only): ERROR at HIGH confidence,
-  WARNING below — confidence = MIN over the baseline boundary links the delta
-  severed (their existence is what proves the lost reach).
-- A pre-existing island (proposed nodes == baseline nodes) is unchanged
-  context, never a finding — e.g. an offline switch that was already alone.
-- Redundancy is respected by construction: graph components, not "an uplink
-  died" — one surviving physical path means no fragmentation, no finding.
+- Severity is terminal here (this layer only): ERROR at HIGH confidence, WARNING
+  below — confidence = MIN over the baseline boundary links the delta severed.
+- A pre-existing island (proposed nodes == baseline nodes) is unchanged context.
+- Redundancy is respected by construction: graph components, not "an uplink died".
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from collections import defaultdict
 import networkx as nx
 
 from digital_twin.analysis.delta_cause import causes_for_severance
+from digital_twin.analysis.exits import exit_anchor_nodes
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
@@ -82,6 +84,7 @@ class L2IsolationCheck:
         prop_comps = [frozenset(c) for c in nx.connected_components(ctx.proposed.l2_graph())]
         occupants = _occupants(ctx.baseline.ir)
         vc_root = vc_root_map(ctx.baseline.ir)
+        anchors = exit_anchor_nodes(ctx.proposed.ir)
 
         findings: list[Finding] = []
         worst = Status.PASS
@@ -89,6 +92,8 @@ class L2IsolationCheck:
             baseline_home = next((b for b in base_comps if fragment & b), None)
             if baseline_home is None or not (fragment < baseline_home):
                 continue  # new/unchanged/merged reach — nothing severed
+            if fragment & anchors:
+                continue  # fragment still holds a real L3 exit — not L2-isolated
             occupied = {n: occupants[n] for n in sorted(fragment) if occupants.get(n)}
             if not occupied:
                 continue  # an empty segment going dark is not client impact

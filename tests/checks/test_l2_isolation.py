@@ -11,7 +11,7 @@ from digital_twin.checks.wired.l2_isolation import L2IsolationCheck
 from digital_twin.contracts import Severity
 from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, Vlan, diff_ir
 from digital_twin.ir.provenance import Provenance, fact_meta
-from tests.factories import access_port, link, sw, trunk_port, wired_client
+from tests.factories import access_port, irb, link, sw, trunk_port, wired_client
 
 
 def _ir(*, uplink_disabled: bool, blind_peer: bool = False):
@@ -97,3 +97,93 @@ def test_preexisting_island_has_no_cause():
     ir = _ir(uplink_disabled=True)
     result = _run(ir, ir)
     assert result.findings == ()
+
+
+# --- Exit anchor guard: suppress survivors that retain L3 exits ----------------------
+
+
+def _anchored_ir(*, link_disabled: bool):
+    """core(IRB vlan10, member+client) --trunk link-- leaf(member+client).
+    Both sides are OCCUPIED; only `core` holds an exit anchor (its IRB)."""
+    b = IRBuilder()
+    b.add_device(sw("core")).add_device(sw("leaf"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_l3intf(irb("core", 10, subnet="10.0.10.0/24"))  # core is an exit anchor
+    c_acc = access_port("core", "cacc", 10)
+    l_acc = access_port("leaf", "lacc", 10)
+    b.add_port(c_acc).add_port(l_acc)
+    b.add_client(wired_client("cc:core", c_acc.id, vlan=10))
+    b.add_client(wired_client("cc:leaf", l_acc.id, vlan=10))
+    c_up = trunk_port("core", "up", tagged=(10,))
+    if link_disabled:
+        c_up = replace(c_up, disabled=True)
+    b.add_port(c_up)
+    b.add_port(trunk_port("leaf", "down", tagged=(10,)))
+    b.add_link(link("core:up", "leaf:down"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def test_exit_anchored_survivor_not_flagged_only_the_leaf():
+    # disabling the link severs leaf from core. core is occupied AND a strict
+    # subset of the baseline domain, but it keeps its IRB -> NOT flagged.
+    result = _run(_anchored_ir(link_disabled=False), _anchored_ir(link_disabled=True))
+    flagged = {n for f in result.findings for n in f.affected_entities}
+    assert "leaf" in flagged       # the cut-off, anchor-less side IS flagged
+    assert "core" not in flagged   # the survivor keeps an exit -> NOT flagged
+
+
+def test_both_sides_keep_an_exit_neither_flagged():
+    def _ir(*, link_disabled: bool):
+        b = IRBuilder()
+        b.add_device(sw("a")).add_device(sw("b"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+        b.add_l3intf(irb("a", 10, subnet="10.0.10.0/24"))
+        b.add_l3intf(irb("b", 10, subnet="10.0.11.0/24"))
+        a_acc, b_acc = access_port("a", "aacc", 10), access_port("b", "bacc", 10)
+        b.add_port(a_acc).add_port(b_acc)
+        b.add_client(wired_client("cc:a", a_acc.id, vlan=10))
+        b.add_client(wired_client("cc:b", b_acc.id, vlan=10))
+        a_up = trunk_port("a", "up", tagged=(10,))
+        if link_disabled:
+            a_up = replace(a_up, disabled=True)
+        b.add_port(a_up).add_port(trunk_port("b", "down", tagged=(10,)))
+        b.add_link(link("a:up", "b:down"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    result = _run(_ir(link_disabled=False), _ir(link_disabled=True))
+    assert result.status is Status.PASS
+    assert result.findings == ()
+
+
+def test_exit_removed_by_delta_flags_the_fragment():
+    # baseline: core keeps leaf reachable AND core has an IRB. proposed: the link
+    # is cut AND core's IRB is removed -> core retains NO proposed anchor ->
+    # core's occupied fragment is flagged (proposed-state anchors only).
+    baseline = _anchored_ir(link_disabled=False)
+    # rebuild `proposed` WITHOUT core's IRB
+    pb = IRBuilder()
+    pb.add_device(sw("core")).add_device(sw("leaf"))
+    pb.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    c_acc, l_acc = access_port("core", "cacc", 10), access_port("leaf", "lacc", 10)
+    pb.add_port(c_acc).add_port(l_acc)
+    pb.add_client(wired_client("cc:core", c_acc.id, vlan=10))
+    pb.add_client(wired_client("cc:leaf", l_acc.id, vlan=10))
+    pb.add_port(replace(trunk_port("core", "up", tagged=(10,)), disabled=True))
+    pb.add_port(trunk_port("leaf", "down", tagged=(10,)))
+    pb.add_link(link("core:up", "leaf:down"))
+    pb.with_capability(IRCapability.WIRED_L2)
+    result = _run(baseline, pb.build())
+    flagged = {n for f in result.findings for n in f.affected_entities}
+    assert "core" in flagged   # IRB gone in proposed -> no anchor -> flagged
+    assert "leaf" in flagged
+
+
+def test_exitless_only_uplink_still_severs_member_side():
+    # P1 guard / regression: NO exits modeled anywhere; the stranded member side
+    # (with all the occupants) is still flagged even though the upstream stub is
+    # empty. A size/majority heuristic would have false-SAFE'd this.
+    result = _run(_ir(uplink_disabled=False), _ir(uplink_disabled=True))
+    flagged = {n for f in result.findings for n in f.affected_entities}
+    assert "A" in flagged
