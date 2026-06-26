@@ -99,7 +99,7 @@ def test_voip_sets_voice_vlan_and_access_membership():
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py -k voip tests/adapters/mist/test_ingest_switch.py -k voip -q`
+Run: `uv run pytest tests/adapters/mist/test_ingest_ports.py tests/adapters/mist/test_ingest_switch.py -k "voip or voice_vlan" -q`
 Expected: FAIL (`Port` has no `voice_vlan`; voip applied from port_config; no voice membership).
 
 - [ ] **Step 3: Resolver — move voip to local+usage; add `_MISC_ATTRS`; `voice_vlan_of`**
@@ -253,7 +253,7 @@ def test_voip_network_in_scope_usage_and_local_not_port_config():
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `uv run pytest tests/checks -k voice_vlan_removed tests/scope/test_allowlist.py -k voip -q`
+Run: `uv run pytest tests/checks/test_client_impact.py tests/scope/test_allowlist.py -k "voice_vlan_removed or voip" -q`
 Expected: FAIL (no `vlan_removed` impact; voip not allowlisted).
 
 - [ ] **Step 3: Extend `client_impact._impact_of`**
@@ -598,7 +598,8 @@ git -C /Users/tmunzer/4_dev/digital-twin/.claude/worktrees/sp4-misc add \
   src/digital_twin/ir/entities.py src/digital_twin/adapters/mist/ingest/switch.py \
   src/digital_twin/checks/wired/mac_limit.py src/digital_twin/checks/wired/__init__.py \
   tests/test_public_api.py src/digital_twin/scope/allowlist.py \
-  tests/checks/test_mac_limit.py tests/scope/test_allowlist.py tests/adapters/mist/test_ingest_switch.py
+  tests/checks/test_mac_limit.py tests/scope/test_allowlist.py tests/scope/test_field_gate.py \
+  tests/adapters/mist/test_ingest_switch.py
 git -C /Users/tmunzer/4_dev/digital-twin/.claude/worktrees/sp4-misc commit -m "$(cat <<'EOF'
 feat: wired.port.mac_limit_exceeded — lowered MAC cap drops connected clients
 
