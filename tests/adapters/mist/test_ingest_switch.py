@@ -1478,3 +1478,29 @@ def test_port_auth_normalization_and_none_when_default():
 def test_reauth_65000_int_equals_str():
     from digital_twin.adapters.mist.ingest.switch import _reauth
     assert _reauth(65000) == _reauth("65000") == "65000"
+
+
+def test_voip_sets_voice_vlan_and_access_membership():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 30}},
+        "port_usages": {
+            "phone": {"mode": "access", "port_network": "corp", "voip_network": "voice"},
+            "up": {"mode": "trunk", "all_networks": True, "voip_network": "voice"},
+        },
+        "port_config": {"ge-0/0/1": {"usage": "phone"}, "ge-0/0/2": {"usage": "up"}},
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+    from digital_twin.ir.indexes import access_ports_by_vlan
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff, device_effective={"aa0000000001": eff}, builder=IRBuilder())
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    acc = ir.ports["aa0000000001:ge-0/0/1"]
+    assert acc.voice_vlan == 30 and 30 in acc.tagged_vlans   # access: voice folded + member
+    members30 = {p.id for p in access_ports_by_vlan(ir).get(30, [])}
+    assert "aa0000000001:ge-0/0/1" in members30              # access port is a MEMBER of voice vlan
+    trunk = ir.ports["aa0000000001:ge-0/0/2"]
+    assert trunk.voice_vlan == 30                            # trunk resolves voice...
+    assert "aa0000000001:ge-0/0/2" not in members30          # ...but is NOT an endpoint member

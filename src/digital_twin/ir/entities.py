@@ -187,6 +187,7 @@ class Port:
     mode: PortMode
     native_vlan: int | None = None
     tagged_vlans: tuple[int, ...] = ()
+    voice_vlan: int | None = None  # SP4: resolved voip_network (voice VLAN), tagged
     # CONFIG intent (L1, SP2): concrete speed enum / duplex. None = unset/auto —
     # the IR NEVER stores "auto" (ingest normalizes "auto"/absent to None), so
     # forced ⇔ autoneg_disabled and speed is not None and duplex is not None.

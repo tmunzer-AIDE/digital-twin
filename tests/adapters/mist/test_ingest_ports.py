@@ -308,3 +308,26 @@ def test_auth_resolves_from_usage_and_local_not_port_config():
     assert r["ge-0/0/1"][0].get("port_auth") == "dot1x"          # from usage
     assert r["ge-0/0/2"][0].get("port_auth") is None             # port_config auth ignored
     assert r["ge-0/0/3"][0].get("enable_mac_auth") is True       # from local
+
+
+def test_voip_resolves_from_usage_not_port_config():
+    eff = _eff(
+        port_usages={"voice": {"mode": "access", "port_network": "corp", "voip_network": "voice"}},
+        port_config={"ge-0/0/1": {"usage": "voice"},
+                     "ge-0/0/2": {"usage": "office", "voip_network": "voice"}},  # pc voip ignored
+    )
+    # NETWORKS in this fixture: corp=10, voice=30
+    u1, _ = _resolved(eff)["ge-0/0/1"]
+    assert u1.get("voip_network") == "voice"          # from usage
+    u2, _ = _resolved(eff)["ge-0/0/2"]
+    assert u2.get("voip_network") is None              # port_config voip NOT applied
+
+
+def test_voice_vlan_of_resolution_and_unresolvable():
+    from digital_twin.adapters.mist.ingest.ports import voice_vlan_of
+    nets = {"voice": {"vlan_id": 30}, "bad": {"vlan_id": "{{voice_vlan}}"}, "none": {}}
+    assert voice_vlan_of({"voip_network": "voice"}, nets) == 30
+    assert voice_vlan_of({"voip_network": "bad"}, nets) is None    # templated -> None, no crash
+    assert voice_vlan_of({"voip_network": "none"}, nets) is None   # no vlan_id -> None
+    assert voice_vlan_of({"voip_network": "absent"}, nets) is None
+    assert voice_vlan_of({}, nets) is None

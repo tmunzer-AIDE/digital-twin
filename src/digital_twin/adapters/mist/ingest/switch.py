@@ -50,6 +50,7 @@ from .ports import (
     resolve_port_bases,
     usage_definition,
     usage_vlans,
+    voice_vlan_of,
 )
 
 _Json = Mapping[str, Any]
@@ -856,6 +857,9 @@ class SwitchIngester:
             else:
                 meta = self._meta_for(resolution, usage_name)
             native, tagged = usage_vlans(usage, networks)
+            voice = voice_vlan_of(usage, networks)
+            if voice is not None and voice != native:
+                tagged = tuple(sorted(set(tagged) | {voice}))
             mode = PortMode.TRUNK if usage.get("mode") == "trunk" else PortMode.ACCESS
             row = stat_rows.get(member)
             l1_speed, l1_duplex, l1_autoneg = _l1_config(usage)
@@ -869,6 +873,7 @@ class SwitchIngester:
                     mode=mode,
                     native_vlan=native,
                     tagged_vlans=tagged,
+                    voice_vlan=voice,
                     profile=usage_name,
                     speed=l1_speed,
                     duplex=l1_duplex,
