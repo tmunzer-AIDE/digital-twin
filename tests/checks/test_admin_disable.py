@@ -123,3 +123,57 @@ def test_caused_by_points_at_the_port():
     f = r.findings[0]
     assert f.caused_by and f.caused_by[0].ref.kind == "port"
     assert f.caused_by[0].ref.id == "S:ge-0/0/1"
+
+
+def _trunk_ir(*, disabled, is_uplink, with_peer_link, peer_prov=Provenance.LLDP_TWO_SIDED):
+    """S:up is a TRUNK with no AP and no wired clients. Optionally a peer link to
+    a 2nd switch (at `peer_prov`'s confidence), and an observed is_uplink bit."""
+    b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
+    up = Port(id="S:up", device_id="S", name="up", mode=PortMode.TRUNK,
+              disabled=disabled, is_uplink=is_uplink)
+    b.add_port(up)
+    if with_peer_link:
+        b.add_port(Port(id="T:down", device_id="T", name="down", mode=PortMode.TRUNK))
+        b.add_link(link("S:up", "T:down", prov=peer_prov))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def test_unconnected_non_uplink_trunk_is_info():
+    # is_uplink False, no peer link, no AP, no clients -> demoted to INFO
+    res = _run(_trunk_ir(disabled=False, is_uplink=False, with_peer_link=False),
+               _trunk_ir(disabled=True, is_uplink=False, with_peer_link=False))
+    f = next(f for f in res.findings if f.evidence.get("port") == "S:up")
+    assert f.severity is Severity.INFO
+    assert f.code == "wired.port.admin_disable.edge"
+
+
+def test_uplink_true_trunk_stays_warning():
+    res = _run(_trunk_ir(disabled=False, is_uplink=True, with_peer_link=False),
+               _trunk_ir(disabled=True, is_uplink=True, with_peer_link=False))
+    f = next(f for f in res.findings if f.evidence.get("port") == "S:up")
+    assert f.severity is Severity.WARNING
+
+
+def test_unknown_uplink_trunk_stays_warning_conservative():
+    # is_uplink None (absent bit) -> conservative WARNING, never demoted
+    res = _run(_trunk_ir(disabled=False, is_uplink=None, with_peer_link=False),
+               _trunk_ir(disabled=True, is_uplink=None, with_peer_link=False))
+    f = next(f for f in res.findings if f.evidence.get("port") == "S:up")
+    assert f.severity is Severity.WARNING
+
+
+def test_linked_trunk_warns_at_link_confidence_even_if_not_uplink():
+    # a modeled ONE-SIDED peer link -> WARNING at the LINK's confidence (LOW),
+    # NOT demoted, even though is_uplink is False. The LOW assertion is what proves
+    # the peer-link branch runs FIRST: the old blanket trunk branch returned _HIGH,
+    # so a two-sided (HIGH) link could not distinguish the two implementations.
+    res = _run(
+        _trunk_ir(disabled=False, is_uplink=False, with_peer_link=True,
+                  peer_prov=Provenance.LLDP_ONE_SIDED),
+        _trunk_ir(disabled=True, is_uplink=False, with_peer_link=True,
+                  peer_prov=Provenance.LLDP_ONE_SIDED),
+    )
+    f = next(f for f in res.findings if f.evidence.get("port") == "S:up")
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.LOW
