@@ -43,14 +43,14 @@
 - Test: `tests/ir/test_port_auth.py` (new)
 
 **Interfaces:**
-- Produces: `PortAuth` (frozen dataclass, 14 fields, defaults = OAS defaults); `Port.auth: PortAuth | None = None`; `requires_auth(a: PortAuth | None) -> bool`; `tightens(old: PortAuth | None, new: PortAuth | None) -> bool`.
+- Produces: `PortAuth` (frozen dataclass, 14 fields, defaults = OAS defaults); `Port.auth: PortAuth | None = None`; `requires_auth(a) -> bool`; `admitted_methods(a) -> frozenset[str] | None`; `_fallbacks(a) -> frozenset[str]`; `tightens(old, new) -> bool` (auth newly required OR newly mac-auth-only OR a fallback network removed).
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `tests/ir/test_port_auth.py`:
 
 ```python
-from digital_twin.ir.entities import PortAuth, requires_auth, tightens
+from digital_twin.ir.entities import PortAuth, admitted_methods, requires_auth, tightens
 
 
 def test_default_portauth_equality():
@@ -65,14 +65,37 @@ def test_requires_auth():
     assert requires_auth(PortAuth(mac_auth_only=True)) is True
 
 
+def test_admitted_methods():
+    assert admitted_methods(None) is None              # no auth -> all admitted
+    assert admitted_methods(PortAuth()) is None
+    assert admitted_methods(PortAuth(port_auth="dot1x")) == frozenset({"dot1x"})
+    assert admitted_methods(PortAuth(port_auth="dot1x", mac_auth=True)) == frozenset({"dot1x", "mac"})
+    # mac-auth-only rejects dot1x supplicants
+    assert admitted_methods(PortAuth(port_auth="dot1x", mac_auth_only=True)) == frozenset({"mac"})
+
+
 def test_tightens_newly_requires_auth():
-    # open -> dot1x: admission tightened
     assert tightens(None, PortAuth(port_auth="dot1x")) is True
     assert tightens(PortAuth(), PortAuth(mac_auth=True)) is True
     # already required -> still required: not a tightening (no new requirement)
     assert tightens(PortAuth(port_auth="dot1x"), PortAuth(port_auth="dot1x", persist_mac=True)) is False
     # loosened: dropped auth
     assert tightens(PortAuth(port_auth="dot1x"), None) is False
+
+
+def test_tightens_mac_auth_only_enabled():
+    # dot1x -> dot1x + mac_auth_only: dot1x supplicants now rejected -> tightened
+    assert tightens(PortAuth(port_auth="dot1x"),
+                    PortAuth(port_auth="dot1x", mac_auth_only=True)) is True
+
+
+def test_tightens_fallback_removed():
+    # losing a guest/server-fail/server-reject fallback is a tightening
+    assert tightens(PortAuth(port_auth="dot1x", guest_network="guest"),
+                    PortAuth(port_auth="dot1x")) is True
+    # gaining a fallback is NOT a tightening
+    assert tightens(PortAuth(port_auth="dot1x"),
+                    PortAuth(port_auth="dot1x", guest_network="guest")) is False
 
 
 def test_persist_mac_only_is_non_default():
@@ -120,10 +143,40 @@ def requires_auth(a: PortAuth | None) -> bool:
     return a is not None and (a.port_auth == "dot1x" or a.mac_auth or a.mac_auth_only)
 
 
+def admitted_methods(a: PortAuth | None) -> frozenset[str] | None:
+    """The auth methods the port admits. None = no auth required (all clients
+    admitted). Else a subset of {"dot1x", "mac"}."""
+    if not requires_auth(a):
+        return None
+    assert a is not None
+    m: set[str] = set()
+    if a.mac_auth or a.mac_auth_only:
+        m.add("mac")
+    if a.port_auth == "dot1x" and not a.mac_auth_only:
+        m.add("dot1x")
+    return frozenset(m)
+
+
+def _fallbacks(a: PortAuth | None) -> frozenset[str]:
+    if a is None:
+        return frozenset()
+    return frozenset(
+        n for n in (a.guest_network, a.server_fail_network, a.server_reject_network) if n
+    )
+
+
 def tightens(old: PortAuth | None, new: PortAuth | None) -> bool:
-    """Admission got stricter: auth is now required where it was not — clients
-    that did not authenticate before would now have to."""
-    return requires_auth(new) and not requires_auth(old)
+    """Admission became more restrictive in a way that could block currently-
+    admitted clients: auth newly required, OR became MAC-auth-only (dot1x
+    supplicants now rejected), OR a fallback network (guest/server_fail/
+    server_reject) was removed."""
+    new_only = new.mac_auth_only if new is not None else False
+    old_only = old.mac_auth_only if old is not None else False
+    return (
+        (requires_auth(new) and not requires_auth(old))
+        or (new_only and not old_only)
+        or bool(_fallbacks(old) - _fallbacks(new))
+    )
 ```
 
 Add the field to `Port` (next to the other config-intent fields, e.g. after `disabled`):
@@ -220,7 +273,10 @@ Expected: FAIL (auth not threaded; `_port_auth`/`_reauth` undefined).
 
 - [ ] **Step 3: Thread `_AUTH_ATTRS` through the resolver (local only)**
 
-In `src/digital_twin/adapters/mist/ingest/ports.py`, add after `_LOCAL_ATTRS`:
+In `src/digital_twin/adapters/mist/ingest/ports.py`, **replace the existing
+`_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled")` line with these two
+definitions, IN THIS ORDER** (`_AUTH_ATTRS` MUST be defined before `_LOCAL_ATTRS`
+references it, or the module import `NameError`s):
 
 ```python
 # Wired-auth attrs (SP3): OAS-present on local_port_config + port_usages ONLY
@@ -234,9 +290,6 @@ _AUTH_ATTRS = (
     "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
     "persist_mac", "reauth_interval",
 )
-```
-And change `_LOCAL_ATTRS` to splice them in:
-```python
 _LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled", *_AUTH_ATTRS)
 ```
 
@@ -330,7 +383,7 @@ EOF
 - Test: `tests/checks/test_auth_access_change.py` (new)
 
 **Interfaces:**
-- Consumes: `Port.auth`, `requires_auth`, `tightens`; `clients_by_port`; `ctx.baseline.ir.client_enrichment.get(client.id)`; `CheckContext`, `min_confidence`.
+- Consumes: `Port.auth`, `admitted_methods`, `tightens` (entities); `Client`, `PortAuth` (types); `clients_by_port`; `ctx.baseline.ir.client_enrichment.get(client.id)`; `CheckContext`, `min_confidence`.
 - Produces: `AuthAccessChangeCheck` (`id="wired.auth.access_change"`); codes `.policy_change`, `.clients_at_risk`.
 
 - [ ] **Step 1: Write the failing check tests**
@@ -409,6 +462,40 @@ def test_no_enrichment_still_reviews_floor_only():
     assert r.status is Status.WARN
     # degrades to the floor; no clients_at_risk without enrichment evidence
     assert all(f.code == "wired.auth.access_change.policy_change" for f in r.findings)
+
+
+def test_base_only_port_auth_loss_surfaces():
+    # a port present ONLY in baseline (e.g. its local port_auth entry was deleted)
+    # must still surface the auth LOSS — union iteration, missing side = None
+    base = _ir(PortAuth(port_auth="dot1x"))
+    prop = IRBuilder().add_device(sw("S")).with_capability(IRCapability.WIRED_L2).build()
+    r = _run(base, prop)
+    assert r.status is Status.WARN
+    assert r.findings[0].code == "wired.auth.access_change.policy_change"
+
+
+def test_mac_auth_only_drops_dot1x_client():
+    # dot1x -> mac-auth-only: a client authenticated via dot1x is no longer
+    # admitted (method dropped) -> escalates, capped at REVIEW
+    c = wired_client("dd:01", "S:ge-0/0/1", vlan=10)
+    enrich = ClientEnrichment(auth_state="authenticated", auth_method="dot1x")
+    base = _ir(PortAuth(port_auth="dot1x"), client=c, enrich=enrich)
+    prop = _ir(PortAuth(port_auth="dot1x", mac_auth_only=True), client=c, enrich=enrich)
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code == "wired.auth.access_change.clients_at_risk")
+    assert "dd:01" in f.affected_entities
+    assert f.severity is Severity.WARNING and r.status is Status.WARN  # capped
+
+
+def test_guest_removal_with_guest_client_escalates():
+    # removing a guest fallback while a guest-state client is connected -> at risk
+    c = wired_client("ee:01", "S:ge-0/0/1", vlan=10)
+    enrich = ClientEnrichment(auth_state="guest")
+    base = _ir(PortAuth(port_auth="dot1x", guest_network="guest"), client=c, enrich=enrich)
+    prop = _ir(PortAuth(port_auth="dot1x"), client=c, enrich=enrich)
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code == "wired.auth.access_change.clients_at_risk")
+    assert "ee:01" in f.affected_entities
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -437,8 +524,15 @@ from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
-from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff, min_confidence
-from digital_twin.ir.entities import requires_auth, tightens
+from digital_twin.ir import (
+    Capability,
+    Confidence,
+    ConfidenceLevel,
+    IRCapability,
+    IRDiff,
+    min_confidence,
+)
+from digital_twin.ir.entities import Client, PortAuth, admitted_methods, tightens
 from digital_twin.ir.indexes import clients_by_port
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -449,6 +543,16 @@ _INFERRED = Confidence(
 # observed auth_state values that mean a client is NOT currently authenticated,
 # so a newly-required auth would put it at risk
 _UNAUTH_STATES = frozenset({"unauthenticated", "unauthorized", "rejected", "failed", "guest"})
+
+
+def _norm_method(observed: str | None) -> str:
+    """Normalize an observed ClientEnrichment.auth_method to {"dot1x","mac",""}."""
+    s = (observed or "").lower()
+    if "dot1x" in s or "802.1" in s:
+        return "dot1x"
+    if "mac" in s:
+        return "mac"
+    return ""
 
 
 class AuthAccessChangeCheck:
@@ -467,10 +571,14 @@ class AuthAccessChangeCheck:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         wired = clients_by_port(base_ir)
         findings: list[Finding] = []
-        for pid, prop_port in prop_ir.ports.items():
+        # union of port ids: a base-only port (e.g. a local-only port whose
+        # port_auth-bearing entry was deleted) must surface its auth LOSS too —
+        # the missing side is None.
+        for pid in sorted(base_ir.ports.keys() | prop_ir.ports.keys()):
             base_port = base_ir.ports.get(pid)
+            prop_port = prop_ir.ports.get(pid)
             old = base_port.auth if base_port is not None else None
-            new = prop_port.auth
+            new = prop_port.auth if prop_port is not None else None
             if old == new:
                 continue  # no auth-surface change
             at_risk = self._clients_at_risk(ctx, pid, old, new, wired)
@@ -485,20 +593,34 @@ class AuthAccessChangeCheck:
             reasoning="compared per-port wired-auth surface baseline vs proposed",
         )
 
-    def _clients_at_risk(self, ctx, pid, old, new, wired) -> list[str]:
-        """Currently-connected wired clients observed un-authenticated, when the
-        change newly requires auth. Enrich/cap only — absence degrades to []."""
+    def _clients_at_risk(
+        self,
+        ctx: CheckContext,
+        pid: str,
+        old: PortAuth | None,
+        new: PortAuth | None,
+        wired: dict[str, list[Client]],
+    ) -> list[str]:
+        """Currently-connected wired clients a tightening would block: observed
+        un-authenticated (auth newly required), OR authenticated by a method the
+        new config no longer admits (e.g. a dot1x client when the port moves to
+        MAC-auth-only). Enrich/cap only — absence of enrichment degrades to []."""
         if not tightens(old, new):
             return []
+        admitted = admitted_methods(new)  # None = no auth required (no one blocked by method)
         out: list[str] = []
         for c in wired.get(pid, []):
             ce = ctx.baseline.ir.client_enrichment.get(c.id)
-            state = (ce.auth_state or "").lower() if ce is not None else ""
-            if state in _UNAUTH_STATES:
+            if ce is None:
+                continue  # no observed evidence -> floor only
+            unauth = (ce.auth_state or "").lower() in _UNAUTH_STATES
+            method = _norm_method(ce.auth_method)
+            method_dropped = admitted is not None and method != "" and method not in admitted
+            if unauth or method_dropped:
                 out.append(c.mac)
         return out
 
-    def _finding(self, ctx, pid, at_risk: list[str]) -> Finding:
+    def _finding(self, ctx: CheckContext, pid: str, at_risk: list[str]) -> Finding:
         cause = tuple(c for c in (ctx.delta_index.cause("port", pid),) if c is not None)
         if at_risk:
             return Finding(
@@ -733,7 +855,11 @@ Add to `tests/engine/test_pipeline.py`. The delta enables `port_auth=dot1x` on a
 def test_local_port_auth_change_is_simulated_not_unknown():
     # enabling dot1x via local_port_config on a configured access port must
     # SIMULATE (REVIEW via wired.auth.access_change), not return UNKNOWN.
-    sw_a = {**SWITCH, "port_config": {**SWITCH["port_config"], "ge-0/0/0": {"usage": "office"}}}
+    # ge-0/0/0 must be locally-overridable up front (no_local_overwrite defaults
+    # True, which would discard the local auth), so the local port_auth
+    # deterministically reaches the resolver/check.
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
     raw = dc_replace(_raw(), devices=(sw_a,))
     payload = {"local_port_config": {"ge-0/0/0": {"port_auth": "dot1x"}}}
     v = simulate(
@@ -746,7 +872,7 @@ def test_local_port_auth_change_is_simulated_not_unknown():
     assert v.decision is Decision.REVIEW, v.decision
 ```
 
-NOTE: use this file's real helpers (SP1/SP2 added device-update e2e tests — copy that scaffold). `SETTING`'s `office` usage is access/corp. `ge-0/0/0` is already in `SWITCH["port_config"]` as a configured port; enabling `port_auth` via `local_port_config` requires the port to be locally-overridable — if `office`/port_config blocks it, add `"no_local_overwrite": False` to that port_config entry in `sw_a` (and keep baseline parity so the flip itself isn't the only change). Verify the gate accepts `local_port_config.*.port_auth` (Task 4) and the resolver applies it (Task 2).
+NOTE: use this file's real helpers (SP1/SP2 added device-update e2e tests — copy that scaffold). `SETTING`'s `office` usage is access/corp. The `no_local_overwrite: False` above is present in BOTH baseline (`sw_a`) and the effective proposed (the payload only adds `local_port_config`, leaving the port_config entry intact), so the only effective change is the added `local_port_config.ge-0/0/0.port_auth` — which the gate accepts (Task 4) and the resolver applies (Task 2).
 
 - [ ] **Step 2: Run to verify it fails for the right reason**
 
@@ -809,4 +935,11 @@ EOF
 
 **Placeholder scan:** No TBD/TODO. The Task-5 NOTE points at the real SP1/SP2 e2e scaffold to mirror; surrounding code complete.
 
-**Type consistency:** `PortAuth` 14 fields + defaults identical across entities.py / `_port_auth` / tests; `Port.auth: PortAuth | None`; `requires_auth`/`tightens` signatures consistent; finding codes `wired.auth.access_change.{policy_change,clients_at_risk}` match impl↔tests; `_AUTH_ATTRS` (14) identical in ports.py and allowlist.py; `ALL_WIRED_CHECKS` 22→23 matches the SP2 count; `_reauth` returns `str | None` everywhere.
+**Type consistency:** `PortAuth` 14 fields + defaults identical across entities.py / `_port_auth` / tests; `Port.auth: PortAuth | None`; `requires_auth`/`admitted_methods`/`_fallbacks`/`tightens` signatures consistent and fully annotated; the check's `run` (union iteration), `_clients_at_risk(ctx, pid, old, new, wired) -> list[str]`, and `_finding(ctx, pid, at_risk) -> Finding` are fully annotated (mypy-strict on src); finding codes `wired.auth.access_change.{policy_change,clients_at_risk}` match impl↔tests; `_AUTH_ATTRS` (14) identical in ports.py and allowlist.py and defined ABOVE `_LOCAL_ATTRS`; `ALL_WIRED_CHECKS` 22→23 matches the verified count; `_reauth` returns `str | None` everywhere.
+
+**Review-round fixes:**
+- **P1** — check iterates `base_ir.ports.keys() | prop_ir.ports.keys()` (base-only auth loss surfaces); regression `test_base_only_port_auth_loss_surfaces`.
+- **P1** — `_AUTH_ATTRS` defined before `_LOCAL_ATTRS` (no import NameError).
+- **P1** — `_clients_at_risk`/`_finding` fully type-annotated (mypy-strict).
+- **P2** — `tightens` broadened (mac-auth-only / fallback removal) + `admitted_methods`/`_norm_method` method-drop escalation; tests `test_tightens_mac_auth_only_enabled`, `test_tightens_fallback_removed`, `test_mac_auth_only_drops_dot1x_client`, `test_guest_removal_with_guest_client_escalates`.
+- **P3** — e2e sets `no_local_overwrite: False` up front so local auth deterministically reaches the check.
