@@ -106,13 +106,17 @@ on `voip_network`).
   (local); usage-level via `usage_definition`. **Not** `_USAGE_OVERRIDE_ATTRS`
   (absent from `port_config`).
 - **Check `wired.port.mac_limit_exceeded`** — **`requires()` returns `{WIRED_L2}`
-  ONLY** (like `AuthAccessChangeCheck`), then inspects `IRCapability.CLIENTS_ACTIVE`
-  in `ctx.proposed.capabilities` INTERNALLY. (If it required `CLIENTS_ACTIVE`, the
-  registry would short-circuit to INSUFFICIENT_DATA when client data is absent —
-  `checks/registry.py` — and the `.unverified` finding below would never emit.)
-  Per port whose `mac_limit` the delta changed, with an explicit **client-data
-  honesty boundary** (where "active wired-client data present" means
-  `IRCapability.CLIENTS_ACTIVE in ctx.proposed.capabilities`):
+  ONLY** (like `AuthAccessChangeCheck`), then inspects `CLIENTS_ACTIVE` INTERNALLY.
+  (If it required `CLIENTS_ACTIVE`, the registry would short-circuit to
+  INSUFFICIENT_DATA when client data is absent — `checks/registry.py` — and the
+  `.unverified` finding below would never emit.) Per port whose `mac_limit` the
+  delta changed, with an explicit **client-data honesty boundary**. The check
+  counts BASELINE (currently-connected) clients, so "active wired-client data
+  present" requires the capability on BOTH sides:
+  `IRCapability.CLIENTS_ACTIVE in base_ir.capabilities and ... in
+  prop_ir.capabilities` (the `dhcp_path` / `ospf_withdrawal` pattern). A baseline
+  lacking the capability is NOT "known zero clients" → treat as data-absent
+  (`.unverified`), never a silent pass:
   - `prop.mac_limit` is `None` (unlimited), or merely RAISED vs baseline →
     **silent** (a looser/removed cap cannot drop anyone).
   - `prop.mac_limit` is an **unresolved token** (and changed) → **WARNING→REVIEW**
@@ -180,10 +184,12 @@ are documented properties the unknown-attribute walker accepts).
   → stable token (NOT None).
 - **mac_limit_exceeded:** check `requires()` is `{WIRED_L2}` only (a unit asserts
   CLIENTS_ACTIVE is NOT required, so it isn't registry-short-circuited); concrete
-  over-limit with CLIENTS_ACTIVE → REVIEW(.exceeded); observed ≤ limit with
-  CLIENTS_ACTIVE → silent; restrictive/new limit WITHOUT CLIENTS_ACTIVE →
-  REVIEW(.unverified); unresolved value → REVIEW(.unresolved); raised/unlimited →
-  silent; never ERROR/UNSAFE.
+  over-limit with CLIENTS_ACTIVE on both sides → REVIEW(.exceeded); observed ≤
+  limit with CLIENTS_ACTIVE on both sides → silent; restrictive/new limit with
+  CLIENTS_ACTIVE missing on EITHER side → REVIEW(.unverified) — **incl. a pin where
+  baseline lacks the capability but proposed has it** (must NOT silently pass);
+  unresolved value → REVIEW(.unresolved); raised/unlimited → silent; never
+  ERROR/UNSAFE.
 - **misc:** any of the 3 knobs changes → REVIEW(.unmodeled); `Port.misc=None`
   ⇔ all-default (a lone `enable_qos` flip wakes it); never SAFE.
 - **Field-gate pins:** each of the 5 in scope on its OAS maps; `port_config.*` and
