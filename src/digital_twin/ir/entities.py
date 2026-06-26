@@ -161,16 +161,22 @@ def _fallbacks(a: PortAuth | None) -> frozenset[str]:
 
 def tightens(old: PortAuth | None, new: PortAuth | None) -> bool:
     """Admission became more restrictive in a way that could block currently-
-    admitted clients: auth newly required, OR became MAC-auth-only (dot1x
-    supplicants now rejected), OR a fallback network (guest/server_fail/
-    server_reject) was removed."""
-    new_only = new.mac_auth_only if new is not None else False
-    old_only = old.mac_auth_only if old is not None else False
-    return (
-        (requires_auth(new) and not requires_auth(old))
-        or (new_only and not old_only)
-        or bool(_fallbacks(old) - _fallbacks(new))
-    )
+    admitted clients: a previously-admitted auth method is no longer admitted,
+    OR a fallback network (guest/server_fail/server_reject) was removed.
+
+    `admitted_methods` returns None when no auth is required (the universe — all
+    clients admitted). The method test is a set-DIFFERENCE, not strict-subset, so
+    it covers auth newly required (universe -> a concrete set), MAC-auth-only
+    (a swap {dot1x} -> {mac}: dot1x clients rejected even though mac is newly
+    admitted), and a single method dropped ({dot1x,mac} -> {dot1x})."""
+    old_m, new_m = admitted_methods(old), admitted_methods(new)
+    if new_m is None:
+        narrowed = False              # new admits everyone -> nothing removed
+    elif old_m is None:
+        narrowed = True               # old admitted everyone -> new restricts
+    else:
+        narrowed = bool(old_m - new_m)  # a previously-admitted method is gone
+    return narrowed or bool(_fallbacks(old) - _fallbacks(new))
 
 
 @dataclass(frozen=True)

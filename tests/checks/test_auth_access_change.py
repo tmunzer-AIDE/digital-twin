@@ -103,3 +103,16 @@ def test_guest_removal_with_guest_client_escalates():
     r = _run(base, prop)
     f = next(x for x in r.findings if x.code == "wired.auth.access_change.clients_at_risk")
     assert "ee:01" in f.affected_entities
+
+
+def test_dropping_mac_auth_drops_mac_client():
+    # dot1x+mac -> dot1x removes MAC-auth admission; a connected mac-auth client
+    # is now at risk even though auth was already required (not mac_auth_only)
+    c = wired_client("ff:01", "S:ge-0/0/1", vlan=10)
+    enrich = ClientEnrichment(auth_state="authenticated", auth_method="mac_auth")
+    base = _ir(PortAuth(port_auth="dot1x", mac_auth=True), client=c, enrich=enrich)
+    prop = _ir(PortAuth(port_auth="dot1x"), client=c, enrich=enrich)
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code == "wired.auth.access_change.clients_at_risk")
+    assert "ff:01" in f.affected_entities
+    assert f.severity is Severity.WARNING and r.status is Status.WARN  # capped

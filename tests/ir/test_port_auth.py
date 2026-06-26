@@ -50,6 +50,18 @@ def test_tightens_fallback_removed():
                     PortAuth(port_auth="dot1x", guest_network="guest")) is False
 
 
+def test_tightens_admitted_method_removed():
+    # dot1x+mac -> dot1x drops MAC-auth admission (strict subset) -> tightened,
+    # even though auth was already required and it's not mac_auth_only
+    assert tightens(PortAuth(port_auth="dot1x", mac_auth=True),
+                    PortAuth(port_auth="dot1x")) is True
+    # the reverse (gaining mac) is a loosening, not a tightening
+    assert tightens(PortAuth(port_auth="dot1x"),
+                    PortAuth(port_auth="dot1x", mac_auth=True)) is False
+    # dropping auth entirely is a loosening (all clients admitted again)
+    assert tightens(PortAuth(port_auth="dot1x"), None) is False
+
+
 def test_persist_mac_only_is_non_default():
     # the false-SAFE guard: a persist_mac-only surface is NOT equal to the
     # all-default surface, so a change to it is detectable downstream
