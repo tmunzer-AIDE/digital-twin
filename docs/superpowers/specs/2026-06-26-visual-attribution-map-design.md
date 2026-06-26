@@ -56,6 +56,8 @@ consumes the serialized form directly — no consumer-side inference over
 VisualMap = { view_id -> { entity_key -> VisualEntry } }
 
 VisualEntry:
+  kind:     "device" | "vlan" | "port" | "link" | "intf"   # structured — no string-parsing needed
+  id:       str                            # the raw entity id (may contain colons, e.g. s1:mge-0/0/0)
   tier:     "origin" | "affected"          # v1 — see Deferred for primary/secondary
   severity: "info" | "warning" | "error" | "critical"
   findings: tuple[FindingRef, ...]         # finding instances touching this (view, entity)
@@ -90,6 +92,15 @@ using the same `_mac` / `node_for` VC-folding normalization already in
 nodes the current `_l3_exits_diagram` already emits (`mermaid.py`), so an
 interface highlighted on the `l3_exits` view has a stable key.
 
+**Parsing rule (contract).** The id portion of a key may itself contain colons —
+a port id is `s1:mge-0/0/0`, so its key is `port:s1:mge-0/0/0`, and a link key is
+`link:<porta>__<portb>` where each port id contains colons. Consumers MUST split
+on the **first** colon only: everything before it is `kind`, everything after is
+the raw id. (This matches `highlight.py`'s existing `pid.split(":", 1)`.) If a
+consumer prefers not to string-parse, the serialized form additionally carries
+the split fields — see the `VisualEntry` note below — so `{kind, id}` is available
+structurally and string-splitting is never required.
+
 **Renderability rule (hard requirement).** Mermaid VLAN/L2 views render **device**
 nodes, not port/link nodes. So whenever a `port:<id>` or `link:<id>` entity is
 emitted (most importantly as an `origin` — see below), the builder **must also**
@@ -104,8 +115,13 @@ For each finding, derive:
 - its **referenced VLANs** — `subject` (kind `vlan`), `evidence["vlan"]`,
   `evidence["affected_vlans"]`, `evidence["impacts"][].vlan`;
 - its **referenced nodes/ports/links** — `subject` (device/port/link),
-  `affected_entities`, and the node/port/link evidence keys
-  (`component_nodes`, `fragment_nodes`, `new_member_ports`, `link`, …).
+  `affected_entities`, the node/port/link evidence keys (`component_nodes`,
+  `fragment_nodes`, `new_member_ports`, `link`, …), and **each
+  `evidence["impacts"][].attachment`** (the client's attach port or AP — this is
+  how `client.impact` findings localize to topology; omitting it would leave a
+  client-impact finding painting only the VLAN box and the origin, losing the
+  affected attachment node). The matching `evidence["impacts"][].vlan` feeds the
+  referenced-VLANs set above.
 
 Then project the finding onto views:
 
@@ -114,9 +130,13 @@ Then project the finding onto views:
 - **`vlan:<vid>`**, for each referenced `vid` ← the referenced nodes **that exist
   in that VLAN's graph**, plus the `vlan:<vid>` box entry. A finding with **no**
   VLAN reference projects onto **no** VLAN view.
-- **`l3_exits`** ← referenced routed VLANs (`vlan:<vid>`) and the interfaces
-  owned by hit nodes, emitted under the `intf:<l3intf_id>` key (mirrors the
-  current `_l3_exits_diagram` mapping).
+- **`l3_exits`** ← referenced routed VLANs (`vlan:<vid>`), and **only the
+  interfaces that serve those referenced VLANs** owned by hit nodes, emitted
+  under the `intf:<l3intf_id>` key. A finding with **no** VLAN reference does
+  **not** project onto `l3_exits` at all. This is deliberately tighter than the
+  current `_l3_exits_diagram` "all interfaces owned by hit nodes" mapping, which
+  preserves the bleed: a VLAN-10 hit on `s1` must not highlight `s1`'s VLAN-20
+  interface. Filter candidate interfaces by `intf.vlan_id ∈ referenced VLANs`.
 
 Consequence: a blackhole-on-VLAN-10 finding reaches `vlan:10` only — it cannot
 appear on `vlan:20` because it never references VLAN 20. **The bleed is
@@ -147,8 +167,9 @@ Within a single `(view, entity)`:
 - **severity** = worst-wins (`INFO < WARNING < ERROR < CRITICAL`), computed
   **independently** of tier. The two axes never interfere: tier answers "how
   central to the change," severity answers "how bad."
-- **findings** = the union of codes that produced this entry (for tooltips /
-  the findings list).
+- **findings** = the union of `FindingRef`s (`{index, code, subject}`) that
+  produced this entry (for tooltips / the findings list / back-links). Refs are
+  deduplicated by `index`.
 
 ### Origin derivation
 
@@ -253,7 +274,14 @@ sign-off.
   untouched `vlan:N` have **no** entry for nodes that exist in their graphs but
   were hit only by the VLAN-10 finding. This is the headline fix.
 - **Scoping invariant** — a finding with no VLAN reference (`isolation.severed`)
-  produces entries under `l2` only, none under any `vlan:*`.
+  produces entries under `l2` only, none under any `vlan:*` **and none under
+  `l3_exits`**.
+- **`l3_exits` interface scoping (P1 guard)** — a VLAN-10 finding on a device
+  that owns both a VLAN-10 and a VLAN-20 interface highlights the VLAN-10
+  interface only; the VLAN-20 `intf:` entry is absent from `l3_exits`.
+- **Client-impact attachment (P2 guard)** — a `client.impact.active_clients`
+  finding produces an entry for each impact's `attachment` node/port on `l2` and
+  the impact's `vlan` view, not merely the VLAN box.
 - **Tier reconciliation** — an entity that is both `caused_by` (origin) and
   inside an affected fragment resolves to `origin`; severity still worst-wins
   independently.
