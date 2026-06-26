@@ -36,8 +36,9 @@ def _port_node(ir: IR, pid: str) -> str | None:
 def _resolve_affected(ent: str, ir: IR) -> tuple[str, str] | None:
     """(kind, id) for an untyped affected_entities value — ONLY if it resolves in
     the IR. Never promote by string shape (a colon-bearing MAC stays unresolved)."""
-    if _node(ir, ent) is not None:
-        return ("device", _node(ir, ent) or ent)
+    n = _node(ir, ent)
+    if n is not None:
+        return ("device", n)
     if ent.isdigit() and int(ent) in ir.vlans:
         return ("vlan", ent)
     if ent in ir.ports:
