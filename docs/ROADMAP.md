@@ -386,6 +386,7 @@ modeling" below.
 - ✅ Switch port admin-disable + port-config precedence rework (SP1 of the port-config attribute-modeling program) — done 2026-06-25
 - ✅ Switch L1 link-parameter mismatch — speed/duplex/autoneg (SP2 of the port-config attribute-modeling program) — done 2026-06-25
 - ✅ Switch wired-auth (802.1X / MAC-auth, whole surface, policy-floor) (SP3 of the port-config attribute-modeling program) — done 2026-06-25
+- ✅ Switch port-config misc — voip_network (voice VLAN) + mac_limit + recognized→REVIEW knobs (SP4, final of the port-config attribute-modeling program) — done 2026-06-26
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true

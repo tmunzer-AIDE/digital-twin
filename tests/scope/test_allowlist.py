@@ -30,7 +30,8 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     assert "local_port_config.*.usage" in device
     assert "port_config_overwrite.*.port_network" in device
     assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
-    assert "port_config_overwrite.*.mac_limit" not in device  # still unmodeled
+    assert "port_config_overwrite.*.mac_limit" in device  # SP4: resolver-honored + modeled
+    assert "port_config_overwrite.*.poe_keep_state_when_reboot" not in device  # still unmodeled
 
 
 def test_l1_attrs_in_scope():
@@ -153,3 +154,26 @@ def test_auth_not_on_port_config_or_overwrite():
     dev = set(RAW_ALLOWLIST["device"])
     assert "port_config.*.port_auth" not in dev
     assert "port_config_overwrite.*.port_auth" not in dev
+
+
+def test_voip_network_in_scope_usage_and_local_not_port_config():
+    site, dev = set(RAW_ALLOWLIST["site_setting"]), set(RAW_ALLOWLIST["device"])
+    assert "port_usages.*.voip_network" in site and "port_usages.*.voip_network" in dev
+    assert "local_port_config.*.voip_network" in dev
+    assert "local_port_config.*.voip_network" not in site
+    assert "port_config.*.voip_network" not in dev
+
+
+def test_mac_limit_in_scope_usage_local_overwrite_not_port_config():
+    dev = set(RAW_ALLOWLIST["device"])
+    assert "port_usages.*.mac_limit" in dev and "local_port_config.*.mac_limit" in dev
+    assert "port_config_overwrite.*.mac_limit" in dev
+    assert "port_config.*.mac_limit" not in dev
+
+
+def test_misc_knobs_in_scope_usage_local_not_port_config():
+    dev = set(RAW_ALLOWLIST["device"])
+    for a in ("inter_switch_link", "storm_control", "enable_qos"):
+        assert f"port_usages.*.{a}" in dev and f"local_port_config.*.{a}" in dev
+        assert f"port_config.*.{a}" not in dev
+        assert f"port_config_overwrite.*.{a}" not in dev

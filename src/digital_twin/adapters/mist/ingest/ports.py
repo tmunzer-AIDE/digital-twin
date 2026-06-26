@@ -28,7 +28,6 @@ _USAGE_OVERRIDE_ATTRS = (
     "port_network",
     "networks",
     "all_networks",
-    "voip_network",
     "poe_disabled",
     "mtu",
     "allow_dhcpd",
@@ -40,7 +39,7 @@ _USAGE_OVERRIDE_ATTRS = (
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the
 # poe.disconnect check). disable_autoneg is NOT on overwrite per OAS.
-_OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled", "speed", "duplex")
+_OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled", "speed", "duplex", "mac_limit")
 
 # Wired-auth attrs (SP3): OAS-present on local_port_config + port_usages ONLY
 # (never port_config / port_config_overwrite). Applied from local here; usage-
@@ -53,8 +52,15 @@ _AUTH_ATTRS = (
     "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
     "persist_mac", "reauth_interval",
 )
+# SP4 misc attrs: OAS-present on local_port_config + port_usages ONLY (mac_limit
+# also on port_config_overwrite). Applied from local here (+ overwrite for
+# mac_limit); usage-level flows via usage_definition. NOT in _USAGE_OVERRIDE_ATTRS
+# (the port_config inline layer — none of these are on port_config).
+_MISC_ATTRS = (
+    "voip_network", "mac_limit", "storm_control", "enable_qos", "inter_switch_link",
+)
 # local_port_config may additionally carry the admin-down boolean (OAS).
-_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled", *_AUTH_ATTRS)
+_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled", *_AUTH_ATTRS, *_MISC_ATTRS)
 
 # Mist SYSTEM-DEFINED port usages: referenced by port_config but defined in NO
 # config object (template/site/device — not even getSiteSettingDerived exposes
@@ -198,3 +204,19 @@ def usage_vlans(
     names = list(networks) if usage.get("all_networks") else list(usage.get("networks") or [])
     tagged = tuple(sorted(v for v in (vlan_of(n) for n in names) if v is not None and v != native))
     return native, tagged
+
+
+def voice_vlan_of(usage: dict[str, Any], networks: dict[str, Any]) -> int | None:
+    """The voice VLAN id from `voip_network` (same namespace/resolution as
+    port_network). None when unset OR unresolvable (a templated/non-numeric
+    vlan_id must yield None, never raise)."""
+    name = usage.get("voip_network")
+    if not name or name not in networks:
+        return None
+    vid = networks[name].get("vlan_id")
+    if vid is None:
+        return None
+    try:
+        return int(vid)
+    except (TypeError, ValueError):
+        return None  # templated/unparseable vlan_id -> unresolvable

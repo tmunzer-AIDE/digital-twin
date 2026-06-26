@@ -132,6 +132,17 @@ class PortAuth:
     reauth_interval: str | None = None     # canonical (see ingest _reauth)
 
 
+@dataclass(frozen=True)
+class PortMisc:
+    """SP4 recognized-but-unmodeled port knobs (inter_switch_link / enable_qos /
+    storm_control). Frozen + comparable; Port.misc is None ONLY when all are
+    default, so a lone flip is detectable."""
+
+    inter_switch_link: bool = False
+    enable_qos: bool = False
+    storm_control: str | None = None  # canonical digest of the storm_control object
+
+
 def requires_auth(a: PortAuth | None) -> bool:
     """The port forces clients to authenticate (dot1x or MAC-auth)."""
     return a is not None and (a.port_auth == "dot1x" or a.mac_auth or a.mac_auth_only)
@@ -187,6 +198,7 @@ class Port:
     mode: PortMode
     native_vlan: int | None = None
     tagged_vlans: tuple[int, ...] = ()
+    voice_vlan: int | None = None  # SP4: resolved voip_network (voice VLAN), tagged
     # CONFIG intent (L1, SP2): concrete speed enum / duplex. None = unset/auto —
     # the IR NEVER stores "auto" (ingest normalizes "auto"/absent to None), so
     # forced ⇔ autoneg_disabled and speed is not None and duplex is not None.
@@ -219,6 +231,8 @@ class Port:
     # unknown trust must never collapse to untrusted (and a RESOLVED dynamic
     # uses its runtime usage like any other port).
     dhcp_trusted: bool | None = None
+    mac_limit: int | str | None = None  # SP4: concrete cap / None=unlimited / str=unresolved token
+    misc: PortMisc | None = None  # SP4: recognized->REVIEW knobs
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None

@@ -4,6 +4,15 @@ from digital_twin.ir import DeviceRole, IRBuilder, IRCapability, L3Role, PortMod
 from tests.adapters.mist.fixtures import ALL_FETCHED, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 
+def test_mac_limit_normalizer():
+    from digital_twin.adapters.mist.ingest.switch import _mac_limit
+    assert _mac_limit(5) == 5 and _mac_limit("5") == 5
+    assert _mac_limit(0) is None and _mac_limit("") is None and _mac_limit(None) is None
+    assert _mac_limit(True) is None
+    assert isinstance(_mac_limit("{{var}}"), str) and _mac_limit("{{var}}").startswith("unresolved")
+    assert isinstance(_mac_limit({"x": 1}), str)  # object -> token, not None
+
+
 def _ingest() -> IngestContext:
     ctx = IngestContext(
         raw=raw_site(),
@@ -1478,3 +1487,42 @@ def test_port_auth_normalization_and_none_when_default():
 def test_reauth_65000_int_equals_str():
     from digital_twin.adapters.mist.ingest.switch import _reauth
     assert _reauth(65000) == _reauth("65000") == "65000"
+
+
+def test_voip_sets_voice_vlan_and_access_membership():
+    eff = {
+        "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 30}},
+        "port_usages": {
+            "phone": {"mode": "access", "port_network": "corp", "voip_network": "voice"},
+            "up": {"mode": "trunk", "all_networks": True, "voip_network": "voice"},
+        },
+        "port_config": {"ge-0/0/1": {"usage": "phone"}, "ge-0/0/2": {"usage": "up"}},
+    }
+    from digital_twin.adapters.mist.ingest.base import IngestContext
+    from digital_twin.ir import IRBuilder
+    from digital_twin.ir.indexes import access_ports_by_vlan
+    ctx = IngestContext(
+        raw=raw_site(devices=({**SWITCH_A, "port_config": eff["port_config"]},)),
+        site_effective=eff, device_effective={"aa0000000001": eff}, builder=IRBuilder())
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    acc = ir.ports["aa0000000001:ge-0/0/1"]
+    assert acc.voice_vlan == 30 and 30 in acc.tagged_vlans   # access: voice folded + member
+    members30 = {p.id for p in access_ports_by_vlan(ir).get(30, [])}
+    assert "aa0000000001:ge-0/0/1" in members30              # access port is a MEMBER of voice vlan
+    trunk = ir.ports["aa0000000001:ge-0/0/2"]
+    assert trunk.voice_vlan == 30                            # trunk resolves voice...
+    assert "aa0000000001:ge-0/0/2" not in members30          # ...but is NOT an endpoint member
+
+
+def test_port_misc_storm_defaults_normalize_to_none():
+    from digital_twin.adapters.mist.ingest.switch import _port_misc, _storm_digest
+    # a default-shaped storm_control object == no misc surface (no REVIEW)
+    default_sc = {"disable_port": False, "no_broadcast": False, "no_multicast": False,
+                  "no_registered_multicast": False, "no_unknown_unicast": False, "percentage": 80}
+    assert _storm_digest(default_sc) is None
+    assert _port_misc({"storm_control": default_sc}) is None
+    assert _port_misc({}) is None
+    # only a non-default value digests / makes a non-None PortMisc
+    assert _storm_digest({**default_sc, "percentage": 50}) == "percentage=50"
+    assert _port_misc({"storm_control": {**default_sc, "no_broadcast": True}}) is not None

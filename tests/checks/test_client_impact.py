@@ -80,3 +80,29 @@ def test_no_clients_affected_passes_with_caveat():
     result = ClientImpactCheck().run(_ctx(_ir(with_client=False), _ir(with_client=False)))
     assert result.status is Status.PASS
     assert any("currently-connected" in n for n in result.coverage.notes)
+
+
+def test_voice_vlan_removed_flags_active_phone():
+    # phone on voice VLAN 30; voip_network removed -> port no longer offers 30,
+    # but VLAN 30 stays healthy elsewhere (blackhole would miss it) -> vlan_removed
+    from digital_twin.analysis.context import AnalysisContext
+    from digital_twin.checks.base import CheckContext, Status
+    from digital_twin.checks.wired.client_impact import ClientImpactCheck
+    from digital_twin.ir import IRBuilder, IRCapability, Port, PortMode, diff_ir
+    from tests.factories import sw, wired_client
+
+    def ir(voice):
+        b = IRBuilder().add_device(sw("S"))
+        b.add_port(Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1",
+                        mode=PortMode.ACCESS, native_vlan=10, voice_vlan=voice,
+                        tagged_vlans=((30,) if voice else ())))
+        b.add_client(wired_client("ph:01", "S:ge-0/0/1", vlan=30))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.CLIENTS_ACTIVE)
+        return b.build()
+
+    base, prop = ir(30), ir(None)
+    r = ClientImpactCheck().run(CheckContext(
+        baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)))
+    assert r.status is Status.WARN
+    impacts = r.findings[0].evidence["impacts"]
+    assert any(i["impact"] == "vlan_removed" and i["mac"] == "ph:01" for i in impacts)

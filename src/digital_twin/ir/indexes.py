@@ -34,11 +34,17 @@ def ports_by_device(ir: IR) -> dict[str, list[Port]]:
 
 
 def access_ports_by_vlan(ir: IR) -> dict[int, list[Port]]:
-    """Access ports keyed by their native VLAN (their membership VLAN)."""
+    """Member access ports keyed by VLAN: the native (data) VLAN, AND the voice
+    VLAN (SP4) — an access phone is a member of both. ACCESS-only: a trunk carries
+    the voice VLAN via tagged carriage, not as an endpoint member."""
     out: dict[int, list[Port]] = defaultdict(list)
     for p in ir.ports.values():
-        if p.mode is PortMode.ACCESS and p.native_vlan is not None:
+        if p.mode is not PortMode.ACCESS:
+            continue
+        if p.native_vlan is not None:
             out[p.native_vlan].append(p)
+        if p.voice_vlan is not None and p.voice_vlan != p.native_vlan:
+            out[p.voice_vlan].append(p)
     return dict(out)
 
 

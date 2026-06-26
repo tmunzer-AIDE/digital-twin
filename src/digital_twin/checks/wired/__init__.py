@@ -13,6 +13,7 @@ from .l2_blackhole import L2BlackholeCheck
 from .l2_isolation import L2IsolationCheck
 from .l2_loop import L2LoopCheck
 from .l2_vlan_segmentation import L2VlanSegmentationCheck
+from .mac_limit import MacLimitExceededCheck
 from .mtu_mismatch import MtuMismatchCheck
 from .native_mismatch import NativeVlanMismatchCheck
 from .ospf_withdrawal import OspfWithdrawalCheck
@@ -22,6 +23,7 @@ from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
+from .unmodeled_change import PortUnmodeledChangeCheck
 from .vlan_collision import VlanCollisionCheck
 from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
@@ -50,11 +52,14 @@ ALL_WIRED_CHECKS: list[Check] = [
     WlanDuplicateSsidCheck(),
     SubnetOverlapCheck(),
     VlanCollisionCheck(),
+    MacLimitExceededCheck(),
+    PortUnmodeledChangeCheck(),
 ]
 
 __all__ = [
     "ALL_WIRED_CHECKS",
     "AdminDisableCheck",
+    "MacLimitExceededCheck",
     "AuthAccessChangeCheck",
     "BgpAdjacencyCheck",
     "ClientImpactCheck",
@@ -77,4 +82,5 @@ __all__ = [
     "StpRootChangeCheck",
     "WlanDuplicateSsidCheck",
     "WlanOpenGuestCheck",
+    "PortUnmodeledChangeCheck",
 ]

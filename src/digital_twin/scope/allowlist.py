@@ -50,13 +50,18 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "port_network",
     "networks",
     "all_networks",
+    "voip_network",
     "poe_disabled",
     "mtu",
+    "mac_limit",
     "allow_dhcpd",
     "speed",
     "duplex",
     "disable_autoneg",
     *_AUTH_ATTRS,
+    "inter_switch_link",
+    "storm_control",
+    "enable_qos",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
@@ -177,6 +182,7 @@ _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.disabled",
     "port_config_overwrite.*.speed",
     "port_config_overwrite.*.duplex",
+    "port_config_overwrite.*.mac_limit",
 )
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,

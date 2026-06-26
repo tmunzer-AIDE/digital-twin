@@ -60,15 +60,14 @@ def test_unmodeled_leaf_inside_allowed_subtree_rejects():
 
 
 def test_unmodeled_usage_leaf_rejects():
-    # mac_limit is one of the usage attrs the IR does NOT consume (SP2 moved
-    # speed/duplex/disable_autoneg into scope — the leaf-tightening principle holds)
+    # SP4 moved mac_limit into scope; use_vstp stays unmodeled
     payload = {
         **CURRENT,
-        "port_usages": {"office": {"mode": "access", "port_network": "corp", "mac_limit": 5}},
+        "port_usages": {"office": {"mode": "access", "port_network": "corp", "use_vstp": True}},
     }
     r = screen_op("site_setting", CURRENT, payload)
     assert isinstance(r, Rejection)
-    assert any("mac_limit" in reason for reason in r.reasons)
+    assert any("use_vstp" in reason for reason in r.reasons)
 
 
 def test_whole_subtree_removal_of_allowed_field_passes():
@@ -99,12 +98,14 @@ def test_modeled_port_config_overwrite_leaf_passes():
 
 
 def test_unmodeled_overwrite_leaf_still_rejects():
-    # the resolver honors port_network/poe_disabled/disabled/speed/duplex from
-    # port_config_overwrite — mac_limit et al. stay out of scope (leaf-tightened)
-    payload = {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"mac_limit": 5}}}
+    # the resolver honors port_network/poe_disabled/disabled/speed/duplex/mac_limit from
+    # port_config_overwrite — poe_keep_state_when_reboot et al. stay out of scope (leaf-tightened)
+    payload = {**SWITCH_CUR, "port_config_overwrite": {
+        "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
     r = screen_op("device", SWITCH_CUR, payload)
     assert isinstance(r, Rejection)
-    assert any("port_config_overwrite.ge-0/0/0.mac_limit" in reason for reason in r.reasons)
+    assert any("port_config_overwrite.ge-0/0/0.poe_keep_state_when_reboot" in reason
+               for reason in r.reasons)
 
 
 def test_device_status_fields_are_ignored():

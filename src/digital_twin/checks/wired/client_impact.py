@@ -94,6 +94,14 @@ class ClientImpactCheck:
                     f"access vlan {base_port.native_vlan} -> {prop_port.native_vlan}",
                     caused_by=ctx.delta_index.causes("port", [client.attach_id]),
                 )
+            base_offered = {base_port.native_vlan, base_port.voice_vlan} - {None}
+            prop_offered = {prop_port.native_vlan, prop_port.voice_vlan} - {None}
+            if client.vlan in base_offered and client.vlan not in prop_offered:
+                return self._entry(
+                    ctx, client, "vlan_removed",
+                    f"vlan {client.vlan} no longer offered on this port",
+                    caused_by=ctx.delta_index.causes("port", [client.attach_id]),
+                )
         vlan = client.vlan
         if vlan is not None and vlan in prop_ir.vlans:
             node = self._attach_node(ctx, client)
