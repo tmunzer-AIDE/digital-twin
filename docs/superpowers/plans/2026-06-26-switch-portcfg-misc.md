@@ -276,29 +276,34 @@ In `scope/allowlist.py`, add `"voip_network"` to `_MODELED_USAGE_ATTRS` (→ `po
 
 - [ ] **Step 5: e2e**
 
-Add to `tests/engine/test_pipeline.py` (mirror the SP1/SP2/SP3 device-update e2e scaffold). A device PUT removing the voice VLAN via `local_port_config` on a port with an observed phone on VLAN 30 → not UNKNOWN; `wired.client.impact.active_clients` present and REVIEW. Use this file's real helpers (`dc_replace`/`_raw`/`FakeProvider`/`_plan`/`_op`/`simulate`/`Decision`/`StateMeta`/`SWITCH`/`SETTING`). **CLIENTS_ACTIVE gate:** `ClientsIngester` only claims active-client data when BOTH `"wired_clients"` and `"wireless_clients"` are in `raw.meta.fetched` (`ingest/clients.py`) — `_raw()` ships `fetched=("devices",)`, so you MUST widen it. Wired-client dicts use keys `device_mac`/`port_id`/`mac`/`vlan` (NOT `vlan_id`). Template:
+Add to `tests/engine/test_pipeline.py` using this file's real helpers (`dc_replace`/`_raw`/`FakeProvider`/`_plan`/`_op`/`simulate`/`Decision`/`SETTING`/`SWITCH`). Done at SITE-SETTING level (cleaner than `local_port_config` — avoids the local-`None` removal-semantics question, and `voip_network` on `port_usages` is allowlisted at site_setting scope). Two facts the template depends on: (1) `SETTING.networks` already has `corp`=10 + `voice`=30, but `SETTING.port_usages` only defines `office`/`uplink` and `SWITCH.port_config` is the RANGE `ge-0/0/0-1` — so the template MUST inject a `phone` usage into the raw setting and give the switch an explicit `ge-0/0/0` phone port; (2) **CLIENTS_ACTIVE** needs BOTH `"wired_clients"` and `"wireless_clients"` in `raw.meta.fetched` (`ingest/clients.py`; `_raw()` ships `("devices",)`), and wired-client dicts use keys `device_mac`/`port_id`/`mac`/`vlan` (NOT `vlan_id`). Template:
 ```python
 def test_voip_removal_flags_active_phone_e2e():
+    # baseline: a phone access port offers data VLAN 10 + voice VLAN 30, with a
+    # live phone on VLAN 30; the op drops voip_network from the phone usage ->
+    # the port stops offering VLAN 30 -> client.impact vlan_removed (the VLAN may
+    # still be healthy elsewhere, so blackhole would miss it).
+    phone = {"mode": "access", "port_network": "corp", "voip_network": "voice"}
+    setting = {**SETTING, "port_usages": {**SETTING["port_usages"], "phone": phone}}
     sw_a = {**SWITCH, "port_config": {
-        **SWITCH["port_config"],
-        "ge-0/0/0": {"usage": "phone", "no_local_overwrite": False}}}  # local applies
+        "ge-0/0/0": {"usage": "phone"}, "ge-0/0/1": {"usage": "office"}}}
     raw0 = _raw()
     raw = dc_replace(
-        raw0, devices=(sw_a,),
+        raw0, setting=setting, devices=(sw_a,),
         wired_clients=({"device_mac": "aa0000000001", "port_id": "ge-0/0/0",
                         "mac": "ph01", "vlan": 30},),
         meta=dc_replace(raw0.meta, fetched=("devices", "wired_clients", "wireless_clients")),
     )
-    # SETTING/usage "phone" must define port_network + voip_network -> voice VLAN 30;
-    # the op drops voip_network so the port stops offering VLAN 30 to the phone.
-    payload = {"local_port_config": {"ge-0/0/0": {"voip_network": None}}}
-    v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
-                 provider=FakeProvider(raw=raw))
+    # proposed: phone usage WITHOUT voip_network (partial payload — other roots persist)
+    new_usages = {**setting["port_usages"], "phone": {"mode": "access", "port_network": "corp"}}
+    v = simulate(_plan([_op(payload={"port_usages": new_usages})]), provider=FakeProvider(raw=raw))
     assert v.decision is not Decision.UNKNOWN, v.decision_reasons
     assert "wired.client.impact.active_clients" in {f.code for f in v.findings}
+    impacts = next(f for f in v.findings
+                   if f.code == "wired.client.impact.active_clients").evidence["impacts"]
+    assert any(i["impact"] == "vlan_removed" for i in impacts)
     assert v.decision is Decision.REVIEW
 ```
-NOTE: confirm `SETTING`/its `port_usages["phone"]` (or whichever usage `ge-0/0/0` resolves to) defines `port_network` + `voip_network` mapping to a VLAN-30 voice network in `SETTING.networks`; adjust the usage/`device_id`/`object_id` to match this file's existing fixtures (e.g. `dev-a` ↔ mac `aa0000000001`).
 
 - [ ] **Step 6: Run tests + gate**
 
@@ -993,6 +998,7 @@ EOF
 - Owner review pins: client.impact voice-loss (T2), mac_limit requires WIRED_L2 + both-sides + baseline-blind .unverified (T3), ACCESS-gated voice membership + trunk-not-member (T1). ✓
 - Plan-review round 2 pins: stale `mac_limit`-as-unmodeled tests repointed to `poe_keep_state_when_reboot`/`use_vstp` (T3 Step 6b); `MacLimitExceededCheck` strict-typed (`dict[str,list[Client]]`, typed `_mk`, `Cause`/`Client` imports); `voice_vlan_of` catches templated `vlan_id` → None (T1); `_storm_digest` normalizes OAS defaults away so a default-shaped object → `Port.misc is None` (T4). ✓
 - Plan-review round 3 pins: client-dependent e2es widen `meta.fetched` (both client keys) so `CLIENTS_ACTIVE` is earned — else T5 `mac_limit` hits `.unverified` not `.exceeded`, T2 voip sees no active phone (T2/T5); single `-k` exprs; `test_field_gate.py` staged in T3. ✓
+- Plan-review round 4 pin: T2 voip e2e moved to site-setting level and INJECTS a `phone` usage into the raw setting (`SETTING.port_usages` only has `office`/`uplink`; `SWITCH.port_config` is the `ge-0/0/0-1` range) + explicit `ge-0/0/0` phone port, so baseline actually resolves `voice_vlan=30` and the op (drop `voip_network` from the phone usage) drives `vlan_removed`. T5 templates already match the proven SP3 single-port + `no_local_overwrite:False` pattern with the defined `office` usage. ✓
 
 **Placeholder scan:** No TBD/TODO. The client-dependent e2es (T2 voip, T5 mac_limit) ship complete templates that widen `meta.fetched` to `("devices","wired_clients","wireless_clients")` — verified against `ingest/clients.py` (CLIENTS_ACTIVE needs both client keys) and the wired-client dict shape (`device_mac`/`port_id`/`mac`/`vlan`). Remaining NOTEs only ask the implementer to align fixture names (usage/`device_id`) to this file's existing `SETTING`/`SWITCH`.
 
