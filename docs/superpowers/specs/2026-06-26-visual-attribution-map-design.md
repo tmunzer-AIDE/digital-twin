@@ -58,8 +58,19 @@ VisualMap = { view_id -> { entity_key -> VisualEntry } }
 VisualEntry:
   tier:     "origin" | "affected"          # v1 — see Deferred for primary/secondary
   severity: "info" | "warning" | "error" | "critical"
-  findings: tuple[str, ...]                # finding codes touching this (view, entity)
+  findings: tuple[FindingRef, ...]         # finding instances touching this (view, entity)
+
+FindingRef:
+  index:   int                             # position in Verdict.findings — stable within a verdict
+  code:    str                             # the finding code (display)
+  subject: ObjectRef | None                # the finding's headline object, for human linkage
 ```
+
+`findings` carries **instance refs, not bare codes**. Two findings can share a
+code (e.g. `blackhole.exit_lost` on VLAN 10 and VLAN 20 both touching `device:s2`
+on the `l2` view); code-only would collapse them, breaking back-links and counts.
+`index` (the finding's position in `Verdict.findings`) uniquely identifies the
+instance the UI links back to; `code`/`subject` are for display.
 
 - Added as `Verdict.visual_map: VisualMap`. Serializes through
   `render.verdict_to_dict`'s existing `_plain` walk with no special-casing.
@@ -73,8 +84,19 @@ mistmcp can correlate a map entry to the chart it annotates.
 
 ### Entity keys
 
-`device:<node>`, `vlan:<vid>`, `port:<id>`, `link:<id>`, using the same
-`_mac` / `node_for` VC-folding normalization already in `highlight.py`.
+`device:<node>`, `vlan:<vid>`, `port:<id>`, `link:<id>`, `intf:<l3intf_id>`,
+using the same `_mac` / `node_for` VC-folding normalization already in
+`highlight.py`. The `intf:<l3intf_id>` key matches the synthetic `intf:<id>`
+nodes the current `_l3_exits_diagram` already emits (`mermaid.py`), so an
+interface highlighted on the `l3_exits` view has a stable key.
+
+**Renderability rule (hard requirement).** Mermaid VLAN/L2 views render **device**
+nodes, not port/link nodes. So whenever a `port:<id>` or `link:<id>` entity is
+emitted (most importantly as an `origin` — see below), the builder **must also**
+emit an entry for its endpoint **`device:<node>`** with the same tier, using the
+existing `port_node` / link-split helpers in `highlight.py`. Without this, a
+cut whose cause is a port/link would have no visible origin on any device-rendering
+view and the "where did the change happen?" signal would silently disappear.
 
 ### Scoping rule (the bleed fix, made generic)
 
@@ -92,8 +114,9 @@ Then project the finding onto views:
 - **`vlan:<vid>`**, for each referenced `vid` ← the referenced nodes **that exist
   in that VLAN's graph**, plus the `vlan:<vid>` box entry. A finding with **no**
   VLAN reference projects onto **no** VLAN view.
-- **`l3_exits`** ← referenced routed VLANs and the interfaces owned by hit nodes
-  (mirrors the current `_l3_exits_diagram` mapping).
+- **`l3_exits`** ← referenced routed VLANs (`vlan:<vid>`) and the interfaces
+  owned by hit nodes, emitted under the `intf:<l3intf_id>` key (mirrors the
+  current `_l3_exits_diagram` mapping).
 
 Consequence: a blackhole-on-VLAN-10 finding reaches `vlan:10` only — it cannot
 appear on `vlan:20` because it never references VLAN 20. **The bleed is
@@ -133,6 +156,15 @@ Within a single `(view, entity)`:
 entity), normalized to graph nodes/ports. An origin **inherits the view-set of
 the finding it caused**, so on `vlan:10` the operator sees `origin s1 → affected
 s2`, and on `l2` the origin device is distinct from the affected sea.
+
+**Port/link causes must surface as device origins.** Most cut causes are ports
+or links (a disabled uplink, a removed link). Per the renderability rule above,
+when `caused_by` resolves to a `port:<id>` or `link:<id>`, the builder emits both
+the `port:`/`link:` origin entry **and** an `origin` entry for the endpoint
+`device:<node>`. This is what keeps "origin s1" visible on the device-rendering
+L2/VLAN views — it is the single most important guard against re-introducing the
+old "where did the change happen?" ambiguity, and it has a dedicated test
+(port-caused blackhole → `device:` origin entry present on `l2` and the VLAN view).
 
 ### Doctrine: cause is still not blast radius
 
@@ -198,8 +230,8 @@ sign-off.
 
 ## Files touched
 
-- **`src/digital_twin/contracts/`** — new `VisualMap` / `VisualEntry` / tier
-  enum (or typed dict); export from the contracts package.
+- **`src/digital_twin/contracts/`** — new `VisualMap` / `VisualEntry` /
+  `FindingRef` / tier enum (or typed dict); export from the contracts package.
 - **`src/digital_twin/viz/highlight.py`** — refactor `build_highlight` into the
   per-`(view, entity)` `VisualMap` builder: per-finding view projection +
   scoping rule + tier/severity reconciliation + origin-from-`caused_by`.
@@ -227,13 +259,22 @@ sign-off.
   independently.
 - **Origin presentation** — `caused_by` entities appear as `origin` entries (a
   behavior change vs today's caption-only), distinct from `affected`.
+- **Port/link → device origin (P1 guard)** — a blackhole whose `caused_by` is a
+  **port** asserts an `origin` entry for the endpoint `device:<node>` on both the
+  `l2` view and the relevant `vlan:<vid>` view (not just the `port:` entry). This
+  is the test that prevents the origin signal from disappearing on
+  device-rendering views.
 - **Severity orthogonality** — two findings of different severity on the same
   `(view, entity)`: tier unchanged, severity = worst.
 - **Verdict invariance** — for a representative set of goldens, building
   `visual_map` does not alter `decision` or any finding `severity` (compare
   verdict with/without the map populated).
 - **Serialization** — `verdict_to_dict` round-trips `visual_map` to the nested
-  `{view: {entity: {tier, severity, findings}}}` shape mistmcp expects.
+  `{view: {entity: {tier, severity, findings}}}` shape mistmcp expects, where each
+  `findings` element is a `{index, code, subject}` ref (not a bare code).
+- **Instance distinctness (P2 guard)** — an entity hit by two same-code findings
+  (`blackhole.exit_lost` on VLAN 10 and VLAN 20) on the `l2` view carries **two**
+  distinct `FindingRef`s with different `index` values, not one collapsed code.
 
 ## v1 scope and deferred work
 
@@ -244,10 +285,19 @@ severity independent from tier; Mermaid rendering from the map; `isolation.sever
 **Deferred (fast-follow):** split `affected` into `affected_primary`
 (the segment/VLAN/client *at* the cut — first hop) and `affected_secondary`
 (the transitive blast radius behind it). This needs **cut-distance analysis**
-(graph adjacency to the severed links — inputs already exist in
-`isolation.severed` evidence: `severed_links`, `lost_peers`) and is easy to make
-subtly wrong, so it is intentionally out of v1. Origin-vs-affected plus view
-scoping already resolves the reported operator confusion.
+(graph adjacency to the cut edges) and is easy to make subtly wrong, so it is
+intentionally out of v1.
+
+The inputs are **partly** present and partly preparatory work:
+`l2.isolation.severed` evidence today is `{fragment_nodes, lost_peers,
+occupants}` — `lost_peers` gives the surviving side of the cut, but the **cut
+edges themselves are not in evidence** (`severed_links` exists only as a local
+confidence-computation variable, never written out). So the fast-follow must
+either add a `severed_links` evidence field as preparatory work, or reconstruct
+the cut edges from `fragment_nodes` + `lost_peers` against the IR's links. This
+is called out here so the plan does not assume the cut edges are already
+available. Origin-vs-affected plus view scoping already resolves the reported
+operator confusion, so v1 ships without it.
 
 ## Dependency: mistmcp (web)
 
