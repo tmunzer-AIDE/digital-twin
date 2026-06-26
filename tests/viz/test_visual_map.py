@@ -1,4 +1,5 @@
 from digital_twin.contracts import (
+    Cause,
     Finding,
     FindingCategory,
     FindingSource,
@@ -269,3 +270,77 @@ def test_affected_emits_exact_port_and_link_entries():
     lcs = vm._affected_contributions(lf, 0, ir, idx)
     assert ("link", "s1:ge-0/0/0__s2:ge-0/0/0") in _views(lcs, "l2")
     assert ("device", "s1") in _views(lcs, "l2") and ("device", "s2") in _views(lcs, "l2")
+
+
+def test_origin_port_cause_surfaces_owner_device_on_l2_and_vlan():
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    f = _f(subject=ObjectRef("vlan", "10"), evidence={"vlan": 10, "component_nodes": ["s2"]},
+           caused_by=(Cause(ref=ObjectRef("port", "s1:ge-0/0/0"), fields=("disabled",)),))
+    cs = vm._origin_contributions(f, 0, ir, ir, idx)
+    assert any(c.view == "l2" and c.kind == "device" and c.id == "s1"
+               and c.tier is vm.VisualTier.ORIGIN for c in cs)
+    # the port itself ALSO gets a self-entry on l2 (it resolves in proposed IR)
+    assert any(c.view == "l2" and c.kind == "port" and c.id == "s1:ge-0/0/0"
+               and c.tier is vm.VisualTier.ORIGIN for c in cs)
+    # s1 participates in vlan 10 -> origin shows on vlan:10 too
+    assert any(c.view == "vlan:10" and c.id == "s1" and c.tier is vm.VisualTier.ORIGIN
+               for c in cs)
+
+
+def test_origin_removed_device_makes_no_phantom_l2_entry():
+    base = _two_switch_vlan_ir()
+    # proposed: s1 removed entirely
+    pb = IRBuilder()
+    pb.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_device(Device(id="s3", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_vlan(Vlan(vlan_id=10, name="data", subnet="10.0.10.0/24"))
+    pb.add_vlan(Vlan(vlan_id=20, name="voice"))
+    proposed = pb.build()
+    idx = vm._build_view_index(proposed)
+    f = _f(subject=ObjectRef("vlan", "10"), evidence={"vlan": 10},
+           caused_by=(Cause(ref=ObjectRef("device", "s1")),))
+    cs = vm._origin_contributions(f, 0, base, proposed, idx)
+    assert not any(c.id == "s1" for c in cs)  # removed device -> no phantom entry
+
+
+def test_origin_removed_l3intf_falls_back_to_owner_on_l2_only():
+    base = _two_switch_vlan_ir()
+    # proposed: the IRB on s1 for vlan 10 is REMOVED, and s1 no longer carries vlan 10
+    pb = IRBuilder()
+    pb.add_device(Device(id="s1", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_device(Device(id="s3", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_vlan(Vlan(vlan_id=10, name="data", subnet="10.0.10.0/24"))
+    pb.add_vlan(Vlan(vlan_id=20, name="voice"))
+    proposed = pb.build()
+    idx = vm._build_view_index(proposed)
+    f = _f(subject=ObjectRef("vlan", "10"), evidence={"vlan": 10},
+           caused_by=(Cause(ref=ObjectRef("l3intf", "s1:l3:irb:10"), fields=()),))
+    cs = vm._origin_contributions(f, 0, base, proposed, idx)
+    assert any(c.view == "l2" and c.id == "s1" and c.tier is vm.VisualTier.ORIGIN for c in cs)
+    # s1 no longer participates in vlan 10's proposed graph -> no forced vlan origin
+    assert not any(c.view == "vlan:10" and c.kind == "device" for c in cs)
+    # and no dangling intf self-entry (the interface is gone from proposed)
+    assert not any(c.kind == "intf" for c in cs)
+
+
+def test_origin_per_impact_cause_pairs_with_its_vlan():
+    ir = _dual_vlan_ir()  # both s1,s2 participate in BOTH vlans -> bug not masked
+    idx = vm._build_view_index(ir)
+    assert idx.node_in_vlan("s2", 10)  # precondition: s2 IS in vlan 10's graph
+    f = _f(code="wired.client.impact.active_clients",
+           caused_by=(Cause(ref=ObjectRef("port", "s1:ge-0/0/0")),
+                      Cause(ref=ObjectRef("port", "s2:ge-0/0/0"))),
+           evidence={"impacts": [
+               {"mac": "m1", "vlan": 10, "attachment": "s1:ge-0/0/0",
+                "caused_by": [Cause(ref=ObjectRef("port", "s1:ge-0/0/0"))]},
+               {"mac": "m2", "vlan": 20, "attachment": "s2:ge-0/0/0",
+                "caused_by": [Cause(ref=ObjectRef("port", "s2:ge-0/0/0"))]},
+           ]})
+    cs = vm._origin_contributions(f, 0, ir, ir, idx)
+    # s2's cause is paired to vlan 20; despite s2 participating in vlan 10's graph
+    # it must NOT appear as an origin on vlan:10 (pairing, not finding-wide union)
+    assert not any(c.view == "vlan:10" and c.id == "s2" for c in cs)
+    assert any(c.view == "vlan:20" and c.id == "s2" and c.tier is vm.VisualTier.ORIGIN
+               for c in cs)

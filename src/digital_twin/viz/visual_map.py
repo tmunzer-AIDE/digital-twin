@@ -15,6 +15,7 @@ import networkx as nx
 from digital_twin.contracts import (
     Finding,
     FindingRef,
+    ObjectRef,
     VisualTier,
 )
 from digital_twin.ir import IR
@@ -262,4 +263,73 @@ def _affected_contributions(
             add(f"vlan:{ivid}", "vlan", str(ivid))
             if att_node and idx.node_in_vlan(att_node, ivid):
                 add(f"vlan:{ivid}", "device", att_node)
+    return out
+
+
+def _origin_owner_views(
+    owner: str, vlans: set[int], proposed_ir: IR, idx: _ViewIndex, ref: FindingRef
+) -> list[_Contribution]:
+    """An owner device projects onto l2 (only if it still EXISTS in proposed —
+    a removed device yields no phantom l2 entry, it becomes unlocalized), and onto
+    each referenced vlan view only if it still participates in that vlan's proposed
+    graph (no phantom nodes)."""
+    if _node(proposed_ir, owner) is None:
+        return []  # owner device removed -> no phantom node (spec: caption/unlocalized)
+    cs = [_Contribution("l2", "device", owner, VisualTier.ORIGIN, ref)]
+    for vid in vlans:
+        if idx.node_in_vlan(owner, vid):
+            cs.append(_Contribution(f"vlan:{vid}", "device", owner, VisualTier.ORIGIN, ref))
+    return cs
+
+
+def _origin_contributions(
+    f: Finding, index: int, baseline_ir: IR, proposed_ir: IR, idx: _ViewIndex
+) -> list[_Contribution]:
+    ref = _ref(f, index)
+    out: list[_Contribution] = []
+
+    def emit_cause(cause_ref: ObjectRef, vlans: set[int]) -> None:
+        # SELF-entry for a non-device cause, ONLY when it resolves in proposed IR
+        # (a removed port/link/intf gets no dangling self-entry — owner device
+        # below is the fallback). port/link render on l2; intf on l3_exits.
+        if cause_ref.kind == "port" and cause_ref.id in proposed_ir.ports:
+            out.append(_Contribution("l2", "port", cause_ref.id, VisualTier.ORIGIN, ref))
+        elif cause_ref.kind == "link" and all(
+            p in proposed_ir.ports for p in cause_ref.id.split("__")
+        ):
+            out.append(_Contribution("l2", "link", cause_ref.id, VisualTier.ORIGIN, ref))
+        elif cause_ref.kind == "l3intf" and any(
+            i.id == cause_ref.id for i in proposed_ir.l3intfs
+        ):
+            for vid in vlans:
+                if vid in idx.routed_vlans:
+                    out.append(_Contribution("l3_exits", "intf", cause_ref.id,
+                                             VisualTier.ORIGIN, ref))
+        # owner device(s) — the renderable fallback; _origin_owner_views gates on
+        # proposed existence so a removed device produces no phantom l2 entry.
+        for owner in owner_device_nodes(cause_ref.kind, cause_ref.id, baseline_ir, proposed_ir):
+            out.extend(_origin_owner_views(owner, vlans, proposed_ir, idx, ref))
+
+    ev: Any = f.evidence
+    impacts = ev.get("impacts") or ()
+    has_paired = any(isinstance(i, dict) and "caused_by" in i for i in impacts)
+
+    if has_paired:
+        # per-impact causes pair with their own vlan (no finding-wide union)
+        for imp in impacts:
+            if not isinstance(imp, dict):
+                continue
+            ivid = imp.get("vlan")
+            vlans = {ivid} if isinstance(ivid, int) else set()
+            for c in imp.get("caused_by") or ():
+                if isinstance(c.ref, ObjectRef):
+                    emit_cause(c.ref, vlans)
+    else:
+        # finding-wide caused_by + the finding's referenced vlans
+        vlans = set()
+        if f.subject is not None and f.subject.kind == "vlan" and f.subject.id.isdigit():
+            vlans.add(int(f.subject.id))
+        vlans.update(_ints(ev.get("vlan")) + _ints(ev.get("affected_vlans")))
+        for c in f.caused_by:
+            emit_cause(c.ref, vlans)
     return out
