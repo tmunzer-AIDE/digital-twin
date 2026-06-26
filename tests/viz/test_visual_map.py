@@ -4,6 +4,8 @@ from digital_twin.ir.entities import (
     DeviceRole,
     L3Intf,
     L3Role,
+    Link,
+    LinkKind,
     Port,
     PortMode,
     Vlan,
@@ -61,3 +63,43 @@ def test_owner_device_nodes_for_port_link_l3intf():
     pb.add_l3intf(L3Intf(device_id="s9", role=L3Role.IRB, vlan_id=77))
     added = pb.build()
     assert vm.owner_device_nodes("l3intf", "s9:l3:irb:77", _baseline(), added) == ["s9"]
+
+
+def _two_switch_vlan_ir():
+    b = IRBuilder()
+    b.add_device(Device(id="s1", role=DeviceRole.SWITCH, site="site1"))
+    b.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="site1"))
+    # trunk between s1 and s2 carrying vlan 10; s3 isolated, only vlan 20
+    b.add_device(Device(id="s3", role=DeviceRole.SWITCH, site="site1"))
+    b.add_port(Port(id="s1:ge-0/0/0", device_id="s1", name="ge-0/0/0",
+                    mode=PortMode.TRUNK, tagged_vlans=(10,)))
+    b.add_port(Port(id="s2:ge-0/0/0", device_id="s2", name="ge-0/0/0",
+                    mode=PortMode.TRUNK, tagged_vlans=(10,)))
+    b.add_port(Port(id="s3:ge-0/0/1", device_id="s3", name="ge-0/0/1",
+                    mode=PortMode.ACCESS, native_vlan=20))
+    b.add_link(Link(
+        id="s1:ge-0/0/0__s2:ge-0/0/0",
+        a_port="s1:ge-0/0/0",
+        b_port="s2:ge-0/0/0",
+        kind=LinkKind.PHYSICAL,
+    ))
+    b.add_vlan(Vlan(vlan_id=10, name="data", subnet="10.0.10.0/24"))
+    b.add_vlan(Vlan(vlan_id=20, name="voice"))
+    b.add_l3intf(L3Intf(device_id="s1", role=L3Role.IRB, vlan_id=10))
+    return b.build()
+
+
+def test_view_index_vlan_membership_is_scoped():
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    assert idx.node_in_vlan("s1", 10) and idx.node_in_vlan("s2", 10)
+    assert not idx.node_in_vlan("s3", 10)  # s3 is not in vlan 10's graph
+    assert idx.node_in_vlan("s3", 20)
+
+
+def test_view_index_routed_and_interfaces():
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    assert 10 in idx.routed_vlans  # has a subnet / IRB
+    assert [i.vlan_id for i in idx.intfs_for_vlan(10)] == [10]
+    assert idx.intfs_for_vlan(20) == []

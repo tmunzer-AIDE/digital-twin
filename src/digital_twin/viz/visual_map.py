@@ -7,8 +7,15 @@ resolves against proposed_ir. decision.py never reads the result.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
+import networkx as nx
+
 from digital_twin.ir import IR
+from digital_twin.ir.entities import L3Intf
 from digital_twin.ir.indexes import node_for, vc_root_map
+from digital_twin.representations.l2_graph import build_l2_graph
+from digital_twin.representations.vlan_graph import build_vlan_graph
 
 _MIST_DEV_HEAD = "00000000-0000-0000-"
 
@@ -72,3 +79,32 @@ def owner_device_nodes(
                     return [node_for(vc_root_map(src), intf.device_id)]
         return []
     return []
+
+
+@dataclass
+class _ViewIndex:
+    vlan_nodes: dict[int, set[str]] = field(default_factory=dict)
+    routed_vlans: set[int] = field(default_factory=set)
+    intfs_by_vlan: dict[int, list[L3Intf]] = field(default_factory=dict)
+
+    def node_in_vlan(self, node: str, vid: int) -> bool:
+        return node in self.vlan_nodes.get(vid, set())
+
+    def intfs_for_vlan(self, vid: int) -> list[L3Intf]:
+        return self.intfs_by_vlan.get(vid, [])
+
+
+def _build_view_index(proposed_ir: IR) -> _ViewIndex:
+    idx = _ViewIndex()
+    l2 = build_l2_graph(proposed_ir)
+    for vid in proposed_ir.vlans:
+        g: nx.MultiGraph = build_vlan_graph(proposed_ir, l2, vid)
+        idx.vlan_nodes[vid] = set(g.nodes)
+    for intf in proposed_ir.l3intfs:
+        if intf.vlan_id is not None:
+            idx.intfs_by_vlan.setdefault(intf.vlan_id, []).append(intf)
+    # routed == has a subnet OR is served by an l3 interface (mirrors _l3_exits_diagram)
+    idx.routed_vlans = {
+        vid for vid, v in proposed_ir.vlans.items() if v.subnet is not None
+    } | set(idx.intfs_by_vlan)
+    return idx
