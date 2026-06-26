@@ -66,9 +66,7 @@ class IR:
     ap_wlan_vlans: Mapping[str, frozenset[int]] = _EMPTY_MAP  # type: ignore[assignment]
     ap_wlan_unresolved: Mapping[str, tuple[str, ...]] = _EMPTY_MAP  # type: ignore[assignment]
     ospf_intfs: tuple[OspfIntf, ...] = ()
-    # OBSERVATIONAL per-client identity for the client.impact report (mac ->
-    # ClientEnrichment). Evidence only: NOT walked by diff_ir, earns no
-    # capability, never read by verdict logic. Defaulted: absence = no enrichment.
+    # observational, enrich/cap only (see ClientEnrichment); never in diff_ir.
     client_enrichment: Mapping[str, ClientEnrichment] = _EMPTY_MAP  # type: ignore[assignment]
     nacrules: tuple[NacRule, ...] = ()
     nactags: tuple[NacTag, ...] = ()

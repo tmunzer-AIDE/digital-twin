@@ -457,9 +457,10 @@ class Client:
 
 @dataclass(frozen=True)
 class ClientEnrichment:
-    """OBSERVATIONAL per-client identity for the client.impact report. Evidence
-    ONLY — never read by verdict logic, never in diff_ir. All fields optional;
-    an instance is created only when at least one field is non-empty."""
+    """OBSERVATIONAL per-client identity. Best-effort, non-diff-bearing (never in
+    diff_ir). MAY enrich or cap a finding (e.g. wired.auth.access_change naming
+    at-risk clients), but never ORIGINATES or floors a verdict, and its absence
+    must degrade gracefully."""
 
     hostname: str | None = None
     family: str | None = None

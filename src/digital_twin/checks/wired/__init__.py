@@ -3,6 +3,7 @@
 from digital_twin.checks.base import Check
 
 from .admin_disable import AdminDisableCheck
+from .auth_change import AuthAccessChangeCheck
 from .bgp_adjacency import BgpAdjacencyCheck
 from .client_impact import ClientImpactCheck
 from .dhcp_path import DhcpPathCheck
@@ -43,6 +44,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     DhcpSnoopingCheck(),
     PoeDisconnectCheck(),
     AdminDisableCheck(),
+    AuthAccessChangeCheck(),
     ClientImpactCheck(),
     WlanOpenGuestCheck(),
     WlanDuplicateSsidCheck(),
@@ -53,6 +55,7 @@ ALL_WIRED_CHECKS: list[Check] = [
 __all__ = [
     "ALL_WIRED_CHECKS",
     "AdminDisableCheck",
+    "AuthAccessChangeCheck",
     "BgpAdjacencyCheck",
     "ClientImpactCheck",
     "SubnetOverlapCheck",
