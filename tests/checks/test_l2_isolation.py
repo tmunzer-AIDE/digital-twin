@@ -100,6 +100,21 @@ def test_below_high_severance_with_anchor_is_warning():
     assert f.evidence["severity_reason"] == "physical severance, severance confidence below HIGH"
 
 
+def test_severed_with_a_newly_added_far_side_anchor_is_not_critical():
+    # the delta severs A from B AND adds a brand-new IRB on B. A never had reach
+    # to a gateway in baseline (B's anchor did not exist then), so it did not LOSE
+    # one -> ERROR, not CRITICAL. Mirrors blackhole.exit_lost, which fires only on
+    # a BASELINE exit that is no longer reached, not on a proposed-only exit.
+    result = _run(
+        _ir(uplink_disabled=False, b_has_irb=False),  # baseline: B is NOT an anchor
+        _ir(uplink_disabled=True, b_has_irb=True),  # proposed: B gains an IRB, A severed
+    )
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert f.severity is Severity.ERROR
+    assert f.evidence["lost_anchor_nodes"] == []  # no baseline anchor to lose
+    assert "B" in f.evidence["exit_anchor_nodes"]  # B is a proposed anchor, but new
+
+
 def test_severance_confidence_comes_from_the_link_not_assumed_carriage():
     # the blind-peer rule caps the EDGE's carriage confidence at MEDIUM, but the
     # LINK's existence is two-sided HIGH — severing it is a HIGH conclusion

@@ -16,10 +16,12 @@ no size/majority heuristic, so the surviving majority is dropped only when it
 demonstrably keeps an exit.
 
 - Severity is terminal here (this layer only): CRITICAL when the severed fragment
-  lost reach to an exit anchor surviving on the far side of the cut (HIGH
-  confidence); ERROR when HIGH with no surviving anchor (exit-less domain or the
-  delta removed the only exit); WARNING below HIGH. Confidence = MIN over the
-  baseline boundary links the delta severed.
+  lost reach to an exit anchor that exists on the far side of the cut in BOTH
+  baseline and proposed (HIGH confidence) — a gateway it genuinely had and lost,
+  the twin of blackhole.exit_lost; ERROR when HIGH with no such lost anchor
+  (exit-less domain, the delta removed the only exit, or the far-side anchor is
+  newly added by the delta so there was no baseline reach to lose); WARNING below
+  HIGH. Confidence = MIN over the baseline boundary links the delta severed.
 - A pre-existing island (proposed nodes == baseline nodes) is unchanged context.
 - Redundancy is respected by construction: graph components, not "an uplink died".
 """
@@ -88,6 +90,7 @@ class L2IsolationCheck:
         occupants = _occupants(ctx.baseline.ir)
         vc_root = vc_root_map(ctx.baseline.ir)
         anchors = exit_anchor_nodes(ctx.proposed.ir)
+        baseline_anchors = exit_anchor_nodes(ctx.baseline.ir)
 
         findings: list[Finding] = []
         worst = Status.PASS
@@ -112,7 +115,13 @@ class L2IsolationCheck:
                     severed_links.append(lnk.meta.confidence)
             confidence = min_confidence(*severed_links) if severed_links else _HIGH
             high = confidence.level is ConfidenceLevel.HIGH
-            lost_anchor_nodes = (baseline_home - fragment) & anchors
+            # CRITICAL only if the fragment LOST reach to a gateway it had: the
+            # anchor must sit on the far side of the cut AND exist in BOTH states.
+            # Intersecting baseline anchors too keeps this the twin of
+            # blackhole.exit_lost — a delta that severs A while ADDING a new exit
+            # on the far side is not a lost-gateway event (no baseline reach to
+            # lose), so it stays ERROR, not CRITICAL.
+            lost_anchor_nodes = (baseline_home - fragment) & anchors & baseline_anchors
             if high and lost_anchor_nodes:
                 severity = Severity.CRITICAL
                 severity_reason = "severed from a surviving exit anchor"
