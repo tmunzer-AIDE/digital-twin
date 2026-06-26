@@ -4,13 +4,13 @@
 
 **Goal:** Escalate `wired.l2.isolation.severed` to `CRITICAL` when a severed occupied fragment lost reach to an exit anchor that survives on the far side of the cut — the device-level twin of PR #23's `blackhole.exit_lost` CRITICAL.
 
-**Architecture:** One self-contained severity change in `l2_isolation.py`: compute `lost_anchor_nodes = (baseline_home - fragment) & anchors` (reusing the `anchors = exit_anchor_nodes(proposed.ir)` already in `run()`), tier the severity CRITICAL/ERROR/WARNING + a `severity_reason`, and add two anchor evidence keys. No change to candidate selection, confidence, status aggregation, verdict, or coverage.
+**Architecture:** One self-contained severity change in `l2_isolation.py`: compute `lost_anchor_nodes = (baseline_home - fragment) & anchors & baseline_anchors` (reusing the proposed `anchors = exit_anchor_nodes(proposed.ir)` already in `run()`, plus a new `baseline_anchors = exit_anchor_nodes(baseline.ir)`), tier the severity CRITICAL/ERROR/WARNING + a `severity_reason`, and add two anchor evidence keys. No change to candidate selection, confidence, status aggregation, verdict, or coverage.
 
 **Tech Stack:** Python 3.14, uv, pytest, ruff (100-col), mypy (strict on `src`, not tests).
 
 ## Global Constraints
 
-- **CRITICAL predicate (explicit form):** `lost_anchor_nodes = (baseline_home - fragment) & anchors`; `critical = high and bool(lost_anchor_nodes)`. Write it in the `(baseline_home - fragment)` form even though the existing `fragment & anchors` suppression makes it equivalent to `baseline_home & anchors` today.
+- **CRITICAL predicate (explicit form):** `baseline_anchors = exit_anchor_nodes(ctx.baseline.ir)`; `lost_anchor_nodes = (baseline_home - fragment) & anchors & baseline_anchors`; `critical = high and bool(lost_anchor_nodes)`. The lost anchor must sit on the far side of the cut **and** exist as an exit anchor in BOTH baseline and proposed — a delta that severs the fragment while *adding* a brand-new far-side exit is not a lost-gateway event (no baseline reach to lose) and must stay ERROR. This keeps it the twin of `blackhole.exit_lost`, which fires only on a baseline exit no longer reached. Write the `(baseline_home - fragment)` form explicitly (it is equivalent to `baseline_home & ...` today only because the existing `fragment & anchors` suppression means a flagged fragment holds no proposed anchor).
 - **Severity tiers:** CRITICAL when `high and lost_anchor_nodes`; ERROR when `high` and no surviving anchor; WARNING when not `high` (even if an anchor exists).
 - **Unchanged:** candidate selection (the `fragment & anchors` suppression and `if not occupied: continue`), `confidence`, the `worst = Status.FAIL if high else (...)` aggregation (CRITICAL is on the `high` branch → FAIL like ERROR), `default_severity = Severity.ERROR`, `requires()` = `{WIRED_L2}` (do NOT add `L3_EXITS`), and the human `message`.
 - **Verdict-invariant:** `decision.py` gates UNSAFE on NETWORK `ERROR` or `CRITICAL` — this is salience only, not a verdict/coverage change.
@@ -107,6 +107,21 @@ def test_below_high_severance_with_anchor_is_warning():
     assert "B" in f.evidence["lost_anchor_nodes"]  # anchor present, but high gate dominates
     assert "B" in f.evidence["exit_anchor_nodes"]
     assert f.evidence["severity_reason"] == "physical severance, severance confidence below HIGH"
+
+
+def test_severed_with_a_newly_added_far_side_anchor_is_not_critical():
+    # the delta severs A from B AND adds a brand-new IRB on B. A never had reach
+    # to a gateway in baseline (B's anchor did not exist then), so it did not LOSE
+    # one -> ERROR, not CRITICAL. Mirrors blackhole.exit_lost, which fires only on
+    # a BASELINE exit that is no longer reached, not on a proposed-only exit.
+    result = _run(
+        _ir(uplink_disabled=False, b_has_irb=False),  # baseline: B is NOT an anchor
+        _ir(uplink_disabled=True, b_has_irb=True),  # proposed: B gains an IRB, A severed
+    )
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert f.severity is Severity.ERROR
+    assert f.evidence["lost_anchor_nodes"] == []  # no baseline anchor to lose
+    assert "B" in f.evidence["exit_anchor_nodes"]  # B is a proposed anchor, but new
 ```
 
 And extend the existing exit-less ERROR test to lock that no anchor was lost (add the one assertion; keep the rest):
@@ -130,11 +145,23 @@ Expected: FAIL — `test_..._is_critical` sees `ERROR` (not yet CRITICAL); the t
 
 - [ ] **Step 4: Implement the severity tier + evidence**
 
-In `src/digital_twin/checks/wired/l2_isolation.py`, in `run()` right after `high = confidence.level is ConfidenceLevel.HIGH` (currently followed by the `totals = {...}` block), compute the anchor-loss and tier:
+In `src/digital_twin/checks/wired/l2_isolation.py`, first add the baseline anchor set next to the existing proposed-anchor line near the top of `run()`:
+
+```python
+        anchors = exit_anchor_nodes(ctx.proposed.ir)
+        baseline_anchors = exit_anchor_nodes(ctx.baseline.ir)
+```
+
+Then in the per-fragment loop, right after `high = confidence.level is ConfidenceLevel.HIGH` (currently followed by the `totals = {...}` block), compute the anchor-loss and tier:
 
 ```python
             high = confidence.level is ConfidenceLevel.HIGH
-            lost_anchor_nodes = (baseline_home - fragment) & anchors
+            # CRITICAL only if the fragment LOST reach to a gateway it had: the
+            # anchor must sit on the far side of the cut AND exist in BOTH states
+            # (proposed = it survives; baseline = the fragment had reach to lose).
+            # A delta that severs the fragment while ADDING a new far-side exit is
+            # not a lost-gateway event -> ERROR, the twin of blackhole.exit_lost.
+            lost_anchor_nodes = (baseline_home - fragment) & anchors & baseline_anchors
             if high and lost_anchor_nodes:
                 severity = Severity.CRITICAL
                 severity_reason = "severed from a surviving exit anchor"
@@ -185,7 +212,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ## Self-Review
 
 **Spec coverage:**
-- CRITICAL `high and bool(lost_anchor_nodes)` with the explicit `(baseline_home - fragment) & anchors` form → Step 4 ✓
+- CRITICAL `high and bool(lost_anchor_nodes)` with the explicit `(baseline_home - fragment) & anchors & baseline_anchors` form (anchor lost on the far side in BOTH states) → Step 4 ✓
 - ERROR (high, no surviving anchor) / WARNING (below high, even with anchor) → Step 4 tiers ✓
 - `requires()` stays WIRED_L2; status aggregation, confidence, candidate selection, `default_severity`, message unchanged → Step 4 leaves them ✓
 - Evidence `exit_anchor_nodes` / `lost_anchor_nodes` / `severity_reason` → Step 4 ✓
