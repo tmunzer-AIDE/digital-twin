@@ -1825,3 +1825,64 @@ def test_visual_map_origin_distinct_and_no_unrelated_vlan_paint(tmp_path):
         f"vlan:{VM_CTRL_VLAN} must not appear in visual_map (scoping regression); "
         f"got views: {list(vmap)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GS-L2ISO: l2_isolation fix regression (headline end-to-end golden)
+#
+# A backbone-connected L3 switch (ACCESS = EDGE) retains its uplink to a core
+# switch (CORE = HUB) that owns an IRB on vlan 999 (exit anchor). Disabling
+# ONLY the leaf ports — the AP uplink and the wired-client access port — severs
+# the AP as a standalone node. The surviving EDGE+HUB fragment retains the IRB
+# anchor and MUST NOT appear in wired.l2.isolation.severed.
+#
+# Before Tasks 1-2 the anchor check was absent: the HUB (and often EDGE)
+# appeared as severed_nodes even though the backbone uplink was up and the IRB
+# provided a real L3 exit. This test is the end-to-end regression lock.
+# ---------------------------------------------------------------------------
+
+
+def test_gs_l2_isolation_leaf_ports_only_severed(tmp_path):
+    # Topology:
+    #   CORE (HUB) — backbone uplink — ACCESS (EDGE) — AP uplink — AP
+    #                                               \— access port — wired client
+    # Delta: disable AP uplink + access port on EDGE; backbone uplink left up.
+    # The IRB on HUB (CORE) is the exit anchor: any fragment containing HUB is
+    # not L2-isolated. Expected: AP in severed_nodes; EDGE and HUB absent.
+    from .builders import ap_uplink_on
+
+    doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=True)
+    ap_mac, ap_port = ap_uplink_on(doc, EDGE)
+
+    # Both leaf ports → "disabled"; backbone uplink (EDGE_UPLINK_PORT) unchanged.
+    plan = plan_for(
+        doc,
+        [
+            device_op(
+                doc,
+                EDGE,
+                **{
+                    ap_port.replace("/", "__"): "disabled",
+                    EDGE_ACCESS_PORT.replace("/", "__"): "disabled",
+                },
+            )
+        ],
+    )
+    v = _simulate(doc, plan, tmp_path)
+
+    isolation = [f for f in v.findings if f.code == "wired.l2.isolation.severed"]
+    severed_nodes = {n for f in isolation for n in f.affected_entities}
+
+    # The leaf AP is physically severed — its uplink port is disabled
+    assert ap_mac in severed_nodes, (
+        f"expected leaf AP {ap_mac} in severed_nodes; got {severed_nodes}"
+    )
+    # The core switch (HUB) holds the IRB exit anchor — must NOT be severed
+    assert HUB not in severed_nodes, (
+        f"HUB (core with IRB anchor) must not be severed; got {severed_nodes}"
+    )
+    # The access switch (EDGE) keeps its backbone uplink to HUB — must NOT be severed
+    assert EDGE not in severed_nodes, (
+        f"EDGE (access switch with live backbone uplink) must not be severed; "
+        f"got {severed_nodes}"
+    )
