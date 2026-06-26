@@ -30,6 +30,7 @@ from .builders import (
     OD_ST_ID,
     OSPF_NETS,
     ST_SITE_B,
+    VM_CTRL_VLAN,
     WIRED_CLIENT_MAC,
     WIRELESS_CLIENT_MAC,
     ap_devlan_doc,
@@ -42,6 +43,8 @@ from .builders import (
     bgp_minimal_doc_device,
     bgp_op,
     device_op,
+    disable_uplink_op,
+    disabled_uplink_doc,
     dp_gatewaytemplate_edit_with_profiled_gw,
     dp_only_ap_profiled_not_tainted,
     dynamic_ap_wlan_doc,
@@ -1779,3 +1782,46 @@ def test_gs28_device_op_switch_peering_removed_is_review(tmp_path):
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
     assert v.decision is Decision.REVIEW, v.decision_reasons
     assert "wired.l3.bgp_adjacency.peering_removed" in {f.code for f in v.findings}
+
+
+# ---------------------------------------------------------------------------
+# VM: visual-map worked-example golden (Task 9)
+#
+# Disabling the sole EDGE->HUB uplink severs EDGE completely.
+# wired.l2.isolation.severed fires with caused_by naming the changed port,
+# so the visual map must place EDGE (as the port's owner) in the `origin`
+# tier on the `l2` view.  A control VLAN 88, confined exclusively to HUB
+# (no member/exit path through the cut link), must produce NO view entry —
+# proving the map is scoped to the cut, not globally painted.
+# ---------------------------------------------------------------------------
+
+
+def test_visual_map_origin_distinct_and_no_unrelated_vlan_paint(tmp_path):
+    # GS-VM: disabling the sole EDGE->HUB uplink severs vlan 999 (exit_lost).
+    # The admin_disable + blackhole findings carry caused_by pointing at the
+    # changed port on EDGE, so the visual map must put EDGE's device node in
+    # the `origin` tier on the `l2` view.  Control vlan 88 is confined to HUB
+    # and must produce no view entry — proving per-finding scoping.
+    doc = disabled_uplink_doc()
+    op = disable_uplink_op(doc)
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    # the disabled port fires at least one attributed finding (exit_lost or
+    # admin_disable.impact) — confirm attribution ran before checking the map
+    assert any(f.caused_by for f in v.findings), (
+        "expected at least one finding with caused_by (attribution must run)"
+    )
+
+    vmap = v.visual_map
+    # (a) l2 view exists and the disabled port's device appears as an ORIGIN tier entry
+    assert "l2" in vmap, f"expected 'l2' view in visual_map; got keys: {list(vmap)}"
+    l2 = vmap["l2"]
+    assert any(e.tier.value == "origin" for e in l2.values()), (
+        f"expected at least one 'origin' tier entry in l2; entries: {l2}"
+    )
+
+    # (b) control VLAN 88 is genuinely uninvolved — no view entry for it
+    assert f"vlan:{VM_CTRL_VLAN}" not in vmap, (
+        f"vlan:{VM_CTRL_VLAN} must not appear in visual_map (scoping regression); "
+        f"got views: {list(vmap)}"
+    )

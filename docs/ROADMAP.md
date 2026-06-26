@@ -81,6 +81,26 @@ sharp UNSAFE during live testing on the Live-Demo site.
     nor `port_stats` carry tx/rx bytes), so the optional "weight impact by real traffic"
     sub-item is dropped until a stats fetch is added. DHCP **lease** detail is likewise
     absent from the client object (only IP + derived subnet are modeled).
+- ✅ **VisualMap visual-attribution layer** — done 2026-06-26. `Verdict.visual_map`
+  (`VisualMap = dict[str, dict[str, VisualEntry]]`, keyed `(view, entity)`) is a
+  presentational-only attribution layer that records HOW CENTRAL an entity is to a change
+  (`tier`: `origin` from `caused_by` / `affected` from blast-radius evidence) and HOW BAD
+  (`severity`: worst-wins across finding instances). Views are scoped: `l2` (full topology),
+  `vlan:<vid>` (per-VLAN graph — a finding scoped to vlan 999 cannot paint vlan 88), and
+  `l3_exits` (routed L3 interface exits for referenced VLANs). `build_visual_map` is
+  purely presentational (decision.py never reads it; `safe_build_visual_map` wraps it with
+  fail-soft so a builder exception can never sink a verdict). Mermaid highlight.py deleted
+  (single mechanism). Pinned by a worked-example golden on a disabled-uplink delta: EDGE's
+  device node appears as `origin` on `l2`; control VLAN 88 (uninvolved in the cut) has no
+  view entry. **Deferred fast-follows:**
+  - **Primary/secondary cut-distance tier split** — a single-hop cause (changed port) and
+    a two-hop symptom (stranded member) both land in `origin` today; splitting them into
+    a third `secondary_origin` tier would let UIs shade hop distance. Punted until a real
+    rendering client asks for it.
+  - **Ghost baseline-node rendering for removed entities** — a removed device/port has no
+    proposed-IR node, so it currently yields no self-entry (only its owner or the residual
+    findings touch it). A "ghost" marker would let UIs show the removed entity as a greyed
+    node. Deferred until a rendering pass needs it.
 
 ## 2. New coverage — more checks over the existing IR
 
