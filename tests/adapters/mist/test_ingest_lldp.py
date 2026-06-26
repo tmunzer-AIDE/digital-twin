@@ -1,7 +1,15 @@
 from digital_twin.adapters.mist.ingest.base import IngestContext
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
-from digital_twin.ir import ConfidenceLevel, IRBuilder, LinkKind, Port, PortMode, port_id
+from digital_twin.ir import (
+    ConfidenceLevel,
+    IRBuilder,
+    IRCapability,
+    LinkKind,
+    Port,
+    PortMode,
+    port_id,
+)
 from tests.adapters.mist.fixtures import AP_1, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 SWITCH_B = {**SWITCH_A, "mac": "bb0000000002", "id": "dev-b", "name": "sw-b"}
@@ -30,6 +38,25 @@ def _ctx(port_stats, device_stats=()) -> IngestContext:
             ctx.builder.add_port(Port(id=pid, device_id=did, name=name, mode=PortMode.TRUNK))
     LldpIngester().ingest(ctx)
     return ctx
+
+
+def _ctx_for_caps(port_stats, device_stats=()):
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, SWITCH_B, AP_1),
+                     port_stats=tuple(port_stats), device_stats=tuple(device_stats)),
+        site_effective=dict(SITE_EFFECTIVE), device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    for did, name in (("aa0000000001", "ge-0/0/47"), ("bb0000000002", "ge-0/0/47"),
+                      ("aa0000000001", "ge-0/0/10")):
+        pid = port_id(did, name)
+        if not ctx.builder.has_port(pid):
+            ctx.builder.add_port(Port(id=pid, device_id=did, name=name, mode=PortMode.TRUNK))
+    return ctx
+
+
+def _port(ir, did, name):
+    return ir.ports[port_id(did, name)]
 
 
 def test_neighbor_named_by_system_name_only_still_links():
@@ -258,3 +285,33 @@ def test_stp_capability_earned_only_when_stp_rows_seen():
     )
     assert IRCapability.STP_STATE in LldpIngester().ingest(with_stp)
     assert with_stp.builder.build().port("aa0000000001:ge-0/0/10").stp_state == "forwarding"
+
+
+def test_uplink_bit_sets_is_uplink_independent_of_stp():
+    # a row with uplink=True and NO stp_state still annotates the port
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/47", "up": True, "uplink": True}]
+    ir = _ctx(stats).builder.build()
+    assert _port(ir, "aa0000000001", "ge-0/0/47").is_uplink is True
+
+
+def test_uplink_false_is_recorded_as_false():
+    stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/47", "up": True, "uplink": False}]
+    ir = _ctx(stats).builder.build()
+    assert _port(ir, "aa0000000001", "ge-0/0/47").is_uplink is False
+
+
+def test_non_bool_uplink_stays_unknown():
+    # strict typing: a drifted/non-bool shape must read as None, never coerced
+    for bad in ("false", 0, 1, "", "true"):
+        stats = [{"mac": "aa0000000001", "port_id": "ge-0/0/47", "up": True, "uplink": bad}]
+        ir = _ctx(stats).builder.build()
+        assert _port(ir, "aa0000000001", "ge-0/0/47").is_uplink is None, bad
+
+
+def test_uplink_only_row_earns_no_stp_capability():
+    # an uplink-bearing row with no stp_state must NOT earn STP_STATE
+    ctx = _ctx_for_caps([{"mac": "aa0000000001", "port_id": "ge-0/0/47",
+                          "up": True, "uplink": True}])
+    caps = LldpIngester().ingest(ctx)
+    assert IRCapability.STP_STATE not in caps
+    assert _port(ctx.builder.build(), "aa0000000001", "ge-0/0/47").is_uplink is True
