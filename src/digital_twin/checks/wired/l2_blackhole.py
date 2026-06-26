@@ -2,7 +2,8 @@
 
 Per VLAN (spec contract):
 - exit resolved by analysis/exits (IRB HIGH > boundary uplink edge-confidence >
-  NONE). NONE while members exist -> INSUFFICIENT_DATA for that vlan.
+  inferred uplink LOW (is_uplink, gateway unmodeled) > NONE). NONE while
+  members exist -> INSUFFICIENT_DATA for that vlan.
 - ATTRIBUTION is condition-based: a stranded member component is attributed to
   the delta when it lost an exit it had in IR (`exit_lost`) OR when its members
   are newly introduced (`new_member_stranded` — e.g. the delta adds the first
