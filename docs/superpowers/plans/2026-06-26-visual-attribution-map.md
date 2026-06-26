@@ -574,6 +574,25 @@ def test_affected_l3_exits_only_serving_interfaces():
     l3 = _views(cs, "l3_exits")
     assert ("vlan", "10") in l3
     assert ("intf", "s1:l3:irb:10") in l3  # serves vlan 10
+
+
+def test_affected_l3_exits_excludes_non_hit_node_interface():
+    # IRB for vlan 10 lives on s1, but the finding hits s2 only -> s1's IRB must
+    # NOT be highlighted (interfaces are scoped to HIT nodes, not just the vlan).
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    f = _f(subject=ObjectRef("vlan", "10"), evidence={"vlan": 10, "component_nodes": ["s2"]})
+    cs = vm._affected_contributions(f, 0, ir, idx)
+    assert ("intf", "s1:l3:irb:10") not in _views(cs, "l3_exits")
+
+
+def test_affected_non_proposed_vlan_makes_no_phantom_view():
+    # a finding referencing a vlan absent from proposed IR yields no vlan: view
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    f = _f(subject=ObjectRef("vlan", "999"), evidence={"vlan": 999, "component_nodes": ["s1"]})
+    cs = vm._affected_contributions(f, 0, ir, idx)
+    assert not any(c.view == "vlan:999" for c in cs)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -688,6 +707,8 @@ def _affected_contributions(
         add("l2", "device", n)
     # vlan:<vid>: nodes that exist in that vlan's graph + the vlan box; l3_exits
     for vid in vlans:
+        if vid not in proposed_ir.vlans:
+            continue  # no diagram exists for a non-proposed vlan -> no phantom view
         add(f"vlan:{vid}", "vlan", str(vid))
         for n in nodes:
             if idx.node_in_vlan(n, vid):
@@ -695,7 +716,8 @@ def _affected_contributions(
         if vid in idx.routed_vlans:
             add("l3_exits", "vlan", str(vid))
             for intf in idx.intfs_for_vlan(vid):
-                if intf.device_id and _node(proposed_ir, intf.device_id):
+                owner = _node(proposed_ir, intf.device_id)
+                if owner and owner in nodes:  # ONLY interfaces owned by a HIT node
                     add("l3_exits", "intf", intf.id)
 
     # ----- paired arrays (impacts[]): attachment pairs ONLY with its own vlan -----
@@ -710,7 +732,7 @@ def _affected_contributions(
         )
         if att_node:
             add("l2", "device", att_node)
-        if isinstance(ivid, int):
+        if isinstance(ivid, int) and ivid in proposed_ir.vlans:
             add(f"vlan:{ivid}", "vlan", str(ivid))
             if att_node and idx.node_in_vlan(att_node, ivid):
                 add(f"vlan:{ivid}", "device", att_node)
@@ -762,9 +784,28 @@ def test_origin_port_cause_surfaces_owner_device_on_l2_and_vlan():
     cs = vm._origin_contributions(f, 0, ir, ir, idx)
     assert any(c.view == "l2" and c.kind == "device" and c.id == "s1"
                and c.tier is vm.VisualTier.ORIGIN for c in cs)
+    # the port itself ALSO gets a self-entry on l2 (it resolves in proposed IR)
+    assert any(c.view == "l2" and c.kind == "port" and c.id == "s1:ge-0/0/0"
+               and c.tier is vm.VisualTier.ORIGIN for c in cs)
     # s1 participates in vlan 10 -> origin shows on vlan:10 too
     assert any(c.view == "vlan:10" and c.id == "s1" and c.tier is vm.VisualTier.ORIGIN
                for c in cs)
+
+
+def test_origin_removed_device_makes_no_phantom_l2_entry():
+    base = _two_switch_vlan_ir()
+    # proposed: s1 removed entirely
+    pb = IRBuilder()
+    pb.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_device(Device(id="s3", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_vlan(Vlan(vlan_id=10, name="data", subnet="10.0.10.0/24"))
+    pb.add_vlan(Vlan(vlan_id=20, name="voice"))
+    proposed = pb.build()
+    idx = vm._build_view_index(proposed)
+    f = _f(subject=ObjectRef("vlan", "10"), evidence={"vlan": 10},
+           caused_by=(Cause(ref=ObjectRef("device", "s1")),))
+    cs = vm._origin_contributions(f, 0, base, proposed, idx)
+    assert not any(c.id == "s1" for c in cs)  # removed device -> no phantom entry
 
 
 def test_origin_removed_l3intf_falls_back_to_owner_on_l2_only():
@@ -820,8 +861,12 @@ Add to `src/digital_twin/viz/visual_map.py`:
 def _origin_owner_views(
     owner: str, vlans: set[int], proposed_ir: IR, idx: _ViewIndex, ref: FindingRef
 ) -> list[_Contribution]:
-    """An owner device projects onto l2 always, and onto each referenced vlan view
-    ONLY if it still participates in that vlan's proposed graph (no phantom nodes)."""
+    """An owner device projects onto l2 (only if it still EXISTS in proposed —
+    a removed device yields no phantom l2 entry, it becomes unlocalized), and onto
+    each referenced vlan view only if it still participates in that vlan's proposed
+    graph (no phantom nodes)."""
+    if _node(proposed_ir, owner) is None:
+        return []  # owner device removed -> no phantom node (spec: caption/unlocalized)
     cs = [_Contribution("l2", "device", owner, VisualTier.ORIGIN, ref)]
     for vid in vlans:
         if idx.node_in_vlan(owner, vid):
@@ -836,14 +881,24 @@ def _origin_contributions(
     out: list[_Contribution] = []
 
     def emit_cause(cause_ref: ObjectRef, vlans: set[int]) -> None:
-        # the interface's own self-entry only when it resolves in proposed IR
-        if cause_ref.kind == "l3intf" and any(
+        # SELF-entry for a non-device cause, ONLY when it resolves in proposed IR
+        # (a removed port/link/intf gets no dangling self-entry — owner device
+        # below is the fallback). port/link render on l2; intf on l3_exits.
+        if cause_ref.kind == "port" and cause_ref.id in proposed_ir.ports:
+            out.append(_Contribution("l2", "port", cause_ref.id, VisualTier.ORIGIN, ref))
+        elif cause_ref.kind == "link" and all(
+            p in proposed_ir.ports for p in cause_ref.id.split("__")
+        ):
+            out.append(_Contribution("l2", "link", cause_ref.id, VisualTier.ORIGIN, ref))
+        elif cause_ref.kind == "l3intf" and any(
             i.id == cause_ref.id for i in proposed_ir.l3intfs
         ):
             for vid in vlans:
                 if vid in idx.routed_vlans:
                     out.append(_Contribution("l3_exits", "intf", cause_ref.id,
                                              VisualTier.ORIGIN, ref))
+        # owner device(s) — the renderable fallback; _origin_owner_views gates on
+        # proposed existence so a removed device produces no phantom l2 entry.
         for owner in owner_device_nodes(cause_ref.kind, cause_ref.id, baseline_ir, proposed_ir):
             out.extend(_origin_owner_views(owner, vlans, proposed_ir, idx, ref))
 
