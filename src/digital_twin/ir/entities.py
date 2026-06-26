@@ -109,6 +109,71 @@ class Device:
 
 
 @dataclass(frozen=True)
+class PortAuth:
+    """Effective wired-auth config for a switch port (SP3). Frozen + comparable:
+    change-detection is plain inequality. Defaults are the OAS defaults, so
+    PortAuth() is the canonical all-default surface — Port.auth is None ONLY when
+    the whole surface is default/absent (a lone persist_mac/reauth change is a
+    non-default PortAuth, never collapsed to None)."""
+
+    port_auth: str | None = None          # "dot1x" | None
+    mac_auth: bool = False                 # enable_mac_auth
+    mac_auth_only: bool = False
+    mac_auth_preferred: bool = False
+    mac_auth_protocol: str = "eap-md5"     # OAS default
+    allow_multiple_supplicants: bool = False
+    dynamic_vlan_networks: tuple[str, ...] = ()
+    server_fail_network: str | None = None
+    server_reject_network: str | None = None
+    guest_network: str | None = None
+    bypass_auth_when_server_down: bool = False
+    bypass_auth_when_server_down_for_unknown_client: bool = False
+    persist_mac: bool = False
+    reauth_interval: str | None = None     # canonical (see ingest _reauth)
+
+
+def requires_auth(a: PortAuth | None) -> bool:
+    """The port forces clients to authenticate (dot1x or MAC-auth)."""
+    return a is not None and (a.port_auth == "dot1x" or a.mac_auth or a.mac_auth_only)
+
+
+def admitted_methods(a: PortAuth | None) -> frozenset[str] | None:
+    """The auth methods the port admits. None = no auth required (all clients
+    admitted). Else a subset of {"dot1x", "mac"}."""
+    if not requires_auth(a):
+        return None
+    assert a is not None
+    m: set[str] = set()
+    if a.mac_auth or a.mac_auth_only:
+        m.add("mac")
+    if a.port_auth == "dot1x" and not a.mac_auth_only:
+        m.add("dot1x")
+    return frozenset(m)
+
+
+def _fallbacks(a: PortAuth | None) -> frozenset[str]:
+    if a is None:
+        return frozenset()
+    return frozenset(
+        n for n in (a.guest_network, a.server_fail_network, a.server_reject_network) if n
+    )
+
+
+def tightens(old: PortAuth | None, new: PortAuth | None) -> bool:
+    """Admission became more restrictive in a way that could block currently-
+    admitted clients: auth newly required, OR became MAC-auth-only (dot1x
+    supplicants now rejected), OR a fallback network (guest/server_fail/
+    server_reject) was removed."""
+    new_only = new.mac_auth_only if new is not None else False
+    old_only = old.mac_auth_only if old is not None else False
+    return (
+        (requires_auth(new) and not requires_auth(old))
+        or (new_only and not old_only)
+        or bool(_fallbacks(old) - _fallbacks(new))
+    )
+
+
+@dataclass(frozen=True)
 class Port:
     id: str
     device_id: str
@@ -135,6 +200,7 @@ class Port:
     observed_duplex: str | None = None
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
+    auth: PortAuth | None = None  # SP3: effective wired-auth surface; None = all-default
     # CONFIG intent (usage stp_edge / stp_disable): an edge port does not
     # expect BPDUs (self-heals on receipt); bpdu_filter DROPS them — the port
     # stops participating in loop protection entirely
