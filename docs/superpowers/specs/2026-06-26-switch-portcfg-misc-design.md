@@ -54,22 +54,39 @@ on `voip_network`).
   ignores an access port's tagged VLANs — `_tagged(port)` returns `set()` unless
   `mode is TRUNK` (`representations/l2_graph.py`), and `access_ports_by_vlan`
   (`ir/indexes.py`) keys access ports by `native_vlan` ONLY. So a voice VLAN folded
-  into an access port's `tagged_vlans` would be silently dropped. **A port with a
-  `voice_vlan` must become a MEMBER of that VLAN** so it participates in the VLAN
-  reachability graph. Concretely: extend the member index so any port with
-  `voice_vlan is not None` is listed under its `voice_vlan` (in addition to the
-  access-native membership), so `build_vlan_graph` includes the switch node in the
-  voice VLAN component. Voice-VLAN reachability to its exit then flows via the
-  uplink trunk's own tagged carriage (which already carries voice when the uplink
-  config lists it — `_tagged` works on trunks) and the voice IRB exit — all
-  existing machinery. **No new check**: `l2.blackhole` / vlan-reachability /
-  `client.impact` / `native_mismatch` react to the voice VLAN automatically.
+  into an access port's `tagged_vlans` would be silently dropped. **An
+  ACCESS/host-facing port with a `voice_vlan` must become a MEMBER of that VLAN**
+  so it participates in the VLAN reachability graph. Concretely: extend the member
+  index so a port with `voice_vlan is not None` **AND `mode is PortMode.ACCESS`**
+  is listed under its `voice_vlan` (in addition to access-native membership), so
+  `build_vlan_graph` includes the switch node in the voice VLAN component.
+  **Mode-gated to ACCESS on purpose:** a trunk-shaped usage can also carry
+  `voip_network`, but a transit trunk is NOT an endpoint member — it carries the
+  voice VLAN via normal tagged carriage (`_tagged` on trunks), so folding voice
+  into `tagged_vlans` covers trunks while the member index covers access. Treating
+  a transit trunk as a member would create false member/blackhole churn.
+  Voice-VLAN reachability to its exit flows via the uplink trunk's tagged carriage
+  + the voice IRB exit — existing machinery; `l2.blackhole` / vlan-reachability /
+  `native_mismatch` react to the voice VLAN automatically.
+- **`client.impact` extension (NOT automatic — required):** `ClientImpactCheck`
+  (`checks/wired/client_impact.py`) detects only `disconnect` (attach port
+  removed), `vlan_move` (NATIVE vlan changed), and `blackhole` (vlan loses exit).
+  A phone on `client.vlan == base_port.voice_vlan` whose port stops offering that
+  voice VLAN (`prop_port.voice_vlan != client.vlan`) is MISSED — the vlan may stay
+  healthy elsewhere (blackhole passes), and `vlan_move` only checks native. So add
+  an explicit branch to `_impact_of`: a wired client whose `vlan` was offered by
+  its attach port in baseline (native OR `voice_vlan`) and is no longer offered in
+  proposed → impact `vlan_removed` ("voice/membership vlan {v} no longer offered on
+  this port"). This is a small modeled extension, not free integration.
 - **Field gate:** allowlist `voip_network` on `port_usages` + `local_port_config`
   (via `_MODELED_USAGE_ATTRS`).
 - **Tests (owner-required):** an ACCESS port with data VLAN 10 + voice VLAN 30
   proves **VLAN 30 appears in the VLAN/reachability graph** (the port is a member
   of VLAN 30); a `voip_network` removal that strands the voice VLAN is a detected
-  delta the existing checks flag.
+  delta; **an active phone on the voice VLAN whose port drops `voip_network` is
+  flagged by `client.impact` (`vlan_removed`)** even when the VLAN stays healthy;
+  **a TRUNK usage carrying `voip_network` is NOT made an endpoint member** (regression
+  — voice rides its tagged carriage, no spurious member/blackhole).
 - **Golden checkpoint:** folding voice into the VLAN graph can shift
   `vlan_components`; the suite is delta-based (voice present on both baseline and
   proposed cancels), but the plan must run the full golden suite and investigate
@@ -88,8 +105,14 @@ on `voip_network`).
 - **Resolver:** `mac_limit` to `_OVERWRITE_ATTRS` (overwrite) + `_LOCAL_ATTRS`
   (local); usage-level via `usage_definition`. **Not** `_USAGE_OVERRIDE_ATTRS`
   (absent from `port_config`).
-- **Check `wired.port.mac_limit_exceeded`** — per port whose `mac_limit` the delta
-  changed, with an explicit **client-data honesty boundary**:
+- **Check `wired.port.mac_limit_exceeded`** — **`requires()` returns `{WIRED_L2}`
+  ONLY** (like `AuthAccessChangeCheck`), then inspects `IRCapability.CLIENTS_ACTIVE`
+  in `ctx.proposed.capabilities` INTERNALLY. (If it required `CLIENTS_ACTIVE`, the
+  registry would short-circuit to INSUFFICIENT_DATA when client data is absent —
+  `checks/registry.py` — and the `.unverified` finding below would never emit.)
+  Per port whose `mac_limit` the delta changed, with an explicit **client-data
+  honesty boundary** (where "active wired-client data present" means
+  `IRCapability.CLIENTS_ACTIVE in ctx.proposed.capabilities`):
   - `prop.mac_limit` is `None` (unlimited), or merely RAISED vs baseline →
     **silent** (a looser/removed cap cannot drop anyone).
   - `prop.mac_limit` is an **unresolved token** (and changed) → **WARNING→REVIEW**
@@ -149,12 +172,17 @@ are documented properties the unknown-attribute walker accepts).
   four on local+usage; NONE on `port_config`).
 - **voip:** ACCESS port data=10 + voice=30 → VLAN 30 in the VLAN/reachability
   graph; voice-VLAN strand detected; resolver resolves `voip_network` and a
-  `port_config` `voip_network` is ignored.
+  `port_config` `voip_network` is ignored; **active phone on the voice VLAN whose
+  port drops `voip_network` → `client.impact` `vlan_removed` even when the VLAN
+  stays healthy**; **TRUNK usage with `voip_network` is NOT an endpoint member**
+  (carried via tagged, no spurious blackhole).
 - **mac_limit normalizer:** `5`=="5"→5; `0`→None; `""`/null→None; `"{{var}}"`/object
   → stable token (NOT None).
-- **mac_limit_exceeded:** concrete over-limit with clients → REVIEW(.exceeded);
-  observed ≤ limit with clients → silent; restrictive/new limit with NO client data
-  → REVIEW(.unverified); unresolved value → REVIEW(.unresolved); raised/unlimited →
+- **mac_limit_exceeded:** check `requires()` is `{WIRED_L2}` only (a unit asserts
+  CLIENTS_ACTIVE is NOT required, so it isn't registry-short-circuited); concrete
+  over-limit with CLIENTS_ACTIVE → REVIEW(.exceeded); observed ≤ limit with
+  CLIENTS_ACTIVE → silent; restrictive/new limit WITHOUT CLIENTS_ACTIVE →
+  REVIEW(.unverified); unresolved value → REVIEW(.unresolved); raised/unlimited →
   silent; never ERROR/UNSAFE.
 - **misc:** any of the 3 knobs changes → REVIEW(.unmodeled); `Port.misc=None`
   ⇔ all-default (a lone `enable_qos` flip wakes it); never SAFE.
