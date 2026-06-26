@@ -1950,7 +1950,8 @@ def disabled_uplink_doc() -> dict[str, Any]:
     - The parallel port rides gs_empty_trunk (carries nothing) — single carrier.
     - Control VLAN 88 is in setting.networks and has an IRB on HUB, but NO
       member port on EDGE and NO carriage across the EDGE->HUB uplink: it is
-      genuinely uninvolved in the uplink cut.
+      genuinely uninvolved in the uplink cut. Disabling the sole uplink fires
+      wired.l2.blackhole.exit_lost (a single disabled uplink does not sever).
     """
     doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=False)
     # Add the control VLAN — declared in setting, IRB on HUB only.
@@ -1969,7 +1970,7 @@ def disable_uplink_op(doc: dict[str, Any]) -> dict[str, Any]:
     """Disable the sole EDGE uplink (EDGE_UPLINK_PORT -> 'disabled').
 
     With parallel_carries_gs=False the parallel port is empty-trunk, so
-    the EDGE segment becomes completely severed -> wired.l2.isolation.severed
+    the EDGE segment loses its exit path -> wired.l2.blackhole.exit_lost
     fires with caused_by naming the disabled port on EDGE.
     """
     return device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "disabled"})

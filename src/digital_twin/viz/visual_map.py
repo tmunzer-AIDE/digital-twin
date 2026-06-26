@@ -351,7 +351,7 @@ class _Cell:
     tier: VisualTier
     sev_rank: int
     sev: Severity | None
-    refs: dict[int, FindingRef]
+    refs: dict[int, FindingRef] = field(default_factory=dict)
 
 
 def build_visual_map(

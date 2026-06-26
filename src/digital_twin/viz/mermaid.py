@@ -179,7 +179,7 @@ def _l2_diagram(
     entity_keys = _entity_keys_on_chart(ids, view_map)
     captions, causes = _captions_and_causes(view_map, findings, ids, entity_keys)
     # unlocalized: findings whose index appears in NO entry across the whole vmap
-    # (computed in build_diagrams and threaded here via unloc_count parameter)
+    # (computed in build_diagrams and threaded here via the _with_unloc wrapper)
     sev = _worst(*(
         entry.severity for ekey, entry in view_map.items()
         if ekey.partition(":")[0] == "device"
