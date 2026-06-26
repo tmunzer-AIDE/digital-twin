@@ -56,7 +56,7 @@ class AnalysisContext:
 
     def exit_for(self, vlan_id: int) -> ExitResolution:
         if vlan_id not in self._exits:
-            self._exits[vlan_id] = resolve_exit(self._ir, self.vlan_graph(vlan_id))
+            self._exits[vlan_id] = resolve_exit(self._ir, vlan_id, self.vlan_graph(vlan_id))
         return self._exits[vlan_id]
 
     def vlan_components(self, vlan_id: int) -> tuple[VlanComponent, ...]:

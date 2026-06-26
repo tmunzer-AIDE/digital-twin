@@ -210,7 +210,7 @@ def _vlan_diagram(
     # resolve_exit covers IRB/SVI (is_exit) AND boundary-uplink GATEWAY nodes on a
     # carrying edge; union the owners of any l3intf for the vlan (incl GATEWAY-role
     # interfaces, which resolve_exit rule 1 — IRB/SVI only — does not see).
-    exit_nodes = set(resolve_exit(ir, g).nodes)
+    exit_nodes = set(resolve_exit(ir, vid, g).nodes)
     for intf in ir.l3intfs:
         if intf.vlan_id == vid:
             exit_nodes.add(node_for(vc, intf.device_id))
