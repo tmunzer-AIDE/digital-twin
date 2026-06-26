@@ -1090,7 +1090,8 @@ def test_build_map_headline_bleed_regression():
     m = vm.build_visual_map(ir, ir, (f,))
     assert "device:s1" in m.get("vlan:10", {})
     assert "device:s1" not in m.get("vlan:20", {})  # THE FIX
-    assert "vlan:20" not in m or all(k.startswith("vlan:") is False for k in [])  # no vlan20 paint
+    # vlan:20 carries no paint at all from a vlan-10-scoped finding
+    assert m.get("vlan:20", {}) == {}
 
 
 def test_build_map_serializable_entry_shape():
