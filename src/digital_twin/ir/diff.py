@@ -21,6 +21,7 @@ _IGNORED_BY_KIND: dict[str, frozenset[str]] = {
     "device": frozenset({"name"}),
     "wlan": frozenset({"inherited"}),
     "bgp_peer": frozenset({"session_name"}),
+    "port": frozenset({"is_uplink"}),
 }
 
 # Entity kinds the diff walks. Adding a domain (WAN/NAC/routing) = append ONE line

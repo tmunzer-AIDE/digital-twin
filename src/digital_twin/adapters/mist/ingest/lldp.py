@@ -53,6 +53,7 @@ class LldpIngester:
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
         claims = self._claims(ctx)
         stp_seen = self._apply_stp(ctx)
+        self._apply_port_uplink(ctx)
         emitted: set[str] = set()
         self._emit_links(ctx, claims, emitted)
         self._emit_ap_uplinks(ctx, claims, emitted)
@@ -109,6 +110,15 @@ class LldpIngester:
             )
             seen = True
         return seen
+
+    def _apply_port_uplink(self, ctx: IngestContext) -> None:
+        for row in ctx.raw.port_stats:
+            val = row.get("uplink")
+            if type(val) is not bool or not row.get("port_id"):
+                continue  # strict bool only; non-bool/absent -> leave is_uplink None
+            pid = port_id(device_id(str(row["mac"])), str(row["port_id"]))
+            self._ensure_port(ctx, pid)
+            ctx.builder.replace_port(replace(ctx.builder.get_port(pid), is_uplink=val))
 
     # -- links ----------------------------------------------------------------
     def _emit_links(

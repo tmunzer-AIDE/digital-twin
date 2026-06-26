@@ -4,9 +4,10 @@ Disabling a port (inline `disabled` on local_port_config / port_config_overwrite
 or a `usage: "disabled"` reassignment) takes the link down: Port.disabled
 forwards NOTHING and the L2 graph drops its edge, so a disabled trunk/uplink
 strands downstream segments (wired.l2.blackhole). This check surfaces the ACTION
-and weights it by blast radius — an AP uplink, an inter-switch/trunk link, or a
-port with active wired clients floors REVIEW (or UNSAFE at HIGH confidence); a
-bare edge port is INFO context.
+and weights it by blast radius — an AP uplink, a modeled inter-switch/gateway
+link, a port with active wired clients, or a trunk that is an uplink or unknown
+floor REVIEW (or UNSAFE at HIGH confidence); a bare edge port or a trunk with
+is_uplink=False and no modeled peer/AP/client is INFO context.
 
 ERROR is emitted ONLY when the port<->peer tie is HIGH-confidence: decide()
 floors UNSAFE on any network ERROR before consulting confidence, so a
@@ -161,19 +162,29 @@ class AdminDisableCheck:
                 "disconnect",
                 port_ref,
             )
-        if base_port.mode is PortMode.TRUNK:
-            # config trunk is a HIGH fact
-            return (
-                Severity.WARNING, _HIGH, "wired.port.admin_disable.impact",
-                f"port {pid} administratively disabled — a trunk link goes down",
-                port_ref,
-            )
         peer_lk = nonap_peers.get(pid)
         if peer_lk is not None:
-            # peer-only tie: confidence is the LINK's (a one-sided LLDP peer is weak)
+            # a modeled inter-switch / gateway link: confidence is the LINK's
+            # (a one-sided LLDP peer is weaker than a two-sided one)
             return (
                 Severity.WARNING, peer_lk.meta.confidence, "wired.port.admin_disable.impact",
                 f"port {pid} administratively disabled — an inter-switch / gateway link goes down",
+                port_ref,
+            )
+        if base_port.mode is PortMode.TRUNK:
+            if base_port.is_uplink is False:
+                # POSITIVE evidence it is not an uplink and has no modeled peer/AP/
+                # client -> a configured-but-unconnected trunk, no impact (INFO).
+                return (
+                    Severity.INFO, _HIGH, "wired.port.admin_disable.edge",
+                    f"port {pid} administratively disabled — trunk port with no modeled "
+                    "uplink or downstream, no impact",
+                    port_ref,
+                )
+            # is_uplink True (faces the core) OR None (unknown) -> conservative WARNING
+            return (
+                Severity.WARNING, _HIGH, "wired.port.admin_disable.impact",
+                f"port {pid} administratively disabled — a trunk link goes down",
                 port_ref,
             )
         return (
