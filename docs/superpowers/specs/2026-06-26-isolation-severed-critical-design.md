@@ -11,7 +11,7 @@ PR [#23](https://github.com/tmunzer-AIDE/digital-twin/pull/23) made `wired.l2.bl
 **This is a salience/consistency change, not a new detection path.** On the *verdict* it is redundant: whenever a fragment is severed from a still-present, per-VLAN-locatable exit, `blackhole.exit_lost` already fires `CRITICAL`, and (under the current visual-map design) `blackhole.exit_lost` already carries the affected device nodes in `affected_entities`, so it can already paint those nodes `CRITICAL`. The value of escalating `isolation.severed` is:
 
 1. **Consistency** — the device-severance finding agrees in severity with the per-VLAN finding for the same event, instead of reading `ERROR` while `blackhole` reads `CRITICAL`.
-2. **The physical-carrier case** — where `isolation.severed` is the *visible* finding and `blackhole` is absent or not applicable (e.g. the severed fragment carried no resolvable per-VLAN membership, but the home it was cut from holds a gateway-role / routed-IRB anchor).
+2. **The physical-carrier case** — where `isolation.severed` is the *visible* finding and `blackhole` emits no per-VLAN blackhole/exit-loss finding for it (isolation still requires occupants, but the home it was cut from holds a gateway-role / routed-IRB anchor without a per-VLAN exit-loss that `blackhole` would report).
 
 It is **not** a verdict change (`CRITICAL` and `ERROR` both gate UNSAFE in `decision.py`) and **not** a coverage change.
 
@@ -19,7 +19,7 @@ It is **not** a verdict change (`CRITICAL` and `ERROR` both gate UNSAFE in `deci
 
 ### Locked contract
 
-`wired.l2.isolation.severed` severity, for a fragment already determined to be a severed occupied strict-subset (the existing candidate test at [l2_isolation.py:128-141](src/digital_twin/checks/wired/l2_isolation.py) is unchanged):
+`wired.l2.isolation.severed` severity, for a fragment already determined to be a severed occupied strict-subset (the existing candidate selection — the `fragment & anchors` suppression and the `if not occupied: continue` guard around [l2_isolation.py:95-98](src/digital_twin/checks/wired/l2_isolation.py) — is unchanged):
 
 - **`CRITICAL`** when `high` **and** `lost_anchor_nodes` is non-empty.
 - **`ERROR`** when `high` but `lost_anchor_nodes` is empty (exit-less domain, or the delta removed the only exit — the conservative direction where we must not invent CRITICAL).
