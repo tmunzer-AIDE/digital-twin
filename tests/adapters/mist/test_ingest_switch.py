@@ -1459,3 +1459,22 @@ def test_observed_l1_canonicalized_and_up_gated():
     assert (p2.observed_speed, p2.observed_duplex) == ("100m", "half")
     p3 = ir.ports["aa0000000001:ge-0/0/3"]  # down port: never spurious half
     assert (p3.observed_speed, p3.observed_duplex) == (None, None)
+
+
+def test_port_auth_normalization_and_none_when_default():
+    from digital_twin.adapters.mist.ingest.switch import _port_auth, _reauth
+    from digital_twin.ir.entities import PortAuth
+    # all-default surface -> None
+    assert _port_auth({"mode": "access", "port_network": "corp"}) is None
+    # persist_mac-only -> non-None (false-SAFE guard)
+    assert _port_auth({"persist_mac": True}) == PortAuth(persist_mac=True)
+    # reauth: 36000 (int) and "36000" (numeric str) canonicalize equal; "" -> None;
+    # object -> stable token (never silently None)
+    assert _reauth(36000) == _reauth("36000") == "36000"
+    assert _reauth("") is None and _reauth(None) is None
+    assert _reauth({"x": 1}) is not None  # stable token, NOT collapsed to None
+
+
+def test_reauth_65000_int_equals_str():
+    from digital_twin.adapters.mist.ingest.switch import _reauth
+    assert _reauth(65000) == _reauth("65000") == "65000"

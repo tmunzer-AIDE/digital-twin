@@ -339,6 +339,26 @@ def test_port_config_overwrite_disable_is_simulated_not_unknown():
     assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
 
 
+def test_local_port_auth_change_is_simulated_not_unknown():
+    # enabling dot1x via local_port_config on a configured access port must
+    # SIMULATE (REVIEW via wired.auth.access_change), not return UNKNOWN.
+    # ge-0/0/0 must be locally-overridable up front (no_local_overwrite defaults
+    # True, which would discard the local auth), so the local port_auth
+    # deterministically reaches the resolver/check.
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    raw = dc_replace(_raw(), devices=(sw_a,))
+    payload = {"local_port_config": {"ge-0/0/0": {"port_auth": "dot1x"}}}
+    v = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert any(c.startswith("wired.auth.access_change") for c in codes), codes
+    assert v.decision is Decision.REVIEW, v.decision
+
+
 def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
     # pinning one end of a trunk uplink to a forced speed/duplex while the peer
     # autonegotiates must SIMULATE (REVIEW via autoneg_mismatch), not UNKNOWN.

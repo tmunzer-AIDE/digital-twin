@@ -30,6 +30,18 @@ _NAC_MATCH_DIMS: tuple[str, ...] = (
     "family", "mfg", "model", "os_type", "vendor",
 )
 
+# Wired-auth attrs (SP3) — modeled by wired.auth.access_change (policy-floor).
+# OAS-present on port_usages + local_port_config only, so routing them through
+# _MODELED_USAGE_ATTRS puts port_usages.* in scope for site/device/networktemplate
+# and local_port_config.* in scope for device only — and nothing on
+# port_config/port_config_overwrite (auth is absent from those maps).
+_AUTH_ATTRS: tuple[str, ...] = (
+    "port_auth", "enable_mac_auth", "mac_auth_only", "mac_auth_preferred",
+    "mac_auth_protocol", "allow_multiple_supplicants", "dynamic_vlan_networks",
+    "server_fail_network", "server_reject_network", "guest_network",
+    "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
+    "persist_mac", "reauth_interval",
+)
 # What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
 # + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
 # about cutting power to a powered device).
@@ -44,6 +56,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "speed",
     "duplex",
     "disable_autoneg",
+    *_AUTH_ATTRS,
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
