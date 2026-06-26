@@ -42,8 +42,19 @@ _USAGE_OVERRIDE_ATTRS = (
 # poe.disconnect check). disable_autoneg is NOT on overwrite per OAS.
 _OVERWRITE_ATTRS = ("port_network", "poe_disabled", "disabled", "speed", "duplex")
 
+# Wired-auth attrs (SP3): OAS-present on local_port_config + port_usages ONLY
+# (never port_config / port_config_overwrite). Applied from local here; usage-
+# level auth flows via usage_definition. NOT added to _USAGE_OVERRIDE_ATTRS
+# (that is the port_config inline layer).
+_AUTH_ATTRS = (
+    "port_auth", "enable_mac_auth", "mac_auth_only", "mac_auth_preferred",
+    "mac_auth_protocol", "allow_multiple_supplicants", "dynamic_vlan_networks",
+    "server_fail_network", "server_reject_network", "guest_network",
+    "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
+    "persist_mac", "reauth_interval",
+)
 # local_port_config may additionally carry the admin-down boolean (OAS).
-_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled")
+_LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled", *_AUTH_ATTRS)
 
 # Mist SYSTEM-DEFINED port usages: referenced by port_config but defined in NO
 # config object (template/site/device — not even getSiteSettingDerived exposes

@@ -39,6 +39,7 @@ from digital_twin.ir import (
     same_ip,
     same_subnet,
 )
+from digital_twin.ir.entities import PortAuth
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
 from .base import IngestContext
@@ -394,6 +395,45 @@ def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
             return v
         return None
     return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
+
+
+def _reauth(v: Any) -> str | None:
+    """Canonical reauth_interval: None for null/empty; the decimal string for an
+    int or numeric string (so 65000 == "65000"); a stable token otherwise — never
+    silently collapse an unparseable non-empty value to None (it must stay
+    change-detecting). bool is not a valid interval."""
+    if v is None or v == "" or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s.isdigit() else (f"raw:{s}" if s else None)
+    return f"raw:{v!r}"
+
+
+def _port_auth(usage: dict[str, Any]) -> PortAuth | None:
+    """Effective wired-auth surface from the resolved usage attrs. None iff the
+    whole surface is default/absent (== PortAuth())."""
+    a = PortAuth(
+        port_auth=usage.get("port_auth") or None,
+        mac_auth=bool(usage.get("enable_mac_auth")),
+        mac_auth_only=bool(usage.get("mac_auth_only")),
+        mac_auth_preferred=bool(usage.get("mac_auth_preferred")),
+        mac_auth_protocol=usage.get("mac_auth_protocol") or "eap-md5",
+        allow_multiple_supplicants=bool(usage.get("allow_multiple_supplicants")),
+        dynamic_vlan_networks=tuple(usage.get("dynamic_vlan_networks") or ()),
+        server_fail_network=usage.get("server_fail_network") or None,
+        server_reject_network=usage.get("server_reject_network") or None,
+        guest_network=usage.get("guest_network") or None,
+        bypass_auth_when_server_down=bool(usage.get("bypass_auth_when_server_down")),
+        bypass_auth_when_server_down_for_unknown_client=bool(
+            usage.get("bypass_auth_when_server_down_for_unknown_client")
+        ),
+        persist_mac=bool(usage.get("persist_mac")),
+        reauth_interval=_reauth(usage.get("reauth_interval")),
+    )
+    return a if a != PortAuth() else None
 
 
 # Observed negotiated speed (port_stats numeric Mbps) -> config speed enum.
@@ -820,6 +860,7 @@ class SwitchIngester:
             row = stat_rows.get(member)
             l1_speed, l1_duplex, l1_autoneg = _l1_config(usage)
             obs_speed, obs_duplex = _l1_observed(row)
+            auth = _port_auth(usage)
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -843,6 +884,7 @@ class SwitchIngester:
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),
                     dhcp_trusted=_dhcp_trust(usage),
+                    auth=auth,
                     meta=meta,
                 )
             )

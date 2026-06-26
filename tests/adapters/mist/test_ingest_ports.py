@@ -291,3 +291,20 @@ def test_l1_overwrite_carries_speed_duplex_not_autoneg():
     )
     usage, _name = _resolved(eff)["ge-0/0/2"]
     assert usage.get("speed") == "10g" and usage.get("duplex") == "full"
+
+
+def test_auth_resolves_from_usage_and_local_not_port_config():
+    # auth flows from the named usage and from local_port_config; a port_config
+    # (or overwrite) auth key is NOT honored (OAS: not on those maps)
+    eff = _eff(
+        port_usages={"office": {"mode": "access", "port_network": "corp"},
+                     "secure": {"mode": "access", "port_network": "corp", "port_auth": "dot1x"}},
+        port_config={"ge-0/0/1": {"usage": "secure"},
+                     "ge-0/0/2": {"usage": "office", "port_auth": "dot1x"},  # ignored (pc)
+                     "ge-0/0/3": {"usage": "office", "no_local_overwrite": False}},
+        local_port_config={"ge-0/0/3": {"enable_mac_auth": True}},
+    )
+    r = _resolved(eff)
+    assert r["ge-0/0/1"][0].get("port_auth") == "dot1x"          # from usage
+    assert r["ge-0/0/2"][0].get("port_auth") is None             # port_config auth ignored
+    assert r["ge-0/0/3"][0].get("enable_mac_auth") is True       # from local
