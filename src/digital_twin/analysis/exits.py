@@ -107,9 +107,11 @@ def exit_anchor_nodes(ir: IR) -> set[str]:
     counted here. An IRB/SVI with vlan_id=None is unresolved/malformed and is NOT
     an exit, matching resolve_exit, which only treats concrete-VLAN IRBs as exits.)
 
-    This lifts resolve_exit's two exit kinds (rule 1: IRB; rule 2: gateway node)
-    from the per-VLAN graph to the vlan-agnostic physical graph, for callers that
-    ask 'does this physical fragment retain any exit'."""
+    This lifts resolve_exit's two MODELED exit kinds (rule 1: IRB; rule 2:
+    gateway node) from the per-VLAN graph to the vlan-agnostic physical graph,
+    for callers that ask 'does this physical fragment retain any exit'. It does
+    NOT lift rule 3's INFERRED_UPLINK — an is_uplink inference is not an L3
+    anchor (deliberate; see the inferred-uplink spec)."""
     vc = vc_root_map(ir)
     anchors = {
         node_for(vc, d.id) for d in ir.devices.values() if d.role is DeviceRole.GATEWAY
