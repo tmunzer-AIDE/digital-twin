@@ -140,3 +140,17 @@ def test_vlan_name_change_is_still_a_diff():
     prop = IRBuilder().add_vlan(Vlan(vlan_id=30, name="new")).build()
     mods = {(m.ref.kind, m.ref.id): m.changed_fields for m in diff_ir(base, prop).modified}
     assert "name" in mods[("vlan", "30")]
+
+
+def test_is_uplink_only_change_is_not_a_modification():
+    # is_uplink is observational evidence, NOT a config change -> empty diff,
+    # so flipping the observed uplink bit never wakes a check.
+    base = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
+             is_uplink=True)
+    ).build()
+    proposed = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
+             is_uplink=False)
+    ).build()
+    assert diff_ir(base, proposed).is_empty()

@@ -216,6 +216,10 @@ class Port:
     # None = down / no telemetry. Speed canonicalized to the config enum (Task 2).
     observed_speed: str | None = None
     observed_duplex: str | None = None
+    # OBSERVED: Mist port-stat `uplink` bit — True = faces the core/uplink,
+    # False = edge/leaf, None = not observed. Evidence-only (diff-isolated): it
+    # weights admin_disable, never a config change.
+    is_uplink: bool | None = None
     profile: str | None = None
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     auth: PortAuth | None = None  # SP3: effective wired-auth surface; None = all-default
