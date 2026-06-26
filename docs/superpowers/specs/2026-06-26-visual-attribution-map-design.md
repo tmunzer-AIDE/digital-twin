@@ -151,12 +151,15 @@ Then project the finding onto views:
   10's graph — exactly the bleed we are removing. So structured arrays project
   **pairwise**: each `impacts[i].attachment` projects **only** onto
   `vlan:impacts[i].vlan` (and onto `l2`), never onto the other impacts' VLANs.
-  General rule: when a finding carries paired `(vlan, node)` tuples, honor the
-  pairing; only the finding-wide scalars (`subject`, top-level `evidence["vlan"]`,
-  `affected_entities`) use the cross-product. Test: a client-impact finding with a
-  VLAN-10 client on `s1` and a VLAN-20 client on `s1` yields `s1` under `vlan:10`
-  and `vlan:20` but does **not** leak either onto an untouched `vlan:30` even
-  though `s1` is in VLAN 30's graph.
+  **The pairing applies to the impact's `caused_by` too** — see the origin note
+  below — so a VLAN-20 impact's cause cannot become an `origin` on `vlan:10`.
+  General rule: when a finding carries paired `(vlan, node)` tuples (both
+  *affected* nodes **and** per-tuple *causes*), honor the pairing; only the
+  finding-wide scalars (`subject`, top-level `evidence["vlan"]`,
+  `affected_entities`, and the **finding-wide** `caused_by`) use the cross-product.
+  See the strengthened test in the test plan, which uses *distinct* attachment
+  nodes that each also exist in the other VLAN's graph, so a cross-product bug
+  cannot pass.
 - **`l3_exits`** ← referenced routed VLANs (`vlan:<vid>`), and **only the
   interfaces that serve those referenced VLANs** owned by hit nodes, emitted
   under the `intf:<l3intf_id>` key. A finding with **no** VLAN reference does
@@ -205,6 +208,17 @@ entity), normalized to graph nodes/ports. An origin **inherits the view-set of
 the finding it caused**, so on `vlan:10` the operator sees `origin s1 → affected
 s2`, and on `l2` the origin device is distinct from the affected sea.
 
+**Per-impact causes pair with their impact's VLAN (no origin cross-product).**
+`client.impact`'s finding-wide `caused_by` is a *union* of every impact's causes
+(`client_impact.py` builds `union = ... for i in impacts for c in
+i["caused_by"]`), and each impact also carries its own `impacts[i].caused_by`.
+Using the finding-wide union for origins would let a VLAN-20 impact's cause paint
+an `origin` on `vlan:10`. So for aggregate findings, origin derivation uses the
+**per-impact** `impacts[i].caused_by` projected **only** onto `vlan:impacts[i].vlan`
+(and `l2`). The finding-wide `caused_by` union is still used only for views with
+no per-impact VLAN pairing (i.e. `l2`). This mirrors the affected-side paired-array
+rule exactly.
+
 **Port/link/l3intf causes must surface as device origins.** Most cut causes are
 ports or links (a disabled uplink, a removed link); blackhole causes can also be
 `Cause(ref.kind="l3intf", …)` (a removed SVI/IRB that was the VLAN's exit). Per
@@ -222,6 +236,17 @@ entry for its owning `device:<node>`:
   below. The interface's own `intf:<l3intf_id>` entry is emitted **only when the
   interface still exists in the rendered (proposed) IR** — see the removed-entity
   rule below.
+
+**The builder takes BOTH baseline and proposed IR.** A removed entity's
+*ownership* (which device owned the removed port/link/SVI) exists only in the
+**baseline** IR — the proposed IR no longer has it. The current render path passes
+only proposed IR (`pipeline.py:273`:
+`safe_build_diagrams(proposed.ir, verdict.findings)`), so the visual-map builder's
+signature **must change to receive `(baseline_ir, proposed_ir, findings)`**, and
+`pipeline.py` must pass both. The builder resolves removed-entity owners against
+the **baseline** IR and renders/scopes everything else against the **proposed**
+IR (what the chart actually draws). This is a required, explicit plan item — see
+Files touched.
 
 **Removed entities are not promised a self-entry (v1).** Diagrams render from the
 **proposed** IR, so an entity the delta *removed* (a removed SVI/IRB, a removed
@@ -323,8 +348,16 @@ sign-off.
 - **`src/digital_twin/contracts/`** — new `VisualMap` / `VisualEntry` /
   `FindingRef` / tier enum (or typed dict); export from the contracts package.
 - **`src/digital_twin/viz/highlight.py`** — refactor `build_highlight` into the
-  per-`(view, entity)` `VisualMap` builder: per-finding view projection +
-  scoping rule + tier/severity reconciliation + origin-from-`caused_by`.
+  per-`(view, entity)` `VisualMap` builder, signature
+  **`build_visual_map(baseline_ir, proposed_ir, findings)`**: per-finding view
+  projection + scoping rule (incl. paired-array projection for `impacts[]`) +
+  tier/severity reconciliation + origin-from-`caused_by`. Removed-entity owners
+  resolve against `baseline_ir`; everything rendered resolves against
+  `proposed_ir`.
+- **`src/digital_twin/engine/pipeline.py:273`** — change the call from
+  `safe_build_diagrams(proposed.ir, …)` to pass **both** `baseline.ir` and
+  `proposed.ir` into diagram/visual-map construction, so removed-entity ownership
+  is resolvable.
 - **`src/digital_twin/viz/mermaid.py`** — render node/VLAN classes and per-chart
   `severity` from the scoped map for the chart's `view` id; remove the global
   `hl.nodes` reuse that caused the bleed. Origin vs affected distinguishable in
@@ -360,10 +393,16 @@ sign-off.
   only — no dangling `intf:` entry and no forced origin on the `vlan:` view
   (diagrams render the proposed IR; v1 renders no phantom nodes).
 - **Paired-array projection (P1 guard)** — a `client.impact` finding with a
-  VLAN-10 client on `s1` and a VLAN-20 client on `s1` yields `s1` under `vlan:10`
-  and `vlan:20`, but **not** under an untouched `vlan:30` even though `s1` is in
-  VLAN 30's graph — each `impacts[i].attachment` projects only onto its own
-  `impacts[i].vlan`, never the finding-wide cross-product.
+  VLAN-10 client on **`s1`** and a VLAN-20 client on **`s2`**, where `s1` **also**
+  exists in VLAN 20's graph and `s2` **also** exists in VLAN 10's graph (so a
+  cross-product bug *would* mispaint). Assert: `vlan:10` has `s1` only, `vlan:20`
+  has `s2` only — `s1` does **not** appear on `vlan:20` nor `s2` on `vlan:10`, and
+  neither on an untouched `vlan:30`. Using *distinct* attach nodes (not the same
+  `s1` for both) is what makes the test actually prove pairing rather than pass
+  vacuously.
+- **Per-impact origin pairing (P1 guard)** — the same finding's per-impact
+  `caused_by` projects as `origin` only onto its own impact's VLAN: a VLAN-20
+  impact's cause must **not** appear as an `origin` on `vlan:10`.
 - **Tier reconciliation** — an entity that is both `caused_by` (origin) and
   inside an affected fragment resolves to `origin`; severity still worst-wins
   independently.
