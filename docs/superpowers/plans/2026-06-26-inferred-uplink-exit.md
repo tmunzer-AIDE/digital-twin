@@ -37,7 +37,9 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/analysis/test_exits.py`, add `from dataclasses import replace` to the imports, and extend the existing `_base` helper with uplink knobs (keep all current params and behavior; add the four new keyword-only params and the `with_uplink` block before `return b.build()`):
+In `tests/analysis/test_exits.py`, add `from dataclasses import replace` and add `access_port` to the existing `from tests.factories import ...` line. Extend the existing `_base` helper with uplink knobs (keep all current params and behavior; add the four new keyword-only params and the `with_uplink` block before `return b.build()`).
+
+**Critical:** the `with_uplink` block must give `A` real VLAN participation via an **access member port** — `build_vlan_graph` does not node a device from a bare trunk, and rule 3 intersects inferred-uplink owners with `vlan_graph.nodes`, so without a member the owner is dropped and the exit resolves `NONE`. This also models the realistic topology: a leaf switch with members and an uplink toward the unmodeled core.
 
 ```python
 def _base(
@@ -63,6 +65,7 @@ def _base(
         prov = Provenance.LLDP_ONE_SIDED if gw_one_sided else Provenance.LLDP_TWO_SIDED
         b.add_link(link("A:up", "GW:down", prov=prov))
     if with_uplink:
+        b.add_port(access_port("A", "acc", 10))  # member -> A is a vlan-10 graph node
         b.add_port(
             replace(
                 trunk_port("A", "up2", tagged=(10,) if uplink_carries else ()),
