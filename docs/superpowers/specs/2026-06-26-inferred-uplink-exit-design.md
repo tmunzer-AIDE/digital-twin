@@ -29,7 +29,7 @@ Add `ExitKind.INFERRED_UPLINK` (distinct from `BOUNDARY_UPLINK` — a modeled ga
 - `not port.disabled`
 - the port offers the VLAN: `vid in port.tagged_vlans` **or** `port.native_vlan == vid`
 
-For each qualifying port, the exit node is its owner node, VC-folded: `node_for(vc_root, port.device_id)`. The resolved exit nodes are `sorted(set(owner_nodes) & set(vlan_graph.nodes))` — a port that offers the VID makes its owner a VLAN-graph node already, so the intersection is a safety guard, not a filter. If any qualify:
+For each qualifying port, the exit node is its owner node, VC-folded: `node_for(vc_root, port.device_id)`. The resolved exit nodes are `sorted(set(owner_nodes) & set(vlan_graph.nodes))`. In the meaningful member/downstream cases the owner already carries the VID and is a VLAN-graph node, so the intersection is a no-op there; it *does* correctly drop a lone uplink-only node that never entered the VLAN graph (no VLAN edge or member) — locating it would be pointless, since no component could ever reach it. If any qualify:
 
 ```python
 ExitResolution(
