@@ -252,6 +252,13 @@ def test_owner_device_nodes_for_port_link_l3intf():
     iid = "s1:l3:irb:10"
     assert vm.owner_device_nodes("l3intf", iid, base, prop) == ["s1"]
     assert vm.owner_device_nodes("vlan", "10", base, prop) == []
+    # an ADDED (proposed-only) l3intf resolves its owner via proposed IR
+    pb = IRBuilder()
+    pb.add_device(Device(id="s9", role=DeviceRole.SWITCH, site="site1"))
+    pb.add_vlan(Vlan(vlan_id=77, name="new"))
+    pb.add_l3intf(L3Intf(device_id="s9", role=L3Role.IRB, vlan_id=77))
+    added = pb.build()
+    assert vm.owner_device_nodes("l3intf", "s9:l3:irb:77", _baseline(), added) == ["s9"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -329,10 +336,11 @@ def owner_device_nodes(
                 out.append(n)
         return out
     if kind == "l3intf":
-        for intf in baseline_ir.l3intfs:
-            if intf.id == ent_id:
-                n = node_for(vc_root_map(baseline_ir), intf.device_id)
-                return [n]
+        # proposed first (added/kept interface), then baseline (removed interface)
+        for src in (proposed_ir, baseline_ir):
+            for intf in src.l3intfs:
+                if intf.id == ent_id:
+                    return [node_for(vc_root_map(src), intf.device_id)]
         return []
     return []
 ```
@@ -492,7 +500,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
   - `@dataclass(frozen=True) class _Contribution(view: str, kind: str, id: str, tier: VisualTier, ref: FindingRef)`
   - `def _affected_contributions(f: Finding, index: int, proposed_ir: IR, idx: _ViewIndex) -> list[_Contribution]`
 
-Implements the AFFECTED tier of the scoping rule: referenced VLANs (subject/evidence/impacts), referenced nodes/ports (IR-resolved), the **paired-array** rule for `impacts[]` (each `attachment` → only its own `vlan`), and view scoping (`l2` for any node; `vlan:<vid>` only for in-graph nodes; `l3_exits` only for interfaces serving referenced VLANs). A finding with no referenced VLAN does not touch any `vlan:` or `l3_exits` view.
+Implements the AFFECTED tier of the scoping rule: referenced VLANs (subject/evidence/impacts), referenced nodes/ports/links (IR-resolved, including `evidence["device"]`), **exact `port:`/`link:` self-entries** (proposed-resolvable) emitted on `l2` alongside their owner devices so consumers never re-infer the precise port/link, the **paired-array** rule for `impacts[]` (each `attachment` → only its own `vlan`), and view scoping (`l2` for any node/port/link; `vlan:<vid>` only for proposed VLANs and in-graph nodes; `l3_exits` only for interfaces owned by a HIT node serving a referenced VLAN). A finding with no referenced VLAN does not touch any `vlan:` or `l3_exits` view.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -545,22 +553,40 @@ def test_affected_no_vlan_finding_is_l2_only():
     assert all(c.view != "l3_exits" for c in cs)
 
 
+def _dual_vlan_ir():
+    """s1 and s2 BOTH carry vlan 10 AND 20 over a shared trunk, so both nodes are
+    in both vlan graphs. This is what makes the pairing test meaningful: a
+    finding-wide cross-product bug is NOT masked by the node_in_vlan() filter."""
+    b = IRBuilder()
+    b.add_device(Device(id="s1", role=DeviceRole.SWITCH, site="site1"))
+    b.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="site1"))
+    b.add_port(Port(id="s1:ge-0/0/0", device_id="s1", name="ge-0/0/0",
+                    mode=PortMode.TRUNK, tagged_vlans=(10, 20)))
+    b.add_port(Port(id="s2:ge-0/0/0", device_id="s2", name="ge-0/0/0",
+                    mode=PortMode.TRUNK, tagged_vlans=(10, 20)))
+    b.add_link(Link(a_port="s1:ge-0/0/0", b_port="s2:ge-0/0/0"))
+    b.add_vlan(Vlan(vlan_id=10, name="data"))
+    b.add_vlan(Vlan(vlan_id=20, name="voice"))
+    return b.build()
+
+
 def test_affected_paired_impacts_do_not_cross_product():
-    ir = _two_switch_vlan_ir()
+    ir = _dual_vlan_ir()
     idx = vm._build_view_index(ir)
-    # client impact: vlan 10 client on s1, vlan 20 client on s3 (distinct nodes).
-    # s1 exists in vlan10 graph; s3 in vlan20 graph. A cross-product bug would
-    # paint s1 on vlan20 / s3 on vlan10.
+    # PRECONDITION: both nodes are in both vlan graphs, so a cross-product bug
+    # would NOT be masked by the node_in_vlan() membership filter.
+    assert idx.node_in_vlan("s1", 20) and idx.node_in_vlan("s2", 10)
+    # client impact: vlan 10 client on s1, vlan 20 client on s2 (distinct nodes).
     f = _f(code="wired.client.impact.active_clients",
            affected_entities=("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"),
            evidence={"impacts": [
                {"mac": "aa:bb:cc:dd:ee:01", "vlan": 10, "attachment": "s1:ge-0/0/0"},
-               {"mac": "aa:bb:cc:dd:ee:02", "vlan": 20, "attachment": "s3:ge-0/0/1"},
+               {"mac": "aa:bb:cc:dd:ee:02", "vlan": 20, "attachment": "s2:ge-0/0/0"},
            ]})
     cs = vm._affected_contributions(f, 0, ir, idx)
     assert ("device", "s1") in _views(cs, "vlan:10")
-    assert ("device", "s3") in _views(cs, "vlan:20")
-    assert ("device", "s3") not in _views(cs, "vlan:10")
+    assert ("device", "s2") in _views(cs, "vlan:20")
+    assert ("device", "s2") not in _views(cs, "vlan:10")  # pairing, not cross-product
     assert ("device", "s1") not in _views(cs, "vlan:20")
     # the client MAC must NOT have resolved to any entity
     assert all(c.kind != "port" or c.id != "aa:bb:cc:dd:ee:01" for c in cs)
@@ -593,6 +619,33 @@ def test_affected_non_proposed_vlan_makes_no_phantom_view():
     f = _f(subject=ObjectRef("vlan", "999"), evidence={"vlan": 999, "component_nodes": ["s1"]})
     cs = vm._affected_contributions(f, 0, ir, idx)
     assert not any(c.view == "vlan:999" for c in cs)
+
+
+def test_affected_consumes_evidence_device_key_ospf_style():
+    # OSPF withdrawal names its device ONLY via evidence["device"]; the affected
+    # projection must paint that device, not just the vlan box.
+    ir = _two_switch_vlan_ir()
+    idx = vm._build_view_index(ir)
+    f = _f(code="wired.l3.ospf.withdrawn", subject=ObjectRef("vlan", "10"),
+           affected_entities=("10",), evidence={"device": "s1", "vlan": 10})
+    cs = vm._affected_contributions(f, 0, ir, idx)
+    assert ("device", "s1") in _views(cs, "l2")
+    assert ("device", "s1") in _views(cs, "vlan:10")
+
+
+def test_affected_emits_exact_port_and_link_entries():
+    # the map must carry exact port/link keys (not collapse to device), so the UI
+    # never has to re-infer the precise port/link from the finding.
+    ir = _dual_vlan_ir()
+    idx = vm._build_view_index(ir)
+    pf = _f(subject=ObjectRef("port", "s1:ge-0/0/0"))
+    pcs = vm._affected_contributions(pf, 0, ir, idx)
+    assert ("port", "s1:ge-0/0/0") in _views(pcs, "l2")
+    assert ("device", "s1") in _views(pcs, "l2")  # owner device too
+    lf = _f(affected_entities=("s1:ge-0/0/0__s2:ge-0/0/0",))
+    lcs = vm._affected_contributions(lf, 0, ir, idx)
+    assert ("link", "s1:ge-0/0/0__s2:ge-0/0/0") in _views(lcs, "l2")
+    assert ("device", "s1") in _views(lcs, "l2") and ("device", "s2") in _views(lcs, "l2")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -640,7 +693,7 @@ def _strs(v: Any) -> list[str]:
     return []
 
 
-_NODE_EV_KEYS = ("component_nodes", "fragment_nodes", "baseline_root", "proposed_root")
+_NODE_EV_KEYS = ("device", "component_nodes", "fragment_nodes", "baseline_root", "proposed_root")
 _PORT_EV_KEYS = ("port", "new_member_ports")
 
 
@@ -660,6 +713,26 @@ def _affected_contributions(
     # ----- finding-wide scalar references -----
     vlans: set[int] = set()
     nodes: set[str] = set()  # device node ids
+    ports: set[str] = set()  # exact port ids (proposed-resolvable)
+    links: set[str] = set()  # exact link ids (both endpoints proposed-resolvable)
+
+    def note_port(pid: str) -> None:
+        # track the exact port AND its owner device (renderability rule)
+        if pid in proposed_ir.ports:
+            ports.add(pid)
+        n = _port_node(proposed_ir, pid)
+        if n:
+            nodes.add(n)
+
+    def note_link(lid: str) -> None:
+        eps = lid.split("__")
+        if len(eps) == 2 and all(p in proposed_ir.ports for p in eps):
+            links.add(lid)
+        for pid in eps:
+            n = _port_node(proposed_ir, pid)
+            if n:
+                nodes.add(n)
+
     if f.subject is not None:
         if f.subject.kind == "vlan" and f.subject.id.isdigit():
             vlans.add(int(f.subject.id))
@@ -668,14 +741,9 @@ def _affected_contributions(
             if n:
                 nodes.add(n)
         elif f.subject.kind == "port":
-            n = _port_node(proposed_ir, f.subject.id)
-            if n:
-                nodes.add(n)
+            note_port(f.subject.id)
         elif f.subject.kind == "link":
-            for pid in f.subject.id.split("__"):
-                n = _port_node(proposed_ir, pid)
-                if n:
-                    nodes.add(n)
+            note_link(f.subject.id)
     ev: Any = f.evidence
     vlans.update(_ints(ev.get("vlan")) + _ints(ev.get("affected_vlans")))
     for k in _NODE_EV_KEYS:
@@ -685,26 +753,30 @@ def _affected_contributions(
                 nodes.add(n)
     for k in _PORT_EV_KEYS:
         for pid in _strs(ev.get(k)):
-            n = _port_node(proposed_ir, pid)
-            if n:
-                nodes.add(n)
+            note_port(pid)
+    for lid in _strs(ev.get("link")):
+        note_link(lid)
     for ent in f.affected_entities:
         resolved = _resolve_affected(ent, proposed_ir)
-        if resolved is None:
-            continue
-        rk, rid = resolved
-        if rk == "device":
-            nodes.add(rid)
-        elif rk == "vlan":
-            vlans.add(int(rid))
-        elif rk == "port":
-            n = _port_node(proposed_ir, rid)
-            if n:
-                nodes.add(n)
+        if resolved is not None:
+            rk, rid = resolved
+            if rk == "device":
+                nodes.add(rid)
+            elif rk == "vlan":
+                vlans.add(int(rid))
+            elif rk == "port":
+                note_port(rid)
+        elif "__" in ent:
+            note_link(ent)  # untyped link id in affected_entities
 
-    # l2: every referenced node
+    # l2: every referenced node + the exact ports/links (so consumers never have
+    # to re-infer the precise port/link from the finding)
     for n in nodes:
         add("l2", "device", n)
+    for p in ports:
+        add("l2", "port", p)
+    for lk in links:
+        add("l2", "link", lk)
     # vlan:<vid>: nodes that exist in that vlan's graph + the vlan box; l3_exits
     for vid in vlans:
         if vid not in proposed_ir.vlans:
@@ -830,21 +902,23 @@ def test_origin_removed_l3intf_falls_back_to_owner_on_l2_only():
 
 
 def test_origin_per_impact_cause_pairs_with_its_vlan():
-    ir = _two_switch_vlan_ir()
+    ir = _dual_vlan_ir()  # both s1,s2 participate in BOTH vlans -> bug not masked
     idx = vm._build_view_index(ir)
+    assert idx.node_in_vlan("s2", 10)  # precondition: s2 IS in vlan 10's graph
     f = _f(code="wired.client.impact.active_clients",
            caused_by=(Cause(ref=ObjectRef("port", "s1:ge-0/0/0")),
-                      Cause(ref=ObjectRef("port", "s3:ge-0/0/1"))),
+                      Cause(ref=ObjectRef("port", "s2:ge-0/0/0"))),
            evidence={"impacts": [
                {"mac": "m1", "vlan": 10, "attachment": "s1:ge-0/0/0",
                 "caused_by": [Cause(ref=ObjectRef("port", "s1:ge-0/0/0"))]},
-               {"mac": "m2", "vlan": 20, "attachment": "s3:ge-0/0/1",
-                "caused_by": [Cause(ref=ObjectRef("port", "s3:ge-0/0/1"))]},
+               {"mac": "m2", "vlan": 20, "attachment": "s2:ge-0/0/0",
+                "caused_by": [Cause(ref=ObjectRef("port", "s2:ge-0/0/0"))]},
            ]})
     cs = vm._origin_contributions(f, 0, ir, ir, idx)
-    # s3's cause (vlan 20) must NOT appear as origin on vlan:10
-    assert not any(c.view == "vlan:10" and c.id == "s3" for c in cs)
-    assert any(c.view == "vlan:20" and c.id == "s3" and c.tier is vm.VisualTier.ORIGIN
+    # s2's cause is paired to vlan 20; despite s2 participating in vlan 10's graph
+    # it must NOT appear as an origin on vlan:10 (pairing, not finding-wide union)
+    assert not any(c.view == "vlan:10" and c.id == "s2" for c in cs)
+    assert any(c.view == "vlan:20" and c.id == "s2" and c.tier is vm.VisualTier.ORIGIN
                for c in cs)
 ```
 
