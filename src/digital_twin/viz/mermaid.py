@@ -51,6 +51,14 @@ def _safe(text: object, cap: int = 120) -> str:
     return t if len(t) <= cap else t[: cap - 1] + "…"
 
 
+def _note(text: object) -> str:
+    """Caption/cause prose for Diagram.notes — rendered as a markdown blockquote
+    BELOW the chart (`> ...`), NOT inside a node box. Flatten newlines so one note
+    stays one quote line, but never truncate or rewrite brackets/pipes: the full
+    finding message must survive intact (unlike `_safe`, which caps node labels)."""
+    return str(text).replace("\n", " ").replace("\r", " ")
+
+
 def _label(*parts: object) -> str:
     return "<br/>".join(_safe(p) for p in parts if p is not None and str(p) != "")
 
@@ -101,14 +109,14 @@ def _captions_and_causes(
         if idx >= len(findings):
             continue
         f = findings[idx]
-        caption = _safe(f"{f.severity.value}: {f.code}: {f.message}")
+        caption = _note(f"{f.severity.value}: {f.code}: {f.message}")
         if caption not in seen_captions:
             captions.append(caption)
             seen_captions.add(caption)
         for c in f.caused_by:
             who = c.ref.name or c.ref.id
             flds = f" [{', '.join(c.fields)}]" if c.fields else ""
-            cause_str = _safe(f"{f.code}: caused by {c.ref.kind} {who}{flds}")
+            cause_str = _note(f"{f.code}: caused by {c.ref.kind} {who}{flds}")
             if cause_str not in seen_causes:
                 causes.append(cause_str)
                 seen_causes.add(cause_str)

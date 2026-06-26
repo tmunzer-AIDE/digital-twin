@@ -367,3 +367,34 @@ print(v30.mermaid)
         "vlan:30 mermaid differs between PYTHONHASHSEED=1 and PYTHONHASHSEED=2\n"
         f"--- seed=1 ---\n{result1.stdout}\n--- seed=2 ---\n{result2.stdout}"
     )
+
+
+def test_diagram_notes_are_not_truncated():
+    # Diagram.notes are prose printed BELOW the chart (markdown blockquotes), not
+    # node-box labels — a long finding message must survive intact, no 120-char cut.
+    long_msg = (
+        "vlan 7: member segment loses its path to the boundary_uplink exit because the "
+        "only trunk uplink carrying the vlan was administratively disabled on the core switch"
+    )
+    assert len(long_msg) > 120
+    f = Finding(
+        source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+        code="wired.l2.blackhole.exit_lost", severity=Severity.WARNING,
+        confidence=_HIGH, message=long_msg, affected_entities=("aabb01",),
+    )
+    l2 = next(d for d in build_diagrams(_ir(), _ir(), (f,)) if d.view == "l2")
+    joined = "\n".join(l2.notes)
+    assert long_msg in joined  # full message present
+    assert "…" not in joined  # no truncation marker
+
+
+def test_diagram_notes_flatten_newlines_in_message():
+    # a multi-line message must not break the markdown blockquote (one note = one line)
+    f = Finding(
+        source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+        code="t.x", severity=Severity.WARNING, confidence=_HIGH,
+        message="line one\nline two", affected_entities=("aabb01",),
+    )
+    l2 = next(d for d in build_diagrams(_ir(), _ir(), (f,)) if d.view == "l2")
+    assert all("\n" not in n for n in l2.notes)
+    assert any("line one line two" in n for n in l2.notes)
