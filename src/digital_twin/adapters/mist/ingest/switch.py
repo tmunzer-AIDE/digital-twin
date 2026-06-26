@@ -398,6 +398,22 @@ def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
     return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
 
 
+def _mac_limit(v: Any) -> int | str | None:
+    """Concrete cap (int>0) / None (unlimited: 0/absent/empty/bool) / a stable
+    `unresolved:` token (templated/object/unparseable — NEVER collapsed to None,
+    which would hide an in-scope change)."""
+    if v is None or v == "" or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v > 0 else None
+    if isinstance(v, str):
+        s = v.strip()
+        if s.isdigit():
+            return int(s) or None
+        return f"unresolved:{s}" if s else None
+    return f"unresolved:{v!r}"
+
+
 def _reauth(v: Any) -> str | None:
     """Canonical reauth_interval: None for null/empty; the decimal string for an
     int or numeric string (so 65000 == "65000"); a stable token otherwise — never
@@ -885,6 +901,7 @@ class SwitchIngester:
                     poe_draw=_poe_draw(row),
                     observed_speed=obs_speed,
                     observed_duplex=obs_duplex,
+                    mac_limit=_mac_limit(usage.get("mac_limit")),
                     disabled=bool(usage.get("disabled")),
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),

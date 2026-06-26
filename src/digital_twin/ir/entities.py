@@ -220,6 +220,7 @@ class Port:
     # unknown trust must never collapse to untrusted (and a RESOLVED dynamic
     # uses its runtime usage like any other port).
     dhcp_trusted: bool | None = None
+    mac_limit: int | str | None = None  # SP4: concrete cap / None=unlimited / str=unresolved token
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None

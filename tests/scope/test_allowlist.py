@@ -30,7 +30,8 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     assert "local_port_config.*.usage" in device
     assert "port_config_overwrite.*.port_network" in device
     assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
-    assert "port_config_overwrite.*.mac_limit" not in device  # still unmodeled
+    assert "port_config_overwrite.*.mac_limit" in device  # SP4: resolver-honored + modeled
+    assert "port_config_overwrite.*.poe_keep_state_when_reboot" not in device  # still unmodeled
 
 
 def test_l1_attrs_in_scope():
@@ -161,3 +162,10 @@ def test_voip_network_in_scope_usage_and_local_not_port_config():
     assert "local_port_config.*.voip_network" in dev
     assert "local_port_config.*.voip_network" not in site
     assert "port_config.*.voip_network" not in dev
+
+
+def test_mac_limit_in_scope_usage_local_overwrite_not_port_config():
+    dev = set(RAW_ALLOWLIST["device"])
+    assert "port_usages.*.mac_limit" in dev and "local_port_config.*.mac_limit" in dev
+    assert "port_config_overwrite.*.mac_limit" in dev
+    assert "port_config.*.mac_limit" not in dev

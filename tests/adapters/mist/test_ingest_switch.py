@@ -4,6 +4,15 @@ from digital_twin.ir import DeviceRole, IRBuilder, IRCapability, L3Role, PortMod
 from tests.adapters.mist.fixtures import ALL_FETCHED, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 
+def test_mac_limit_normalizer():
+    from digital_twin.adapters.mist.ingest.switch import _mac_limit
+    assert _mac_limit(5) == 5 and _mac_limit("5") == 5
+    assert _mac_limit(0) is None and _mac_limit("") is None and _mac_limit(None) is None
+    assert _mac_limit(True) is None
+    assert isinstance(_mac_limit("{{var}}"), str) and _mac_limit("{{var}}").startswith("unresolved")
+    assert isinstance(_mac_limit({"x": 1}), str)  # object -> token, not None
+
+
 def _ingest() -> IngestContext:
     ctx = IngestContext(
         raw=raw_site(),

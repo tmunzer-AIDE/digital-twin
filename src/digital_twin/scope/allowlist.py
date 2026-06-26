@@ -53,6 +53,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "voip_network",
     "poe_disabled",
     "mtu",
+    "mac_limit",
     "allow_dhcpd",
     "speed",
     "duplex",
@@ -178,6 +179,7 @@ _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.disabled",
     "port_config_overwrite.*.speed",
     "port_config_overwrite.*.duplex",
+    "port_config_overwrite.*.mac_limit",
 )
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,
