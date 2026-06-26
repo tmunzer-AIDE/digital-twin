@@ -273,7 +273,7 @@ def _simulate_site_state(
         )
         return replace(
             verdict,
-            diagrams=safe_build_diagrams(proposed.ir, verdict.findings),
+            diagrams=safe_build_diagrams(baseline.ir, proposed.ir, verdict.findings),
             visual_map=safe_build_visual_map(baseline.ir, proposed.ir, verdict.findings),
         )
 
