@@ -82,30 +82,38 @@ counted above.)
 
 ### The home/severed rule
 
+Suppression is **grounded only** — a fragment is dropped solely because it
+*itself still reaches an exit*. There is no size/majority heuristic. The anchor
+set is computed on the **proposed IR** (the post-change state), because the
+question is "which surviving fragment still has an exit." A device removed by the
+delta is not a node in the proposed graph, so an IRB/gateway the delta deletes
+correctly drops out of the anchor set.
+
 ```
-anchors = exit_anchor_nodes(ir)
+anchors = exit_anchor_nodes(proposed_ir)        # exits in the POST-change state
 for each baseline component B (with occupants):
     fragments = proposed components overlapping B
     if len(fragments) == 1 and fragments[0] == B:   # B unchanged
         continue
-    if anchors & B:                       # B had an exit
-        home = { F in fragments : F & anchors }     # every exit-keeping side
-    else:                                  # exit-less B — original motivating case
-        home = { the single largest fragment }      # majority fallback
+    home = { F in fragments : F & anchors }     # fragments that STILL hold an exit
     for F in fragments:
-        if F in home:           continue
-        if not occupants(F):    continue   # an empty segment going dark is not impact
-        emit wired.l2.isolation.severed(F)  # only the genuinely cut-off side
+        if F in home:           continue        # F keeps a real L3 exit -> not isolated
+        if not (F < B):         continue        # not a strict subset -> reach didn't shrink
+        if not occupants(F):    continue        # an empty segment going dark is not impact
+        emit wired.l2.isolation.severed(F)      # genuinely cut off from its exit
 ```
 
-Two edge cases, both resolving toward the never-false-SAFE direction:
-- **The exit itself was severed.** If `anchors & B` is non-empty but **no**
-  proposed fragment retains an anchor (the exit device was itself cut off),
-  `home` is empty and every occupant fragment is flagged — the correct,
-  conservative outcome (everything genuinely lost its exit).
-- **"largest fragment"** in the fallback is defined deterministically: most
-  occupants, tie-broken by node count, then by sorted node id — so the choice is
-  stable across runs.
+When `home` is **empty** — either an exit-less component (the original motivating
+scenario) **or** a component whose only exit the delta itself removed — there is
+no grounded survivor to suppress, so **every** occupied strict-subset is flagged.
+That is exactly today's conservative behavior, and it is the never-false-SAFE
+direction. The fix only ever *removes* findings for fragments that demonstrably
+still hold an exit; it never withholds a finding from a fragment that lost one.
+
+There is deliberately **no majority/largest-fragment heuristic**: guessing the
+survivor by size would false-SAFE the classic case where a disabled uplink
+strands the access switch (with all the clients) and leaves an empty core stub —
+the stranded, occupied side must always be flagged.
 
 Occupant counting, the confidence calc (MIN over the severed boundary links),
 and the per-fragment subject/message are **unchanged**. The structural change is
@@ -119,24 +127,21 @@ every fragment that is neither home nor empty.
   gateway), {APB}, {2nd AP}, {wired client}]`. `home` = the survivor. Only the
   three leaf fragments with occupants are flagged. **Survivors go quiet.**
 - **The original exit-less case** (disable a switch's only uplink, no modeled L3
-  exit — the scenario the check was written for): `anchors & B` is empty →
-  majority fallback → `home` = the surviving majority, and the cut-off
-  switch+downstream is still flagged. **No regression.**
+  exit — the scenario the check was written for): `anchors` holds no node in this
+  component, so `home` is empty and every occupied strict-subset is flagged,
+  including the stranded switch+downstream. **No regression, no false-SAFE.**
 
 ### Never-false-SAFE guard
 
-The CARDINAL RULE is never to hide a real breakage. This change only ever
-**drops** a fragment that:
-1. **itself contains an exit anchor** — it has a real local L3 exit, so it is by
-   definition not L2-isolated (it can still route); or
-2. in the **exit-less fallback only**, is the **largest** fragment.
-
-Case 1 is exit-grounded and cannot conceal a genuine cut-off. Case 2 is confined
-to the legacy no-exit-modeled path and is strictly *less* aggressive than today's
-"flag everything"; its one documented limitation is a degenerate split where the
-disabled port cuts off a majority — there the largest (cut-off) fragment would be
-mislabeled home. This is accepted: it only occurs when the IR models no exit at
-all, and it never makes the result worse than the current behavior.
+The CARDINAL RULE is never to hide a real breakage. This change has exactly one
+suppression rule: a fragment is dropped **only if it itself still contains an
+exit anchor** (gateway-role node or a routed IRB/SVI in the proposed state) — it
+has a real local L3 exit, so it is by definition not L2-isolated. There is **no
+size, majority, or "pick a survivor" heuristic**, so the fix can never withhold a
+finding from a fragment that genuinely lost its exit. When no fragment retains an
+anchor, the check falls back to its current behavior (flag every occupied
+strict-subset). The change is therefore a strict *reduction* of false positives
+with no new false negatives.
 
 ## Verdict impact
 
@@ -152,7 +157,11 @@ segment still reaches UNSAFE.
 - `src/digital_twin/analysis/exits.py` — add `exit_anchor_nodes(ir) -> set[str]`.
 - `src/digital_twin/checks/wired/l2_isolation.py` — replace the per-fragment
   strict-subset loop with the home/anchor rule. No change to occupants,
-  confidence, subject, or message construction.
+  confidence, subject, or message construction. **Update the module docstring**:
+  it currently states the check is intentionally exit-agnostic and flags every
+  strict-subset fragment — the new contract is "flag occupied strict-subset
+  fragments that do **not** retain an exit anchor; an exit-less component still
+  flags all of them." This is where a future reviewer will look first.
 - Tests + a golden fixture (below).
 
 ## Testing
@@ -162,9 +171,14 @@ segment still reaches UNSAFE.
    AP + wired-client ports. Disable the leaf ports → assert `isolation.severed`
    fires **only** for the leaf fragments, and the survivor nodes (core, peer
    switches, their APs) appear in **no** `isolation.severed` finding.
-2. **Regression — exit-less case.** Disable a switch's only uplink with no
-   modeled L3 exit → the cut-off switch+downstream is **still** flagged via the
-   majority fallback.
+2. **Regression — exit-less case (the false-SAFE guard).** Disable a switch's
+   only uplink with no modeled L3 exit, where the **stranded** side holds all the
+   occupants and the surviving stub is **empty** → the stranded, occupied side is
+   **still** flagged (empty `home` → flag every occupied strict-subset). This is
+   the specific shape that a size/majority heuristic would have false-SAFE'd.
+2b. **Exit removed by the delta.** A component that had an exit in baseline but
+   whose only IRB/gateway the delta deletes → no proposed anchor survives →
+   `home` empty → occupied fragments flagged (not silently dropped).
 3. **Never-false-SAFE.** A genuine severance that strands an occupant segment
    which loses its only exit → still flagged.
 4. **Both-sides-keep-an-exit.** A split where each side retains an anchor →
