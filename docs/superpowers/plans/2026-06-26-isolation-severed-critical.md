@@ -105,6 +105,7 @@ def test_below_high_severance_with_anchor_is_warning():
     f = next(f for f in result.findings if "A" in f.affected_entities)
     assert f.severity is Severity.WARNING
     assert "B" in f.evidence["lost_anchor_nodes"]  # anchor present, but high gate dominates
+    assert "B" in f.evidence["exit_anchor_nodes"]
     assert f.evidence["severity_reason"] == "physical severance, severance confidence below HIGH"
 ```
 
