@@ -1925,6 +1925,57 @@ def _bgp_gw_site_doc(bgp_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# VM: visual-map worked-example scenario (Task 9)
+#
+# Disabling the SOLE uplink between EDGE and HUB severs EDGE completely.
+# The isolation check fires `wired.l2.isolation.severed` with `caused_by`
+# pointing at the disabled port — so the visual map puts EDGE (the device
+# that owns the changed port) in the `origin` tier on the `l2` view.
+#
+# A control VLAN (88) is declared in setting.networks but lives ONLY on HUB
+# and is NOT carried by any port on EDGE; it has no member or exit path
+# through the cut link. It should therefore produce no `vlan:88` view entry.
+# ---------------------------------------------------------------------------
+
+VM_CTRL_VLAN = 88          # distinctive id; NOT the gs_net (999) being severed
+VM_CTRL_NET = "vm_ctrl"    # setting network name for the control vlan
+
+
+def disabled_uplink_doc() -> dict[str, Any]:
+    """Baseline doc for the visual-map worked example.
+
+    Built on top of augmented_doc (single-carrier, no wireless client):
+    - The EDGE->HUB uplink (EDGE_UPLINK_PORT) carries gs_net (vlan 999).
+    - The parallel port rides gs_empty_trunk (carries nothing) — single carrier.
+    - Control VLAN 88 is in setting.networks and has an IRB on HUB, but NO
+      member port on EDGE and NO carriage across the EDGE->HUB uplink: it is
+      genuinely uninvolved in the uplink cut. Disabling the sole uplink fires
+      wired.l2.blackhole.exit_lost (a single disabled uplink does not sever).
+    """
+    doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=False)
+    # Add the control VLAN — declared in setting, IRB on HUB only.
+    doc["setting"]["networks"][VM_CTRL_NET] = {"vlan_id": VM_CTRL_VLAN}
+    hub = _device(doc, HUB)
+    hub.setdefault("other_ip_configs", {})[VM_CTRL_NET] = {
+        "type": "static", "ip": "198.51.88.1", "netmask": "255.255.255.0"
+    }
+    # Intentionally NO port_config entry for VM_CTRL_NET on EDGE, and the
+    # EDGE_UPLINK_PORT (gs_trunk) does NOT list vm_ctrl in its networks.
+    # Control VLAN 88 therefore has no path through the disabled port.
+    return doc
+
+
+def disable_uplink_op(doc: dict[str, Any]) -> dict[str, Any]:
+    """Disable the sole EDGE uplink (EDGE_UPLINK_PORT -> 'disabled').
+
+    With parallel_carries_gs=False the parallel port is empty-trunk, so
+    the EDGE segment loses its exit path -> wired.l2.blackhole.exit_lost
+    fires with caused_by naming the disabled port on EDGE.
+    """
+    return device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "disabled"})
+
+
 def bgp_gateway_scenario(
     base: dict[str, Any], proposed: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:

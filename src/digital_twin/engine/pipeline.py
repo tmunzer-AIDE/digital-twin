@@ -66,6 +66,7 @@ from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
 from digital_twin.verdict.verdict import Verdict, assemble
 from digital_twin.viz.mermaid import safe_build_diagrams
+from digital_twin.viz.visual_map import safe_build_visual_map
 
 _EMPTY_DIFF = IRDiff((), (), ())
 
@@ -270,7 +271,11 @@ def _simulate_site_state(
             state_meta=state_meta,
             trace_ref=run.run_id,
         )
-        return replace(verdict, diagrams=safe_build_diagrams(proposed.ir, verdict.findings))
+        return replace(
+            verdict,
+            diagrams=safe_build_diagrams(baseline.ir, proposed.ir, verdict.findings),
+            visual_map=safe_build_visual_map(baseline.ir, proposed.ir, verdict.findings),
+        )
 
 
 def simulate(

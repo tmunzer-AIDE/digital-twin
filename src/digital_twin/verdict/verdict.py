@@ -4,10 +4,10 @@ confidence) + the single agent-facing decision. Two finding sources (adapter L0
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from digital_twin.checks.base import CheckResult
-from digital_twin.contracts import Diagram, Finding, ObjectConfigDiff, Severity
+from digital_twin.contracts import Diagram, Finding, ObjectConfigDiff, Severity, VisualMap
 from digital_twin.ir import IRDiff
 
 from .confidence_summary import ConfidenceSummary, summarize
@@ -32,6 +32,7 @@ class Verdict:
     trace_ref: str | None = None  # run id of the trace record
     diagrams: tuple[Diagram, ...] = ()  # topology charts (mermaid); () when no proposed IR
     config_diffs: tuple[ObjectConfigDiff, ...] = ()  # raw before→after (non-load-bearing)
+    visual_map: VisualMap = field(default_factory=dict)  # presentational; decision.py ignores it
 
 
 def assemble(

@@ -5,6 +5,7 @@ from .config_diff import FieldChange, ObjectConfigDiff
 from .diagram import Diagram
 from .finding import Cause, Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from .rejection import Rejection
+from .visual_map import FindingRef, VisualEntry, VisualMap, VisualTier, entity_key
 
 __all__ = [
     "Cause",
@@ -15,9 +16,14 @@ __all__ = [
     "FieldChange",
     "Finding",
     "FindingCategory",
+    "FindingRef",
     "FindingSource",
     "ObjectConfigDiff",
     "ObjectRef",
     "Severity",
     "Rejection",
+    "VisualEntry",
+    "VisualMap",
+    "VisualTier",
+    "entity_key",
 ]
