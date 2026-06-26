@@ -131,3 +131,25 @@ def test_local_dynamic_usage_still_out_of_scope():
     # P1 regression: adding `disabled` must NOT reintroduce local dynamic_usage,
     # which PR #14 deliberately narrowed out (it's a port_config-only pointer)
     assert "local_port_config.*.dynamic_usage" not in set(RAW_ALLOWLIST["device"])
+
+
+def test_auth_usage_leaves_in_scope_everywhere_usages_live():
+    from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
+    for coll in (RAW_ALLOWLIST["site_setting"], RAW_ALLOWLIST["device"],
+                 RAW_ALLOWLIST["networktemplate"], EFFECTIVE_ALLOWLIST):
+        s = set(coll)
+        for a in ("port_auth", "enable_mac_auth", "dynamic_vlan_networks", "guest_network"):
+            assert f"port_usages.*.{a}" in s, a
+
+
+def test_auth_local_leaves_device_only():
+    assert "local_port_config.*.port_auth" in set(RAW_ALLOWLIST["device"])
+    # site_setting / networktemplate have NO local_port_config map
+    assert "local_port_config.*.port_auth" not in set(RAW_ALLOWLIST["site_setting"])
+    assert "local_port_config.*.port_auth" not in set(RAW_ALLOWLIST["networktemplate"])
+
+
+def test_auth_not_on_port_config_or_overwrite():
+    dev = set(RAW_ALLOWLIST["device"])
+    assert "port_config.*.port_auth" not in dev
+    assert "port_config_overwrite.*.port_auth" not in dev

@@ -315,3 +315,20 @@ def test_ospf_metric_leaf_is_in_scope():
         "ospf_areas": {"0": {"networks": {"corp": {"passive": False, "metric": 50}}}},
     }
     assert screen_op("device", cur, new) is None
+
+
+def test_auth_in_port_config_or_overwrite_is_unknown():
+    # auth attrs are NOT on port_config/overwrite (OAS) -> a change there is
+    # out-of-scope (UNKNOWN), even though local/usage auth is modeled
+    for payload in (
+        {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "office", "port_auth": "dot1x"}}},
+        {**SWITCH_CUR, "port_config_overwrite": {"ge-0/0/0": {"port_auth": "dot1x"}}},
+    ):
+        r = screen_op("device", SWITCH_CUR, payload)
+        assert isinstance(r, Rejection)
+        assert any("port_auth" in reason for reason in r.reasons)
+
+
+def test_auth_in_local_port_config_passes_for_device():
+    payload = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"port_auth": "dot1x"}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
