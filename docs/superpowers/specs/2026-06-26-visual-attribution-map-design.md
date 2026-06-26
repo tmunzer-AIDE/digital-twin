@@ -123,6 +123,17 @@ For each finding, derive:
   affected attachment node). The matching `evidence["impacts"][].vlan` feeds the
   referenced-VLANs set above.
 
+**`affected_entities` disambiguation rule (resolve against the IR, never by
+syntax).** `affected_entities` is an untyped id list and some findings put
+non-topology ids there — `client.impact` puts client **MACs** there. A value is
+promoted to an entity **only if it resolves against the IR**: `ent in ir.devices`
+(or its VC-folded node), `int(ent) in ir.vlans`, or `ent in ir.ports` (the
+existing `highlight.py:123-132` checks). A colon-bearing MAC must **never** be
+treated as a `port:`-ish entity by string shape. Client-impact clients localize
+via `impacts[].attachment` (a real port/AP id), not via their MACs in
+`affected_entities`. Test: a `client.impact` finding's MAC does not produce any
+device/port entry, while its `attachment` does.
+
 Then project the finding onto views:
 
 - **`l2`** ← every referenced node/port/link. (The L2 topology is the global
@@ -187,17 +198,33 @@ entry for its owning `device:<node>`:
 
 - `port:<id>` → endpoint `device:<node>` (existing `port_node` helper)
 - `link:<id>` → both endpoint `device:<node>`s (existing link-split)
-- `l3intf:<id>` → the interface's `intf:<l3intf_id>` entry **and** its owner
-  `device:<node>` (resolve owner via the `L3Intf.device_id` + `node_for` folding,
-  the same path `_l3_exits_diagram` uses). The `intf:` entry projects onto
-  `l3_exits` (and the device onto `l2`/the referenced VLAN views).
+- `l3intf:<id>` → its owner `device:<node>` (resolve owner via `L3Intf.device_id`
+  + `node_for` folding, the same path `_l3_exits_diagram` uses). The owner device
+  is the guaranteed-renderable origin (it projects onto `l2`/the referenced VLAN
+  views). The interface's own `intf:<l3intf_id>` entry is emitted **only when the
+  interface still exists in the rendered (proposed) IR** — see the removed-entity
+  rule below.
 
-This is what keeps "origin s1" visible on the device-rendering L2/VLAN views — it
-is the single most important guard against re-introducing the old "where did the
-change happen?" ambiguity, and it has dedicated tests: a **port-caused** blackhole
-→ `device:` origin on `l2` and the VLAN view, and an **l3intf-caused** blackhole
-(removed SVI/IRB) → both the `intf:` origin on `l3_exits` and the owner `device:`
-origin.
+**Removed entities are not promised a self-entry (v1).** Diagrams render from the
+**proposed** IR, so an entity the delta *removed* (a removed SVI/IRB, a removed
+port, a removed link) has **no node in the rendered chart** to attach a class to.
+For v1 we do **not** render "ghost"/baseline-only nodes. The contract therefore:
+an origin always surfaces on its **owner `device:<node>`** (which still exists as
+long as the device does), and the entity's own `intf:`/`port:`/`link:` self-entry
+is emitted **only if that entity resolves in the proposed IR**. So a removed SVI's
+origin shows on its owner device in `l2`/VLAN views, not as a dangling `intf:` on
+`l3_exits`. (Rendering ghost baseline interfaces in `l3_exits` is a possible
+fast-follow, listed in Deferred.) If the owner device itself was removed, the
+finding contributes its origin as caption/unlocalized rather than a phantom node.
+
+This owner-device fallback is what keeps "origin s1" visible on the
+device-rendering L2/VLAN views — the single most important guard against
+re-introducing the old "where did the change happen?" ambiguity. Dedicated tests:
+a **port-caused** blackhole → `device:` origin on `l2` and the VLAN view; an
+**l3intf-caused** blackhole where the SVI **still exists** → `intf:` origin on
+`l3_exits` **and** owner `device:` origin; an **l3intf-caused** blackhole where
+the SVI was **removed** → owner `device:` origin present, **no** dangling `intf:`
+entry.
 
 ### Doctrine: cause is still not blast radius
 
@@ -293,7 +320,14 @@ sign-off.
   interface only; the VLAN-20 `intf:` entry is absent from `l3_exits`.
 - **Client-impact attachment (P2 guard)** — a `client.impact.active_clients`
   finding produces an entry for each impact's `attachment` node/port on `l2` and
-  the impact's `vlan` view, not merely the VLAN box.
+  the impact's `vlan` view, not merely the VLAN box. Conversely, the client
+  **MAC** in `affected_entities` produces **no** device/port entry (it does not
+  resolve against the IR) — the IR-resolution disambiguation rule.
+- **Removed-entity origin (P2 guard)** — an `l3intf`-caused blackhole where the
+  SVI **still exists** in proposed IR yields both an `intf:` origin on `l3_exits`
+  and the owner `device:` origin; where the SVI was **removed**, only the owner
+  `device:` origin appears (no dangling `intf:` entry, since diagrams render the
+  proposed IR).
 - **Tier reconciliation** — an entity that is both `caused_by` (origin) and
   inside an affected fragment resolves to `origin`; severity still worst-wins
   independently.
@@ -340,6 +374,12 @@ the cut edges from `fragment_nodes` + `lost_peers` against the IR's links. This
 is called out here so the plan does not assume the cut edges are already
 available. Origin-vs-affected plus view scoping already resolves the reported
 operator confusion, so v1 ships without it.
+
+**Deferred (fast-follow):** render "ghost" baseline-only nodes for removed
+entities (a removed SVI/IRB in `l3_exits`, a removed port/link in `l2`) so a
+removed entity can carry its own self-entry instead of falling back to the owner
+device. v1 deliberately renders only proposed-IR nodes and surfaces removed-entity
+origins on the owner `device:<node>`.
 
 ## Dependency: mistmcp (web)
 
