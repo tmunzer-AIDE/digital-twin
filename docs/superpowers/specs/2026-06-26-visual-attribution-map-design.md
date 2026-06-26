@@ -141,6 +141,22 @@ Then project the finding onto views:
 - **`vlan:<vid>`**, for each referenced `vid` ← the referenced nodes **that exist
   in that VLAN's graph**, plus the `vlan:<vid>` box entry. A finding with **no**
   VLAN reference projects onto **no** VLAN view.
+
+  **Paired-array exception (no finding-wide cross-product).** The bullet above
+  takes the *finding-wide* node set × *finding-wide* VLAN set, which is correct
+  only when a finding is single-VLAN. `wired.client.impact.active_clients` is a
+  **single** finding carrying many `impacts[]`, each with its own `vlan` **and**
+  `attachment`. Projecting the finding-wide cross-product would paint a VLAN-20
+  client's attach node onto `vlan:10` whenever that switch also exists in VLAN
+  10's graph — exactly the bleed we are removing. So structured arrays project
+  **pairwise**: each `impacts[i].attachment` projects **only** onto
+  `vlan:impacts[i].vlan` (and onto `l2`), never onto the other impacts' VLANs.
+  General rule: when a finding carries paired `(vlan, node)` tuples, honor the
+  pairing; only the finding-wide scalars (`subject`, top-level `evidence["vlan"]`,
+  `affected_entities`) use the cross-product. Test: a client-impact finding with a
+  VLAN-10 client on `s1` and a VLAN-20 client on `s1` yields `s1` under `vlan:10`
+  and `vlan:20` but does **not** leak either onto an untouched `vlan:30` even
+  though `s1` is in VLAN 30's graph.
 - **`l3_exits`** ← referenced routed VLANs (`vlan:<vid>`), and **only the
   interfaces that serve those referenced VLANs** owned by hit nodes, emitted
   under the `intf:<l3intf_id>` key. A finding with **no** VLAN reference does
@@ -200,8 +216,10 @@ entry for its owning `device:<node>`:
 - `link:<id>` → both endpoint `device:<node>`s (existing link-split)
 - `l3intf:<id>` → its owner `device:<node>` (resolve owner via `L3Intf.device_id`
   + `node_for` folding, the same path `_l3_exits_diagram` uses). The owner device
-  is the guaranteed-renderable origin (it projects onto `l2`/the referenced VLAN
-  views). The interface's own `intf:<l3intf_id>` entry is emitted **only when the
+  is the guaranteed-renderable origin **on `l2`** (which contains every device).
+  It also projects onto a referenced VLAN view **only if the owner still
+  participates in that VLAN's proposed graph** — see the participation caveat
+  below. The interface's own `intf:<l3intf_id>` entry is emitted **only when the
   interface still exists in the rendered (proposed) IR** — see the removed-entity
   rule below.
 
@@ -212,19 +230,31 @@ For v1 we do **not** render "ghost"/baseline-only nodes. The contract therefore:
 an origin always surfaces on its **owner `device:<node>`** (which still exists as
 long as the device does), and the entity's own `intf:`/`port:`/`link:` self-entry
 is emitted **only if that entity resolves in the proposed IR**. So a removed SVI's
-origin shows on its owner device in `l2`/VLAN views, not as a dangling `intf:` on
-`l3_exits`. (Rendering ghost baseline interfaces in `l3_exits` is a possible
-fast-follow, listed in Deferred.) If the owner device itself was removed, the
-finding contributes its origin as caption/unlocalized rather than a phantom node.
+origin shows on its owner device in `l2`, not as a dangling `intf:` on `l3_exits`.
+(Rendering ghost baseline interfaces in `l3_exits` is a possible fast-follow,
+listed in Deferred.) If the owner device itself was removed, the finding
+contributes its origin as caption/unlocalized rather than a phantom node.
+
+**Participation caveat (v1 promise scope).** The owner-device origin is
+guaranteed only on **`l2`** (it contains every device). It appears on a
+`vlan:<vid>` view **only if the owner still participates in that VLAN's proposed
+graph**. Removing an SVI/IRB can drop its owner out of that VLAN's proposed graph
+entirely (the IRB was the device's only presence in the VLAN), and v1 does not
+render non-participating phantom nodes — so on that VLAN view the operator sees
+the *affected* stranded members, and correlates the origin via `l2`. We do **not**
+force-render a non-participating origin device onto a VLAN chart (that is the
+ghost-node work, deferred). This is an honest, narrower promise than "origin shows
+on `l2`/VLAN views"; the where-is-the-change signal is always present on `l2`.
 
 This owner-device fallback is what keeps "origin s1" visible on the
-device-rendering L2/VLAN views — the single most important guard against
-re-introducing the old "where did the change happen?" ambiguity. Dedicated tests:
-a **port-caused** blackhole → `device:` origin on `l2` and the VLAN view; an
-**l3intf-caused** blackhole where the SVI **still exists** → `intf:` origin on
-`l3_exits` **and** owner `device:` origin; an **l3intf-caused** blackhole where
-the SVI was **removed** → owner `device:` origin present, **no** dangling `intf:`
-entry.
+device-rendering views — the single most important guard against re-introducing
+the old "where did the change happen?" ambiguity. Dedicated tests: a
+**port-caused** blackhole → `device:` origin on `l2` and the VLAN view (the port's
+device still participates); an **l3intf-caused** blackhole where the SVI **still
+exists** → `intf:` origin on `l3_exits` **and** owner `device:` origin; an
+**l3intf-caused** blackhole where the SVI was **removed** and the owner no longer
+participates in the VLAN → owner `device:` origin present on **`l2`**, **no**
+dangling `intf:` entry, and **no** forced origin on the `vlan:` view.
 
 ### Doctrine: cause is still not blast radius
 
@@ -325,9 +355,15 @@ sign-off.
   resolve against the IR) — the IR-resolution disambiguation rule.
 - **Removed-entity origin (P2 guard)** — an `l3intf`-caused blackhole where the
   SVI **still exists** in proposed IR yields both an `intf:` origin on `l3_exits`
-  and the owner `device:` origin; where the SVI was **removed**, only the owner
-  `device:` origin appears (no dangling `intf:` entry, since diagrams render the
-  proposed IR).
+  and the owner `device:` origin; where the SVI was **removed** and the owner no
+  longer participates in the VLAN, the owner `device:` origin appears on **`l2`**
+  only — no dangling `intf:` entry and no forced origin on the `vlan:` view
+  (diagrams render the proposed IR; v1 renders no phantom nodes).
+- **Paired-array projection (P1 guard)** — a `client.impact` finding with a
+  VLAN-10 client on `s1` and a VLAN-20 client on `s1` yields `s1` under `vlan:10`
+  and `vlan:20`, but **not** under an untouched `vlan:30` even though `s1` is in
+  VLAN 30's graph — each `impacts[i].attachment` projects only onto its own
+  `impacts[i].vlan`, never the finding-wide cross-product.
 - **Tier reconciliation** — an entity that is both `caused_by` (origin) and
   inside an affected fragment resolves to `origin`; severity still worst-wins
   independently.
