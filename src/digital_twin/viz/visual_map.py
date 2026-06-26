@@ -7,6 +7,7 @@ resolves against proposed_ir. decision.py never reads the result.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,7 +17,11 @@ from digital_twin.contracts import (
     Finding,
     FindingRef,
     ObjectRef,
+    Severity,
+    VisualEntry,
+    VisualMap,
     VisualTier,
+    entity_key,
 )
 from digital_twin.ir import IR
 from digital_twin.ir.entities import L3Intf
@@ -333,3 +338,71 @@ def _origin_contributions(
         for c in f.caused_by:
             emit_cause(c.ref, vlans)
     return out
+
+
+_SEV_RANK = {Severity.INFO: 0, Severity.WARNING: 1, Severity.ERROR: 2, Severity.CRITICAL: 3}
+_TIER_RANK = {VisualTier.AFFECTED: 0, VisualTier.ORIGIN: 1}  # higher = more foreground
+
+
+@dataclass
+class _Cell:
+    kind: str
+    id: str
+    tier: VisualTier
+    sev_rank: int
+    sev: Severity | None
+    refs: dict[int, FindingRef]
+
+
+def build_visual_map(
+    baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]
+) -> VisualMap:
+    idx = _build_view_index(proposed_ir)
+    contribs: list[_Contribution] = []
+    for i, f in enumerate(findings):
+        contribs.extend(_affected_contributions(f, i, proposed_ir, idx))
+        contribs.extend(_origin_contributions(f, i, baseline_ir, proposed_ir, idx))
+
+    # accumulate per (view, entity_key)
+    acc: dict[str, dict[str, _Cell]] = {}
+    for c in contribs:
+        key = entity_key(c.kind, c.id)
+        view = acc.setdefault(c.view, {})
+        cell = view.get(key)
+        if cell is None:
+            view[key] = _Cell(kind=c.kind, id=c.id, tier=c.tier,
+                              sev_rank=-1, sev=None, refs={})
+            cell = view[key]
+        if _TIER_RANK[c.tier] > _TIER_RANK[cell.tier]:
+            cell.tier = c.tier
+        # severity from the finding the ref points at
+        f = findings[c.ref.index]
+        if _SEV_RANK[f.severity] > cell.sev_rank:
+            cell.sev_rank = _SEV_RANK[f.severity]
+            cell.sev = f.severity
+        cell.refs[c.ref.index] = c.ref
+
+    out: VisualMap = {}
+    for view_id, cells in acc.items():
+        out[view_id] = {}
+        for key, cell in cells.items():
+            refs = tuple(cell.refs[i] for i in sorted(cell.refs))
+            # sev is guaranteed non-None: each cell exists only because >= 1 contribution
+            # touched it, and each contribution updates sev from a finding
+            assert cell.sev is not None
+            out[view_id][key] = VisualEntry(
+                kind=cell.kind, id=cell.id, tier=cell.tier,
+                severity=cell.sev, findings=refs,
+            )
+    return out
+
+
+def safe_build_visual_map(
+    baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]
+) -> VisualMap:
+    """Fail-soft: the map is presentational and must NEVER sink a verdict
+    (mirrors safe_build_diagrams). Any builder exception -> empty map."""
+    try:
+        return build_visual_map(baseline_ir, proposed_ir, findings)
+    except Exception:  # noqa: BLE001 — presentational; never sink a verdict
+        return {}

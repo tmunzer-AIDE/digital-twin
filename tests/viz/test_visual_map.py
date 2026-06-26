@@ -5,6 +5,7 @@ from digital_twin.contracts import (
     FindingSource,
     ObjectRef,
     Severity,
+    VisualTier,
 )
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
 from digital_twin.ir.entities import (
@@ -344,3 +345,44 @@ def test_origin_per_impact_cause_pairs_with_its_vlan():
     assert not any(c.view == "vlan:10" and c.id == "s2" for c in cs)
     assert any(c.view == "vlan:20" and c.id == "s2" and c.tier is vm.VisualTier.ORIGIN
                for c in cs)
+
+
+def test_build_map_origin_beats_affected_severity_orthogonal():
+    ir = _two_switch_vlan_ir()
+    # one finding makes s1 affected (warning); a second makes s1 origin (info-severity)
+    affected = _f(severity=Severity.WARNING, affected_entities=("s1",))
+    origin = _f(severity=Severity.INFO, subject=ObjectRef("vlan", "10"),
+                evidence={"vlan": 10},
+                caused_by=(Cause(ref=ObjectRef("device", "s1")),))
+    m = vm.build_visual_map(ir, ir, (affected, origin))
+    e = m["l2"]["device:s1"]
+    assert e.tier is VisualTier.ORIGIN          # origin wins
+    assert e.severity is Severity.WARNING  # severity worst-wins, independent of tier
+    assert {r.index for r in e.findings} == {0, 1}
+
+
+def test_build_map_headline_bleed_regression():
+    ir = _two_switch_vlan_ir()
+    # blackhole on vlan 10 hitting s1; vlan 20 and untouched vlans must stay clean
+    f = _f(subject=ObjectRef("vlan", "10"),
+           evidence={"vlan": 10, "component_nodes": ["s1", "s2"]})
+    m = vm.build_visual_map(ir, ir, (f,))
+    assert "device:s1" in m.get("vlan:10", {})
+    assert "device:s1" not in m.get("vlan:20", {})  # THE FIX
+    # vlan:20 carries no paint at all from a vlan-10-scoped finding
+    assert m.get("vlan:20", {}) == {}
+
+
+def test_build_map_serializable_entry_shape():
+    ir = _two_switch_vlan_ir()
+    f = _f(affected_entities=("s1",))
+    m = vm.build_visual_map(ir, ir, (f,))
+    e = m["l2"]["device:s1"]
+    assert (e.kind, e.id) == ("device", "s1")
+
+
+def test_safe_build_visual_map_swallows_errors(monkeypatch):
+    # the map is presentational: a builder bug must yield {}, never crash the verdict
+    monkeypatch.setattr(vm, "build_visual_map",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert vm.safe_build_visual_map(_two_switch_vlan_ir(), _two_switch_vlan_ir(), ()) == {}
