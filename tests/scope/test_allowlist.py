@@ -169,3 +169,11 @@ def test_mac_limit_in_scope_usage_local_overwrite_not_port_config():
     assert "port_usages.*.mac_limit" in dev and "local_port_config.*.mac_limit" in dev
     assert "port_config_overwrite.*.mac_limit" in dev
     assert "port_config.*.mac_limit" not in dev
+
+
+def test_misc_knobs_in_scope_usage_local_not_port_config():
+    dev = set(RAW_ALLOWLIST["device"])
+    for a in ("inter_switch_link", "storm_control", "enable_qos"):
+        assert f"port_usages.*.{a}" in dev and f"local_port_config.*.{a}" in dev
+        assert f"port_config.*.{a}" not in dev
+        assert f"port_config_overwrite.*.{a}" not in dev

@@ -39,7 +39,7 @@ from digital_twin.ir import (
     same_ip,
     same_subnet,
 )
-from digital_twin.ir.entities import PortAuth
+from digital_twin.ir.entities import PortAuth, PortMisc
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
 from .base import IngestContext
@@ -412,6 +412,36 @@ def _mac_limit(v: Any) -> int | str | None:
             return int(s) or None
         return f"unresolved:{s}" if s else None
     return f"unresolved:{v!r}"
+
+
+_SENTINEL = object()  # "key absent from defaults" marker (unknown keys are kept)
+# OAS defaults for storm_control — a default-shaped object (real fixtures send
+# exactly this) must normalize to None so absent == explicit-default == no REVIEW.
+_STORM_DEFAULTS: dict[str, Any] = {
+    "disable_port": False, "no_broadcast": False, "no_multicast": False,
+    "no_registered_multicast": False, "no_unknown_unicast": False, "percentage": 80,
+}
+
+
+def _storm_digest(sc: Any) -> str | None:
+    """Order-independent canonical digest of the NON-default storm_control fields;
+    None when absent OR all-default (so unset == explicit-default). Unknown keys
+    are kept (conservative)."""
+    if not isinstance(sc, dict):
+        return None
+    nondefault = {k: v for k, v in sc.items() if _STORM_DEFAULTS.get(k, _SENTINEL) != v}
+    if not nondefault:
+        return None
+    return ";".join(f"{k}={nondefault[k]}" for k in sorted(nondefault))
+
+
+def _port_misc(usage: dict[str, Any]) -> PortMisc | None:
+    m = PortMisc(
+        inter_switch_link=bool(usage.get("inter_switch_link")),
+        enable_qos=bool(usage.get("enable_qos")),
+        storm_control=_storm_digest(usage.get("storm_control")),
+    )
+    return m if m != PortMisc() else None
 
 
 def _reauth(v: Any) -> str | None:
@@ -902,6 +932,7 @@ class SwitchIngester:
                     observed_speed=obs_speed,
                     observed_duplex=obs_duplex,
                     mac_limit=_mac_limit(usage.get("mac_limit")),
+                    misc=_port_misc(usage),
                     disabled=bool(usage.get("disabled")),
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),

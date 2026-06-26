@@ -1513,3 +1513,16 @@ def test_voip_sets_voice_vlan_and_access_membership():
     trunk = ir.ports["aa0000000001:ge-0/0/2"]
     assert trunk.voice_vlan == 30                            # trunk resolves voice...
     assert "aa0000000001:ge-0/0/2" not in members30          # ...but is NOT an endpoint member
+
+
+def test_port_misc_storm_defaults_normalize_to_none():
+    from digital_twin.adapters.mist.ingest.switch import _port_misc, _storm_digest
+    # a default-shaped storm_control object == no misc surface (no REVIEW)
+    default_sc = {"disable_port": False, "no_broadcast": False, "no_multicast": False,
+                  "no_registered_multicast": False, "no_unknown_unicast": False, "percentage": 80}
+    assert _storm_digest(default_sc) is None
+    assert _port_misc({"storm_control": default_sc}) is None
+    assert _port_misc({}) is None
+    # only a non-default value digests / makes a non-None PortMisc
+    assert _storm_digest({**default_sc, "percentage": 50}) == "percentage=50"
+    assert _port_misc({"storm_control": {**default_sc, "no_broadcast": True}}) is not None

@@ -59,6 +59,9 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "duplex",
     "disable_autoneg",
     *_AUTH_ATTRS,
+    "inter_switch_link",
+    "storm_control",
+    "enable_qos",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff

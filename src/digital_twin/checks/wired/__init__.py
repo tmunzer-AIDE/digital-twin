@@ -23,6 +23,7 @@ from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
+from .unmodeled_change import PortUnmodeledChangeCheck
 from .vlan_collision import VlanCollisionCheck
 from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
@@ -52,6 +53,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     SubnetOverlapCheck(),
     VlanCollisionCheck(),
     MacLimitExceededCheck(),
+    PortUnmodeledChangeCheck(),
 ]
 
 __all__ = [
@@ -80,4 +82,5 @@ __all__ = [
     "StpRootChangeCheck",
     "WlanDuplicateSsidCheck",
     "WlanOpenGuestCheck",
+    "PortUnmodeledChangeCheck",
 ]
