@@ -90,6 +90,8 @@ def test_severed_from_a_surviving_exit_anchor_is_critical():
     f = next(f for f in result.findings if "A" in f.affected_entities)
     assert f.severity is Severity.CRITICAL
     assert "B" in f.evidence["lost_anchor_nodes"]
+    assert "B" in f.evidence["exit_anchor_nodes"]
+    assert f.evidence["severity_reason"] == "severed from a surviving exit anchor"
 
 
 def test_below_high_severance_with_anchor_is_warning():
@@ -103,6 +105,7 @@ def test_below_high_severance_with_anchor_is_warning():
     f = next(f for f in result.findings if "A" in f.affected_entities)
     assert f.severity is Severity.WARNING
     assert "B" in f.evidence["lost_anchor_nodes"]  # anchor present, but high gate dominates
+    assert f.evidence["severity_reason"] == "physical severance, severance confidence below HIGH"
 ```
 
 And extend the existing exit-less ERROR test to lock that no anchor was lost (add the one assertion; keep the rest):
@@ -115,6 +118,8 @@ def test_disabling_the_only_uplink_severs_the_member_fragment():
     assert f.severity is Severity.ERROR
     assert f.confidence.level is ConfidenceLevel.HIGH
     assert f.evidence["lost_anchor_nodes"] == []  # exit-less home -> no anchor lost -> ERROR, not CRITICAL
+    assert f.evidence["exit_anchor_nodes"] == []  # no exit anywhere in this domain
+    assert f.evidence["severity_reason"] == "physical severance, no surviving exit anchor"
 ```
 
 - [ ] **Step 3: Run the new tests to verify they fail**
@@ -184,7 +189,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - `requires()` stays WIRED_L2; status aggregation, confidence, candidate selection, `default_severity`, message unchanged → Step 4 leaves them ✓
 - Evidence `exit_anchor_nodes` / `lost_anchor_nodes` / `severity_reason` → Step 4 ✓
 - Verdict invariance (CRITICAL→FAIL→UNSAFE like ERROR) → unchanged `worst` line; `test_gs13` decision stays UNSAFE ✓
-- Tests: CRITICAL, below-HIGH WARNING, exit-less ERROR `lost_anchor_nodes == []` → Step 2 ✓
+- Tests: CRITICAL, below-HIGH WARNING, exit-less ERROR — each pins all three evidence keys (`lost_anchor_nodes`, `exit_anchor_nodes`, `severity_reason`) for its tier → Step 2 ✓
 
 **Type/name consistency:** `Severity.CRITICAL` exists; `anchors` / `baseline_home` / `fragment` / `high` are existing locals in the loop; `(frozenset - frozenset) & set` → set, `sorted(...)` over it is fine; `link(..., prov=...)` and `irb(did, vlan)` match the factory signatures; `Provenance.LLDP_ONE_SIDED` → LOW confidence.
 
