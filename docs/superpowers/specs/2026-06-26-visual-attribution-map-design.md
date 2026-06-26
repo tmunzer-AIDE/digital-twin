@@ -178,14 +178,26 @@ entity), normalized to graph nodes/ports. An origin **inherits the view-set of
 the finding it caused**, so on `vlan:10` the operator sees `origin s1 → affected
 s2`, and on `l2` the origin device is distinct from the affected sea.
 
-**Port/link causes must surface as device origins.** Most cut causes are ports
-or links (a disabled uplink, a removed link). Per the renderability rule above,
-when `caused_by` resolves to a `port:<id>` or `link:<id>`, the builder emits both
-the `port:`/`link:` origin entry **and** an `origin` entry for the endpoint
-`device:<node>`. This is what keeps "origin s1" visible on the device-rendering
-L2/VLAN views — it is the single most important guard against re-introducing the
-old "where did the change happen?" ambiguity, and it has a dedicated test
-(port-caused blackhole → `device:` origin entry present on `l2` and the VLAN view).
+**Port/link/l3intf causes must surface as device origins.** Most cut causes are
+ports or links (a disabled uplink, a removed link); blackhole causes can also be
+`Cause(ref.kind="l3intf", …)` (a removed SVI/IRB that was the VLAN's exit). Per
+the renderability rule above, when `caused_by` resolves to a non-device entity
+the builder emits **both** the entity's own origin entry **and** an `origin`
+entry for its owning `device:<node>`:
+
+- `port:<id>` → endpoint `device:<node>` (existing `port_node` helper)
+- `link:<id>` → both endpoint `device:<node>`s (existing link-split)
+- `l3intf:<id>` → the interface's `intf:<l3intf_id>` entry **and** its owner
+  `device:<node>` (resolve owner via the `L3Intf.device_id` + `node_for` folding,
+  the same path `_l3_exits_diagram` uses). The `intf:` entry projects onto
+  `l3_exits` (and the device onto `l2`/the referenced VLAN views).
+
+This is what keeps "origin s1" visible on the device-rendering L2/VLAN views — it
+is the single most important guard against re-introducing the old "where did the
+change happen?" ambiguity, and it has dedicated tests: a **port-caused** blackhole
+→ `device:` origin on `l2` and the VLAN view, and an **l3intf-caused** blackhole
+(removed SVI/IRB) → both the `intf:` origin on `l3_exits` and the owner `device:`
+origin.
 
 ### Doctrine: cause is still not blast radius
 
@@ -298,8 +310,10 @@ sign-off.
   `visual_map` does not alter `decision` or any finding `severity` (compare
   verdict with/without the map populated).
 - **Serialization** — `verdict_to_dict` round-trips `visual_map` to the nested
-  `{view: {entity: {tier, severity, findings}}}` shape mistmcp expects, where each
-  `findings` element is a `{index, code, subject}` ref (not a bare code).
+  `{view: {entity: {kind, id, tier, severity, findings}}}` shape mistmcp expects,
+  where each entry carries structured `kind`/`id` (so no string-parsing is
+  required) and each `findings` element is a `{index, code, subject}` ref (not a
+  bare code).
 - **Instance distinctness (P2 guard)** — an entity hit by two same-code findings
   (`blackhole.exit_lost` on VLAN 10 and VLAN 20) on the `l2` view carries **two**
   distinct `FindingRef`s with different `index` values, not one collapsed code.
