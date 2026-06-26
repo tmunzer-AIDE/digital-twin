@@ -15,8 +15,13 @@ conservative, never-false-SAFE direction. Suppression is grounded-only: there is
 no size/majority heuristic, so the surviving majority is dropped only when it
 demonstrably keeps an exit.
 
-- Severity is terminal here (this layer only): ERROR at HIGH confidence, WARNING
-  below — confidence = MIN over the baseline boundary links the delta severed.
+- Severity is terminal here (this layer only): CRITICAL when the severed fragment
+  lost reach to an exit anchor that exists on the far side of the cut in BOTH
+  baseline and proposed (HIGH confidence) — a gateway it genuinely had and lost,
+  the twin of blackhole.exit_lost; ERROR when HIGH with no such lost anchor
+  (exit-less domain, the delta removed the only exit, or the far-side anchor is
+  newly added by the delta so there was no baseline reach to lose); WARNING below
+  HIGH. Confidence = MIN over the baseline boundary links the delta severed.
 - A pre-existing island (proposed nodes == baseline nodes) is unchanged context.
 - Redundancy is respected by construction: graph components, not "an uplink died".
 """
@@ -85,6 +90,7 @@ class L2IsolationCheck:
         occupants = _occupants(ctx.baseline.ir)
         vc_root = vc_root_map(ctx.baseline.ir)
         anchors = exit_anchor_nodes(ctx.proposed.ir)
+        baseline_anchors = exit_anchor_nodes(ctx.baseline.ir)
 
         findings: list[Finding] = []
         worst = Status.PASS
@@ -109,6 +115,22 @@ class L2IsolationCheck:
                     severed_links.append(lnk.meta.confidence)
             confidence = min_confidence(*severed_links) if severed_links else _HIGH
             high = confidence.level is ConfidenceLevel.HIGH
+            # CRITICAL only if the fragment LOST reach to a gateway it had: the
+            # anchor must sit on the far side of the cut AND exist in BOTH states.
+            # Intersecting baseline anchors too keeps this the twin of
+            # blackhole.exit_lost — a delta that severs A while ADDING a new exit
+            # on the far side is not a lost-gateway event (no baseline reach to
+            # lose), so it stays ERROR, not CRITICAL.
+            lost_anchor_nodes = (baseline_home - fragment) & anchors & baseline_anchors
+            if high and lost_anchor_nodes:
+                severity = Severity.CRITICAL
+                severity_reason = "severed from a surviving exit anchor"
+            elif high:
+                severity = Severity.ERROR
+                severity_reason = "physical severance, no surviving exit anchor"
+            else:
+                severity = Severity.WARNING
+                severity_reason = "physical severance, severance confidence below HIGH"
             totals = {
                 key: sum(c.get(key, 0) for c in occupied.values())
                 for key in ("member_ports", "clients", "wlan_aps")
@@ -119,7 +141,7 @@ class L2IsolationCheck:
                     category=FindingCategory.NETWORK,
                     code="wired.l2.isolation.severed",
                     subject=ObjectRef("device", sorted(fragment)[0]),
-                    severity=Severity.ERROR if high else Severity.WARNING,
+                    severity=severity,
                     confidence=confidence,
                     message=(
                         f"segment {sorted(fragment)} is physically severed from the rest "
@@ -132,6 +154,9 @@ class L2IsolationCheck:
                         "fragment_nodes": sorted(fragment),
                         "lost_peers": sorted(baseline_home - fragment),
                         "occupants": {n: dict(c) for n, c in occupied.items()},
+                        "exit_anchor_nodes": sorted(anchors),
+                        "lost_anchor_nodes": sorted(lost_anchor_nodes),
+                        "severity_reason": severity_reason,
                     },
                     caused_by=causes_for_severance(ctx, fragment),
                 )

@@ -14,11 +14,19 @@ from digital_twin.ir.provenance import Provenance, fact_meta
 from tests.factories import access_port, irb, link, sw, trunk_port, wired_client
 
 
-def _ir(*, uplink_disabled: bool, blind_peer: bool = False):
+def _ir(
+    *,
+    uplink_disabled: bool,
+    blind_peer: bool = False,
+    b_has_irb: bool = False,
+    link_prov: Provenance = Provenance.LLDP_TWO_SIDED,
+):
     """A(member+client) --up/down-- B. The delta disables A's uplink."""
     b = IRBuilder()
     b.add_device(sw("A")).add_device(sw("B"))
     b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    if b_has_irb:
+        b.add_l3intf(irb("B", 10))  # B owns a routed IRB -> B is an exit anchor
     acc = access_port("A", "acc", 10)
     b.add_port(acc)
     b.add_client(wired_client("cc:01", acc.id, vlan=10))
@@ -36,7 +44,7 @@ def _ir(*, uplink_disabled: bool, blind_peer: bool = False):
             meta=fact_meta(Provenance.OBSERVED),
         )
     b.add_port(down)
-    b.add_link(link("A:up", "B:down"))  # link() default meta is HIGH (two-sided)
+    b.add_link(link("A:up", "B:down", prov=link_prov))
     b.with_capability(IRCapability.WIRED_L2)
     return b.build()
 
@@ -57,6 +65,54 @@ def test_disabling_the_only_uplink_severs_the_member_fragment():
     f = next(f for f in result.findings if "A" in f.affected_entities)
     assert f.severity is Severity.ERROR
     assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["lost_anchor_nodes"] == []  # exit-less home -> no anchor lost -> ERROR
+    assert f.evidence["exit_anchor_nodes"] == []  # no exit anywhere in this domain
+    assert f.evidence["severity_reason"] == "physical severance, no surviving exit anchor"
+
+
+def test_severed_from_a_surviving_exit_anchor_is_critical():
+    # A is cut from B, and B owns a routed IRB (a surviving exit anchor on the
+    # far side) -> the severance is the top-severity "lost the gateway" event.
+    result = _run(
+        _ir(uplink_disabled=False, b_has_irb=True),
+        _ir(uplink_disabled=True, b_has_irb=True),
+    )
+    assert result.status is Status.FAIL
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert f.severity is Severity.CRITICAL
+    assert "B" in f.evidence["lost_anchor_nodes"]
+    assert "B" in f.evidence["exit_anchor_nodes"]
+    assert f.evidence["severity_reason"] == "severed from a surviving exit anchor"
+
+
+def test_below_high_severance_with_anchor_is_warning():
+    # same severed-from-anchor topology, but the severed link is one-sided LLDP
+    # (LOW) -> severance confidence is below HIGH, so it stays WARNING even though
+    # an exit anchor exists (the `high` gate dominates).
+    result = _run(
+        _ir(uplink_disabled=False, b_has_irb=True, link_prov=Provenance.LLDP_ONE_SIDED),
+        _ir(uplink_disabled=True, b_has_irb=True, link_prov=Provenance.LLDP_ONE_SIDED),
+    )
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert f.severity is Severity.WARNING
+    assert "B" in f.evidence["lost_anchor_nodes"]  # anchor present, but high gate dominates
+    assert "B" in f.evidence["exit_anchor_nodes"]
+    assert f.evidence["severity_reason"] == "physical severance, severance confidence below HIGH"
+
+
+def test_severed_with_a_newly_added_far_side_anchor_is_not_critical():
+    # the delta severs A from B AND adds a brand-new IRB on B. A never had reach
+    # to a gateway in baseline (B's anchor did not exist then), so it did not LOSE
+    # one -> ERROR, not CRITICAL. Mirrors blackhole.exit_lost, which fires only on
+    # a BASELINE exit that is no longer reached, not on a proposed-only exit.
+    result = _run(
+        _ir(uplink_disabled=False, b_has_irb=False),  # baseline: B is NOT an anchor
+        _ir(uplink_disabled=True, b_has_irb=True),  # proposed: B gains an IRB, A severed
+    )
+    f = next(f for f in result.findings if "A" in f.affected_entities)
+    assert f.severity is Severity.ERROR
+    assert f.evidence["lost_anchor_nodes"] == []  # no baseline anchor to lose
+    assert "B" in f.evidence["exit_anchor_nodes"]  # B is a proposed anchor, but new
 
 
 def test_severance_confidence_comes_from_the_link_not_assumed_carriage():
