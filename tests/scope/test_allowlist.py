@@ -153,3 +153,11 @@ def test_auth_not_on_port_config_or_overwrite():
     dev = set(RAW_ALLOWLIST["device"])
     assert "port_config.*.port_auth" not in dev
     assert "port_config_overwrite.*.port_auth" not in dev
+
+
+def test_voip_network_in_scope_usage_and_local_not_port_config():
+    site, dev = set(RAW_ALLOWLIST["site_setting"]), set(RAW_ALLOWLIST["device"])
+    assert "port_usages.*.voip_network" in site and "port_usages.*.voip_network" in dev
+    assert "local_port_config.*.voip_network" in dev
+    assert "local_port_config.*.voip_network" not in site
+    assert "port_config.*.voip_network" not in dev

@@ -50,6 +50,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "port_network",
     "networks",
     "all_networks",
+    "voip_network",
     "poe_disabled",
     "mtu",
     "allow_dhcpd",
