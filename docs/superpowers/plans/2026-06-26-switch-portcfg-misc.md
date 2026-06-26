@@ -60,6 +60,16 @@ def test_voip_resolves_from_usage_not_port_config():
     assert u1.get("voip_network") == "voice"          # from usage
     u2, _ = _resolved(eff)["ge-0/0/2"]
     assert u2.get("voip_network") is None              # port_config voip NOT applied
+
+
+def test_voice_vlan_of_resolution_and_unresolvable():
+    from digital_twin.adapters.mist.ingest.ports import voice_vlan_of
+    nets = {"voice": {"vlan_id": 30}, "bad": {"vlan_id": "{{voice_vlan}}"}, "none": {}}
+    assert voice_vlan_of({"voip_network": "voice"}, nets) == 30
+    assert voice_vlan_of({"voip_network": "bad"}, nets) is None    # templated -> None, no crash
+    assert voice_vlan_of({"voip_network": "none"}, nets) is None   # no vlan_id -> None
+    assert voice_vlan_of({"voip_network": "absent"}, nets) is None
+    assert voice_vlan_of({}, nets) is None
 ```
 Add to `tests/adapters/mist/test_ingest_switch.py` (mirror the `test_l1_config_*` IngestContext scaffold; mac prefix `aa0000000001`):
 ```python
@@ -116,12 +126,18 @@ Add a module helper next to `usage_vlans`:
 ```python
 def voice_vlan_of(usage: dict[str, Any], networks: dict[str, Any]) -> int | None:
     """The voice VLAN id from `voip_network` (same namespace/resolution as
-    port_network). None when unset or unresolvable."""
+    port_network). None when unset OR unresolvable (a templated/non-numeric
+    vlan_id must yield None, never raise)."""
     name = usage.get("voip_network")
     if not name or name not in networks:
         return None
     vid = networks[name].get("vlan_id")
-    return int(vid) if vid is not None else None
+    if vid is None:
+        return None
+    try:
+        return int(vid)
+    except (TypeError, ValueError):
+        return None  # templated/unparseable vlan_id -> unresolvable
 ```
 
 - [ ] **Step 4: IR field + ingest wiring**
@@ -429,8 +445,11 @@ the .unverified path is not registry-short-circuited.
 from __future__ import annotations
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
-from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
+from digital_twin.contracts import (
+    Cause, Finding, FindingCategory, FindingSource, ObjectRef, Severity,
+)
 from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability, IRDiff
+from digital_twin.ir.entities import Client
 from digital_twin.ir.indexes import clients_by_port
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
@@ -485,13 +504,13 @@ class MacLimitExceededCheck:
         return CheckResult(
             check_id=self.id, status=worst, findings=tuple(findings),
             coverage=Coverage(state=CoverageState.COMPLETE),
-            confidence=_HIGH if findings else _HIGH,
+            confidence=_HIGH,
             reasoning="compared per-port mac_limit vs connected clients baseline vs proposed",
         )
 
     def _finding(
         self, ctx: CheckContext, pid: str, new: int | str | None,
-        wired: dict[str, list], clients_known: bool,
+        wired: dict[str, list[Client]], clients_known: bool,
     ) -> Finding | None:
         cause = ctx.delta_index.causes("port", [pid])
         if isinstance(new, str):  # unresolved/templated
@@ -507,7 +526,9 @@ class MacLimitExceededCheck:
                             f"{observed} connected client(s) exceed the new mac_limit {new}", cause)
         return None  # proven within the cap
 
-    def _mk(self, pid, code, conf, msg, cause) -> Finding:
+    def _mk(
+        self, pid: str, code: str, conf: Confidence, msg: str, cause: tuple[Cause, ...],
+    ) -> Finding:
         return Finding(
             source=FindingSource.CHECK, category=FindingCategory.NETWORK,
             code=f"{self.id}.{code}", severity=Severity.WARNING, confidence=conf,
@@ -532,6 +553,36 @@ def test_mac_limit_in_scope_usage_local_overwrite_not_port_config():
     assert "port_config_overwrite.*.mac_limit" in dev
     assert "port_config.*.mac_limit" not in dev
 ```
+
+- [ ] **Step 6b: Reconcile existing `mac_limit`-as-unmodeled tests**
+
+Prior SPs used `mac_limit` as the stand-in "still-unmodeled" leaf. Now that it is in scope, three existing assertions go stale and MUST be repointed to a *permanently*-unmodeled leaf (verified against `oas/device_switch.schema.json`: `poe_keep_state_when_reboot` is on `port_config_overwrite` but unmodeled; `use_vstp` is on `port_usages`/`local_port_config` but unmodeled — neither is an SP4 attr).
+
+In `tests/scope/test_allowlist.py`, the line `assert "port_config_overwrite.*.mac_limit" not in device  # still unmodeled` → change to two lines:
+```python
+    assert "port_config_overwrite.*.mac_limit" in device  # SP4: resolver-honored + modeled
+    assert "port_config_overwrite.*.poe_keep_state_when_reboot" not in device  # still unmodeled
+```
+In `tests/scope/test_field_gate.py` `test_unmodeled_usage_leaf_rejects`, swap `mac_limit` → `use_vstp` (comment: SP4 moved mac_limit into scope; use_vstp stays unmodeled):
+```python
+    payload = {
+        **CURRENT,
+        "port_usages": {"office": {"mode": "access", "port_network": "corp", "use_vstp": True}},
+    }
+    r = screen_op("site_setting", CURRENT, payload)
+    assert isinstance(r, Rejection)
+    assert any("use_vstp" in reason for reason in r.reasons)
+```
+In `tests/scope/test_field_gate.py` `test_unmodeled_overwrite_leaf_still_rejects`, swap `mac_limit` → `poe_keep_state_when_reboot`:
+```python
+    payload = {**SWITCH_CUR, "port_config_overwrite": {
+        "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
+    r = screen_op("device", SWITCH_CUR, payload)
+    assert isinstance(r, Rejection)
+    assert any("port_config_overwrite.ge-0/0/0.poe_keep_state_when_reboot" in reason
+               for reason in r.reasons)
+```
+(Also grep the test suite for any other `mac_limit` rejection assumption: `grep -rn "mac_limit" tests/scope tests/engine` — repoint any that assert it is out-of-scope/UNKNOWN.)
 
 - [ ] **Step 7: Run tests + gate**
 
@@ -569,7 +620,7 @@ EOF
 - Modify: `ir/entities.py` (`PortMisc` + `Port.misc`), `adapters/mist/ingest/switch.py` (`_port_misc` + `_storm_digest` + wire)
 - Create: `checks/wired/unmodeled_change.py`
 - Modify: `checks/wired/__init__.py`, `tests/test_public_api.py` (24→25), `scope/allowlist.py`
-- Test: `tests/ir/test_port_misc.py`, `tests/checks/test_unmodeled_change.py`, `tests/scope/test_allowlist.py`
+- Test: `tests/ir/test_port_misc.py`, `tests/checks/test_unmodeled_change.py`, `tests/adapters/mist/test_ingest_switch.py`, `tests/scope/test_allowlist.py`
 
 **Interfaces:**
 - Consumes: T1 resolver (these 3 in `_LOCAL_ATTRS` via `_MISC_ATTRS`); `CheckContext`.
@@ -590,6 +641,20 @@ def test_lone_flip_is_non_default():
     assert PortMisc(enable_qos=True) != PortMisc()
     assert PortMisc(inter_switch_link=True) != PortMisc()
     assert PortMisc(storm_control="percentage=50") != PortMisc()
+```
+Add storm-default normalization tests to `tests/adapters/mist/test_ingest_switch.py`:
+```python
+def test_port_misc_storm_defaults_normalize_to_none():
+    from digital_twin.adapters.mist.ingest.switch import _port_misc, _storm_digest
+    # a default-shaped storm_control object == no misc surface (no REVIEW)
+    default_sc = {"disable_port": False, "no_broadcast": False, "no_multicast": False,
+                  "no_registered_multicast": False, "no_unknown_unicast": False, "percentage": 80}
+    assert _storm_digest(default_sc) is None
+    assert _port_misc({"storm_control": default_sc}) is None
+    assert _port_misc({}) is None
+    # only a non-default value digests / makes a non-None PortMisc
+    assert _storm_digest({**default_sc, "percentage": 50}) == "percentage=50"
+    assert _port_misc({"storm_control": {**default_sc, "no_broadcast": True}}) is not None
 ```
 Create `tests/checks/test_unmodeled_change.py`:
 ```python
@@ -651,12 +716,25 @@ class PortMisc:
 In `Port`, add: `misc: PortMisc | None = None  # SP4: recognized->REVIEW knobs`.
 In `adapters/mist/ingest/switch.py`, add helpers next to `_mac_limit`:
 ```python
+_SENTINEL = object()  # "key absent from defaults" marker (unknown keys are kept)
+# OAS defaults for storm_control — a default-shaped object (real fixtures send
+# exactly this) must normalize to None so absent == explicit-default == no REVIEW.
+_STORM_DEFAULTS: dict[str, Any] = {
+    "disable_port": False, "no_broadcast": False, "no_multicast": False,
+    "no_registered_multicast": False, "no_unknown_unicast": False, "percentage": 80,
+}
+
+
 def _storm_digest(sc: Any) -> str | None:
-    """Order-independent canonical digest of the storm_control object; None when
-    absent/empty so an unset storm_control == default."""
-    if not isinstance(sc, dict) or not sc:
+    """Order-independent canonical digest of the NON-default storm_control fields;
+    None when absent OR all-default (so unset == explicit-default). Unknown keys
+    are kept (conservative)."""
+    if not isinstance(sc, dict):
         return None
-    return ";".join(f"{k}={sc[k]}" for k in sorted(sc))
+    nondefault = {k: v for k, v in sc.items() if _STORM_DEFAULTS.get(k, _SENTINEL) != v}
+    if not nondefault:
+        return None
+    return ";".join(f"{k}={nondefault[k]}" for k in sorted(nondefault))
 
 
 def _port_misc(usage: dict[str, Any]) -> PortMisc | None:
@@ -774,7 +852,8 @@ git -C /Users/tmunzer/4_dev/digital-twin/.claude/worktrees/sp4-misc add \
   src/digital_twin/ir/entities.py src/digital_twin/adapters/mist/ingest/switch.py \
   src/digital_twin/checks/wired/unmodeled_change.py src/digital_twin/checks/wired/__init__.py \
   tests/test_public_api.py src/digital_twin/scope/allowlist.py \
-  tests/ir/test_port_misc.py tests/checks/test_unmodeled_change.py tests/scope/test_allowlist.py
+  tests/ir/test_port_misc.py tests/checks/test_unmodeled_change.py \
+  tests/adapters/mist/test_ingest_switch.py tests/scope/test_allowlist.py
 git -C /Users/tmunzer/4_dev/digital-twin/.claude/worktrees/sp4-misc commit -m "$(cat <<'EOF'
 feat: wired.port.unmodeled_change — inter_switch_link/storm_control/enable_qos -> REVIEW
 
@@ -882,6 +961,7 @@ EOF
 - §4 registration + 23→25; no L0 change → Tasks 3 (→24), 4 (→25). ✓
 - OAS placement (mac_limit overwrite+local+usage; others local+usage; none port_config) → scope tests in Tasks 2/3/4. ✓
 - Owner review pins: client.impact voice-loss (T2), mac_limit requires WIRED_L2 + both-sides + baseline-blind .unverified (T3), ACCESS-gated voice membership + trunk-not-member (T1). ✓
+- Plan-review round 2 pins: stale `mac_limit`-as-unmodeled tests repointed to `poe_keep_state_when_reboot`/`use_vstp` (T3 Step 6b); `MacLimitExceededCheck` strict-typed (`dict[str,list[Client]]`, typed `_mk`, `Cause`/`Client` imports); `voice_vlan_of` catches templated `vlan_id` → None (T1); `_storm_digest` normalizes OAS defaults away so a default-shaped object → `Port.misc is None` (T4). ✓
 
 **Placeholder scan:** No TBD/TODO. Two "NOTE to implementer" blocks point at the real e2e harness/`wired_clients` wiring to mirror (exact field plumbing lives in test_pipeline.py); the test bodies are complete.
 
