@@ -276,7 +276,29 @@ In `scope/allowlist.py`, add `"voip_network"` to `_MODELED_USAGE_ATTRS` (→ `po
 
 - [ ] **Step 5: e2e**
 
-Add to `tests/engine/test_pipeline.py` (mirror the SP1/SP2/SP3 device-update e2e scaffold). A device PUT removing the voice VLAN via `local_port_config` on a port with an observed phone on VLAN 30 → not UNKNOWN; `wired.client.impact.active_clients` present (or REVIEW). NOTE to implementer: use this file's real helpers (`dc_replace`/`_raw`/`FakeProvider`/`_plan`/`_op`/`simulate`/`Decision`/`SWITCH`/`SETTING`); set `no_local_overwrite: False` on the port's `port_config` entry up front so the local change applies; ensure `SETTING.networks` defines the voice network and an observed wired client on VLAN 30 exists in `_raw()` (add one if needed). Assert decision is not UNKNOWN and is REVIEW.
+Add to `tests/engine/test_pipeline.py` (mirror the SP1/SP2/SP3 device-update e2e scaffold). A device PUT removing the voice VLAN via `local_port_config` on a port with an observed phone on VLAN 30 → not UNKNOWN; `wired.client.impact.active_clients` present and REVIEW. Use this file's real helpers (`dc_replace`/`_raw`/`FakeProvider`/`_plan`/`_op`/`simulate`/`Decision`/`StateMeta`/`SWITCH`/`SETTING`). **CLIENTS_ACTIVE gate:** `ClientsIngester` only claims active-client data when BOTH `"wired_clients"` and `"wireless_clients"` are in `raw.meta.fetched` (`ingest/clients.py`) — `_raw()` ships `fetched=("devices",)`, so you MUST widen it. Wired-client dicts use keys `device_mac`/`port_id`/`mac`/`vlan` (NOT `vlan_id`). Template:
+```python
+def test_voip_removal_flags_active_phone_e2e():
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"],
+        "ge-0/0/0": {"usage": "phone", "no_local_overwrite": False}}}  # local applies
+    raw0 = _raw()
+    raw = dc_replace(
+        raw0, devices=(sw_a,),
+        wired_clients=({"device_mac": "aa0000000001", "port_id": "ge-0/0/0",
+                        "mac": "ph01", "vlan": 30},),
+        meta=dc_replace(raw0.meta, fetched=("devices", "wired_clients", "wireless_clients")),
+    )
+    # SETTING/usage "phone" must define port_network + voip_network -> voice VLAN 30;
+    # the op drops voip_network so the port stops offering VLAN 30 to the phone.
+    payload = {"local_port_config": {"ge-0/0/0": {"voip_network": None}}}
+    v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+                 provider=FakeProvider(raw=raw))
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    assert "wired.client.impact.active_clients" in {f.code for f in v.findings}
+    assert v.decision is Decision.REVIEW
+```
+NOTE: confirm `SETTING`/its `port_usages["phone"]` (or whichever usage `ge-0/0/0` resolves to) defines `port_network` + `voip_network` mapping to a VLAN-30 voice network in `SETTING.networks`; adjust the usage/`device_id`/`object_id` to match this file's existing fixtures (e.g. `dev-a` ↔ mac `aa0000000001`).
 
 - [ ] **Step 6: Run tests + gate**
 
@@ -883,13 +905,20 @@ EOF
 Add to `tests/engine/test_pipeline.py` (mirror prior SP e2e tests; set `no_local_overwrite: False` on the touched port up front):
 ```python
 def test_mac_limit_lowered_below_clients_is_review():
-    # a port with 2 observed wired clients; lowering mac_limit to 1 -> REVIEW
+    # a port with 2 observed wired clients; lowering mac_limit to 1 -> REVIEW.
+    # CLIENTS_ACTIVE requires BOTH client keys in meta.fetched (ingest/clients.py);
+    # _raw() ships fetched=("devices",), so widen it or this hits .unverified.
     sw_a = {**SWITCH, "port_config": {
         **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
-    raw = dc_replace(_raw(), devices=(sw_a,), wired_clients=(
-        {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c1", "vlan": 10},
-        {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c2", "vlan": 10},
-    ))
+    raw0 = _raw()
+    raw = dc_replace(
+        raw0, devices=(sw_a,),
+        wired_clients=(
+            {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c1", "vlan": 10},
+            {"device_mac": "aa0000000001", "port_id": "ge-0/0/0", "mac": "c2", "vlan": 10},
+        ),
+        meta=dc_replace(raw0.meta, fetched=("devices", "wired_clients", "wireless_clients")),
+    )
     payload = {"local_port_config": {"ge-0/0/0": {"mac_limit": 1}}}
     v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
                  provider=FakeProvider(raw=raw))
@@ -910,7 +939,7 @@ def test_enable_qos_change_is_review_not_unknown():
     assert any(c.startswith("wired.port.unmodeled_change") for c in {f.code for f in v.findings})
     assert v.decision is Decision.REVIEW
 ```
-NOTE: confirm `RawSiteState` exposes a `wired_clients` field and `_raw()`/`FakeProvider` feed it into ingest so the clients reach `clients_by_port` with `CLIENTS_ACTIVE`; if the harness needs a capability/clients hookup, mirror however the existing client-impact e2e (if any) wires observed clients. If `mac_limit` clients can't be wired into this harness, assert the `.unverified` code instead and note it.
+NOTE: the `enable_qos` test needs no client data (PortMisc change is client-independent), so its plain `dc_replace(_raw(), devices=(sw_a,))` is fine. The `mac_limit` test's widened `meta.fetched` is what earns `CLIENTS_ACTIVE` — verify with a quick check that `.exceeded` (not `.unverified`) fires; if it still reports `.unverified`, the `meta.fetched` widening didn't take (re-check the `dc_replace(raw0.meta, ...)` call).
 
 - [ ] **Step 2: Run to verify it fails for the right reason**
 
@@ -963,7 +992,8 @@ EOF
 - OAS placement (mac_limit overwrite+local+usage; others local+usage; none port_config) → scope tests in Tasks 2/3/4. ✓
 - Owner review pins: client.impact voice-loss (T2), mac_limit requires WIRED_L2 + both-sides + baseline-blind .unverified (T3), ACCESS-gated voice membership + trunk-not-member (T1). ✓
 - Plan-review round 2 pins: stale `mac_limit`-as-unmodeled tests repointed to `poe_keep_state_when_reboot`/`use_vstp` (T3 Step 6b); `MacLimitExceededCheck` strict-typed (`dict[str,list[Client]]`, typed `_mk`, `Cause`/`Client` imports); `voice_vlan_of` catches templated `vlan_id` → None (T1); `_storm_digest` normalizes OAS defaults away so a default-shaped object → `Port.misc is None` (T4). ✓
+- Plan-review round 3 pins: client-dependent e2es widen `meta.fetched` (both client keys) so `CLIENTS_ACTIVE` is earned — else T5 `mac_limit` hits `.unverified` not `.exceeded`, T2 voip sees no active phone (T2/T5); single `-k` exprs; `test_field_gate.py` staged in T3. ✓
 
-**Placeholder scan:** No TBD/TODO. Two "NOTE to implementer" blocks point at the real e2e harness/`wired_clients` wiring to mirror (exact field plumbing lives in test_pipeline.py); the test bodies are complete.
+**Placeholder scan:** No TBD/TODO. The client-dependent e2es (T2 voip, T5 mac_limit) ship complete templates that widen `meta.fetched` to `("devices","wired_clients","wireless_clients")` — verified against `ingest/clients.py` (CLIENTS_ACTIVE needs both client keys) and the wired-client dict shape (`device_mac`/`port_id`/`mac`/`vlan`). Remaining NOTEs only ask the implementer to align fixture names (usage/`device_id`) to this file's existing `SETTING`/`SWITCH`.
 
 **Type consistency:** `Port.voice_vlan: int|None`, `Port.mac_limit: int|str|None`, `Port.misc: PortMisc|None`; `voice_vlan_of`/`_mac_limit`/`_storm_digest`/`_port_misc` signatures consistent; `_more_restrictive(old,new)` and `_changed(old,new)` typed; finding codes `wired.port.mac_limit_exceeded.{exceeded,unverified,unresolved}` and `wired.port.unmodeled_change.recognized` match impl↔tests; `_MISC_ATTRS` (5) consistent; `voip_network` removed from `_USAGE_OVERRIDE_ATTRS` and added to `_MISC_ATTRS`/`_LOCAL_ATTRS`; `mac_limit` in `_OVERWRITE_ATTRS`; `ALL_WIRED_CHECKS` 23→24→25 matches the verified current 23.
