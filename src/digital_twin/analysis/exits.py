@@ -81,6 +81,9 @@ def resolve_exit(ir: IR, vlan_id: int, vlan_graph: nx.MultiGraph) -> ExitResolut
             for p in ir.ports.values()
             if p.is_uplink is True
             and not p.disabled
+            # native_vlan is included deliberately (an access/native uplink can
+            # carry the VID untagged); if it over-qualifies, the LOW confidence
+            # still floors REVIEW, so it can never manufacture a false-SAFE.
             and (vlan_id in p.tagged_vlans or p.native_vlan == vlan_id)
         }
         & graph_nodes
