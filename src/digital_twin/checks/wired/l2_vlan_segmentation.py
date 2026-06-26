@@ -2,7 +2,9 @@
 
 Per VLAN, compares the per-VLAN graph partition between IR and IR':
 - SPLIT (a baseline component fragments into >=2 proposed components) ->
-  WARN + WARNING finding, HIGH confidence.
+  PASS + INFO finding, HIGH confidence. A split is reported as INFO context —
+  the real harm (a populated piece losing its exit) is carried by
+  `blackhole`/`isolation`.
 - expansion/contraction (node set grows/shrinks without a split) -> PASS +
   INFO finding, HIGH confidence.
 Deliberately does NOT judge whether the change is allowed (that needs intent).
@@ -30,7 +32,7 @@ class L2VlanSegmentationCheck:
     id = "wired.l2.vlan_segmentation"
     title = "Broadcast-domain shape change"
     domain = "wired.l2"
-    default_severity = Severity.WARNING
+    default_severity = Severity.INFO
 
     def requires(self) -> frozenset[Capability]:
         return frozenset({IRCapability.WIRED_L2})
@@ -46,11 +48,10 @@ class L2VlanSegmentationCheck:
             prop_comps = [set(c.nodes) for c in ctx.proposed.vlan_components(vid)]
             split = any(len([p for p in prop_comps if p & b]) >= 2 for b in base_comps)
             if split:
-                status = Status.WARN
                 findings.append(
                     self._finding(
                         code="wired.l2.vlan_segmentation.split",
-                        severity=Severity.WARNING,
+                        severity=Severity.INFO,
                         message=f"vlan {vid}: broadcast domain partitioned by the delta",
                         vid=vid,
                         base=base_comps,

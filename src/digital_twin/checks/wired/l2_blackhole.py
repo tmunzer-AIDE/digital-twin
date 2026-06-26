@@ -8,6 +8,13 @@ Per VLAN (spec contract):
   are newly introduced (`new_member_stranded` — e.g. the delta adds the first
   access port on an isolated switch). It is pre-existing INFO context ONLY when
   the same stranded-member condition already existed in the baseline.
+- Severity summary:
+    exit_lost          (a populated segment that lost its path to a located exit):
+                       CRITICAL at HIGH confidence / WARNING below.
+    new_member_stranded (a newly configured member that never had a path):
+                       ERROR at HIGH confidence / WARNING below.
+    exit_unlocatable   (no IRB and no boundary uplink found):
+                       INSUFFICIENT_DATA / WARNING.
 - FAIL only at HIGH exit confidence; MEDIUM/LOW downgrades to WARN.
 - The exit's confidence bounds the conclusion ONLY for vlans whose member
   reachability relies on it — a transit-only vlan (no members) never consults
@@ -329,7 +336,11 @@ class L2BlackholeCheck:
             findings.append(
                 self._finding(
                     code=code,
-                    severity=Severity.ERROR if high else Severity.WARNING,
+                    severity=(
+                        (Severity.CRITICAL if high else Severity.WARNING)
+                        if lost_exit
+                        else (Severity.ERROR if high else Severity.WARNING)
+                    ),
                     category=FindingCategory.NETWORK,
                     confidence=exit_conf,
                     message=message,

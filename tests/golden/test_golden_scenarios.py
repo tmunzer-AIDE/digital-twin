@@ -1433,8 +1433,8 @@ def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
 # non-load-bearing invariant). ONE EDGE device op re-profiles TWO trunk ports
 # (ge-0/0/90 carries only vlan 991, ge-0/0/91 only vlan 992); both flip
 # trunk -> empty-trunk, dropping both vlans. Each vlan strands its member from
-# its HUB IRB exit -> blackhole.exit_lost (ERROR) + vlan_segmentation.split
-# (WARNING), one per vlan, each attributable to the ONE port that carried it.
+# its HUB IRB exit -> blackhole.exit_lost (CRITICAL) + vlan_segmentation.split
+# (INFO), one per vlan, each attributable to the ONE port that carried it.
 # ---------------------------------------------------------------------------
 
 
@@ -1528,8 +1528,8 @@ def test_ca_non_load_bearing_verdict_unchanged_and_causes_populated(tmp_path):
     # severity drift (the load-bearing axis) trips this golden
     assert Counter((f.code, f.severity) for f in v.findings) == Counter(
         {
-            ("wired.l2.blackhole.exit_lost", Severity.ERROR): 2,
-            ("wired.l2.vlan_segmentation.split", Severity.WARNING): 2,
+            ("wired.l2.blackhole.exit_lost", Severity.CRITICAL): 2,
+            ("wired.l2.vlan_segmentation.split", Severity.INFO): 2,
             ("wired.l2.blackhole.preexisting", Severity.INFO): 2,
             ("wired.l2.blackhole.preexisting_unlocatable", Severity.INFO): 1,
             ("wired.l2.loop.preexisting", Severity.INFO): 1,

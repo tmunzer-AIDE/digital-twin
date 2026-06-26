@@ -39,8 +39,52 @@ def test_losing_a_high_confidence_exit_fails():
     result = L2BlackholeCheck().run(_ctx(_ir(connected=True), _ir(connected=False)))
     assert result.status is Status.FAIL
     f = result.findings[0]
-    assert f.severity is Severity.ERROR
+    assert f.code == "wired.l2.blackhole.exit_lost"
+    assert f.severity is Severity.CRITICAL   # gateway path lost -> top severity
     assert "10" in f.message  # names the vlan
+
+
+def test_exit_lost_below_high_confidence_is_warning():
+    # A below-HIGH (LOW) exit confidence downgrades exit_lost to WARNING —
+    # only HIGH-confidence "gateway path lost" rises to CRITICAL.
+    # Topology: A--B--GW. Baseline: A reaches GW via B (B--GW is LLDP_ONE_SIDED
+    # -> LOW exit). Proposed: A's link to B is cut; B still has the LOW-confidence
+    # uplink to GW, so the exit IS locatable (BOUNDARY_UPLINK/LOW) — but A's
+    # member component no longer reaches it -> exit_lost at LOW -> WARNING.
+    from digital_twin.ir.entities import Device, DeviceRole
+    from digital_twin.ir.provenance import Provenance
+
+    def site(a_connected: bool):
+        b = IRBuilder()
+        b.add_device(sw("A"))
+        b.add_device(sw("B"))
+        b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+        b.add_port(access_port("A", "acc", 10))
+        b.add_port(trunk_port("A", "up", tagged=(10,)))
+        b.add_port(trunk_port("B", "to-A", tagged=(10,)))
+        b.add_port(trunk_port("B", "to-gw", tagged=(10,)))
+        b.add_port(trunk_port("GW", "down", tagged=(10,)))
+        if a_connected:
+            b.add_link(link("A:up", "B:to-A"))  # HIGH (CONFIG)
+        b.add_link(link("B:to-gw", "GW:down", prov=Provenance.LLDP_ONE_SIDED))  # LOW exit
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(True), site(False)))
+    f = next(x for x in result.findings if x.code == "wired.l2.blackhole.exit_lost")
+    assert f.severity is Severity.WARNING  # below-HIGH exit confidence: not CRITICAL
+
+
+def test_new_member_stranded_high_confidence_is_error():
+    # new_member_stranded at HIGH confidence stays ERROR — "never reached" is
+    # not as severe as "lost the gateway". This locks the split so Task 1's
+    # CRITICAL change never accidentally affects this code.
+    base = _ir(connected=False, with_member=False)
+    prop = _ir(connected=False, with_member=True)
+    result = L2BlackholeCheck().run(_ctx(base, prop))
+    f = next(x for x in result.findings if x.code == "wired.l2.blackhole.new_member_stranded")
+    assert f.severity is Severity.ERROR  # "never reached", not "lost the gateway"
 
 
 def test_still_connected_passes():
