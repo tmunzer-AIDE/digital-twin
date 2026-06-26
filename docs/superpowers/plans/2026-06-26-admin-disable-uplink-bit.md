@@ -241,16 +241,16 @@ The current `_classify` (admin_disable.py) checks, in order: `base_port is None`
 Append to `tests/checks/test_admin_disable.py` (reuses `_run`, `sw`, `link`, `Port`, `PortMode`, `Provenance`, `IRBuilder`, `IRCapability`, `Severity`, `ConfidenceLevel`). Build small IRs directly.
 
 ```python
-def _trunk_ir(*, disabled, is_uplink, with_peer_link):
+def _trunk_ir(*, disabled, is_uplink, with_peer_link, peer_prov=Provenance.LLDP_TWO_SIDED):
     """S:up is a TRUNK with no AP and no wired clients. Optionally a peer link to
-    a 2nd switch, and an observed is_uplink bit."""
+    a 2nd switch (at `peer_prov`'s confidence), and an observed is_uplink bit."""
     b = IRBuilder().add_device(sw("S")).add_device(sw("T"))
     up = Port(id="S:up", device_id="S", name="up", mode=PortMode.TRUNK,
               disabled=disabled, is_uplink=is_uplink)
     b.add_port(up)
     if with_peer_link:
         b.add_port(Port(id="T:down", device_id="T", name="down", mode=PortMode.TRUNK))
-        b.add_link(link("S:up", "T:down", prov=Provenance.LLDP_TWO_SIDED))
+        b.add_link(link("S:up", "T:down", prov=peer_prov))
     b.with_capability(IRCapability.WIRED_L2)
     return b.build()
 
@@ -280,13 +280,19 @@ def test_unknown_uplink_trunk_stays_warning_conservative():
 
 
 def test_linked_trunk_warns_at_link_confidence_even_if_not_uplink():
-    # a modeled two-sided peer link -> WARNING at the LINK's confidence (HIGH),
-    # NOT demoted, even though is_uplink is False
-    res = _run(_trunk_ir(disabled=False, is_uplink=False, with_peer_link=True),
-               _trunk_ir(disabled=True, is_uplink=False, with_peer_link=True))
+    # a modeled ONE-SIDED peer link -> WARNING at the LINK's confidence (LOW),
+    # NOT demoted, even though is_uplink is False. The LOW assertion is what proves
+    # the peer-link branch runs FIRST: the old blanket trunk branch returned _HIGH,
+    # so a two-sided (HIGH) link could not distinguish the two implementations.
+    res = _run(
+        _trunk_ir(disabled=False, is_uplink=False, with_peer_link=True,
+                  peer_prov=Provenance.LLDP_ONE_SIDED),
+        _trunk_ir(disabled=True, is_uplink=False, with_peer_link=True,
+                  peer_prov=Provenance.LLDP_ONE_SIDED),
+    )
     f = next(f for f in res.findings if f.evidence.get("port") == "S:up")
     assert f.severity is Severity.WARNING
-    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.confidence.level is ConfidenceLevel.LOW
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
