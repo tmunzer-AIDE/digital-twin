@@ -119,7 +119,6 @@ def _captions_and_causes(
 def _class_lines_from_map(
     ids: _Ids,
     view_map: dict[str, VisualEntry],
-    get_entity_key: str,
 ) -> list[str]:
     """Emit `class nX cls;` lines for drawn nodes that appear in view_map."""
     lines = []
@@ -175,7 +174,7 @@ def _l2_diagram(
         lbl = ",".join(str(x) for x in sorted(edge.vlans)) or edge.kind
         lines.append(f'  {ids.get(u)} ---|"{_safe(lbl)}"| {ids.get(v)}')
     # paint classes from view_map
-    cls_lines = _class_lines_from_map(ids, view_map, "device")
+    cls_lines = _class_lines_from_map(ids, view_map)
     lines += cls_lines
     entity_keys = _entity_keys_on_chart(ids, view_map)
     captions, causes = _captions_and_causes(view_map, findings, ids, entity_keys)
@@ -219,7 +218,7 @@ def _vlan_diagram(
         a, b = (u, v) if u <= v else (v, u)
         lines.append(f'  {ids.get(a)} ---|"{_safe(vid)}"| {ids.get(b)}')
     # paint device-level classes from view_map (VLAN-scoped: only this view's entries)
-    cls_lines = _class_lines_from_map(ids, view_map, "device")
+    cls_lines = _class_lines_from_map(ids, view_map)
     lines += cls_lines
     # also paint the vlan box entry if present (for l3_exits cross-reference, but
     # on the vlan chart the box isn't drawn as a node — skip it here)
@@ -242,7 +241,6 @@ def _l3_exits_diagram(
     ir: IR,
     view_map: dict[str, VisualEntry],
     findings: tuple[Finding, ...],
-    l2_view_map: dict[str, VisualEntry] | None = None,
 ) -> Diagram:
     vc = vc_root_map(ir)
     by_vlan: dict[int, list[L3Intf]] = {}
@@ -251,7 +249,6 @@ def _l3_exits_diagram(
             by_vlan.setdefault(intf.vlan_id, []).append(intf)
     routed = sorted(set(by_vlan) | {vid for vid, v in ir.vlans.items() if v.subnet is not None})
     ids = _Ids()
-    intf_id_map: dict[str, str] = {}  # intf.id -> ikey used in ids
     lines = ["graph LR", *_CLASSDEFS]
     for vid in routed:
         name = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
@@ -260,75 +257,32 @@ def _l3_exits_diagram(
             owner = node_for(vc, intf.device_id)
             dev = ir.devices.get(owner)
             ikey = f"intf:{intf.id}"
-            intf_id_map[intf.id] = ikey
             iname = dev.name if dev and dev.name else intf.device_id
             lines.append(f'  {ids.get(ikey)}(["{_label(iname, intf.role.value)}"])')
             lines.append(f'  {ids.get(f"vlan:{vid}")} -->|"served by"| {ids.get(ikey)}')
 
-    # paint classes from view_map: vlan boxes and intf nodes
-    # also use l2_view_map device entries to color intf nodes owned by those devices
+    # paint classes STRICTLY from the l3_exits sub-map: vlan boxes and intf nodes only.
+    # No fallback to l2 device entries — that would re-introduce cross-scope bleed.
     classes: list[str] = []
-    # combine device entries from both l3_exits view_map and l2 fallback
-    all_device_entries: dict[str, VisualEntry] = {}
-    for src_map in (view_map, l2_view_map or {}):
-        for ekey, entry in src_map.items():
-            kind, _, raw_id = ekey.partition(":")
-            if kind == "device" and raw_id not in all_device_entries:
-                all_device_entries[raw_id] = entry
-            elif kind == "device" and raw_id in all_device_entries:
-                # take worst severity
-                existing = all_device_entries[raw_id]
-                if _SEV_RANK[entry.severity] > _SEV_RANK[existing.severity]:
-                    all_device_entries[raw_id] = entry
+    classed: set[str] = set()  # guard against duplicate class lines
+
+    def _emit_class(node_key: str, entry: VisualEntry) -> None:
+        if node_key in ids._map and node_key not in classed:
+            classes.append(f"  class {ids.get(node_key)} {_class_for(entry)};")
+            classed.add(node_key)
 
     for ekey, entry in view_map.items():
         kind, _, raw_id = ekey.partition(":")
         if kind == "vlan":
-            vlan_node_key = f"vlan:{raw_id}"
-            if vlan_node_key in ids._map:
-                classes.append(f"  class {ids.get(vlan_node_key)} {_class_for(entry)};")
+            _emit_class(f"vlan:{raw_id}", entry)
         elif kind == "intf":
-            intf_node_key = f"intf:{raw_id}"
-            if intf_node_key in ids._map:
-                classes.append(f"  class {ids.get(intf_node_key)} {_class_for(entry)};")
-
-    # color intf nodes via device hits (from l3_exits view or l2 view fallback)
-    for dev_id, dev_entry in all_device_entries.items():
-        for intf in ir.l3intfs:
-            owner = node_for(vc, intf.device_id)
-            if owner == dev_id:
-                intf_node_key = f"intf:{intf.id}"
-                if intf_node_key in ids._map:
-                    classes.append(
-                        f"  class {ids.get(intf_node_key)} {_class_for(dev_entry)};"
-                    )
+            _emit_class(f"intf:{raw_id}", entry)
     lines += classes
 
     entity_keys = _entity_keys_on_chart(ids, view_map)
-    # also include findings from l2 device entries whose owned intfs are on this chart
-    if l2_view_map:
-        for ekey, _entry in l2_view_map.items():
-            kind, _, raw_id = ekey.partition(":")
-            if kind == "device":
-                for intf in ir.l3intfs:
-                    owner = node_for(vc, intf.device_id)
-                    if owner == raw_id and f"intf:{intf.id}" in ids._map:
-                        entity_keys.add(ekey)
-                        break
-        captions, causes = _captions_and_causes(
-            {**view_map, **{k: v for k, v in l2_view_map.items() if k in entity_keys}},
-            findings, ids, entity_keys,
-        )
-    else:
-        captions, causes = _captions_and_causes(view_map, findings, ids, entity_keys)
-    sev = _worst(
-        *(entry.severity for ekey, entry in view_map.items() if _l3_entry_on_chart(ekey, ids)),
-        *(dev_entry.severity for dev_id, dev_entry in all_device_entries.items()
-          if any(
-              f"intf:{intf.id}" in ids._map
-              for intf in ir.l3intfs if node_for(vc, intf.device_id) == dev_id
-          )),
-    )
+    captions, causes = _captions_and_causes(view_map, findings, ids, entity_keys)
+    sev = _worst(*(entry.severity for ekey, entry in view_map.items()
+                   if _l3_entry_on_chart(ekey, ids)))
     return Diagram(view="l3_exits", title="Routed VLAN exits", severity=sev,
                    mermaid="\n".join(lines), notes=tuple(captions + causes))
 
@@ -381,7 +335,6 @@ def build_diagrams(
     out += vlan_diagrams
     out.append(_with_unloc(_l3_exits_diagram(
         proposed_ir, vmap.get("l3_exits", {}), findings,
-        l2_view_map=vmap.get("l2", {}),
     )))
     return tuple(out)
 
