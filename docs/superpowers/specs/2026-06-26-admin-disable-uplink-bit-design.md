@@ -32,9 +32,14 @@ In `adapters/mist/ingest/lldp.py`, the existing stats-annotation pass
 (`_apply_stp`) **skips rows that have no `stp_state`** (`lldp.py:98`). The `uplink`
 bit must NOT hide behind that guard — a port can carry `uplink` with no STP row.
 So apply it independently: add `_apply_port_uplink(ctx)` (a sibling pass that, for
-each `port_stats` row with a `port_id` and a non-None `uplink`, sets
-`Port.is_uplink = bool(row["uplink"])`), or generalize the annotation pass so each
-row annotates whatever facts it carries. **Capability earning is unchanged:** only
+each `port_stats` row with a `port_id`, sets `Port.is_uplink` from the row's
+`uplink` value), or generalize the annotation pass so each row annotates whatever
+facts it carries. **Strict typing — no truthiness coercion:** accept the value
+ONLY when `type(value) is bool` (a genuine JSON boolean); for anything else
+(`None`, missing, `0`, `""`, `"false"`, …) leave `is_uplink = None` (unknown).
+This is load-bearing: the never-false-SAFE demotion depends on a *positive*
+`False`, so a drifted/non-bool shape must read as unknown, never as `False`.
+**Capability earning is unchanged:** only
 `stp_state` earns `IRCapability.STP_STATE`; `is_uplink` earns nothing (it is a
 weighting hint, not a capability gate).
 
@@ -104,6 +109,9 @@ port is never silently quieted.
 - **Ingest:** a `port_stats` row with `uplink: true` (and no `stp_state`) sets
   `Port.is_uplink is True` and earns **no** `STP_STATE` capability; a row with
   `stp_state` but no `uplink` still sets `stp_state` and leaves `is_uplink` None.
+- **Ingest strict typing:** a row whose `uplink` is a non-bool (`"false"`, `0`,
+  `""`, or absent) leaves `Port.is_uplink is None` (unknown) — never coerced to a
+  bool — so the admin_disable demotion can never fire on non-authoritative data.
 - **Diff isolation:** two IRs differing only in `Port.is_uplink` produce an empty
   `diff_ir` (no `port` modification) — so the change does not wake any check.
 - **admin_disable demotion (the headline):** a disabled trunk with `is_uplink is
