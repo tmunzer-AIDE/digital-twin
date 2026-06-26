@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - **Verdict-neutral:** the map is presentational. `verdict/decision.py` MUST NOT read it; SAFE/REVIEW/UNSAFE/UNKNOWN and every finding `severity` are unchanged. (Locked by an invariance test in Task 7.)
+- **Fail-soft:** the pipeline builds the map via `safe_build_visual_map` (returns `{}` on any exception), exactly like `safe_build_diagrams` — a builder bug must never sink a verdict.
 - **Views = existing `Diagram.view` ids:** `l2`, `vlan:<vid>`, `l3_exits`. No parallel vocabulary.
 - **Entity keys:** `kind:id` where `kind ∈ {device, vlan, port, link, intf}`. The `id` may contain colons; consumers split on the FIRST colon only. `VisualEntry` ALSO carries structured `kind`/`id` so no string-parsing is required.
 - **Builder takes BOTH IRs:** removed-entity ownership exists only in `baseline_ir`; everything rendered is resolved against `proposed_ir`.
@@ -25,7 +26,7 @@
 
 - `src/digital_twin/contracts/visual_map.py` **(create)** — pure value types: `VisualTier`, `FindingRef`, `VisualEntry`, `VisualMap` alias, `entity_key()`.
 - `src/digital_twin/contracts/__init__.py` **(modify)** — export the new types.
-- `src/digital_twin/viz/visual_map.py` **(create)** — the pure builder `build_visual_map(baseline_ir, proposed_ir, findings)` + entity/owner helpers + per-view membership index + contribution extraction + reconciliation.
+- `src/digital_twin/viz/visual_map.py` **(create)** — the pure builder `build_visual_map(baseline_ir, proposed_ir, findings)` + the fail-soft `safe_build_visual_map` wrapper + entity/owner helpers + per-view membership index + contribution extraction + reconciliation.
 - `src/digital_twin/verdict/verdict.py` **(modify)** — add `Verdict.visual_map` field.
 - `src/digital_twin/engine/pipeline.py:273` **(modify)** — populate `visual_map` (dual IR) and pass both IRs to diagrams.
 - `src/digital_twin/viz/mermaid.py` **(modify)** — `build_diagrams(baseline_ir, proposed_ir, findings)`; paint each chart from its view sub-map; add an `origin` classDef.
@@ -588,8 +589,30 @@ def test_affected_paired_impacts_do_not_cross_product():
     assert ("device", "s2") in _views(cs, "vlan:20")
     assert ("device", "s2") not in _views(cs, "vlan:10")  # pairing, not cross-product
     assert ("device", "s1") not in _views(cs, "vlan:20")
+    # the EXACT impacted port is in the map (not just its device)
+    assert ("port", "s1:ge-0/0/0") in _views(cs, "l2")
+    assert ("port", "s2:ge-0/0/0") in _views(cs, "l2")
     # the client MAC must NOT have resolved to any entity
     assert all(c.kind != "port" or c.id != "aa:bb:cc:dd:ee:01" for c in cs)
+
+
+def test_affected_snooping_and_loop_evidence_keys():
+    # snooping names blocked ports via untrusted_egress; loop names links via
+    # link_ids and nodes via cycle_nodes — all must reach the map.
+    ir = _dual_vlan_ir()
+    idx = vm._build_view_index(ir)
+    snoop = _f(code="wired.l2.snooping.blocks_dhcp", subject=ObjectRef("vlan", "10"),
+               affected_entities=("s1", "10"),
+               evidence={"device": "s1", "vlan": 10, "untrusted_egress": ["s1:ge-0/0/0"]})
+    scs = vm._affected_contributions(snoop, 0, ir, idx)
+    assert ("port", "s1:ge-0/0/0") in _views(scs, "l2")
+    loop = _f(code="wired.l2.loop.unprotected", subject=ObjectRef("vlan", "10"),
+              affected_entities=("s1:ge-0/0/0", "s2:ge-0/0/0"),
+              evidence={"vlan": 10, "cycle_nodes": ["s1", "s2"],
+                        "link_ids": ["s1:ge-0/0/0__s2:ge-0/0/0"]})
+    lcs = vm._affected_contributions(loop, 0, ir, idx)
+    assert ("link", "s1:ge-0/0/0__s2:ge-0/0/0") in _views(lcs, "l2")
+    assert ("device", "s1") in _views(lcs, "l2")  # from cycle_nodes
 
 
 def test_affected_l3_exits_only_serving_interfaces():
@@ -693,8 +716,12 @@ def _strs(v: Any) -> list[str]:
     return []
 
 
-_NODE_EV_KEYS = ("device", "component_nodes", "fragment_nodes", "baseline_root", "proposed_root")
-_PORT_EV_KEYS = ("port", "new_member_ports")
+_NODE_EV_KEYS = (
+    "device", "component_nodes", "fragment_nodes", "cycle_nodes",
+    "baseline_root", "proposed_root",
+)
+_PORT_EV_KEYS = ("port", "new_member_ports", "untrusted_egress")  # snooping blocks egress ports
+_LINK_EV_KEYS = ("link", "link_ids")  # l2_loop emits the cycle's link_ids
 
 
 def _ref(f: Finding, index: int) -> FindingRef:
@@ -754,8 +781,9 @@ def _affected_contributions(
     for k in _PORT_EV_KEYS:
         for pid in _strs(ev.get(k)):
             note_port(pid)
-    for lid in _strs(ev.get("link")):
-        note_link(lid)
+    for k in _LINK_EV_KEYS:
+        for lid in _strs(ev.get(k)):
+            note_link(lid)
     for ent in f.affected_entities:
         resolved = _resolve_affected(ent, proposed_ir)
         if resolved is not None:
@@ -798,10 +826,11 @@ def _affected_contributions(
             continue
         att = imp.get("attachment")
         ivid = imp.get("vlan")
-        att_node = (
-            _port_node(proposed_ir, att) or _node(proposed_ir, att)
-            if isinstance(att, str) else None
-        )
+        att_node = None
+        if isinstance(att, str):
+            if att in proposed_ir.ports:
+                add("l2", "port", att)  # the EXACT impacted port (not just its device)
+            att_node = _port_node(proposed_ir, att) or _node(proposed_ir, att)
         if att_node:
             add("l2", "device", att_node)
         if isinstance(ivid, int) and ivid in proposed_ir.vlans:
@@ -1026,7 +1055,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `_affected_contributions`, `_origin_contributions`, `_build_view_index`, `entity_key`, `VisualEntry`, `VisualTier`, `Severity`.
-- Produces: `def build_visual_map(baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]) -> VisualMap`
+- Produces:
+  - `def build_visual_map(baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]) -> VisualMap` (pure, may raise on an unexpected finding shape)
+  - `def safe_build_visual_map(baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]) -> VisualMap` — fail-soft wrapper returning `{}` on any exception (the map is presentational; it must NEVER sink a verdict, exactly like `safe_build_diagrams`). The pipeline calls THIS one.
 
 Merges all contributions into the map. Per `(view, entity)`: tier precedence `ORIGIN > AFFECTED`; severity worst-wins (independent of tier); `findings` deduped by `index`, sorted by `index`.
 
@@ -1068,6 +1099,13 @@ def test_build_map_serializable_entry_shape():
     m = vm.build_visual_map(ir, ir, (f,))
     e = m["l2"]["device:s1"]
     assert (e.kind, e.id) == ("device", "s1")
+
+
+def test_safe_build_visual_map_swallows_errors(monkeypatch):
+    # the map is presentational: a builder bug must yield {}, never crash the verdict
+    monkeypatch.setattr(vm, "build_visual_map",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert vm.safe_build_visual_map(_two_switch_vlan_ir(), _two_switch_vlan_ir(), ()) == {}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1126,6 +1164,17 @@ def build_visual_map(
                 severity=cell["sev"], findings=refs,  # type: ignore[arg-type]
             )
     return out
+
+
+def safe_build_visual_map(
+    baseline_ir: IR, proposed_ir: IR, findings: Sequence[Finding]
+) -> VisualMap:
+    """Fail-soft: the map is presentational and must NEVER sink a verdict
+    (mirrors safe_build_diagrams). Any builder exception -> empty map."""
+    try:
+        return build_visual_map(baseline_ir, proposed_ir, findings)
+    except Exception:  # noqa: BLE001 — presentational; never sink a verdict
+        return {}
 ```
 
 > Note: the `dict[str, object]` accumulator avoids a second dataclass; the `# type: ignore` lines are localized to the accumulation. If the reviewer prefers, replace the inner dict with a small mutable `@dataclass class _Cell` — functionally identical. Keep whichever passes `mypy src` cleanly.
@@ -1235,10 +1284,10 @@ from dataclasses import dataclass, field
 In `src/digital_twin/engine/pipeline.py`, add the import near the existing mermaid import:
 
 ```python
-from digital_twin.viz.visual_map import build_visual_map
+from digital_twin.viz.visual_map import safe_build_visual_map
 ```
 
-Replace line 273:
+In THIS task, keep the diagrams call unchanged (Task 8 upgrades it to dual-IR) and only attach the map via the fail-soft wrapper. Replace line 273:
 
 ```python
         return replace(verdict, diagrams=safe_build_diagrams(proposed.ir, verdict.findings))
@@ -1249,12 +1298,12 @@ with:
 ```python
         return replace(
             verdict,
-            diagrams=safe_build_diagrams(baseline.ir, proposed.ir, verdict.findings),
-            visual_map=build_visual_map(baseline.ir, proposed.ir, verdict.findings),
+            diagrams=safe_build_diagrams(proposed.ir, verdict.findings),
+            visual_map=safe_build_visual_map(baseline.ir, proposed.ir, verdict.findings),
         )
 ```
 
-> `safe_build_diagrams` becomes dual-IR in Task 8; until then this line will not type-check. To keep Task 7 independently green, in THIS task pass only the map and leave the diagrams call unchanged: `diagrams=safe_build_diagrams(proposed.ir, verdict.findings)`, add only `visual_map=build_visual_map(baseline.ir, proposed.ir, verdict.findings)`. Task 8 then upgrades the diagrams call. (Confirm `baseline` is in scope at line 273 — it is the same `baseline` used to build the diff earlier in the function; if the local is named differently, use that name.)
+> Use `safe_build_visual_map` (NOT the raw `build_visual_map`): the map is presentational and must never sink a verdict. Task 8 then upgrades the `diagrams=` call to `safe_build_diagrams(baseline.ir, proposed.ir, verdict.findings)`. (Confirm `baseline` is in scope at line 273 — it is the same `baseline` used to build the diff earlier in the function; if the local is named differently, use that name.)
 
 - [ ] **Step 5: Verdict-invariance test**
 
