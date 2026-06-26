@@ -25,6 +25,7 @@
 - `src/digital_twin/checks/wired/l2_isolation.py` **(modify)** — compute anchors once, add the one-line skip guard, update the module docstring.
 - `tests/analysis/test_exits.py` **(modify)** — unit tests for `exit_anchor_nodes`.
 - `tests/checks/test_l2_isolation.py` **(modify)** — new behavior tests; the existing three stay green.
+- `tests/golden/builders.py` **(modify)** + `tests/golden/test_golden_scenarios.py` **(modify)** — a headline golden reproducing the reported topology end-to-end (backbone-connected L3 switch + leaf AP/client ports; disable the leaf ports while the backbone stays up), asserting `isolation.severed` flags only the leaves and the survivors are absent.
 
 ---
 
@@ -69,16 +70,31 @@ def test_exit_anchor_nodes_excludes_wan_loopback_and_plain_switch():
     assert exit_anchor_nodes(b.build()) == {"gwdev"}
 
 
+def test_exit_anchor_nodes_ignores_unresolved_irb_without_vlan():
+    # an IRB/SVI not tied to a concrete VLAN is unresolved/malformed -> not an exit
+    b = IRBuilder()
+    b.add_device(Device(id="sw", role=DeviceRole.SWITCH, site="s1"))
+    b.add_l3intf(L3Intf(device_id="sw", role=L3Role.IRB, vlan_id=None, port="irb"))
+    assert exit_anchor_nodes(b.build()) == set()
+
+
 def test_exit_anchor_nodes_folds_vc_members_to_root():
     b = IRBuilder()
+    # member1 must exist as a device (IRBuilder._validate_l3intfs rejects unknown
+    # devices); it is also declared a VC member of vcroot, so it folds to the root.
     b.add_device(Device(id="vcroot", role=DeviceRole.SWITCH, site="s1", vc_members=("member1",)))
+    b.add_device(Device(id="member1", role=DeviceRole.SWITCH, site="s1"))
     b.add_vlan(Vlan(vlan_id=10, name="a", scope="s1"))
     b.add_l3intf(L3Intf(device_id="member1", role=L3Role.IRB, vlan_id=10))
     # the IRB lives on a VC member -> its anchor node is the VC root
     assert exit_anchor_nodes(b.build()) == {"vcroot"}
 ```
 
-> If `IRBuilder.build()` rejects an L3Intf whose VLAN is absent, the `add_vlan` lines above prevent it. If the VC-member test trips a builder validation (member must be a known device), drop `test_exit_anchor_nodes_folds_vc_members_to_root` to a member that the builder accepts, or model it the way `tests/factories.py`'s `sw(..., vc_members=...)` is used elsewhere — keep the assertion (anchor folds to root).
+> The `add_vlan(10)` lines satisfy any builder validation that an IRB's VLAN
+> exist. If the VC-member fixture trips a builder rule about a device being both
+> a top-level device and a `vc_members` entry, mirror the exact construction
+> `tests/factories.py`'s `sw(..., vc_members=...)` uses elsewhere — but keep both
+> the `member1` device and the fold-to-root assertion.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -98,10 +114,12 @@ Append the function at module end:
 ```python
 def exit_anchor_nodes(ir: IR) -> set[str]:
     """VC-folded graph nodes that ARE a network exit on the PHYSICAL graph:
-    gateway-role devices, or devices owning a routed IRB/SVI. A fragment that
-    contains one of these still reaches an L3 exit and is therefore NOT
-    L2-isolated. (WAN/LOOPBACK L3 interfaces are not exits; a gateway's own L3
-    interface already belongs to a DeviceRole.GATEWAY device counted here.)
+    gateway-role devices, or devices owning a routed IRB/SVI that is tied to a
+    concrete VLAN. A fragment that contains one of these still reaches an L3 exit
+    and is therefore NOT L2-isolated. (WAN/LOOPBACK L3 interfaces are not exits; a
+    gateway's own L3 interface already belongs to a DeviceRole.GATEWAY device
+    counted here. An IRB/SVI with vlan_id=None is unresolved/malformed and is NOT
+    an exit, matching resolve_exit, which only treats concrete-VLAN IRBs as exits.)
 
     This lifts resolve_exit's two exit kinds (rule 1: IRB; rule 2: gateway node)
     from the per-VLAN graph to the vlan-agnostic physical graph, for callers that
@@ -113,7 +131,7 @@ def exit_anchor_nodes(ir: IR) -> set[str]:
     anchors |= {
         node_for(vc, i.device_id)
         for i in ir.l3intfs
-        if i.role in (L3Role.IRB, L3Role.SVI)
+        if i.role in (L3Role.IRB, L3Role.SVI) and i.vlan_id is not None
     }
     return anchors
 ```
@@ -333,15 +351,92 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+## Task 3: Headline golden (end-to-end, the reported topology)
+
+**Files:**
+- Modify: `tests/golden/builders.py`
+- Modify: `tests/golden/test_golden_scenarios.py`
+
+**Interfaces:**
+- Consumes: the existing golden harness. Before writing anything, read
+  `tests/golden/builders.py` and `tests/golden/test_golden_scenarios.py` to learn
+  the exact construction pattern (how a Mist doc is assembled, how a device-level
+  port change is applied, and how a scenario is simulated to a `verdict`). Mirror
+  the nearest existing multi-device / port-disable scenario — do not invent a new
+  harness.
+
+This task proves the fix end-to-end through the real simulate path (which the
+Task 2 unit tests do not exercise): a backbone-connected L3 switch keeps its
+uplink while leaf ports are disabled, and only the leaves are reported severed.
+
+- [ ] **Step 1: Write the failing golden test**
+
+Add a scenario to `tests/golden/test_golden_scenarios.py` that reproduces the
+reported shape and asserts on the simulated `verdict`:
+
+- Topology (built via `tests/golden/builders.py`, extending it with a helper if
+  the existing ones don't cover it):
+  - a **core** switch that is an exit anchor — it owns an IRB/SVI on a routed
+    VLAN (and/or a gateway device is present),
+  - the changed **access** switch, connected to the core by a **backbone uplink
+    that is NOT disabled**,
+  - on the access switch, **leaf ports**: at least one AP uplink (an AP with an
+    observed client) and one wired-client access port.
+- Delta (a `device_op`-style change on the access switch): disable the leaf ports
+  only; leave the backbone uplink up.
+- Assertions on the resulting `verdict`:
+
+```python
+    isolation = [f for f in verdict.findings if f.code == "wired.l2.isolation.severed"]
+    severed_nodes = {n for f in isolation for n in f.affected_entities}
+    # the cut-off leaf AP (and/or wired-client device) IS reported severed
+    assert LEAF_AP_NODE in severed_nodes
+    # the survivors keep the backbone + an exit anchor -> NOT reported severed
+    assert CORE_NODE not in severed_nodes
+    assert ACCESS_NODE not in severed_nodes
+```
+
+Use the concrete node ids your fixture mints for `LEAF_AP_NODE`, `CORE_NODE`,
+`ACCESS_NODE` (match how neighbouring golden assertions reference nodes).
+
+- [ ] **Step 2: Run it to confirm it fails on the pre-fix tree**
+
+If implementing Task 3 after Tasks 1-2 are merged (the fix is already in place),
+this test will PASS immediately — that is acceptable; it then serves as the
+end-to-end regression lock. To see it fail first, you can temporarily `git stash`
+the Task 2 guard, observe the survivors flagged, then restore. Either way, run:
+
+Run: `uv run pytest tests/golden/test_golden_scenarios.py -k isolation -q`
+Expected (post-fix): PASS — only the leaf nodes in `severed_nodes`.
+
+- [ ] **Step 3: Do NOT weaken the assertion**
+
+If `CORE_NODE`/`ACCESS_NODE` appear in `severed_nodes`, that is a real failure of
+the fix (or the fixture doesn't actually give the core an exit anchor / keep the
+backbone up) — fix the fixture or the code, never relax the assertion.
+
+- [ ] **Step 4: Full gate + commit**
+
+```bash
+uv run pytest tests -q && uv run ruff check . && uv run mypy src
+git add tests/golden/builders.py tests/golden/test_golden_scenarios.py
+git commit -m "test(golden): leaf-port-disable on a backbone-anchored L3 switch flags only the leaves
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
-- `exit_anchor_nodes` (gateway ∪ IRB/SVI, WAN/LOOPBACK excluded, VC-folded) → Task 1 ✓
+- `exit_anchor_nodes` (gateway ∪ IRB/SVI **tied to a concrete VLAN**, WAN/LOOPBACK excluded, VC-folded) → Task 1 ✓; unresolved `vlan_id=None` IRB does not anchor → `test_exit_anchor_nodes_ignores_unresolved_irb_without_vlan` ✓
 - Anchors on the proposed IR → Task 2 (`exit_anchor_nodes(ctx.proposed.ir)`) ✓
 - Grounded-only suppression / no majority heuristic / empty-home flags-all → Task 2 guard (`if fragment & anchors: continue`) ✓
 - Never-false-SAFE (exit-less still flags; exit-removed still flags) → `test_exitless_only_uplink_still_severs_member_side`, `test_exit_removed_by_delta_flags_the_fragment` ✓
-- Headline case (survivor quiet, leaf flagged) → `test_exit_anchored_survivor_not_flagged_only_the_leaf` ✓
+- Headline case (survivor quiet, leaf flagged) → unit `test_exit_anchored_survivor_not_flagged_only_the_leaf` (Task 2) **and** the end-to-end golden (Task 3) ✓
 - Both-sides-keep-exit → `test_both_sides_keep_an_exit_neither_flagged` ✓
+- Spec's "Tests + a golden fixture" / headline golden → Task 3 ✓
 - Module docstring contract update → Task 2 Step 4 ✓
 - No change to occupants/confidence/severity/subject/message → guard is additive; nothing else touched ✓
 
