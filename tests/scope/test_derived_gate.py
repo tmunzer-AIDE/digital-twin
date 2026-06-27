@@ -4,6 +4,7 @@ from digital_twin.scope.derived_gate import (
     changed_effective_paths,
     check_derived,
     check_derived_gap,
+    check_derived_gaps,
 )
 
 BASE = {
@@ -107,3 +108,37 @@ def test_check_derived_gap_returns_structured_dhcp_row():
     assert gap.paths == ()
     assert gap.dhcp_row == "n"
     assert any("dhcpd_config.n in gateway gw1" in reason for reason in gap.rejection.reasons)
+
+
+def test_check_derived_gaps_accumulates_leaf_and_dhcp_rows():
+    base = {
+        "extra": 0,
+        "dhcpd_config": {
+            "a": {"type": "local", "servers": ["a"], "ip_start": "1"},
+            "b": {"type": "local", "servers": ["b"], "ip_start": "1"},
+        },
+    }
+    prop = {
+        "extra": 1,
+        "dhcpd_config": {
+            "a": {"type": "relay", "servers": ["a"]},
+            "b": {"type": "relay", "servers": ["b"]},
+        },
+    }
+
+    gaps = check_derived_gaps(
+        base,
+        prop,
+        artifact="gateway gw1",
+        allowlist=GATEWAY_EFFECTIVE_ALLOWLIST,
+    )
+
+    assert [g.rejection.stage for g in gaps] == [
+        "derived_gate",
+        "dhcp_mode_transition",
+        "dhcp_mode_transition",
+    ]
+    assert gaps[0].paths == ("extra",)
+    assert [g.dhcp_row for g in gaps[1:]] == ["a", "b"]
+    assert any("dhcpd_config.a in gateway gw1" in r for r in gaps[1].rejection.reasons)
+    assert any("dhcpd_config.b in gateway gw1" in r for r in gaps[2].rejection.reasons)

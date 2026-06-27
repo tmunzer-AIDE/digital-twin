@@ -69,12 +69,17 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
         return Decision.UNSAFE, tuple(unsafe)
 
     # 3) coverage-gap UNKNOWN — valid simulation with partial coverage
-    gap_reasons = [
-        f"COVERAGE GAP [{r.stage}]: {reason}"
-        for r in inputs.coverage_gaps
-        for reason in r.reasons
-    ]
-    if gap_reasons:
+    if inputs.coverage_gaps:
+        gap_reasons = [
+            f"COVERAGE GAP [{r.stage}]: {reason}"
+            for r in inputs.coverage_gaps
+            for reason in r.reasons
+        ]
+        if not gap_reasons:
+            gap_reasons = [
+                f"COVERAGE GAP [{r.stage}]: coverage gap without detail"
+                for r in inputs.coverage_gaps
+            ]
         return Decision.UNKNOWN, tuple(gap_reasons)
 
     # 4) REVIEW — any warning or blind spot

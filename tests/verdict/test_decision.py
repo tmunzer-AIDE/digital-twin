@@ -189,6 +189,14 @@ def test_coverage_gap_plus_warning_is_unknown_not_review():
     assert reasons == ("COVERAGE GAP [derived_gate]: x",)
 
 
+def test_empty_reason_coverage_gap_is_still_unknown():
+    d, reasons = decide(
+        _inputs(coverage_gaps=(Rejection(stage="derived_gate", reasons=()),))
+    )
+    assert d is Decision.UNKNOWN
+    assert reasons == ("COVERAGE GAP [derived_gate]: coverage gap without detail",)
+
+
 def test_default_no_coverage_gap_warning_path_unchanged():
     res = _result(Status.WARN, [_finding(Severity.WARNING)])
     d, reasons = decide(

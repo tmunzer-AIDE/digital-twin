@@ -38,6 +38,53 @@ def changed_effective_paths(
     return changed_leaf_paths(baseline, proposed)
 
 
+def check_derived_gaps(
+    baseline: Mapping[str, Any],
+    proposed: Mapping[str, Any],
+    *,
+    artifact: str = "site",
+    allowlist: tuple[str, ...] = EFFECTIVE_ALLOWLIST,
+) -> tuple[DerivedGap, ...]:
+    gaps: list[DerivedGap] = []
+    offending = [
+        path
+        for path in changed_effective_paths(baseline, proposed)
+        if not allowed(path, allowlist)
+    ]
+    if offending:
+        gaps.append(
+            DerivedGap(
+                rejection=Rejection(
+                    stage=_STAGE,
+                    reasons=tuple(
+                        f"{path}: out-of-scope EFFECTIVE leaf differs in {artifact} config "
+                        "(change ripples beyond the M1 model)"
+                        for path in offending
+                    ),
+                ),
+                paths=tuple(offending),
+            )
+        )
+    b_dhcp = baseline.get("dhcpd_config") or {}
+    p_dhcp = proposed.get("dhcpd_config") or {}
+    for name in sorted(set(b_dhcp) | set(p_dhcp)):
+        rej = dhcp_row_rejection(b_dhcp.get(name) or {}, p_dhcp.get(name) or {})
+        if rej is not None:
+            gaps.append(
+                DerivedGap(
+                    rejection=Rejection(
+                        stage=rej.stage,
+                        reasons=tuple(
+                            f"dhcpd_config.{name} in {artifact}: {reason}"
+                            for reason in rej.reasons
+                        ),
+                    ),
+                    dhcp_row=name,
+                )
+            )
+    return tuple(gaps)
+
+
 def check_derived_gap(
     baseline: Mapping[str, Any],
     proposed: Mapping[str, Any],
@@ -45,39 +92,13 @@ def check_derived_gap(
     artifact: str = "site",
     allowlist: tuple[str, ...] = EFFECTIVE_ALLOWLIST,
 ) -> DerivedGap | None:
-    offending = [
-        path
-        for path in changed_effective_paths(baseline, proposed)
-        if not allowed(path, allowlist)
-    ]
-    if offending:
-        return DerivedGap(
-            rejection=Rejection(
-                stage=_STAGE,
-                reasons=tuple(
-                    f"{path}: out-of-scope EFFECTIVE leaf differs in {artifact} config "
-                    "(change ripples beyond the M1 model)"
-                    for path in offending
-                ),
-            ),
-            paths=tuple(offending),
-        )
-    b_dhcp = baseline.get("dhcpd_config") or {}
-    p_dhcp = proposed.get("dhcpd_config") or {}
-    for name in sorted(set(b_dhcp) | set(p_dhcp)):
-        rej = dhcp_row_rejection(b_dhcp.get(name) or {}, p_dhcp.get(name) or {})
-        if rej is not None:
-            return DerivedGap(
-                rejection=Rejection(
-                    stage=rej.stage,
-                    reasons=tuple(
-                        f"dhcpd_config.{name} in {artifact}: {reason}"
-                        for reason in rej.reasons
-                    ),
-                ),
-                dhcp_row=name,
-            )
-    return None
+    gaps = check_derived_gaps(
+        baseline,
+        proposed,
+        artifact=artifact,
+        allowlist=allowlist,
+    )
+    return gaps[0] if gaps else None
 
 
 def check_derived(

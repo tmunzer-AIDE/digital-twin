@@ -63,7 +63,7 @@ from digital_twin.providers.base import (
     StateProvider,
 )
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
-from digital_twin.scope.derived_gate import check_derived_gap
+from digital_twin.scope.derived_gate import check_derived_gaps
 from digital_twin.scope.device_profile_gate import device_profile_gap
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op
@@ -260,10 +260,10 @@ def _simulate_site_state(
         )
     coverage_gaps: list[Rejection] = []
     with trace.stage("derived_gate"):
-        site_gap = check_derived_gap(
+        site_gaps = check_derived_gaps(
             _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
         )
-        if site_gap:
+        for site_gap in site_gaps:
             coverage_gaps.append(site_gap.rejection)
             adapter_findings += (
                 _coverage_gap_finding(
@@ -275,12 +275,12 @@ def _simulate_site_state(
                 ),
             )
         for did in sorted(set(baseline.device_effective) | set(proposed.device_effective)):
-            device_gap = check_derived_gap(
+            device_gaps = check_derived_gaps(
                 baseline.device_effective.get(did, {}),
                 proposed.device_effective.get(did, {}),
                 artifact=f"device {did}",
             )
-            if device_gap:
+            for device_gap in device_gaps:
                 coverage_gaps.append(device_gap.rejection)
                 adapter_findings += (
                     _coverage_gap_finding(
@@ -293,13 +293,13 @@ def _simulate_site_state(
                     ),
                 )
         for did in sorted(set(baseline.gateway_effective) | set(proposed.gateway_effective)):
-            gateway_gap = check_derived_gap(
+            gateway_gaps = check_derived_gaps(
                 _gw_screen_view(baseline.gateway_effective.get(did, {}), full=gateway_screen_full),
                 _gw_screen_view(proposed.gateway_effective.get(did, {}), full=gateway_screen_full),
                 allowlist=GATEWAY_EFFECTIVE_ALLOWLIST,
                 artifact=f"gateway {did}",
             )
-            if gateway_gap:
+            for gateway_gap in gateway_gaps:
                 coverage_gaps.append(gateway_gap.rejection)
                 adapter_findings += (
                     _coverage_gap_finding(
