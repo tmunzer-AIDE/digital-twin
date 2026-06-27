@@ -468,13 +468,14 @@ def simulate_org_plan(
 
     def org_unknown(
         rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = (),
-        changes: tuple[OrgChange, ...] = (),
+        changes: tuple[OrgChange, ...] = (), config_diffs: tuple[ObjectConfigDiff, ...] = (),
     ) -> OrgVerdict:
         return OrgVerdict(
             decision=Decision.UNKNOWN,
             decision_reasons=tuple(f"[{r.stage}] {x}" for r in rejections for x in r.reasons),
             changes=tuple(changes), per_site={}, driving_sites=(), site_failures={},
             template_findings=tuple(template_findings), org_rejections=tuple(rejections),
+            config_diffs=tuple(config_diffs),
         )
 
     plan = parse_change_plan(plan_data)
@@ -514,39 +515,45 @@ def simulate_org_plan(
             return org_unknown((Rejection(stage="fetch", reasons=tuple(
                 f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
             ) or ("org-template lookup failed",)),),
-                template_findings=tuple(template_findings), changes=tuple(changes))
+                template_findings=tuple(template_findings), changes=tuple(changes),
+                config_diffs=tuple(org_diffs))
         snapshot = dict(resolved.template)
         ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
         changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
         if op.action == "delete":
             proposed: Mapping[str, Any] | None = None
+            org_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=snapshot.get("name"), action=op.action, before=snapshot, after=None))
         else:
             proposed_t = apply_template(snapshot, op.payload)
             if isinstance(proposed_t, Rejection):
                 return org_unknown((proposed_t,),
-                    template_findings=tuple(template_findings), changes=tuple(changes))
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
+            org_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=snapshot.get("name"), action=op.action, before=snapshot, after=proposed_t))
             l0 = adapter.validate(replace(op, payload=proposed_t),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload))
             if l0.fatal:
                 return org_unknown((Rejection(stage="l0",
                     reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
                              f"{op.object_id}",)),),
-                    template_findings=tuple(template_findings), changes=tuple(changes))
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
             template_findings.extend(_stamp(l0.findings, ref))
             fg = screen_op(op.object_type, snapshot, proposed_t)
             if fg:
                 return org_unknown((fg,), template_findings=tuple(template_findings),
-                                   changes=tuple(changes))
+                                   changes=tuple(changes), config_diffs=tuple(org_diffs))
             proposed = proposed_t
         overlays.append(OrgOverlay(
             object_type=op.object_type, object_id=op.object_id, name=snapshot.get("name"),
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
             baseline=snapshot, proposed=proposed,
         ))
-        org_diffs.append(object_config_diff(
-            object_type=op.object_type, object_id=op.object_id,
-            name=snapshot.get("name"), action=op.action,
-            before=snapshot, after=proposed))
+        # (the old org_diffs.append(...) at ~558 is removed — built above)
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
@@ -559,7 +566,7 @@ def simulate_org_plan(
         return OrgVerdict(decision=decision, decision_reasons=reasons, changes=tuple(changes),
             per_site={}, driving_sites=driving, site_failures={},
             template_findings=tf, org_rejections=(),
-            config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else ())
+            config_diffs=tuple(org_diffs))
 
     raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
@@ -603,7 +610,7 @@ def simulate_org_plan(
         decision=decision, decision_reasons=reasons, changes=tuple(changes),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
         template_findings=tf, org_rejections=(),
-        config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else (),
+        config_diffs=tuple(org_diffs),
     )
 
 

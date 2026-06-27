@@ -355,9 +355,98 @@ def test_org_delete_lists_removed_leaves():
 
 
 def test_org_unknown_drops_config_diffs():
-    # non-empty delete payload → object_gate UNKNOWN → no diffs
+    # PRE-loop check_objects rejection (non-empty delete payload) → UNKNOWN before any
+    # diff can be built → config_diffs stays (). This is correct and intentional.
     ov = simulate_org_plan(
         _plan(_del("networktemplate", "nt1", payload={"networks": {}})),
         provider=_two_op_provider())
     assert ov.decision is Decision.UNKNOWN
     assert ov.config_diffs == ()
+
+
+def test_org_field_gate_unknown_carries_config_diff():
+    # switch_mgmt is out-of-scope for sitetemplate -> in-loop field-gate UNKNOWN.
+    ov = simulate_org_plan(
+        _plan(_upd("sitetemplate", "st1", {"switch_mgmt": {"root_password": "x"}})),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds and cds["st1"].object_type == "sitetemplate"
+
+
+def test_org_template_lookup_failed_keeps_earlier_op_diffs():
+    # op0 (st1, in-scope) builds a diff; op1 ("ghost", unknown) -> template-lookup
+    # failed IN the loop -> UNKNOWN. op0's diff must survive.
+    trunkB_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    ghost_payload = {"port_usages": {"x": {"mode": "access"}}}
+    ov = simulate_org_plan(
+        _plan(
+            _upd("sitetemplate", "st1", trunkB_drop, order=0),
+            _upd("networktemplate", "ghost", ghost_payload, order=1),
+        ),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds                      # earlier op survived
+    assert "ghost" not in cds                # uncomputable op carries nothing
+
+
+def test_org_final_unknown_carries_config_diff(monkeypatch):
+    # Force the POST-loop decision to UNKNOWN so we exercise the (now unconditional)
+    # final attach at ~618, not an in-loop reject. decide_org returns
+    # (decision, reasons, driving).
+    import digital_twin.engine.pipeline as pl
+    monkeypatch.setattr(pl, "decide_org", lambda *a, **k: (Decision.UNKNOWN, ("forced",), ()))
+    trunkB_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    ov = simulate_org_plan(
+        _plan(_upd("sitetemplate", "st1", trunkB_drop)),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds
+
+
+def test_org_l0_fatal_carries_config_diff(monkeypatch):
+    # Force L0 fatal on the org op; the diff is built before validate, so the
+    # in-loop L0-fatal early return must carry it.
+    from digital_twin.adapters.mist.adapter import MistAdapter
+    from digital_twin.adapters.mist.validate import L0Result
+    monkeypatch.setattr(
+        MistAdapter, "validate", lambda self, op, **k: L0Result(findings=(), fatal=True)
+    )
+    trunkB_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    ov = simulate_org_plan(
+        _plan(_upd("sitetemplate", "st1", trunkB_drop)),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds
+
+
+def test_org_apply_template_reject_keeps_earlier_op_diff(monkeypatch):
+    # op0 (st1) builds its diff; op1 (nt1) is forced to fail apply_template — the
+    # step that would compute op1's `after`, so op1 is uncomputable. op0 survives.
+    import digital_twin.engine.pipeline as pl
+    from digital_twin.contracts import Rejection
+    real = pl.apply_template
+    calls = {"n": 0}
+
+    def fake(snapshot, payload):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            return Rejection(stage="apply", reasons=("forced apply_template fail",))
+        return real(snapshot, payload)
+
+    monkeypatch.setattr(pl, "apply_template", fake)
+    trunkB_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    trunkA_drop = {"port_usages": {"trunkA": {"mode": "trunk", "networks": []}}}
+    ov = simulate_org_plan(
+        _plan(
+            _upd("sitetemplate", "st1", trunkB_drop, order=0),
+            _upd("networktemplate", "nt1", trunkA_drop, order=1),
+        ),
+        provider=_two_op_provider())
+    assert ov.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in ov.config_diffs}
+    assert "st1" in cds        # earlier op survived
+    assert "nt1" not in cds    # apply_template failed -> no `after` -> uncomputable
