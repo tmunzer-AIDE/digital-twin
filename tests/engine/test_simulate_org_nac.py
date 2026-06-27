@@ -198,21 +198,52 @@ def test_config_diff_delete_lists_removed_leaves():
     assert "order" in paths and "action" in paths
 
 
-def test_config_diff_empty_on_unknown():
+def test_field_gate_unknown_carries_config_diff():
+    # guest_auth_state is not an allowlisted nacrule leaf -> in-loop field-gate UNKNOWN.
     nf = NacFetch(rules=BASE, tags=())
     v = simulate_org_nac(_plan(_op("update", "b", {"guest_auth_state": "x"})),
                          provider=FakeProvider(nf))
     assert v.decision is Decision.UNKNOWN
-    assert v.config_diffs == ()
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "b" in cds
+    assert "guest_auth_state" in {c.path for c in cds["b"].changes}
 
 
-def test_config_diff_dropped_when_later_op_makes_plan_unknown():
-    # op-b accumulates a diff, then op-a (unallowlisted field) → UNKNOWN.
-    # The decision-gate must drop the accumulated diff: config_diffs == ().
+def test_later_op_unknown_keeps_all_computable_diffs():
+    # op0 (b, valid) and op1 (a, out-of-scope field) are BOTH computable -> both diffs
+    # present even though op1 forces UNKNOWN.
     nf = NacFetch(rules=BASE, tags=())
     v = simulate_org_nac(
         _plan(_op("update", "b", {"order": 0}, order=0),
               _op("update", "a", {"guest_auth_state": "x"}, order=1)),
         provider=FakeProvider(nf))
     assert v.decision is Decision.UNKNOWN
-    assert v.config_diffs == ()
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "b" in cds and "a" in cds
+
+
+def test_nac_l0_fatal_direct_return_carries_config_diff(monkeypatch):
+    # The NAC L0-fatal branch returns OrgNacVerdict directly (not via the helper).
+    # Force fatal=True to exercise it; the op's diff (built before L0) must survive.
+    import digital_twin.engine.pipeline as pl
+    from digital_twin.adapters.mist.validate import L0Result
+    monkeypatch.setattr(
+        pl, "validate_payload",
+        lambda *a, **k: L0Result(findings=(), fatal=True))
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("update", "b", {"order": 0})), provider=FakeProvider(nf))
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "b" in cds
+
+
+def test_nac_final_unknown_carries_config_diff(monkeypatch):
+    # Force the POST-loop decision to UNKNOWN so we exercise the (now unconditional)
+    # final attach at ~759, not an in-loop reject. decide returns (decision, reasons).
+    import digital_twin.engine.pipeline as pl
+    monkeypatch.setattr(pl, "decide", lambda *a, **k: (Decision.UNKNOWN, ("forced",)))
+    nf = NacFetch(rules=BASE, tags=())
+    v = simulate_org_nac(_plan(_op("update", "b", {"order": 0})), provider=FakeProvider(nf))
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "b" in cds

@@ -634,12 +634,15 @@ from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
 )
 
 
-def _org_nac_unknown(rej: Rejection, *, adapter_findings: tuple[Finding, ...] = ()
-                     ) -> OrgNacVerdict:
+def _org_nac_unknown(
+    rej: Rejection | None = None, *, adapter_findings: tuple[Finding, ...] = (),
+    l0_fatal: bool = False, config_diffs: tuple[ObjectConfigDiff, ...] = (),
+) -> OrgNacVerdict:
     decision, reasons = decide(DecisionInputs(
-        rejections=(rej,), l0_fatal=False, baseline_unavailable=False,
+        rejections=(rej,) if rej else (), l0_fatal=l0_fatal, baseline_unavailable=False,
         check_results=(), adapter_findings=adapter_findings))
-    return OrgNacVerdict(decision, reasons, (), (), adapter_findings, (rej,))
+    return OrgNacVerdict(decision, reasons, (), (), adapter_findings,
+                         (rej,) if rej else (), tuple(config_diffs))
 
 
 def simulate_org_nac(
@@ -681,11 +684,11 @@ def simulate_org_nac(
         if op.action in ("update", "delete") and not exists:
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: no nacrule with id {op.object_id!r}",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         if op.action == "create" and exists:
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: nacrule id {op.object_id!r} already exists",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         if op.action == "delete":
             nac_diffs.append(object_config_diff(
                 object_type="nacrule", object_id=op.object_id,
@@ -696,30 +699,30 @@ def simulate_org_nac(
         if update_conflicts(op.payload):
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: conflicting set AND '-' delete marker",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         current = baseline_raw.get(op.object_id, {"id": op.object_id})
         effective = effective_update(current, op.payload)
         if op.action == "create":
             effective["id"] = op.object_id
-        scope_roots = None if (op.action == "create" or l0_full_object) \
-            else _changed_roots(op.payload)
-        l0 = validate_payload("nacrule", effective, scope_roots=scope_roots)
-        subject = ObjectRef("nacrule", op.object_id, name=current.get("name"))
-        adapter_findings += _stamp(l0.findings, subject)
-        if l0.fatal:
-            decision, reasons = decide(DecisionInputs(
-                rejections=(), l0_fatal=True, baseline_unavailable=False,
-                check_results=(), adapter_findings=adapter_findings))
-            return OrgNacVerdict(decision, reasons, (), (), adapter_findings, ())
-        fg = screen_op("nacrule", current, effective)
-        if fg:
-            return _org_nac_unknown(fg, adapter_findings=adapter_findings)
         nac_diffs.append(object_config_diff(
             object_type="nacrule", object_id=op.object_id,
             # create's `current` is only {"id": ...}; the new name lives in `effective`
             name=effective.get("name") if op.action == "create" else current.get("name"),
             action=op.action,
             before={} if op.action == "create" else current, after=effective))
+        scope_roots = None if (op.action == "create" or l0_full_object) \
+            else _changed_roots(op.payload)
+        l0 = validate_payload("nacrule", effective, scope_roots=scope_roots)
+        subject = ObjectRef("nacrule", op.object_id, name=current.get("name"))
+        adapter_findings += _stamp(l0.findings, subject)
+        if l0.fatal:
+            return _org_nac_unknown(
+                adapter_findings=adapter_findings, l0_fatal=True,
+                config_diffs=tuple(nac_diffs))
+        fg = screen_op("nacrule", current, effective)
+        if fg:
+            return _org_nac_unknown(fg, adapter_findings=adapter_findings,
+                                    config_diffs=tuple(nac_diffs))
         proposed_raw[op.object_id] = effective
 
     # Build the baseline IR from the RAW fetch.rules (not the id-keyed baseline_raw) so
@@ -754,5 +757,5 @@ def simulate_org_nac(
     return OrgNacVerdict(
         decision, reasons, nac_changes(diff, base_map, prop_map),
         results, adapter_findings, (),
-        tuple(nac_diffs) if decision is not Decision.UNKNOWN else (),
+        tuple(nac_diffs),
     )
