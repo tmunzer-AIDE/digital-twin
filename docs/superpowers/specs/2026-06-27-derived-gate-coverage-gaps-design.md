@@ -53,9 +53,9 @@ twice: never computed, and out-ranked.
   SAFE**. A coverage gap renders as `Decision.UNKNOWN` but sits *below* UNSAFE.
 - **No-false-SAFE preserved.** A coverage gap can NEVER resolve SAFE; the modeled
   checks may only **escalate** (add UNSAFE/REVIEW), never certify SAFE over a gap.
-- **The gap is visible.** Surface the unmodeled changed leaves as a finding/reason
-  ("unmodeled effective config changed — not assessed: `radius_config`, …") so the
-  operator sees exactly what the twin could not evaluate.
+- **The gap is visible.** Surface the coverage-gap evidence as a finding/reason
+  (for example: unmodeled effective leaves, DHCP row transition, or device-profile
+  override risk) so the operator sees exactly what the twin could not evaluate.
 - **Result:** a template delete that strands clients/removes a depended-on VLAN →
   **UNSAFE** ("removes VLAN X / disconnects these clients", + "unmodeled config
   removed: … — unverified"). A delete that touches only inert unmodeled leaves →
@@ -113,10 +113,15 @@ All feed the new `coverage_gaps` channel in `_simulate_site_state`; the pipeline
     offending leaf paths;
   - *DHCP semantic transitions* (`dhcp_row_rejection`) — `stage` ∈
     {`dhcp_mode_transition`, `dhcp_relay_target`, `dhcp_inert_servers`,
-    `dhcp_scope_field`}, `reasons` = the semantic description. These are "valid IR,
-    a DHCP transition the dhcp model can't fully assess" — the same coverage-gap
-    class, so they accumulate too (a modeled UNSAFE still outranks; a clean run is
-    still floored to UNKNOWN). `check_derived` is otherwise unchanged.
+    `dhcp_scope_field`}. These are "valid IR, a DHCP transition the dhcp model can't
+    fully assess" — the same coverage-gap class, so they accumulate too (a modeled
+    UNSAFE still outranks; a clean run is still floored to UNKNOWN). One small
+    evidence change is required here: `dhcp_row_rejection` is row-local today, so
+    `check_derived` must wrap/enrich the returned `Rejection` with the current
+    artifact and row name before returning it, e.g.
+    `dhcpd_config.<name> in gateway <id>: active relay target changed`. Without
+    that, an accumulated org/site finding would say only "active relay target
+    changed" with no location.
 - **Device-profile gate (`device_profile_rejection`)** — its checks **already run**
   before `dp_rej` is computed (pipeline.py: `registry.run_all(...)` precedes it),
   so the verdict-side change is just **routing** (`dp_rej` → `coverage_gaps`, not
@@ -140,13 +145,21 @@ Add `coverage_gaps: tuple[Rejection, ...] = ()` to `DecisionInputs`. New order
    flow via `coverage_gaps`.)
 2. **UNSAFE** — NETWORK ERROR/CRITICAL findings (now reachable under a gap).
 3. **Coverage-gap UNKNOWN** — if `coverage_gaps` is non-empty → `UNKNOWN`, reasons
-   list the unmodeled changed leaves. Sits below UNSAFE, above REVIEW/SAFE — so a
-   gap can never be SAFE and never masks a real UNSAFE.
+   list the source-specific coverage evidence (derived leaf paths, DHCP row
+   transition + artifact, or device-profile overridable leaves). Sits below UNSAFE,
+   above REVIEW/SAFE — so a gap can never be SAFE and never masks a real UNSAFE.
+   Reason text uses a distinct prefix, e.g. `COVERAGE GAP [derived_gate]: ...`, not
+   the hard-UNKNOWN `UNSUPPORTED [...]` prefix. Operators must be able to tell
+   "partially assessed" from "could not simulate."
 4. **REVIEW** — warnings / blind spots (today's step 3).
 5. **SAFE** (today's step 4).
 
 The module docstring's precedence line updates to:
 `hard-UNKNOWN > UNSAFE > coverage-gap UNKNOWN > REVIEW > SAFE`.
+
+Org-NAC is unaffected: it has no derived/device-profile coverage gate and keeps
+calling `decide()` with the default `coverage_gaps=()`, so the new step-3 tier is
+skipped and its existing hard-UNKNOWN / UNSAFE / REVIEW / SAFE behavior is unchanged.
 
 ### §3b Org rollup precedence (`decide_org`) — the org-level half
 
@@ -175,18 +188,39 @@ get the same correct headline.
 ## §4 Coverage-gap finding shape
 
 Each accumulated coverage-gap `Rejection` becomes one **OPERATIONAL** finding
-(category `OPERATIONAL`, so it never itself drives UNSAFE), code
-`derived.coverage_gap`, severity `WARNING`, `confidence=HIGH`. Its message is
-built from the rejection's own `stage` + `reasons` — which is **source-specific by
-design**, so the operator always sees *what* couldn't be assessed:
+(category `OPERATIONAL`, so it never itself drives UNSAFE), code `coverage.gap`,
+severity `WARNING`, `confidence=HIGH`. The source stays in `evidence["stage"]`
+(`derived_gate`, `dhcp_mode_transition`, `device_profile_gate`, ...), not in the
+machine code, so consumers do not misclassify DHCP/profile gaps as "derived" gaps.
+Its message is built from the rejection's own `stage` + `reasons` — which is
+**source-specific by design**, so the operator always sees *what* couldn't be
+assessed:
 - derived-gate leaf gap → the out-of-scope effective leaf paths;
-- `dhcp_*` → the DHCP transition description (mode/relay-target/inert);
+- `dhcp_*` → the DHCP transition description (mode/relay-target/inert) plus the
+  artifact and `dhcpd_config.<row>` location;
 - device-profile → the changed overridable leaves (after the §2 P2b reason
   enhancement) + the device id.
 
-The coverage-gap UNKNOWN's verdict reasons reuse those same strings. So the §
-visibility promise is "list whatever the rejection names," not "always leaf
-paths" — the three sources legitimately differ.
+Attribution fields are pinned so the visual/output surfaces can localize the gap:
+- `subject`: best local `ObjectRef` for the artifact:
+  `ObjectRef("site", raw.scope.site_id)` for site-effective gaps,
+  `ObjectRef("device", did)` for switch/device-effective and device-profile gaps,
+  and `ObjectRef("device", did)` for gateway-effective gaps too (gateways are
+  `Device` IR entities with `role=gateway`, so the `device` subject kind resolves
+  names correctly).
+- `affected_entities`: `(did,)` for device/gateway/profile gaps when the IR id is
+  known; `()` for site-level gaps with no single topology entity.
+- `evidence`: at minimum `{"stage": r.stage, "reasons": list(r.reasons),
+  "artifact": artifact}`; include `paths` for leaf/profile gaps and `dhcp_row` for
+  DHCP gaps when available.
+- `caused_by`: intentionally empty in v1 unless the caller already has an exact
+  changed-object cause to attach. `_simulate_site_state` is shared by single-site
+  and org fan-out and does not always know the originating op; config-diffs remain
+  the raw before/after evidence.
+
+The coverage-gap UNKNOWN's verdict reasons reuse those same strings. So the
+visibility promise is "list whatever the rejection names," not "always leaf paths"
+— the three sources legitimately differ.
 
 ## §5 No-false-SAFE (why this is safe)
 
@@ -194,16 +228,16 @@ paths" — the three sources legitimately differ.
 - Raising UNSAFE above the gap can only make a verdict **more** conservative,
   never less — it cannot introduce a false-SAFE (the doctrine forbids false-SAFE,
   not false-UNSAFE).
-- The modeled checks run on the genuinely-modeled IR; the unmodeled leaves they
-  don't see are exactly the ones reported as the gap. So nothing the checks
-  certify SAFE is contradicted by an unseen leaf *that the verdict claims is
-  fine* — the verdict is UNKNOWN-or-worse whenever a gap exists.
+- The modeled checks run on the genuinely-modeled IR; any unmodeled leaf,
+  unmodeled DHCP transition, or unmodeled device-profile override risk is reported
+  as the gap. So nothing the checks certify SAFE is presented as fully assessed
+  while a blind spot exists — the verdict is UNKNOWN-or-worse whenever a gap exists.
 
 ## §6 Testing
 
 - **Template delete, modeled breakage** (e.g. networktemplate delete removes a
   VLAN a client depends on, or strands a switch) → **UNSAFE**, with the modeled
-  finding AND a `derived.coverage_gap` note for the removed unmodeled leaves.
+  finding AND a `coverage.gap` note for the removed unmodeled leaves.
 - **Template delete, only inert unmodeled leaves removed** (dns/ntp/syslog) →
   **UNKNOWN** (coverage gap) with any modeled findings attached — not a bare
   UNKNOWN, and never SAFE.
@@ -215,26 +249,34 @@ paths" — the three sources legitimately differ.
   never SAFE. The existing golden at `tests/golden/test_golden_scenarios.py:1403`
   (profiled gateway-template edit → bare `UNKNOWN`) flips to coverage-gap-UNKNOWN-
   with-findings (or UNSAFE) — update it deliberately, leaf-by-leaf. Assert the
-  device-profile `coverage_gap` finding **names the changed overridable leaves**
+  device-profile `coverage.gap` finding **names the changed overridable leaves**
   (P2b), not just the device id.
 - **DHCP transition coverage gap** (P2a): a `dhcp_mode_transition` /
   `dhcp_relay_target` effective change with no modeled breakage → **UNKNOWN**
-  (coverage gap), finding carries the DHCP semantic reason; the same change
-  alongside a modeled NETWORK ERROR → **UNSAFE** (gap does not mask it). An inert
-  DHCP row change (`dhcp_inert_servers`/`dhcp_scope_field`) → coverage-gap UNKNOWN,
-  never SAFE.
+  (coverage gap), finding carries the DHCP semantic reason **plus artifact and
+  `dhcpd_config.<row>` context**; the same change alongside a modeled NETWORK ERROR
+  → **UNSAFE** (gap does not mask it). An inert DHCP row change
+  (`dhcp_inert_servers`/`dhcp_scope_field`) → coverage-gap UNKNOWN, never SAFE.
 - **Hard-UNKNOWN unchanged**: L0-fatal, baseline-unavailable, parse/object-gate
   rejection, field-gate rejection → still `UNKNOWN`, dominating any finding.
 - **decide() unit tests**: the new 5-tier precedence, each tier; coverage-gap with
   no other findings → UNKNOWN; coverage-gap + NETWORK ERROR → UNSAFE; coverage-gap
-  + only WARNING → UNKNOWN (gap outranks REVIEW).
+  + only WARNING → UNKNOWN (gap outranks REVIEW); coverage-gap reasons use
+  `COVERAGE GAP [...]`, while hard-UNKNOWN reasons still use `UNSUPPORTED [...]`.
 - **decide_org() unit tests** (§3b): single per-site UNSAFE → org UNSAFE; per-site
   {UNSAFE, UNKNOWN} → org **UNSAFE** (was UNKNOWN); per-site all-UNKNOWN → org
   UNKNOWN; per-site {REVIEW, UNKNOWN} → org UNKNOWN (UNKNOWN still over REVIEW).
+- **coverage-gap finding shape**: `code=="coverage.gap"`, category OPERATIONAL,
+  severity WARNING, `evidence.stage` set, subject localizes the artifact, and
+  `affected_entities` is populated for device/gateway/profile gaps.
 - **derived gate** still detects the same out-of-scope leaves (its detection is
   unchanged); only the pipeline's consumption is now non-fatal.
-- goldens: template-delete goldens flip from UNKNOWN-bare to UNSAFE/UNKNOWN-with-
-  findings — reviewed leaf-by-leaf, not blind-regenerated.
+- **golden inventory first**: enumerate every existing golden that currently lands
+  in bare UNKNOWN via a post-sim gate (`derived_gate`, any `dhcp_*` stage, or
+  `device_profile_gate`) before updating expected outputs. The churn is broader
+  than template deletes: any such golden may now run checks and gain findings,
+  diagrams/visual-map entries, and `coverage.gap` evidence even if the decision
+  remains UNKNOWN. Review each affected golden leaf-by-leaf; do not blind-regenerate.
 - `docs/ROADMAP.md`.
 
 ## Files touched (anchor map for the plan)
@@ -246,15 +288,18 @@ paths" — the three sources legitimately differ.
 - `src/digital_twin/engine/pipeline.py` — `_simulate_site_state`: accumulate
   derived-gate rejections into `coverage_gaps` instead of `return _unknown`;
   **route `dp_rej` into `coverage_gaps` not `rejections`**; pass into
-  `assemble`/`DecisionInputs`; emit the `derived.coverage_gap` finding.
+  `assemble`/`DecisionInputs`; emit the `coverage.gap` finding with subject,
+  affected_entities, and evidence as pinned in §4.
 - `src/digital_twin/scope/device_profile_gate.py` — small change (P2b): extend the
   rejection `reasons` to list the changed overridable leaves it already computes
   (detection logic itself stays).
 - `src/digital_twin/verdict/verdict.py` — `assemble` threads `coverage_gaps` (if
   it doesn't already pass `DecisionInputs` straight through).
-- `src/digital_twin/scope/derived_gate.py` — unchanged (detection stays); note it
-  returns BOTH `stage="derived_gate"` leaf-gap rejections and `dhcp_*` semantic
-  rejections (via `dhcp_row_rejection`) — all consumed as coverage gaps.
+- `src/digital_twin/scope/derived_gate.py` — detection stays; note it returns BOTH
+  `stage="derived_gate"` leaf-gap rejections and `dhcp_*` semantic rejections (via
+  `dhcp_row_rejection`) — all consumed as coverage gaps. Small evidence change:
+  wrap/enrich `dhcp_*` rejections with the artifact and `dhcpd_config.<row>` name
+  before returning them.
 - Tests: `tests/verdict/test_decision*.py`, `tests/engine/test_pipeline.py`,
   `tests/engine/test_org_plan.py` (template-delete e2e), goldens.
 - `docs/ROADMAP.md`.
