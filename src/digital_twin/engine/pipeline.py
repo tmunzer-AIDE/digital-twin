@@ -154,6 +154,30 @@ def _coverage_gap_finding(
     )
 
 
+def _record_coverage_gap(
+    coverage_gaps: list[Rejection],
+    coverage_gap_findings: list[Finding],
+    rejection: Rejection,
+    *,
+    artifact: str,
+    subject: ObjectRef,
+    affected_entities: tuple[str, ...] = (),
+    paths: tuple[str, ...] = (),
+    dhcp_row: str | None = None,
+) -> None:
+    coverage_gaps.append(rejection)
+    coverage_gap_findings.append(
+        _coverage_gap_finding(
+            rejection,
+            artifact=artifact,
+            subject=subject,
+            affected_entities=affected_entities,
+            paths=paths,
+            dhcp_row=dhcp_row,
+        )
+    )
+
+
 def _changed_roots(payload: Mapping[str, Any]) -> frozenset[str]:
     """Top-level roots the op actually SETS — the only roots Mist processes (and
     thus re-validates) on a root-level-merge PUT. Dash-delete markers ('-attr')
@@ -259,20 +283,20 @@ def _simulate_site_state(
             unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
     coverage_gaps: list[Rejection] = []
+    coverage_gap_findings: list[Finding] = []
     with trace.stage("derived_gate"):
         site_gaps = check_derived_gaps(
             _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
         )
         for site_gap in site_gaps:
-            coverage_gaps.append(site_gap.rejection)
-            adapter_findings += (
-                _coverage_gap_finding(
-                    site_gap.rejection,
-                    artifact="site",
-                    subject=ObjectRef("site", baseline_raw.scope.site_id),
-                    paths=site_gap.paths,
-                    dhcp_row=site_gap.dhcp_row,
-                ),
+            _record_coverage_gap(
+                coverage_gaps,
+                coverage_gap_findings,
+                site_gap.rejection,
+                artifact="site",
+                subject=ObjectRef("site", baseline_raw.scope.site_id),
+                paths=site_gap.paths,
+                dhcp_row=site_gap.dhcp_row,
             )
         for did in sorted(set(baseline.device_effective) | set(proposed.device_effective)):
             device_gaps = check_derived_gaps(
@@ -281,16 +305,15 @@ def _simulate_site_state(
                 artifact=f"device {did}",
             )
             for device_gap in device_gaps:
-                coverage_gaps.append(device_gap.rejection)
-                adapter_findings += (
-                    _coverage_gap_finding(
-                        device_gap.rejection,
-                        artifact=f"device {did}",
-                        subject=ObjectRef("device", did),
-                        affected_entities=(did,),
-                        paths=device_gap.paths,
-                        dhcp_row=device_gap.dhcp_row,
-                    ),
+                _record_coverage_gap(
+                    coverage_gaps,
+                    coverage_gap_findings,
+                    device_gap.rejection,
+                    artifact=f"device {did}",
+                    subject=ObjectRef("device", did),
+                    affected_entities=(did,),
+                    paths=device_gap.paths,
+                    dhcp_row=device_gap.dhcp_row,
                 )
         for did in sorted(set(baseline.gateway_effective) | set(proposed.gateway_effective)):
             gateway_gaps = check_derived_gaps(
@@ -300,16 +323,15 @@ def _simulate_site_state(
                 artifact=f"gateway {did}",
             )
             for gateway_gap in gateway_gaps:
-                coverage_gaps.append(gateway_gap.rejection)
-                adapter_findings += (
-                    _coverage_gap_finding(
-                        gateway_gap.rejection,
-                        artifact=f"gateway {did}",
-                        subject=ObjectRef("device", did),
-                        affected_entities=(did,),
-                        paths=gateway_gap.paths,
-                        dhcp_row=gateway_gap.dhcp_row,
-                    ),
+                _record_coverage_gap(
+                    coverage_gaps,
+                    coverage_gap_findings,
+                    gateway_gap.rejection,
+                    artifact=f"gateway {did}",
+                    subject=ObjectRef("device", did),
+                    affected_entities=(did,),
+                    paths=gateway_gap.paths,
+                    dhcp_row=gateway_gap.dhcp_row,
                 )
     with trace.stage("checks"):
         diff = diff_ir(baseline.ir, proposed.ir)
@@ -328,15 +350,14 @@ def _simulate_site_state(
         {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
     )
     for dp_gap in dp_gaps:
-        coverage_gaps.append(dp_gap.rejection)
-        adapter_findings += (
-            _coverage_gap_finding(
-                dp_gap.rejection,
-                artifact=f"device {dp_gap.device_id}",
-                subject=ObjectRef("device", dp_gap.device_id),
-                affected_entities=(dp_gap.device_id,),
-                paths=dp_gap.paths,
-            ),
+        _record_coverage_gap(
+            coverage_gaps,
+            coverage_gap_findings,
+            dp_gap.rejection,
+            artifact=f"device {dp_gap.device_id}",
+            subject=ObjectRef("device", dp_gap.device_id),
+            affected_entities=(dp_gap.device_id,),
+            paths=dp_gap.paths,
         )
     with trace.stage("verdict"):
         verdict = assemble(
@@ -345,7 +366,7 @@ def _simulate_site_state(
                 l0_fatal=False,
                 baseline_unavailable=False,
                 check_results=results,
-                adapter_findings=adapter_findings,
+                adapter_findings=(*adapter_findings, *coverage_gap_findings),
                 coverage_gaps=tuple(coverage_gaps),
             ),
             ir_diff=diff,
