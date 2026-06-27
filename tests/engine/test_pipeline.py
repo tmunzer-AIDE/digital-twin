@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from digital_twin.engine.pipeline import simulate
 from digital_twin.providers.base import FetchError, RawSiteState, SiteScope, StateMeta
+from digital_twin.redaction import REDACTED
 from digital_twin.verdict.decision import Decision
 
 SITE = "s1"
@@ -301,22 +302,84 @@ def test_site_update_carries_config_diff():
     assert by["networks.voice.vlan_id"].before == 30 and by["networks.voice.vlan_id"].after == 31
 
 
-def test_pre_apply_unknown_drops_config_diffs():
+def test_field_gate_unknown_carries_config_diff():
+    # dhcpd_config.corp.ip is OUT of scope (only type/servers/ip_start/ip_end/gateway
+    # are allowlisted) -> field-gate UNKNOWN, in-loop. The diff must now be surfaced.
     bad = {**SETTING, "dhcpd_config": {"corp": {"ip": "9.9.9.9"}}}
     v = simulate(_plan([_op(payload=bad)]), provider=FakeProvider())
-    assert v.decision is Decision.UNKNOWN
-    assert v.config_diffs == ()
+    assert v.decision is Decision.UNKNOWN                      # non-load-bearing:
+    cds = {d.object_id: d for d in v.config_diffs}             # UNKNOWN + diff coexist
+    assert SITE in cds
+    assert "dhcpd_config.corp.ip" in {c.path for c in cds[SITE].changes}
 
 
-def test_post_apply_unknown_drops_config_diffs():
+def test_derived_gate_unknown_carries_config_diff():
     # vars ripple passes the field gate (vars.* allowlisted) then fails the DERIVED
-    # gate inside _simulate_site_state — a post-apply UNKNOWN. The decision gate must
-    # still drop diffs (P2b), proving it keys off the final decision, not the path.
+    # gate inside _simulate_site_state -> post-apply UNKNOWN reached via the final
+    # unconditional attach.
     ripple = {**SETTING, "vars": {"dhcp_ip": "10.9.9.9"}}
     v = simulate(_plan([_op(payload=ripple)]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
     assert any("derived_gate" in r for r in v.decision_reasons)
-    assert v.config_diffs == ()
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert SITE in cds
+    assert "vars.dhcp_ip" in {c.path for c in cds[SITE].changes}
+
+
+def test_object_not_found_keeps_earlier_op_diffs():
+    # op0 (site_setting, valid) builds a diff and applies; op1 (device, missing id)
+    # hits object-not-found IN the loop -> UNKNOWN. op0's diff must survive.
+    good = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    plan = _plan([
+        _op(object_type="site_setting", object_id=SITE, payload=good, order=0),
+        _op(object_type="device", object_id="nope", payload={"name": "x"}, order=1),
+    ])
+    v = simulate(plan, provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert SITE in cds                                  # earlier op survived
+    assert "nope" not in cds                            # uncomputable op carries nothing
+
+
+def test_out_of_scope_secret_leaf_redacted_in_surfaced_diff():
+    # switch_mgmt.root_password is out-of-scope (field-gate UNKNOWN) AND secret-keyed.
+    # Now that the diff is surfaced, the value must still be redacted.
+    secret = {**SETTING, "switch_mgmt": {"root_password": "hunter2"}}
+    v = simulate(_plan([_op(payload=secret)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    by = {c.path: c for c in cds[SITE].changes}
+    assert by["switch_mgmt.root_password"].after == REDACTED
+    assert by["switch_mgmt.root_password"].after != "hunter2"
+
+
+def test_site_l0_fatal_carries_config_diff(monkeypatch):
+    # Force L0 fatal (unreachable with natural payloads — effective is always a dict).
+    # The diff is built BEFORE validate, so the L0-fatal early return must carry it.
+    from digital_twin.adapters.mist.adapter import MistAdapter
+    from digital_twin.adapters.mist.validate import L0Result
+    monkeypatch.setattr(
+        MistAdapter, "validate", lambda self, op, **k: L0Result(findings=(), fatal=True)
+    )
+    good = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    v = simulate(_plan([_op(payload=good)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert SITE in cds
+
+
+def test_site_apply_reject_carries_config_diff(monkeypatch):
+    # Force adapter.apply to reject (post-screen_op, post-build). The in-loop apply
+    # rejection early return must carry the already-built diff.
+    from digital_twin.adapters.mist.adapter import MistAdapter
+    from digital_twin.contracts import Rejection
+    monkeypatch.setattr(MistAdapter, "apply",
+                        lambda self, raw, ops: Rejection(stage="apply", reasons=("forced",)))
+    good = {**SETTING, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
+    v = simulate(_plan([_op(payload=good)]), provider=FakeProvider())
+    assert v.decision is Decision.UNKNOWN
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert SITE in cds
 
 
 def test_port_config_overwrite_disable_is_simulated_not_unknown():
