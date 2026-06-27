@@ -140,6 +140,10 @@ def _device_op(device_id: str, payload: dict, order: int = 0) -> dict:
     }
 
 
+def _coverage_gap_findings(verdict):
+    return [f for f in verdict.findings if f.code == "coverage.gap"]
+
+
 # ---------------------------------------------------------------------------
 # (i) site_setting edit that changes an overridable leaf on a profiled switch
 # ---------------------------------------------------------------------------
@@ -168,9 +172,20 @@ def test_site_setting_edit_taints_profiled_switch_unknown():
     verdict = simulate(_plan([op]), provider=provider)
 
     assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
-    assert any("device_profile_gate" in r for r in verdict.decision_reasons), (
+    assert any(
+        r.startswith("COVERAGE GAP [device_profile_gate]")
+        for r in verdict.decision_reasons
+    ), (
         f"expected device_profile_gate in reasons, got: {verdict.decision_reasons}"
     )
+    gaps = _coverage_gap_findings(verdict)
+    assert len(gaps) == 1
+    assert gaps[0].subject is not None
+    assert gaps[0].subject.kind == "device"
+    assert gaps[0].subject.id == PROFILED_SWITCH_MAC
+    assert gaps[0].affected_entities == (PROFILED_SWITCH_MAC,)
+    assert "port_usages.office.mode" in gaps[0].evidence["paths"]
+    assert "port_usages.office.mode" in gaps[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +281,7 @@ def test_profile_proposed_ingest_crash_is_unknown_not_a_hard_crash():
 
     assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
     assert any("ingest crashed" in r for r in verdict.decision_reasons), verdict.decision_reasons
+    assert not _coverage_gap_findings(verdict)
 
 
 def test_below_profile_stp_edit_on_profiled_switch_is_unknown():
@@ -281,8 +297,13 @@ def test_below_profile_stp_edit_on_profiled_switch_is_unknown():
     verdict = simulate(_plan([site_op]), provider=provider)
 
     assert verdict.decision is Decision.UNKNOWN and any(
-        "device_profile_gate" in r for r in verdict.decision_reasons
+        r.startswith("COVERAGE GAP [device_profile_gate]")
+        for r in verdict.decision_reasons
     ), (
         f"a below-profile stp_config edit on a profiled switch must be UNKNOWN via "
         f"device_profile_gate; got {verdict.decision}: {verdict.decision_reasons}"
     )
+    gaps = _coverage_gap_findings(verdict)
+    assert len(gaps) == 1
+    assert "stp_config.bridge_priority" in gaps[0].evidence["paths"]
+    assert "stp_config.bridge_priority" in gaps[0].message

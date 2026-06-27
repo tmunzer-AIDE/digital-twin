@@ -1402,16 +1402,18 @@ def test_st_b_fetch_fail_site_is_unknown(tmp_path):
 
 def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     # Scenario 7a: gatewaytemplate changes ip_configs.*.ip on a site whose
-    # gateway carries a deviceprofile_id -> device_profile_gate fires -> UNKNOWN.
-    # The per-site verdict (not the org-level rollup reason) carries the gate text.
+    # gateway carries a deviceprofile_id -> device_profile_gate coverage gap,
+    # but modeled gateway breakage now outranks the gap as UNSAFE.
     doc, plan = dp_gatewaytemplate_edit_with_profiled_gw()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
-    # The gate is surfaced in the per-site verdict's decision_reasons
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
     from .builders import DP_SITE
     per = ov.per_site[DP_SITE]
-    assert per.decision is Decision.UNKNOWN
-    assert any("device_profile_gate" in r for r in per.decision_reasons)
+    assert per.decision is Decision.UNSAFE
+    gaps = [f for f in per.findings if f.code == "coverage.gap"]
+    assert len(gaps) == 1
+    assert gaps[0].evidence["stage"] == "device_profile_gate"
+    assert gaps[0].evidence["paths"] == ["ip_configs.dp_net.ip"]
 
 
 def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
