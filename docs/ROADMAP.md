@@ -381,6 +381,15 @@ modeling" below.
   types: `Verdict` (site path), `OrgVerdict` (org-template/delete-ripple path),
   and `OrgNacVerdict` (NAC path). Spec:
   `docs/superpowers/specs/2026-06-23-config-diff-in-results-design.md`.
+- ✅ **config_diffs surfaced on UNKNOWN** (2026-06-27): the before→after `ObjectConfigDiff`
+  is now attached to every verdict regardless of `Decision.UNKNOWN`, for each op whose
+  `before → after` is computable, across the site / org-template / org-NAC paths
+  (field-gate / L0-fatal / apply-reject / derived-gate UNKNOWNs all carry the diff).
+  Scoping is **per op, not per verdict**: an op with no computable `before → after`
+  (parse, object-not-found, baseline fetch failure, org `apply_template` reject)
+  contributes no diff, but every earlier computable op's diff in the same plan still
+  survives. Supersedes the 2026-06-23 "config diffs on UNKNOWN/rejected plans"
+  non-goal. The diff stays redacted and non-load-bearing.
 - ✅ **OAS unknown-attribute check (L0 validity)** — done 2026-06-25. L0 now flags
   any payload attribute NOT documented in the committed Mist OAS
   (`l0.schema.unknown_attribute`, WARNING → floors REVIEW), derived from the OAS —
