@@ -390,6 +390,16 @@ modeling" below.
   contributes no diff, but every earlier computable op's diff in the same plan still
   survives. Supersedes the 2026-06-23 "config diffs on UNKNOWN/rejected plans"
   non-goal. The diff stays redacted and non-load-bearing.
+- ✅ **post-sim coverage gaps are partial verdict inputs** (2026-06-27):
+  derived-gate leaf gaps, DHCP semantic gaps, and device-profile gate hits now
+  run through the normal modeled checks as `coverage.gap` findings instead of
+  blanket hard UNKNOWN short-circuits. Decision precedence is
+  hard-UNKNOWN > UNSAFE > coverage-gap UNKNOWN > REVIEW > SAFE, so a modeled
+  NETWORK ERROR/CRITICAL can still surface as UNSAFE, while a gap-only run floors
+  to UNKNOWN and never SAFE. Raw field-gate out-of-scope updates remain a hard
+  UNKNOWN before IR/checks because no trustworthy modeled state exists yet.
+  Org-NAC is unaffected; it has no derived/device-profile coverage gate and keeps
+  its existing decision path.
 - ✅ **OAS unknown-attribute check (L0 validity)** — done 2026-06-25. L0 now flags
   any payload attribute NOT documented in the committed Mist OAS
   (`l0.schema.unknown_attribute`, WARNING → floors REVIEW), derived from the OAS —
