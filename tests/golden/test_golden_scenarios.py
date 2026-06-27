@@ -1531,7 +1531,11 @@ def test_ca_non_load_bearing_verdict_unchanged_and_causes_populated(tmp_path):
             ("wired.l2.blackhole.exit_lost", Severity.CRITICAL): 2,
             ("wired.l2.vlan_segmentation.split", Severity.INFO): 2,
             ("wired.l2.blackhole.preexisting", Severity.INFO): 2,
-            ("wired.l2.blackhole.preexisting_unlocatable", Severity.INFO): 1,
+            # preexisting_unlocatable is no longer emitted here: rule 3
+            # (resolve_exit INFERRED_UPLINK) now locates an exit via the
+            # is_uplink port on the fixture's EDGE device, so the VLAN is no
+            # longer unlocatable — the stranded component reaches the inferred
+            # exit and the check returns PASS for that VLAN.
             ("wired.l2.loop.preexisting", Severity.INFO): 1,
             ("wired.client.impact.active_clients", Severity.WARNING): 1,
         }

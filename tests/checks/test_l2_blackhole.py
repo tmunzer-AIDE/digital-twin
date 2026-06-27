@@ -2,11 +2,14 @@
 path in IR and LOSES it in IR'; MEDIUM/LOW exit -> WARN; no locatable exit ->
 INSUFFICIENT_DATA for that vlan (never PASS); pre-existing strands = context."""
 
+from dataclasses import replace
+
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.l2_blackhole import L2BlackholeCheck
 from digital_twin.contracts import ObjectRef, Severity
-from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.verdict.decision import Decision, DecisionInputs, decide
 from tests.factories import access_port, irb, link, sw, trunk_port
 
 
@@ -371,3 +374,81 @@ def test_exit_unlocatable_honest_empty_when_exit_already_none():
         and f.subject == ObjectRef("vlan", "10")
     )
     assert row.caused_by == ()
+
+
+# --- INFERRED_UPLINK downstream cases -----------------------------------------------
+
+
+def _uplink(did, name, vid):  # an is_uplink trunk toward an UNMODELED core
+    return replace(trunk_port(did, name, tagged=(vid,)), is_uplink=True)
+
+
+def _ab(*, extra_member=False, uplink_disabled=False):
+    # A(member access) -- B(is_uplink toward unmodeled core); no IRB, no gateway
+    b = IRBuilder()
+    b.add_device(sw("A")).add_device(sw("B"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_port(access_port("A", "acc", 10))
+    if extra_member:
+        b.add_port(access_port("A", "acc2", 10))  # the delta: a new vlan-10 member
+    b.add_port(trunk_port("A", "up", tagged=(10,)))
+    b.add_port(trunk_port("B", "down", tagged=(10,)))
+    core = _uplink("B", "core", 10)
+    if uplink_disabled:
+        core = replace(core, disabled=True)
+    b.add_port(core)
+    b.add_link(link("A:up", "B:down"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def _abc(*, sever=False):
+    # A(member) -- B -- C(is_uplink toward unmodeled core); delta severs A's uplink
+    b = IRBuilder()
+    for d in ("A", "B", "C"):
+        b.add_device(sw(d))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_port(access_port("A", "acc", 10))
+    a_up = trunk_port("A", "up", tagged=(10,))
+    if sever:
+        a_up = replace(a_up, disabled=True)  # the delta: A loses its path upstream
+    b.add_port(a_up)
+    b.add_port(trunk_port("B", "da", tagged=(10,)))
+    b.add_port(trunk_port("B", "uc", tagged=(10,)))
+    b.add_port(trunk_port("C", "dc", tagged=(10,)))
+    b.add_port(_uplink("C", "core", 10))  # untouched -> exit survives in proposed
+    b.add_link(link("A:up", "B:da"))
+    b.add_link(link("B:uc", "C:dc"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def test_inferred_uplink_intact_is_review_not_safe():
+    # case 1: a changed vlan still reaches its inferred uplink -> structural PASS,
+    # but result confidence LOW -> decision floors REVIEW (never SAFE), and NO
+    # exit_unlocatable noise is emitted.
+    result = L2BlackholeCheck().run(_ctx(_ab(), _ab(extra_member=True)))
+    assert result.status is Status.PASS
+    assert result.confidence is not None and result.confidence.level is ConfidenceLevel.LOW
+    assert not any("unlocatable" in f.code for f in result.findings)
+    decision, _ = decide(
+        DecisionInputs(rejections=(), l0_fatal=False, baseline_unavailable=False,
+                       check_results=(result,))
+    )
+    assert decision is Decision.REVIEW  # the LOW result confidence floors it; never SAFE
+
+
+def test_inferred_uplink_severed_is_exit_lost_warning():
+    # case 2: the delta cuts A off from the SURVIVING inferred uplink at C ->
+    # sharper exit_lost (WARNING at LOW exit confidence), not vague unlocatable.
+    result = L2BlackholeCheck().run(_ctx(_abc(sever=False), _abc(sever=True)))
+    f = next(f for f in result.findings if f.code == "wired.l2.blackhole.exit_lost")
+    assert f.severity is Severity.WARNING
+    assert not any("unlocatable" in x.code for x in result.findings)
+
+
+def test_inferred_uplink_last_uplink_removed_stays_unlocatable():
+    # case 3: disabling the sole qualifying uplink removes the inferred exit in
+    # proposed -> NONE -> exit_unlocatable (unchanged; the exit genuinely vanished)
+    result = L2BlackholeCheck().run(_ctx(_ab(), _ab(uplink_disabled=True)))
+    assert any(f.code == "wired.l2.blackhole.exit_unlocatable" for f in result.findings)
