@@ -19,11 +19,11 @@ class DeviceProfileGap:
     paths: tuple[str, ...]
 
 
-def device_profile_gap(
+def device_profile_gaps(
     devices: Sequence[Mapping[str, Any]],
     baseline_eff: Mapping[str, JsonObj],
     proposed_eff: Mapping[str, JsonObj],
-) -> DeviceProfileGap | None:
+) -> tuple[DeviceProfileGap, ...]:
     """Per-site coverage gate for the unmodeled device-profile layer. Taints (->
     UNKNOWN) iff a modeled switch/gateway device carries a `deviceprofile_id` AND its
     OWN effective config — restricted to that role's overridable leaves — DIFFERS
@@ -32,6 +32,7 @@ def device_profile_gap(
     `deviceprofile_id` from the RAW device dict (the IR Device entity drops it).
     AP devices, unprofiled devices, and devices whose modeled surface is unchanged
     never taint."""
+    gaps: list[DeviceProfileGap] = []
     for dev in devices:
         role = str((dev or {}).get("type") or "")
         patterns = DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE.get(role)
@@ -43,20 +44,31 @@ def device_profile_gap(
         changed = changed_leaf_paths(baseline_eff.get(did) or {}, proposed_eff.get(did) or {})
         paths = tuple(path for path in changed if allowed(path, patterns))
         if paths:
-            return DeviceProfileGap(
-                rejection=Rejection(
-                    stage="device_profile_gate",
-                    reasons=(
-                        f"device {did} has a deviceprofile_id and the edit changes "
-                        "overridable leaf path(s) "
-                        f"{', '.join(paths)} on its effective config; the unmodeled "
-                        "device-profile layer could override the outcome",
+            gaps.append(
+                DeviceProfileGap(
+                    rejection=Rejection(
+                        stage="device_profile_gate",
+                        reasons=(
+                            f"device {did} has a deviceprofile_id and the edit changes "
+                            "overridable leaf path(s) "
+                            f"{', '.join(paths)} on its effective config; the unmodeled "
+                            "device-profile layer could override the outcome",
+                        ),
                     ),
-                ),
-                device_id=did,
-                paths=paths,
+                    device_id=did,
+                    paths=paths,
+                )
             )
-    return None
+    return tuple(gaps)
+
+
+def device_profile_gap(
+    devices: Sequence[Mapping[str, Any]],
+    baseline_eff: Mapping[str, JsonObj],
+    proposed_eff: Mapping[str, JsonObj],
+) -> DeviceProfileGap | None:
+    gaps = device_profile_gaps(devices, baseline_eff, proposed_eff)
+    return gaps[0] if gaps else None
 
 
 def device_profile_rejection(

@@ -1,4 +1,8 @@
-from digital_twin.scope.device_profile_gate import device_profile_gap, device_profile_rejection
+from digital_twin.scope.device_profile_gate import (
+    device_profile_gap,
+    device_profile_gaps,
+    device_profile_rejection,
+)
 
 # effective maps are keyed by device_id(mac) (normalized: lower, no colons).
 GW = {"port_config": {"ge-0/0/0": {"disabled": False}}}          # baseline gateway eff
@@ -26,6 +30,22 @@ def test_device_profile_gap_returns_device_id_and_paths():
     assert gap.paths == ("port_config.ge-0/0/0.disabled",)
     assert any("aabbccddee01" in reason for reason in gap.rejection.reasons)
     assert any("port_config.ge-0/0/0.disabled" in reason for reason in gap.rejection.reasons)
+
+
+def test_device_profile_gaps_returns_all_profiled_devices():
+    sw_base = {"port_usages": {"office": {"mode": "access"}}}
+    sw_prop = {"port_usages": {"office": {"mode": "trunk"}}}
+    gaps = device_profile_gaps(
+        devices=[
+            {"type": "gateway", "mac": "AA:BB:CC:DD:EE:01", "deviceprofile_id": "p1"},
+            {"type": "switch", "mac": "AA:BB:CC:DD:EE:02", "deviceprofile_id": "p2"},
+        ],
+        baseline_eff={"aabbccddee01": GW, "aabbccddee02": sw_base},
+        proposed_eff={"aabbccddee01": GW2, "aabbccddee02": sw_prop},
+    )
+    assert [g.device_id for g in gaps] == ["aabbccddee01", "aabbccddee02"]
+    assert gaps[0].paths == ("port_config.ge-0/0/0.disabled",)
+    assert gaps[1].paths == ("port_usages.office.mode",)
 
 
 def test_ap_profile_does_not_taint():

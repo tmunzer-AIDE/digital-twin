@@ -64,7 +64,7 @@ from digital_twin.providers.base import (
 )
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived_gaps
-from digital_twin.scope.device_profile_gate import device_profile_gap
+from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -322,12 +322,12 @@ def _simulate_site_state(
             )
         )
     profile_outcome = profile_proposed if profile_proposed is not None else proposed
-    dp_gap = device_profile_gap(
+    dp_gaps = device_profile_gaps(
         proposed_raw.devices,
         {**baseline.device_effective, **baseline.gateway_effective},
         {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
     )
-    if dp_gap:
+    for dp_gap in dp_gaps:
         coverage_gaps.append(dp_gap.rejection)
         adapter_findings += (
             _coverage_gap_finding(
