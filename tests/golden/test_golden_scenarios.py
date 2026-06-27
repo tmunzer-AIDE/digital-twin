@@ -1300,10 +1300,11 @@ def test_ms_a_template_network_removal_breaks_one_site_unsafe(tmp_path):
     assert "siteA" in ov.driving_sites and ov.per_site["siteB"].decision is Decision.SAFE
 
 
-def test_ms_b_one_site_fetch_fails_rolls_up_unknown(tmp_path):
+def test_ms_b_one_site_fetch_fails_keeps_unsafe_site_headline(tmp_path):
     doc, plan = multisite_with_failed_site()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert ov.driving_sites == ("siteA",)
     assert "siteB" in ov.site_failures
 
 
@@ -1364,12 +1365,13 @@ def test_gt_d_cosmetic_edit_is_safe(tmp_path):
     assert ov.decision is Decision.SAFE, ov.decision_reasons
 
 
-def test_gt_e_fetch_fail_site_is_unknown(tmp_path):
+def test_gt_e_fetch_fail_site_keeps_unsafe_site_headline(tmp_path):
     # Scenario 6: same IP change as GT-a but site B's fetch fails -> org
-    # UNKNOWN with GT_SITE_B in site_failures.
+    # UNSAFE from site A with GT_SITE_B still listed in site_failures.
     doc, plan = gt_fetch_fail_site()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert ov.driving_sites == (GT_SITE_A,)
     assert GT_SITE_B in ov.site_failures
 
 

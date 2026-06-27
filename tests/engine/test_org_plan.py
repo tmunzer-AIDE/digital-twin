@@ -202,6 +202,33 @@ def test_single_networktemplate_delete_recompiles_and_collapses():
     assert _has_code(v, "wired.l2.vlan_segmentation") or _has_code(v, "wired.l2.blackhole")
 
 
+def test_org_unsafe_site_beats_fetch_failed_site_and_keeps_failure():
+    failed_site = FetchError(
+        scope=SiteScope("o1", "sFail"),
+        failures=(FetchFailure(object="site", error="boom"),),
+        acquired_at=datetime.now(UTC),
+        host="h",
+    )
+    prov = FakeProvider(
+        {"sFail": failed_site, "sUnsafe": _site("sUnsafe", networktemplate=_NT, sitetemplate=_ST)},
+        {
+            "networktemplate": {"nt1": (_NT, ["sFail", "sUnsafe"])},
+            "sitetemplate": {"st1": (_ST, ["sFail", "sUnsafe"])},
+        },
+    )
+
+    ov = simulate_org_plan(
+        _plan(_del("networktemplate", "nt1", order=0), _del("sitetemplate", "st1", order=1)),
+        provider=prov,
+    )
+
+    assert ov.decision is Decision.UNSAFE
+    assert ov.driving_sites == ("sUnsafe",)
+    assert ov.site_failures == {"sFail": "site: boom"}
+    assert ov.per_site["sFail"].decision is Decision.UNKNOWN
+    assert ov.per_site["sUnsafe"].decision is Decision.UNSAFE
+
+
 # --- 0-site delete --------------------------------------------------------
 
 def test_zero_site_delete_is_safe_with_change_named():
