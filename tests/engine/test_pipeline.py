@@ -3,7 +3,17 @@
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 
+from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.registry import CheckRegistry
+from digital_twin.contracts import (
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Severity,
+)
 from digital_twin.engine.pipeline import simulate
+from digital_twin.ir import Confidence, ConfidenceLevel
 from digital_twin.providers.base import FetchError, RawSiteState, SiteScope, StateMeta
 from digital_twin.redaction import REDACTED
 from digital_twin.verdict.decision import Decision
@@ -130,7 +140,48 @@ def test_vars_ripple_unknown_at_derived_gate():
     ripple = {**SETTING, "vars": {"dhcp_ip": "10.9.9.9"}}
     v = simulate(_plan([_op(payload=ripple)]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
-    assert any("derived_gate" in r for r in v.decision_reasons)
+    assert any(r.startswith("COVERAGE GAP [derived_gate]") for r in v.decision_reasons)
+    assert v.check_results
+    assert any(f.code == "coverage.gap" for f in v.findings)
+
+
+class _NetworkErrorRegistry(CheckRegistry):
+    def __init__(self) -> None:
+        pass
+
+    def run_all(self, ctx: CheckContext) -> tuple[CheckResult, ...]:
+        return (
+            CheckResult(
+                check_id="fake.network",
+                status=Status.FAIL,
+                findings=(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code="fake.network.error",
+                        severity=Severity.ERROR,
+                        confidence=Confidence(level=ConfidenceLevel.HIGH),
+                        message="modeled network breakage",
+                        subject=ObjectRef("vlan", "10"),
+                    ),
+                ),
+                coverage=Coverage(state=CoverageState.COMPLETE),
+                confidence=Confidence(level=ConfidenceLevel.HIGH),
+                reasoning="forced modeled failure",
+            ),
+        )
+
+
+def test_coverage_gap_plus_modeled_network_error_is_unsafe():
+    ripple = {**SETTING, "vars": {"dhcp_ip": "10.9.9.9"}}
+    v = simulate(
+        _plan([_op(payload=ripple)]),
+        provider=FakeProvider(),
+        registry=_NetworkErrorRegistry(),
+    )
+    assert v.decision is Decision.UNSAFE
+    assert any(f.code == "coverage.gap" for f in v.findings)
+    assert any(f.code == "fake.network.error" for f in v.findings)
 
 
 def test_unknown_target_object_is_unknown():
@@ -320,7 +371,9 @@ def test_derived_gate_unknown_carries_config_diff():
     ripple = {**SETTING, "vars": {"dhcp_ip": "10.9.9.9"}}
     v = simulate(_plan([_op(payload=ripple)]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
-    assert any("derived_gate" in r for r in v.decision_reasons)
+    assert any(r.startswith("COVERAGE GAP [derived_gate]") for r in v.decision_reasons)
+    assert v.check_results
+    assert any(f.code == "coverage.gap" for f in v.findings)
     cds = {d.object_id: d for d in v.config_diffs}
     assert SITE in cds
     assert "vars.dhcp_ip" in {c.path for c in cds[SITE].changes}

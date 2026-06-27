@@ -142,7 +142,7 @@ def _raw(gateway: dict) -> RawSiteState:
 
 def test_out_of_scope_gateway_leaf_rejected_as_unknown():
     """A gateway whose ip_configs.*.netmask differs (netmask is NOT in
-    GATEWAY_EFFECTIVE_ALLOWLIST) -> derived_gate UNKNOWN."""
+    GATEWAY_EFFECTIVE_ALLOWLIST) -> coverage-gap UNKNOWN."""
     baseline_raw = _raw(_GATEWAY_BASE)
     proposed_raw = _raw(_GATEWAY_PROP)
 
@@ -159,7 +159,19 @@ def test_out_of_scope_gateway_leaf_rejected_as_unknown():
         state_meta=sm,
     )
     assert verdict.decision is Decision.UNKNOWN
-    assert any("derived_gate" in r for r in verdict.decision_reasons), verdict.decision_reasons
+    assert any(
+        r.startswith("COVERAGE GAP [derived_gate]") for r in verdict.decision_reasons
+    ), verdict.decision_reasons
+    gaps = [f for f in verdict.findings if f.code == "coverage.gap"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap.subject is not None
+    assert gap.subject.kind == "device"
+    assert gap.subject.id == GATEWAY_MAC
+    assert gap.affected_entities == (GATEWAY_MAC,)
+    assert gap.evidence["artifact"] == f"gateway {GATEWAY_MAC}"
+    assert gap.evidence["paths"] == ["ip_configs.corp.netmask"]
+    assert not any(f.subject and f.subject.kind == "gateway" for f in gaps)
 
 
 def _raw_with_sitetemplate(sitetemplate: dict, devices: tuple = ()) -> RawSiteState:

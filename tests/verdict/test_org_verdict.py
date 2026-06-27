@@ -36,10 +36,25 @@ def test_rollup_is_worst_of_sites():
     assert driving == ("s2",)
 
 
-def test_unknown_site_wins():
+def test_unsafe_site_beats_unknown_site():
     per = {"s1": _verdict(Decision.UNSAFE), "s2": _verdict(Decision.UNKNOWN)}
     decision, _r, driving = decide_org(per, template_findings=(), org_rejections=())
-    assert decision is Decision.UNKNOWN and driving == ("s2",)
+    assert decision is Decision.UNSAFE
+    assert driving == ("s1",)
+
+
+def test_all_unknown_sites_still_unknown():
+    per = {"s1": _verdict(Decision.UNKNOWN), "s2": _verdict(Decision.UNKNOWN)}
+    decision, _r, driving = decide_org(per, template_findings=(), org_rejections=())
+    assert decision is Decision.UNKNOWN
+    assert driving == ("s1", "s2")
+
+
+def test_unknown_site_still_beats_review_site():
+    per = {"s1": _verdict(Decision.REVIEW), "s2": _verdict(Decision.UNKNOWN)}
+    decision, _r, driving = decide_org(per, template_findings=(), org_rejections=())
+    assert decision is Decision.UNKNOWN
+    assert driving == ("s2",)
 
 
 def test_template_findings_floor_review():

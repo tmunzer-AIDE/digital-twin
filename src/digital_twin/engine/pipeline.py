@@ -11,7 +11,7 @@
  5 Adapter.ingest      baseline (effective + IR)                  -> UNKNOWN if not ok
  6 Adapter.apply       per-op update on the rolling state          -> UNKNOWN on bad target
  7 Adapter.ingest      proposed                                   -> UNKNOWN if not ok
- 8 derived gate        full effective config, site + per device   -> UNKNOWN
+ 8 derived gate        full effective config, site + per device   -> coverage gap
  9 diff + checks       registry (gating order, isolation)
 10 verdict             DecisionInputs -> decision + assembly
 
@@ -42,11 +42,18 @@ from digital_twin.analysis.delta_cause import delta_index
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
-from digital_twin.contracts import Finding, ObjectRef, Rejection
+from digital_twin.contracts import (
+    Finding,
+    FindingCategory,
+    FindingSource,
+    ObjectRef,
+    Rejection,
+    Severity,
+)
 from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
 from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
-from digital_twin.ir import IRDiff, diff_ir
+from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff, diff_ir
 from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
@@ -56,8 +63,8 @@ from digital_twin.providers.base import (
     StateProvider,
 )
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
-from digital_twin.scope.derived_gate import check_derived
-from digital_twin.scope.device_profile_gate import device_profile_rejection
+from digital_twin.scope.derived_gate import check_derived_gaps
+from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op
 from digital_twin.scope.object_gate import check_objects
@@ -111,6 +118,64 @@ def _stamp(findings: tuple[Finding, ...], subject: ObjectRef) -> tuple[Finding, 
     """Attach the headline object to every L0 finding so the verdict says WHICH
     object (and the existing evidence path says which attribute)."""
     return tuple(replace(f, subject=subject) for f in findings)
+
+
+_HIGH = Confidence(level=ConfidenceLevel.HIGH)
+
+
+def _coverage_gap_finding(
+    rejection: Rejection,
+    *,
+    artifact: str,
+    subject: ObjectRef,
+    affected_entities: tuple[str, ...] = (),
+    paths: tuple[str, ...] = (),
+    dhcp_row: str | None = None,
+) -> Finding:
+    evidence: dict[str, Any] = {
+        "stage": rejection.stage,
+        "artifact": artifact,
+        "reasons": list(rejection.reasons),
+    }
+    if paths:
+        evidence["paths"] = list(paths)
+    if dhcp_row is not None:
+        evidence["dhcp_row"] = dhcp_row
+    return Finding(
+        source=FindingSource.ADAPTER,
+        category=FindingCategory.OPERATIONAL,
+        code="coverage.gap",
+        severity=Severity.WARNING,
+        confidence=_HIGH,
+        message=f"Coverage gap in {artifact}: {'; '.join(rejection.reasons)}",
+        subject=subject,
+        affected_entities=affected_entities,
+        evidence=evidence,
+    )
+
+
+def _record_coverage_gap(
+    coverage_gaps: list[Rejection],
+    coverage_gap_findings: list[Finding],
+    rejection: Rejection,
+    *,
+    artifact: str,
+    subject: ObjectRef,
+    affected_entities: tuple[str, ...] = (),
+    paths: tuple[str, ...] = (),
+    dhcp_row: str | None = None,
+) -> None:
+    coverage_gaps.append(rejection)
+    coverage_gap_findings.append(
+        _coverage_gap_finding(
+            rejection,
+            artifact=artifact,
+            subject=subject,
+            affected_entities=affected_entities,
+            paths=paths,
+            dhcp_row=dhcp_row,
+        )
+    )
 
 
 def _changed_roots(payload: Mapping[str, Any]) -> frozenset[str]:
@@ -217,34 +282,56 @@ def _simulate_site_state(
         adapter_findings += tuple(
             unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
+    coverage_gaps: list[Rejection] = []
+    coverage_gap_findings: list[Finding] = []
     with trace.stage("derived_gate"):
-        rejection = check_derived(
+        site_gaps = check_derived_gaps(
             _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
         )
-        if rejection:
-            return _unknown(
-                rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
+        for site_gap in site_gaps:
+            _record_coverage_gap(
+                coverage_gaps,
+                coverage_gap_findings,
+                site_gap.rejection,
+                artifact="site",
+                subject=ObjectRef("site", baseline_raw.scope.site_id),
+                paths=site_gap.paths,
+                dhcp_row=site_gap.dhcp_row,
             )
         for did in sorted(set(baseline.device_effective) | set(proposed.device_effective)):
-            rejection = check_derived(
+            device_gaps = check_derived_gaps(
                 baseline.device_effective.get(did, {}),
                 proposed.device_effective.get(did, {}),
                 artifact=f"device {did}",
             )
-            if rejection:
-                return _unknown(
-                    rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
+            for device_gap in device_gaps:
+                _record_coverage_gap(
+                    coverage_gaps,
+                    coverage_gap_findings,
+                    device_gap.rejection,
+                    artifact=f"device {did}",
+                    subject=ObjectRef("device", did),
+                    affected_entities=(did,),
+                    paths=device_gap.paths,
+                    dhcp_row=device_gap.dhcp_row,
                 )
         for did in sorted(set(baseline.gateway_effective) | set(proposed.gateway_effective)):
-            rejection = check_derived(
+            gateway_gaps = check_derived_gaps(
                 _gw_screen_view(baseline.gateway_effective.get(did, {}), full=gateway_screen_full),
                 _gw_screen_view(proposed.gateway_effective.get(did, {}), full=gateway_screen_full),
                 allowlist=GATEWAY_EFFECTIVE_ALLOWLIST,
                 artifact=f"gateway {did}",
             )
-            if rejection:
-                return _unknown(
-                    rejection, adapter_findings=adapter_findings, run=run, state_meta=state_meta
+            for gateway_gap in gateway_gaps:
+                _record_coverage_gap(
+                    coverage_gaps,
+                    coverage_gap_findings,
+                    gateway_gap.rejection,
+                    artifact=f"gateway {did}",
+                    subject=ObjectRef("device", did),
+                    affected_entities=(did,),
+                    paths=gateway_gap.paths,
+                    dhcp_row=gateway_gap.dhcp_row,
                 )
     with trace.stage("checks"):
         diff = diff_ir(baseline.ir, proposed.ir)
@@ -257,19 +344,30 @@ def _simulate_site_state(
             )
         )
     profile_outcome = profile_proposed if profile_proposed is not None else proposed
-    dp_rej = device_profile_rejection(
+    dp_gaps = device_profile_gaps(
         proposed_raw.devices,
         {**baseline.device_effective, **baseline.gateway_effective},
         {**profile_outcome.device_effective, **profile_outcome.gateway_effective},
     )
+    for dp_gap in dp_gaps:
+        _record_coverage_gap(
+            coverage_gaps,
+            coverage_gap_findings,
+            dp_gap.rejection,
+            artifact=f"device {dp_gap.device_id}",
+            subject=ObjectRef("device", dp_gap.device_id),
+            affected_entities=(dp_gap.device_id,),
+            paths=dp_gap.paths,
+        )
     with trace.stage("verdict"):
         verdict = assemble(
             inputs=DecisionInputs(
-                rejections=(dp_rej,) if dp_rej else (),
+                rejections=(),
                 l0_fatal=False,
                 baseline_unavailable=False,
                 check_results=results,
-                adapter_findings=adapter_findings,
+                adapter_findings=(*adapter_findings, *coverage_gap_findings),
+                coverage_gaps=tuple(coverage_gaps),
             ),
             ir_diff=diff,
             state_meta=state_meta,

@@ -16,6 +16,7 @@ from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
 
 from .builders import (
+    DP_GW_MAC,
     EDGE,
     EDGE_ACCESS_PORT,
     EDGE_PAR_PORT,
@@ -1300,10 +1301,11 @@ def test_ms_a_template_network_removal_breaks_one_site_unsafe(tmp_path):
     assert "siteA" in ov.driving_sites and ov.per_site["siteB"].decision is Decision.SAFE
 
 
-def test_ms_b_one_site_fetch_fails_rolls_up_unknown(tmp_path):
+def test_ms_b_one_site_fetch_fails_keeps_unsafe_site_headline(tmp_path):
     doc, plan = multisite_with_failed_site()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert ov.driving_sites == ("siteA",)
     assert "siteB" in ov.site_failures
 
 
@@ -1339,21 +1341,26 @@ def test_gt_a_break_gateway_ip_is_unsafe(tmp_path):
 
 def test_gt_b_unmodeled_field_edit_is_unknown(tmp_path):
     # Scenario 2: edit routing_policies (NOT in the gatewaytemplate allowlist)
-    # -> raw field gate fires -> org UNKNOWN. The reason text comes from the
-    # field_gate stage (not 'UNSUPPORTED', which is the decision prefix).
+    # -> raw field gate fires before per-site simulation, so this remains a hard
+    # UNKNOWN with no coverage.gap finding.
     doc, plan = gt_edit_unmodeled_field()
     ov = _simulate_org(doc, plan, tmp_path)
     assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
     assert any("field_gate" in r for r in ov.decision_reasons)
+    assert not any("COVERAGE GAP" in r for r in ov.decision_reasons)
+    assert ov.per_site == {}
 
 
 def test_gt_c_networks_field_edit_is_unknown(tmp_path):
     # Scenario 3: edit gatewaytemplate.networks (NOT in the gatewaytemplate
-    # allowlist) -> raw field gate fires -> org UNKNOWN.
+    # allowlist) -> raw field gate fires before per-site simulation, so this is
+    # hard UNKNOWN with no coverage.gap finding.
     doc, plan = gt_edit_networks()
     ov = _simulate_org(doc, plan, tmp_path)
     assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
     assert any("field_gate" in r for r in ov.decision_reasons)
+    assert not any("COVERAGE GAP" in r for r in ov.decision_reasons)
+    assert ov.per_site == {}
 
 
 def test_gt_d_cosmetic_edit_is_safe(tmp_path):
@@ -1364,12 +1371,13 @@ def test_gt_d_cosmetic_edit_is_safe(tmp_path):
     assert ov.decision is Decision.SAFE, ov.decision_reasons
 
 
-def test_gt_e_fetch_fail_site_is_unknown(tmp_path):
+def test_gt_e_fetch_fail_site_keeps_unsafe_site_headline(tmp_path):
     # Scenario 6: same IP change as GT-a but site B's fetch fails -> org
-    # UNKNOWN with GT_SITE_B in site_failures.
+    # UNSAFE from site A with GT_SITE_B still listed in site_failures.
     doc, plan = gt_fetch_fail_site()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert ov.driving_sites == (GT_SITE_A,)
     assert GT_SITE_B in ov.site_failures
 
 
@@ -1402,16 +1410,22 @@ def test_st_b_fetch_fail_site_is_unknown(tmp_path):
 
 def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     # Scenario 7a: gatewaytemplate changes ip_configs.*.ip on a site whose
-    # gateway carries a deviceprofile_id -> device_profile_gate fires -> UNKNOWN.
-    # The per-site verdict (not the org-level rollup reason) carries the gate text.
+    # gateway carries a deviceprofile_id -> device_profile_gate coverage gap,
+    # but modeled gateway breakage now outranks the gap as UNSAFE.
     doc, plan = dp_gatewaytemplate_edit_with_profiled_gw()
     ov = _simulate_org(doc, plan, tmp_path)
-    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
-    # The gate is surfaced in the per-site verdict's decision_reasons
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
     from .builders import DP_SITE
     per = ov.per_site[DP_SITE]
-    assert per.decision is Decision.UNKNOWN
-    assert any("device_profile_gate" in r for r in per.decision_reasons)
+    assert per.decision is Decision.UNSAFE
+    gaps = [f for f in per.findings if f.code == "coverage.gap"]
+    assert len(gaps) == 1
+    assert gaps[0].evidence["stage"] == "device_profile_gate"
+    assert gaps[0].evidence["paths"] == ["ip_configs.dp_net.ip"]
+    assert gaps[0].subject.kind == "device"
+    assert gaps[0].subject.id == DP_GW_MAC
+    assert gaps[0].affected_entities == (DP_GW_MAC,)
+    assert "ip_configs.dp_net.ip" in gaps[0].message
 
 
 def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):

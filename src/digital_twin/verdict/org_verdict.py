@@ -1,6 +1,6 @@
 """Org-level rollup over per-site Verdicts (multisite design §7).
 
-decision = worst under UNKNOWN > UNSAFE > REVIEW > SAFE over (every per-site
+decision = worst under UNSAFE > UNKNOWN > REVIEW > SAFE over (every per-site
 Verdict's decision) AND (template_findings: an operational ERROR/CRITICAL, or any
 WARNING, floors REVIEW). org_rejections (short-circuit causes) are handled by the engine BEFORE
 fan-out; when present the engine builds an UNKNOWN OrgVerdict directly.
@@ -22,7 +22,7 @@ from digital_twin.contracts import (
 from digital_twin.verdict.decision import Decision
 from digital_twin.verdict.verdict import Verdict
 
-_PRECEDENCE = {Decision.SAFE: 0, Decision.REVIEW: 1, Decision.UNSAFE: 2, Decision.UNKNOWN: 3}
+_PRECEDENCE = {Decision.SAFE: 0, Decision.REVIEW: 1, Decision.UNKNOWN: 2, Decision.UNSAFE: 3}
 
 
 @dataclass(frozen=True)
