@@ -1,4 +1,4 @@
-"""The decision table (spec): UNKNOWN > UNSAFE > REVIEW > SAFE, first match wins.
+"""The decision table (spec): hard-UNKNOWN > UNSAFE > coverage-gap UNKNOWN > REVIEW > SAFE.
 A blind spot can NEVER resolve to SAFE."""
 
 from digital_twin.checks.base import CheckResult, Coverage, CoverageState, Status
@@ -148,12 +148,59 @@ def test_all_clean_is_safe():
     assert d is Decision.SAFE and reasons
 
 
-def test_precedence_unknown_beats_unsafe():
+def test_hard_unknown_still_beats_unsafe():
     res = _result(Status.FAIL, [_finding(Severity.ERROR)])
-    d, _ = decide(
+    d, reasons = decide(
         _inputs(rejections=(Rejection(stage="envelope", reasons=("bad",)),), check_results=(res,))
     )
     assert d is Decision.UNKNOWN
+    assert any(reason.startswith("UNSUPPORTED [envelope]") for reason in reasons)
+
+
+def test_coverage_gap_alone_is_unknown_with_coverage_prefix():
+    d, reasons = decide(
+        _inputs(coverage_gaps=(Rejection(stage="derived_gate", reasons=("x",)),))
+    )
+    assert d is Decision.UNKNOWN
+    assert reasons == ("COVERAGE GAP [derived_gate]: x",)
+
+
+def test_coverage_gap_plus_network_error_is_unsafe():
+    res = _result(Status.FAIL, [_finding(Severity.ERROR, category=FindingCategory.NETWORK)])
+    d, reasons = decide(
+        _inputs(
+            coverage_gaps=(Rejection(stage="derived_gate", reasons=("x",)),),
+            check_results=(res,),
+        )
+    )
+    assert d is Decision.UNSAFE
+    assert reasons == ("t: m",)
+
+
+def test_coverage_gap_plus_warning_is_unknown_not_review():
+    res = _result(Status.WARN, [_finding(Severity.WARNING)])
+    d, reasons = decide(
+        _inputs(
+            coverage_gaps=(Rejection(stage="derived_gate", reasons=("x",)),),
+            check_results=(res,),
+        )
+    )
+    assert d is Decision.UNKNOWN
+    assert reasons == ("COVERAGE GAP [derived_gate]: x",)
+
+
+def test_default_no_coverage_gap_warning_path_unchanged():
+    res = _result(Status.WARN, [_finding(Severity.WARNING)])
+    d, reasons = decide(
+        DecisionInputs(
+            rejections=(),
+            l0_fatal=False,
+            baseline_unavailable=False,
+            check_results=(res,),
+        )
+    )
+    assert d is Decision.REVIEW
+    assert reasons == ("t: m",)
 
 
 def test_unknown_attribute_finding_alone_floors_to_review():
@@ -167,7 +214,13 @@ def test_unknown_attribute_finding_alone_floors_to_review():
         confidence=Confidence(level=ConfidenceLevel.HIGH),
         message="attribute 'port_config.ge-0/0/1.disabled' is not documented",
     )
-    d, _ = decide(DecisionInputs(
-        rejections=(), l0_fatal=False, baseline_unavailable=False,
-        check_results=(), adapter_findings=(f,)))
+    d, _ = decide(
+        DecisionInputs(
+            rejections=(),
+            l0_fatal=False,
+            baseline_unavailable=False,
+            check_results=(),
+            adapter_findings=(f,),
+        )
+    )
     assert d is Decision.REVIEW

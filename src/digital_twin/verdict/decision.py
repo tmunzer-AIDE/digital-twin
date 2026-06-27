@@ -1,6 +1,7 @@
 """The agent-facing decision: SAFE | REVIEW | UNSAFE | UNKNOWN.
 
-Deterministic precedence (first match wins): UNKNOWN > UNSAFE > REVIEW > SAFE.
+Deterministic precedence (first match wins): hard-UNKNOWN > UNSAFE >
+coverage-gap UNKNOWN > REVIEW > SAFE.
 Key invariant (spec): a blind spot — INSUFFICIENT_DATA, partial coverage,
 non-HIGH confidence, or a crashed check — can NEVER resolve to SAFE; it floors
 at REVIEW. Operational findings never drive UNSAFE.
@@ -36,10 +37,11 @@ class DecisionInputs:
     baseline_unavailable: bool  # FetchError / ingest not ok
     check_results: tuple[CheckResult, ...]
     adapter_findings: tuple[Finding, ...] = ()  # L0 (non-fatal) — must reach the decision
+    coverage_gaps: tuple[Rejection, ...] = ()
 
 
 def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
-    # 1) UNKNOWN — could not simulate
+    # 1) hard-UNKNOWN — could not simulate
     unknown: list[str] = []
     for r in inputs.rejections:
         unknown.extend(f"UNSUPPORTED [{r.stage}]: {reason}" for reason in r.reasons)
@@ -66,7 +68,16 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
     if unsafe:
         return Decision.UNSAFE, tuple(unsafe)
 
-    # 3) REVIEW — any warning or blind spot
+    # 3) coverage-gap UNKNOWN — valid simulation with partial coverage
+    gap_reasons = [
+        f"COVERAGE GAP [{r.stage}]: {reason}"
+        for r in inputs.coverage_gaps
+        for reason in r.reasons
+    ]
+    if gap_reasons:
+        return Decision.UNKNOWN, tuple(gap_reasons)
+
+    # 4) REVIEW — any warning or blind spot
     review: list[str] = []
     review.extend(f"{f.code}: {f.message}" for f in findings if f.severity is Severity.WARNING)
     review.extend(
@@ -107,7 +118,7 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
     if review:
         return Decision.REVIEW, tuple(review)
 
-    # 4) SAFE — evaluated, covered, high confidence, clean
+    # 5) SAFE — evaluated, covered, high confidence, clean
     evaluated = [r.check_id for r in inputs.check_results if r.status is not Status.NOT_APPLICABLE]
     return Decision.SAFE, (
         f"all applicable checks passed ({', '.join(evaluated) or 'none applicable'}); "
