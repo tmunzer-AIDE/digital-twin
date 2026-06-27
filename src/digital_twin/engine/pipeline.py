@@ -131,18 +131,22 @@ def _unknown(
     state_meta: StateMetaView | None = None,
     l0_fatal: bool = False,
     baseline_unavailable: bool = False,
+    config_diffs: tuple[ObjectConfigDiff, ...] = (),
 ) -> Verdict:
-    return assemble(
-        inputs=DecisionInputs(
-            rejections=(rejection,) if rejection else (),
-            l0_fatal=l0_fatal,
-            baseline_unavailable=baseline_unavailable,
-            check_results=(),
-            adapter_findings=adapter_findings,
+    return replace(
+        assemble(
+            inputs=DecisionInputs(
+                rejections=(rejection,) if rejection else (),
+                l0_fatal=l0_fatal,
+                baseline_unavailable=baseline_unavailable,
+                check_results=(),
+                adapter_findings=adapter_findings,
+            ),
+            ir_diff=_EMPTY_DIFF,
+            state_meta=state_meta,
+            trace_ref=run.run_id,
         ),
-        ir_diff=_EMPTY_DIFF,
-        state_meta=state_meta,
-        trace_ref=run.run_id,
+        config_diffs=config_diffs,
     )
 
 
@@ -351,33 +355,28 @@ def simulate(
             current = get_object(proposed_raw, op.object_type, op.object_id)
             if current is None:
                 return _unknown(
-                    Rejection(
-                        stage="apply",
-                        reasons=(
-                            f"ops[order={op.order}]: no {op.object_type} with id "
-                            f"{op.object_id!r} in fetched state",
-                        ),
-                    ),
-                    adapter_findings=adapter_findings,
-                    run=run,
-                    state_meta=state_meta,
+                    Rejection(stage="apply", reasons=(
+                        f"ops[order={op.order}]: no {op.object_type} with id "
+                        f"{op.object_id!r} in fetched state",)),
+                    adapter_findings=adapter_findings, run=run,
+                    state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
             conflicts = update_conflicts(op.payload)
             if conflicts:
                 return _unknown(
-                    Rejection(
-                        stage="apply",
-                        reasons=tuple(
-                            f"ops[order={op.order}]: conflicting set AND '-{c}' delete "
-                            "marker for the same attribute"
-                            for c in conflicts
-                        ),
-                    ),
-                    adapter_findings=adapter_findings,
-                    run=run,
-                    state_meta=state_meta,
+                    Rejection(stage="apply", reasons=tuple(
+                        f"ops[order={op.order}]: conflicting set AND '-{c}' delete "
+                        "marker for the same attribute" for c in conflicts)),
+                    adapter_findings=adapter_findings, run=run,
+                    state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
             effective = effective_update(current, op.payload)
+            # Build the before→after NOW (pure structural data, independent of
+            # validation) so it is available to every downstream early exit.
+            site_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=current.get("name"), action=op.action,
+                before=current, after=effective))
             # The unknown-attribute walker validates the CHANGE, not the whole persisted
             # object: scope it to roots with actual value deltas. Full-object PUTs echo
             # every persisted root, which the closed OAS does not fully document; auditing
@@ -394,31 +393,21 @@ def simulate(
             adapter_findings += _stamp(result.findings, subject)
             if result.fatal:
                 return _unknown(
-                    None,
-                    adapter_findings=adapter_findings,
-                    run=run,
-                    l0_fatal=True,
-                    state_meta=state_meta,
+                    None, adapter_findings=adapter_findings, run=run,
+                    l0_fatal=True, state_meta=state_meta,
+                    config_diffs=tuple(site_diffs),
                 )
             rejection = screen_op(op.object_type, current, effective)
             if rejection:
                 return _unknown(
-                    rejection,
-                    adapter_findings=adapter_findings,
-                    run=run,
-                    state_meta=state_meta,
+                    rejection, adapter_findings=adapter_findings, run=run,
+                    state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
-            site_diffs.append(object_config_diff(
-                object_type=op.object_type, object_id=op.object_id,
-                name=current.get("name"), action=op.action,
-                before=current, after=effective))
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
                 return _unknown(
-                    applied,
-                    adapter_findings=adapter_findings,
-                    run=run,
-                    state_meta=state_meta,
+                    applied, adapter_findings=adapter_findings, run=run,
+                    state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
             proposed_raw = applied
 
@@ -452,6 +441,7 @@ def simulate(
                 Rejection(stage="ingest", reasons=(f"baseline ingest crashed: {e}",)),
                 adapter_findings=adapter_findings, run=run,
                 state_meta=state_meta, baseline_unavailable=True,
+                config_diffs=tuple(site_diffs),
             )
 
     verdict = _simulate_site_state(
@@ -460,9 +450,7 @@ def simulate(
         state_meta=state_meta, adapter_findings=adapter_findings,
         profile_proposed=profile_proposed,
     )
-    if verdict.decision is not Decision.UNKNOWN:
-        verdict = replace(verdict, config_diffs=tuple(site_diffs))
-    return verdict
+    return replace(verdict, config_diffs=tuple(site_diffs))
 
 
 def simulate_org_plan(
@@ -480,13 +468,14 @@ def simulate_org_plan(
 
     def org_unknown(
         rejections: tuple[Rejection, ...], *, template_findings: tuple[Finding, ...] = (),
-        changes: tuple[OrgChange, ...] = (),
+        changes: tuple[OrgChange, ...] = (), config_diffs: tuple[ObjectConfigDiff, ...] = (),
     ) -> OrgVerdict:
         return OrgVerdict(
             decision=Decision.UNKNOWN,
             decision_reasons=tuple(f"[{r.stage}] {x}" for r in rejections for x in r.reasons),
             changes=tuple(changes), per_site={}, driving_sites=(), site_failures={},
             template_findings=tuple(template_findings), org_rejections=tuple(rejections),
+            config_diffs=tuple(config_diffs),
         )
 
     plan = parse_change_plan(plan_data)
@@ -526,39 +515,45 @@ def simulate_org_plan(
             return org_unknown((Rejection(stage="fetch", reasons=tuple(
                 f"org-template lookup failed: {f.object}: {f.error}" for f in resolved.failures
             ) or ("org-template lookup failed",)),),
-                template_findings=tuple(template_findings), changes=tuple(changes))
+                template_findings=tuple(template_findings), changes=tuple(changes),
+                config_diffs=tuple(org_diffs))
         snapshot = dict(resolved.template)
         ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
         changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
         if op.action == "delete":
             proposed: Mapping[str, Any] | None = None
+            org_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=snapshot.get("name"), action=op.action, before=snapshot, after=None))
         else:
             proposed_t = apply_template(snapshot, op.payload)
             if isinstance(proposed_t, Rejection):
                 return org_unknown((proposed_t,),
-                    template_findings=tuple(template_findings), changes=tuple(changes))
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
+            org_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=snapshot.get("name"), action=op.action, before=snapshot, after=proposed_t))
             l0 = adapter.validate(replace(op, payload=proposed_t),
                 scope_roots=None if l0_full_object else _changed_roots(op.payload))
             if l0.fatal:
                 return org_unknown((Rejection(stage="l0",
                     reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
                              f"{op.object_id}",)),),
-                    template_findings=tuple(template_findings), changes=tuple(changes))
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
             template_findings.extend(_stamp(l0.findings, ref))
             fg = screen_op(op.object_type, snapshot, proposed_t)
             if fg:
                 return org_unknown((fg,), template_findings=tuple(template_findings),
-                                   changes=tuple(changes))
+                                   changes=tuple(changes), config_diffs=tuple(org_diffs))
             proposed = proposed_t
         overlays.append(OrgOverlay(
             object_type=op.object_type, object_id=op.object_id, name=snapshot.get("name"),
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
             baseline=snapshot, proposed=proposed,
         ))
-        org_diffs.append(object_config_diff(
-            object_type=op.object_type, object_id=op.object_id,
-            name=snapshot.get("name"), action=op.action,
-            before=snapshot, after=proposed))
+        # (the old org_diffs.append(...) at ~558 is removed — built above)
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
@@ -571,7 +566,7 @@ def simulate_org_plan(
         return OrgVerdict(decision=decision, decision_reasons=reasons, changes=tuple(changes),
             per_site={}, driving_sites=driving, site_failures={},
             template_findings=tf, org_rejections=(),
-            config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else ())
+            config_diffs=tuple(org_diffs))
 
     raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
@@ -615,7 +610,7 @@ def simulate_org_plan(
         decision=decision, decision_reasons=reasons, changes=tuple(changes),
         per_site=per_site, driving_sites=driving, site_failures=site_failures,
         template_findings=tf, org_rejections=(),
-        config_diffs=tuple(org_diffs) if decision is not Decision.UNKNOWN else (),
+        config_diffs=tuple(org_diffs),
     )
 
 
@@ -639,12 +634,15 @@ from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
 )
 
 
-def _org_nac_unknown(rej: Rejection, *, adapter_findings: tuple[Finding, ...] = ()
-                     ) -> OrgNacVerdict:
+def _org_nac_unknown(
+    rej: Rejection | None = None, *, adapter_findings: tuple[Finding, ...] = (),
+    l0_fatal: bool = False, config_diffs: tuple[ObjectConfigDiff, ...] = (),
+) -> OrgNacVerdict:
     decision, reasons = decide(DecisionInputs(
-        rejections=(rej,), l0_fatal=False, baseline_unavailable=False,
+        rejections=(rej,) if rej else (), l0_fatal=l0_fatal, baseline_unavailable=False,
         check_results=(), adapter_findings=adapter_findings))
-    return OrgNacVerdict(decision, reasons, (), (), adapter_findings, (rej,))
+    return OrgNacVerdict(decision, reasons, (), (), adapter_findings,
+                         (rej,) if rej else (), tuple(config_diffs))
 
 
 def simulate_org_nac(
@@ -686,11 +684,11 @@ def simulate_org_nac(
         if op.action in ("update", "delete") and not exists:
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: no nacrule with id {op.object_id!r}",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         if op.action == "create" and exists:
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: nacrule id {op.object_id!r} already exists",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         if op.action == "delete":
             nac_diffs.append(object_config_diff(
                 object_type="nacrule", object_id=op.object_id,
@@ -701,30 +699,30 @@ def simulate_org_nac(
         if update_conflicts(op.payload):
             return _org_nac_unknown(Rejection(stage="apply", reasons=(
                 f"ops[order={op.order}]: conflicting set AND '-' delete marker",)),
-                adapter_findings=adapter_findings)
+                adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         current = baseline_raw.get(op.object_id, {"id": op.object_id})
         effective = effective_update(current, op.payload)
         if op.action == "create":
             effective["id"] = op.object_id
-        scope_roots = None if (op.action == "create" or l0_full_object) \
-            else _changed_roots(op.payload)
-        l0 = validate_payload("nacrule", effective, scope_roots=scope_roots)
-        subject = ObjectRef("nacrule", op.object_id, name=current.get("name"))
-        adapter_findings += _stamp(l0.findings, subject)
-        if l0.fatal:
-            decision, reasons = decide(DecisionInputs(
-                rejections=(), l0_fatal=True, baseline_unavailable=False,
-                check_results=(), adapter_findings=adapter_findings))
-            return OrgNacVerdict(decision, reasons, (), (), adapter_findings, ())
-        fg = screen_op("nacrule", current, effective)
-        if fg:
-            return _org_nac_unknown(fg, adapter_findings=adapter_findings)
         nac_diffs.append(object_config_diff(
             object_type="nacrule", object_id=op.object_id,
             # create's `current` is only {"id": ...}; the new name lives in `effective`
             name=effective.get("name") if op.action == "create" else current.get("name"),
             action=op.action,
             before={} if op.action == "create" else current, after=effective))
+        scope_roots = None if (op.action == "create" or l0_full_object) \
+            else _changed_roots(op.payload)
+        l0 = validate_payload("nacrule", effective, scope_roots=scope_roots)
+        subject = ObjectRef("nacrule", op.object_id, name=current.get("name"))
+        adapter_findings += _stamp(l0.findings, subject)
+        if l0.fatal:
+            return _org_nac_unknown(
+                adapter_findings=adapter_findings, l0_fatal=True,
+                config_diffs=tuple(nac_diffs))
+        fg = screen_op("nacrule", current, effective)
+        if fg:
+            return _org_nac_unknown(fg, adapter_findings=adapter_findings,
+                                    config_diffs=tuple(nac_diffs))
         proposed_raw[op.object_id] = effective
 
     # Build the baseline IR from the RAW fetch.rules (not the id-keyed baseline_raw) so
@@ -759,5 +757,5 @@ def simulate_org_nac(
     return OrgNacVerdict(
         decision, reasons, nac_changes(diff, base_map, prop_map),
         results, adapter_findings, (),
-        tuple(nac_diffs) if decision is not Decision.UNKNOWN else (),
+        tuple(nac_diffs),
     )
