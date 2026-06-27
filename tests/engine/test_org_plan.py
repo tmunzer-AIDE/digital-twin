@@ -163,6 +163,10 @@ def _has_code(verdict: Any, prefix: str) -> bool:
     return any(f.code.startswith(prefix) for f in verdict.findings)
 
 
+def _coverage_gaps(verdict: Any) -> list[Any]:
+    return [f for f in verdict.findings if f.code == "coverage.gap"]
+
+
 # --- single networktemplate delete ---------------------------------------
 
 def _single_delete_provider() -> FakeProvider:
@@ -198,7 +202,9 @@ def test_single_networktemplate_delete_recompiles_and_collapses():
     # template vanishes -> the corp domain collapses + the wired client is affected
     assert "sX" in ov.per_site
     v = ov.per_site["sX"]
-    assert v.decision is not Decision.SAFE
+    assert v.decision is Decision.REVIEW
+    assert ov.decision is Decision.REVIEW
+    assert not _coverage_gaps(v)
     assert _has_code(v, "wired.l2.vlan_segmentation") or _has_code(v, "wired.l2.blackhole")
 
 
@@ -257,6 +263,17 @@ def _two_op_provider() -> FakeProvider:
     )
 
 
+def _two_op_coverage_gap_provider() -> FakeProvider:
+    # The template id is intentionally not modeled. Template deletes skip the raw
+    # field gate, then the removed id leaf becomes an effective coverage gap.
+    nt = {**_NT, "id": "nt1"}
+    site = _site("sX", networktemplate=nt, sitetemplate=_ST)
+    return FakeProvider(
+        {"sX": site},
+        {"networktemplate": {"nt1": (nt, ["sX"])}, "sitetemplate": {"st1": (_ST, ["sX"])}},
+    )
+
+
 def test_only_op_a_delete_networktemplate_is_safe():
     ov = simulate_org_plan(_plan(_del("networktemplate", "nt1")), provider=_two_op_provider())
     assert ov.decision is Decision.SAFE  # trunkB (st1) still carries corp
@@ -302,6 +319,43 @@ def test_mixed_delete_and_update_both_overlays_apply():
     assert _has_code(ov.per_site["sX"], "wired.l2.blackhole.exit_lost")
     actions = {(c.ref.id, c.action) for c in ov.changes}
     assert actions == {("nt1", "delete"), ("st1", "update")}
+
+
+def test_org_coverage_gap_without_modeled_breakage_is_unknown_not_safe():
+    ov = simulate_org_plan(
+        _plan(_del("networktemplate", "nt1")),
+        provider=_two_op_coverage_gap_provider(),
+    )
+
+    assert ov.decision is Decision.UNKNOWN
+    v = ov.per_site["sX"]
+    assert v.decision is Decision.UNKNOWN
+    assert any(r.startswith("COVERAGE GAP [derived_gate]") for r in v.decision_reasons)
+    gaps = _coverage_gaps(v)
+    assert gaps
+    assert {g.evidence["stage"] for g in gaps} == {"derived_gate"}
+    assert any(g.evidence.get("paths") == ["id"] for g in gaps)
+    assert not _has_code(v, "wired.l2.blackhole.exit_lost")
+
+
+def test_org_coverage_gap_plus_modeled_unsafe_stays_unsafe():
+    st_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}
+    ov = simulate_org_plan(
+        _plan(
+            _del("networktemplate", "nt1", order=0),
+            _upd("sitetemplate", "st1", st_drop, order=1),
+        ),
+        provider=_two_op_coverage_gap_provider(),
+    )
+
+    assert ov.decision is Decision.UNSAFE
+    v = ov.per_site["sX"]
+    assert v.decision is Decision.UNSAFE
+    assert _has_code(v, "wired.l2.blackhole.exit_lost")
+    gaps = _coverage_gaps(v)
+    assert gaps
+    assert {g.evidence["stage"] for g in gaps} == {"derived_gate"}
+    assert any(g.evidence.get("paths") == ["id"] for g in gaps)
 
 
 # --- OD-unknown-names-all --------------------------------------------------

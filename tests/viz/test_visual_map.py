@@ -381,6 +381,33 @@ def test_build_map_serializable_entry_shape():
     assert (e.kind, e.id) == ("device", "s1")
 
 
+def test_gateway_effective_coverage_gap_uses_device_visual_entry():
+    b = IRBuilder()
+    b.add_device(Device(id="gw1", role=DeviceRole.GATEWAY, site="site1"))
+    ir = b.build()
+    gap = Finding(
+        source=FindingSource.ADAPTER,
+        category=FindingCategory.OPERATIONAL,
+        code="coverage.gap",
+        severity=Severity.WARNING,
+        confidence=_HIGH,
+        message="Coverage gap in gateway gw1: netmask changed",
+        subject=ObjectRef("device", "gw1"),
+        affected_entities=("gw1",),
+        evidence={
+            "stage": "derived_gate",
+            "artifact": "gateway gw1",
+            "paths": ["ip_configs.corp.netmask"],
+        },
+    )
+
+    m = vm.build_visual_map(ir, ir, (gap,))
+
+    assert "device:gw1" in m["l2"]
+    assert "gateway:gw1" not in m["l2"]
+    assert m["l2"]["device:gw1"].findings[0].subject == ObjectRef("device", "gw1")
+
+
 def test_safe_build_visual_map_swallows_errors(monkeypatch):
     # the map is presentational: a builder bug must yield {}, never crash the verdict
     monkeypatch.setattr(vm, "build_visual_map",
