@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from digital_twin.contracts import Rejection
@@ -11,11 +12,18 @@ from digital_twin.scope.paths import allowed, changed_leaf_paths
 JsonObj = dict[str, Any]
 
 
-def device_profile_rejection(
+@dataclass(frozen=True)
+class DeviceProfileGap:
+    rejection: Rejection
+    device_id: str
+    paths: tuple[str, ...]
+
+
+def device_profile_gap(
     devices: Sequence[Mapping[str, Any]],
     baseline_eff: Mapping[str, JsonObj],
     proposed_eff: Mapping[str, JsonObj],
-) -> Rejection | None:
+) -> DeviceProfileGap | None:
     """Per-site coverage gate for the unmodeled device-profile layer. Taints (->
     UNKNOWN) iff a modeled switch/gateway device carries a `deviceprofile_id` AND its
     OWN effective config — restricted to that role's overridable leaves — DIFFERS
@@ -33,13 +41,28 @@ def device_profile_rejection(
             continue
         did = device_id(str(dev["mac"]))
         changed = changed_leaf_paths(baseline_eff.get(did) or {}, proposed_eff.get(did) or {})
-        if any(allowed(path, patterns) for path in changed):
-            return Rejection(
-                stage="device_profile_gate",
-                reasons=(
-                    f"device {did} has a deviceprofile_id and the edit changes an "
-                    "overridable leaf on its effective config; the unmodeled "
-                    "device-profile layer could override the outcome",
+        paths = tuple(path for path in changed if allowed(path, patterns))
+        if paths:
+            return DeviceProfileGap(
+                rejection=Rejection(
+                    stage="device_profile_gate",
+                    reasons=(
+                        f"device {did} has a deviceprofile_id and the edit changes "
+                        "overridable leaf path(s) "
+                        f"{', '.join(paths)} on its effective config; the unmodeled "
+                        "device-profile layer could override the outcome",
+                    ),
                 ),
+                device_id=did,
+                paths=paths,
             )
     return None
+
+
+def device_profile_rejection(
+    devices: Sequence[Mapping[str, Any]],
+    baseline_eff: Mapping[str, JsonObj],
+    proposed_eff: Mapping[str, JsonObj],
+) -> Rejection | None:
+    gap = device_profile_gap(devices, baseline_eff, proposed_eff)
+    return gap.rejection if gap is not None else None

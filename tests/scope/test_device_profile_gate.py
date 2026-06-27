@@ -1,4 +1,4 @@
-from digital_twin.scope.device_profile_gate import device_profile_rejection
+from digital_twin.scope.device_profile_gate import device_profile_gap, device_profile_rejection
 
 # effective maps are keyed by device_id(mac) (normalized: lower, no colons).
 GW = {"port_config": {"ge-0/0/0": {"disabled": False}}}          # baseline gateway eff
@@ -12,6 +12,20 @@ def test_profiled_gateway_with_overridable_leaf_diff_rejects():
         proposed_eff={"aabbccddee01": GW2},     # port_config.*.disabled is gateway-overridable
     )
     assert rej is not None and rej.stage == "device_profile_gate"
+
+
+def test_device_profile_gap_returns_device_id_and_paths():
+    gap = device_profile_gap(
+        devices=[{"type": "gateway", "mac": "AA:BB:CC:DD:EE:01", "deviceprofile_id": "p1"}],
+        baseline_eff={"aabbccddee01": GW},
+        proposed_eff={"aabbccddee01": GW2},
+    )
+    assert gap is not None
+    assert gap.rejection.stage == "device_profile_gate"
+    assert gap.device_id == "aabbccddee01"
+    assert gap.paths == ("port_config.ge-0/0/0.disabled",)
+    assert any("aabbccddee01" in reason for reason in gap.rejection.reasons)
+    assert any("port_config.ge-0/0/0.disabled" in reason for reason in gap.rejection.reasons)
 
 
 def test_ap_profile_does_not_taint():
