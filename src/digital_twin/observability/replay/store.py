@@ -394,17 +394,59 @@ class FixtureProvider:
     def resolve_org_wlan_template(
         self, scope: OrgScope, template_id: str
     ) -> OrgWlanTemplateContext | FetchError:
-        return FetchError(
-            scope=scope,
-            failures=(
-                FetchFailure(
-                    object="org_wlantemplate",
-                    error="resolve_org_wlan_template not implemented for replay fixtures",
+        if not self._multisite:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="org_wlantemplate",
+                        error="resolve_org_wlan_template not supported for single-site fixtures",
+                    ),
                 ),
-            ),
-            acquired_at=self._acquired_at,
-            host=self._host,
-        )
+                acquired_at=datetime.now(UTC),
+                host=self._host,
+            )
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="fixture",
+                        error=f"fixture holds org {self._org_id}, not the requested {scope.org_id}",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        template = self._templates.get("wlantemplate", {}).get(template_id)
+        if template is None:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="wlantemplate",
+                        error=f"{template_id} not found in the multi-site fixture",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        by_site: dict[str, tuple[dict[str, Any], ...]] = {}
+        for sid, doc in self._site_docs.items():
+            rows = tuple(
+                sorted(
+                    (
+                        dict(row)
+                        for row in doc.get("wlans", ())
+                        if str(row.get("template_id") or "") == template_id
+                        and row.get("id") is not None
+                    ),
+                    key=lambda row: str(row.get("id") or ""),
+                )
+            )
+            if rows:
+                by_site[sid] = rows
+        return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         if self._wrong_org(scope):
