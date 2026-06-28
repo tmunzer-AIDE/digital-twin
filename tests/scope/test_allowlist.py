@@ -87,8 +87,13 @@ def test_networktemplate_allowlist_equals_site_setting_exactly():
     assert RAW_ALLOWLIST["networktemplate"] == RAW_ALLOWLIST["site_setting"]
 
 
-def test_org_object_types_includes_all_three():
-    assert set(ORG_OBJECT_TYPES) == {"networktemplate", "gatewaytemplate", "sitetemplate"}
+def test_org_object_types_includes_all_fanout_types():
+    assert set(ORG_OBJECT_TYPES) == {
+        "networktemplate",
+        "gatewaytemplate",
+        "sitetemplate",
+        "wlan",
+    }
 
 
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():

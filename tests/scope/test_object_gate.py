@@ -117,8 +117,27 @@ def _org_plan(ops, org_id="o1", site_id=None):
 
 
 def test_org_mode_template_plan_passes():
-    # ORG mode triggers ONLY when ALL ops are networktemplate AND site_id absent
+    # ORG mode triggers ONLY when ALL ops are org object types AND site_id absent
     assert check_objects(_org_plan([_nt_op()])) is None
+
+
+def test_org_mode_wlan_update_and_delete_allowed():
+    assert check_objects(_org_plan([_op(object_type="wlan", object_id="w1")])) is None
+    assert check_objects(_org_plan([_del("wlan", "w1")])) is None
+
+
+def test_org_mode_wlan_delete_with_nonempty_payload_rejected():
+    r = check_objects(_org_plan([_del("wlan", "w1", payload={"ssid": "corp"})]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete payload must be empty" in reason for reason in r.reasons)
+
+
+def test_org_mode_mixed_template_and_wlan_allowed():
+    assert check_objects(_org_plan([
+        _nt_op(object_id="ntA"),
+        ChangeOp(action="update", order=1, object_type="wlan",
+                 object_id="w1", payload={"enabled": False}),
+    ])) is None
 
 
 def test_networktemplate_with_site_id_is_out_of_scope_single_site():

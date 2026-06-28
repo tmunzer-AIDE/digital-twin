@@ -96,6 +96,15 @@ class OrgTemplateContext:
 
 
 @dataclass(frozen=True)
+class OrgWlanContext:
+    """Resolution of an org WLAN change: the org-level WLAN snapshot plus each
+    affected site's current derived WLAN row for that same WLAN id."""
+
+    wlan: JsonObj
+    derived_rows_by_site: Mapping[str, JsonObj]
+
+
+@dataclass(frozen=True)
 class NacFetch:
     """Org-level NAC fetch result: rule payloads + tag payloads (vendor-shaped).
 
@@ -148,6 +157,11 @@ class StateProvider(Protocol):
         template_id, and fetch the template. A lookup failure (sites or template)
         is a FetchError (whole-plan UNKNOWN). 0 assigned sites is a SUCCESS with
         an empty assigned_site_ids tuple."""
+        ...
+
+    def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+        """Fetch the org WLAN snapshot and determine affected sites from their
+        derived WLAN rows. A lookup or membership-probe failure is a FetchError."""
         ...
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:

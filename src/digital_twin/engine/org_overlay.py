@@ -6,7 +6,7 @@ OrgOverlay; `proposed is None` means the layer is ABSENT (a delete), distinct fr
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from typing import Any
 
@@ -15,13 +15,26 @@ from digital_twin.providers.base import RawSiteState
 
 @dataclass(frozen=True)
 class OrgOverlay:
-    object_type: str                          # networktemplate | gatewaytemplate | sitetemplate
+    # networktemplate | gatewaytemplate | sitetemplate | wlan
+    object_type: str
     object_id: str
     name: str | None
     action: str                               # "update" | "delete"
     assigned_site_ids: frozenset[str]
     baseline: Mapping[str, Any]
     proposed: Mapping[str, Any] | None         # None == REMOVED (layer absent)
+    wlan_baseline_by_site: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    wlan_proposed_by_site: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.object_type != "wlan":
+            return
+        baseline_sites = frozenset(self.wlan_baseline_by_site)
+        proposed_sites = frozenset(self.wlan_proposed_by_site)
+        if baseline_sites != self.assigned_site_ids:
+            raise ValueError("wlan overlay baseline sites must equal assigned_site_ids")
+        if proposed_sites != baseline_sites:
+            raise ValueError("wlan overlay proposed sites must equal baseline sites")
 
 
 def affected_sites(overlays: tuple[OrgOverlay, ...]) -> tuple[str, ...]:
@@ -45,6 +58,26 @@ def _pin(raw: RawSiteState, object_type: str, value: Mapping[str, Any] | None) -
     return dc_replace(raw, networktemplate=v)  # networktemplate default
 
 
+def _pin_wlan(
+    raw: RawSiteState, object_id: str, value: Mapping[str, Any] | None
+) -> RawSiteState:
+    if value is None:
+        filtered_rows = tuple(row for row in raw.wlans if str(row.get("id") or "") != object_id)
+        return dc_replace(raw, wlans=filtered_rows)
+    replacement = dict(value)
+    out_rows: list[Mapping[str, Any]] = []
+    replaced = False
+    for row in raw.wlans:
+        if str(row.get("id") or "") == object_id:
+            out_rows.append(replacement)
+            replaced = True
+        else:
+            out_rows.append(row)
+    if not replaced:
+        out_rows.append(replacement)
+    return dc_replace(raw, wlans=tuple(out_rows))
+
+
 def apply_overlays(
     fetched: RawSiteState, site_id: str, overlays: tuple[OrgOverlay, ...]
 ) -> tuple[RawSiteState, RawSiteState]:
@@ -58,6 +91,10 @@ def apply_overlays(
     for o in overlays:
         if site_id not in o.assigned_site_ids:
             continue
-        base_raw = _pin(base_raw, o.object_type, o.baseline)
-        prop_raw = _pin(prop_raw, o.object_type, o.proposed)
+        if o.object_type == "wlan":
+            base_raw = _pin_wlan(base_raw, o.object_id, o.wlan_baseline_by_site[site_id])
+            prop_raw = _pin_wlan(prop_raw, o.object_id, o.wlan_proposed_by_site[site_id])
+        else:
+            base_raw = _pin(base_raw, o.object_type, o.baseline)
+            prop_raw = _pin(prop_raw, o.object_type, o.proposed)
     return base_raw, prop_raw

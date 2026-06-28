@@ -153,6 +153,13 @@ state on its own. Cheap: the data is already fetched and in the IR.
   no same-SSID survivor provably covers their AP; missing/unknown client SSID
   telemetry floors to REVIEW, and provable survivors/zero clients reach SAFE.
   [done 2026-06-28]
+- ✅ **Org WLAN coverage-loss fan-out** (SP2) —
+  no-site `wlan` update/delete plans resolve the org WLAN snapshot, derive the
+  affected site set from each site's effective WLAN rows, then reuse the SP1
+  per-site impact check. Baseline coverage is pinned from the derived row, not
+  the org snapshot, so stale/divergent org metadata cannot hide a real coverage
+  loss. Assignment-field mutations stay UNKNOWN; SP3 template/container WLAN
+  changes remain deferred. [done 2026-06-28]
 
 The four config-lint checks are **delta-conditioned** via the shared `run_delta_lint` core
 (introduced → WARNING/REVIEW; pre-existing → INFO context, never floors an
@@ -160,9 +167,9 @@ unrelated change) and rest on the new `Wlan` IR entity (secret-free) + WLAN as
 a simulable site object. Live-verified 2026-06-20: `mist-guest` (open WITH
 isolation) correctly NOT flagged; ingest clean.
 
-The site WLAN client-impact check is a separate delta-conditioned impact check:
-it is not a single-state config lint, and SP2/SP3 remain deferred for org/template
-WLAN delete ripple and NAC/role-profile interactions.
+The WLAN client-impact checks are separate delta-conditioned impact checks: they
+are not single-state config lint. SP3 remains deferred for wlantemplate/template-
+container WLAN changes and NAC/role-profile interactions.
 
 - 🔵 **WLAN auth-type transition (psk/eap → open) → sharp GS33** — the twin
   models only `auth.type`, but Mist replaces the whole `auth` ROOT, so a

@@ -327,6 +327,88 @@ def test_legacy_template_key_still_resolves_as_networktemplate(tmp_path):
     assert set(resolved.assigned_site_ids) == {"siteA"}
 
 
+def test_multisite_org_wlan_resolves_from_site_derived_rows(tmp_path):
+    from digital_twin.providers.base import OrgScope, OrgWlanContext
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(
+        store,
+        "a",
+        raw_site(wlans=({"id": "w1", "ssid": "corp", "enabled": True, "apply_to": "site"},)),
+    )
+    b = _site_doc(store, "b", raw_site(wlans=({"id": "other", "ssid": "guest"},)))
+    a["scope"]["site_id"] = "siteA"
+    b["scope"]["site_id"] = "siteB"
+    doc = {
+        "org_wlans": {"w1": {"id": "w1", "ssid": "corp", "enabled": False}},
+        "sites": {"siteA": a, "siteB": b},
+    }
+    path = tmp_path / "ms_wlan.json"
+    path.write_text(json.dumps(doc))
+
+    resolved = FixtureProvider(path).resolve_org_wlan(OrgScope("o1"), "w1")
+
+    assert isinstance(resolved, OrgWlanContext)
+    assert resolved.wlan["enabled"] is False
+    assert set(resolved.derived_rows_by_site) == {"siteA"}
+    assert resolved.derived_rows_by_site["siteA"]["enabled"] is True
+
+
+def test_multisite_org_wlan_missing_is_fetch_error(tmp_path):
+    from digital_twin.providers.base import FetchError, OrgScope
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site())
+    doc = {"org_wlans": {}, "sites": {"siteA": a}}
+    path = tmp_path / "ms_wlan.json"
+    path.write_text(json.dumps(doc))
+
+    result = FixtureProvider(path).resolve_org_wlan(OrgScope("o1"), "missing")
+
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "org_wlan"
+
+
+def test_multisite_org_wlan_wrong_org_is_fetch_error(tmp_path):
+    from digital_twin.providers.base import FetchError, OrgScope
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site(wlans=({"id": "w1"},)))
+    doc = {"org_wlans": {"w1": {"id": "w1"}}, "sites": {"siteA": a}}
+    path = tmp_path / "ms_wlan.json"
+    path.write_text(json.dumps(doc))
+
+    result = FixtureProvider(path).resolve_org_wlan(OrgScope("other-org"), "w1")
+
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "fixture"
+
+
+def test_multisite_org_wlan_membership_includes_later_fetch_failure(tmp_path):
+    from digital_twin.providers.base import OrgScope, OrgWlanContext
+
+    store = ReplayStore(tmp_path)
+    a = _site_doc(store, "a", raw_site(wlans=({"id": "w1", "ssid": "corp"},)))
+    a["scope"]["site_id"] = "siteA"
+    doc = {
+        "org_wlans": {"w1": {"id": "w1", "ssid": "corp"}},
+        "sites": {"siteA": a},
+        "fetch_failures": ["siteA"],
+    }
+    path = tmp_path / "ms_wlan.json"
+    path.write_text(json.dumps(doc))
+    provider = FixtureProvider(path)
+
+    resolved = provider.resolve_org_wlan(OrgScope("o1"), "w1")
+    fetched = provider.fetch_sites(OrgScope("o1"), ["siteA"])
+
+    assert isinstance(resolved, OrgWlanContext)
+    assert set(resolved.derived_rows_by_site) == {"siteA"}
+    from digital_twin.providers.base import FetchError
+
+    assert isinstance(fetched["siteA"], FetchError)
+
+
 def test_bgp_neighbors_round_trip_and_default_when_absent(tmp_path):
     from digital_twin.observability.replay.store import load_fixture_doc
 

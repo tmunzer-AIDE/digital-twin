@@ -196,7 +196,7 @@ def test_safe_noop_exits_0_human(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 def test_is_org_plan_recognizes_all_org_types():
-    for t in ("networktemplate", "gatewaytemplate", "sitetemplate"):
+    for t in ("networktemplate", "gatewaytemplate", "sitetemplate", "wlan"):
         plan = {
             "source": "mist",
             "scope": {"org_id": "o1"},
@@ -228,6 +228,16 @@ def test_is_org_plan_false_with_site_id():
         "scope": {"org_id": "o1", "site_id": "s1"},
         "ops": [{"action": "update", "order": 0, "object_type": "networktemplate",
                  "object_id": "nt1", "payload": {}}],
+    }
+    assert _is_org_plan(plan) is False
+
+
+def test_is_org_plan_false_for_site_scoped_wlan():
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": "o1", "site_id": "s1"},
+        "ops": [{"action": "update", "order": 0, "object_type": "wlan",
+                 "object_id": "w1", "payload": {"enabled": False}}],
     }
     assert _is_org_plan(plan) is False
 
@@ -268,7 +278,7 @@ def _org_plan(payload=None):
 
 
 def test_org_plan_routed_to_org_path_json(tmp_path, capsys, monkeypatch):
-    """An org-template plan is dispatched to simulate_org_template; exit code
+    """An org fan-out plan is dispatched to the org path; exit code
     matches the org decision (SAFE=0) and JSON output contains 'changes'."""
     tmpl = {"id": "nt1", "networks": {"corp": {"vlan_id": 10}}}
     s1 = _org_site("s1", setting={"id": "s1"}, devices=(), nt=tmpl)

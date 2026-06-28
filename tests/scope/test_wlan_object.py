@@ -84,6 +84,27 @@ def test_inherited_wlan_op_rejected_post_fetch():
     assert isinstance(r, Rejection) and any("inherited" in x for x in r.reasons)
 
 
+def test_org_wlan_screening_bypasses_site_ownership_check():
+    r = screen_op(
+        "wlan",
+        _INHERITED,
+        effective_update(_INHERITED, {"isolation": True}),
+        enforce_wlan_site_ownership=False,
+    )
+    assert r is None
+
+
+def test_org_wlan_assignment_edit_remains_out_of_scope():
+    r = screen_op(
+        "wlan",
+        _INHERITED,
+        effective_update(_INHERITED, {"site_ids": ["s2"]}),
+        enforce_wlan_site_ownership=False,
+    )
+    assert isinstance(r, Rejection)
+    assert any("site_ids" in reason for reason in r.reasons)
+
+
 def test_auth_root_replace_currently_out_of_scope():
     # PINS CURRENT (conservative) BEHAVIOR — see ROADMAP "WLAN auth-type transition".
     # The twin models only auth.type, but Mist replaces the whole `auth` ROOT, so a

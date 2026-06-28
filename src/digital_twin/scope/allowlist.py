@@ -17,7 +17,12 @@ SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 # Org-level object types simulated by fan-out (NOT single-site). networktemplate
 # carries the SAME modeled config layer as a site_setting, so its raw field gate
 # reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
-ORG_OBJECT_TYPES: tuple[str, ...] = ("networktemplate", "gatewaytemplate", "sitetemplate")
+ORG_OBJECT_TYPES: tuple[str, ...] = (
+    "networktemplate",
+    "gatewaytemplate",
+    "sitetemplate",
+    "wlan",
+)
 
 # Org-level NAC rules (GS34). SEPARATE from SUPPORTED_OBJECT_TYPES (the site
 # whitelist, whose gate branch requires a site_id) and from ORG_OBJECT_TYPES
