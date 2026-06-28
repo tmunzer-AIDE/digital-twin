@@ -110,6 +110,21 @@ def _wlan_ov(
     )
 
 
+def _wlantemplate_ov(*, rows_by_site=None, sites=("s1",)):
+    if rows_by_site is None:
+        rows_by_site = {"s1": ({"id": "w1", "ssid": "guest", "template_id": "tmpl1"},)}
+    return OrgOverlay(
+        object_type="wlantemplate",
+        object_id="tmpl1",
+        name="Guest template",
+        action="delete",
+        assigned_site_ids=frozenset(sites),
+        baseline={"id": "tmpl1", "name": "Guest template"},
+        proposed=None,
+        wlan_template_rows_by_site=rows_by_site,
+    )
+
+
 def test_wlan_overlay_site_maps_must_match_assigned_sites():
     with pytest.raises(ValueError, match="baseline sites"):
         _wlan_ov(sites=("s1", "s2"), baseline_by_site={"s1": {"id": "w1"}})
@@ -160,3 +175,68 @@ def test_apply_overlays_wlan_skips_unassigned_site():
 
     assert base.wlans == fetched.wlans
     assert prop.wlans == fetched.wlans
+
+
+def test_wlantemplate_overlay_row_maps_must_match_assigned_sites():
+    with pytest.raises(ValueError, match="row sites"):
+        _wlantemplate_ov(
+            sites=("s1", "s2"),
+            rows_by_site={"s1": ({"id": "w1", "template_id": "tmpl1"},)},
+        )
+
+
+def test_apply_overlays_wlantemplate_delete_uses_captured_rows_and_removes_all_template_rows():
+    fetched = _raw(
+        nt={"id": "live-networktemplate"},
+        wlans=(
+            {"id": "w1", "ssid": "fetched", "template_id": "tmpl1"},
+            {"id": "w-race", "ssid": "race", "template_id": "tmpl1"},
+            {"id": "w-other", "ssid": "corp", "template_id": "other"},
+            {"id": "site-owned", "ssid": "local"},
+        ),
+    )
+    o = _wlantemplate_ov(rows_by_site={
+        "s1": (
+            {"id": "w2", "ssid": "iot", "template_id": "tmpl1"},
+            {"id": "w1", "ssid": "guest", "template_id": "tmpl1"},
+        )
+    })
+
+    base, prop = apply_overlays(fetched, "s1", (o,))
+
+    assert base.networktemplate == {"id": "live-networktemplate"}
+    assert prop.networktemplate == {"id": "live-networktemplate"}
+    assert [row["id"] for row in base.wlans] == ["w-other", "site-owned", "w1", "w2"]
+    assert [row["ssid"] for row in base.wlans if row["id"] == "w1"] == ["guest"]
+    assert [row["id"] for row in prop.wlans] == ["w-other", "site-owned"]
+
+
+def test_apply_overlays_wlantemplate_skips_unassigned_site():
+    fetched = _raw(wlans=({"id": "w1", "template_id": "tmpl1"},))
+    o = _wlantemplate_ov(
+        sites=("s2",),
+        rows_by_site={"s2": ({"id": "w1", "template_id": "tmpl1"},)},
+    )
+
+    base, prop = apply_overlays(fetched, "s1", (o,))
+
+    assert base.wlans == fetched.wlans
+    assert prop.wlans == fetched.wlans
+
+
+def test_apply_overlays_wlantemplate_composes_with_networktemplate_overlay():
+    fetched = _raw(
+        nt={"id": "nt-live"},
+        wlans=({"id": "w1", "template_id": "tmpl1"}, {"id": "w-local"}),
+    )
+    nt_op = _ov(otype="networktemplate", oid="nt1", sites=("s1",), action="delete")
+    wt_op = _wlantemplate_ov(
+        rows_by_site={"s1": ({"id": "w1", "template_id": "tmpl1"},)},
+    )
+
+    base, prop = apply_overlays(fetched, "s1", (nt_op, wt_op))
+
+    assert base.networktemplate == {"id": "nt1"}
+    assert prop.networktemplate is None
+    assert [row["id"] for row in base.wlans] == ["w-local", "w1"]
+    assert [row["id"] for row in prop.wlans] == ["w-local"]
