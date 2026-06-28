@@ -1,8 +1,8 @@
 from digital_twin.ir.diff import diff_ir
-from digital_twin.ir.entities import Port, PortMode
+from digital_twin.ir.entities import AttachKind, Client, ClientKind, Port, PortMode
 from digital_twin.ir.model import IRBuilder
 from digital_twin.ir.provenance import Provenance, fact_meta
-from tests.factories import sw, trunk_port
+from tests.factories import ap, sw, trunk_port
 
 
 def test_no_change_is_empty_diff():
@@ -152,5 +152,27 @@ def test_is_uplink_only_change_is_not_a_modification():
     proposed = IRBuilder().add_device(sw("S")).add_port(
         Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
              is_uplink=False)
+    ).build()
+    assert diff_ir(base, proposed).is_empty()
+
+
+def test_client_ssid_only_change_is_not_a_modification():
+    base = IRBuilder().add_device(ap("AP")).add_client(
+        Client(
+            mac="001122334455",
+            kind=ClientKind.WIRELESS,
+            attach_kind=AttachKind.AP,
+            attach_id="AP",
+            ssid="Corp",
+        )
+    ).build()
+    proposed = IRBuilder().add_device(ap("AP")).add_client(
+        Client(
+            mac="001122334455",
+            kind=ClientKind.WIRELESS,
+            attach_kind=AttachKind.AP,
+            attach_id="AP",
+            ssid="Guest",
+        )
     ).build()
     assert diff_ir(base, proposed).is_empty()

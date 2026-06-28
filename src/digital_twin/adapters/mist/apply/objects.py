@@ -85,3 +85,11 @@ def replace_object(
         for dev in raw.devices
     )
     return dc_replace(raw, devices=devices)
+
+
+def delete_object(raw: RawSiteState, object_type: str, object_id: str) -> RawSiteState:
+    """Remove an object from raw state. The caller must have resolved it first."""
+    if object_type == "wlan":
+        wlans = tuple(w for w in raw.wlans if str(w.get("id")) != object_id)
+        return dc_replace(raw, wlans=wlans)
+    raise ValueError(f"delete is not supported for object_type {object_type!r}")

@@ -51,9 +51,20 @@ mutations that would otherwise resolve falsely SAFE.
   only; inherited WLANs are bounced (ownership gate / existing field-gate).
 - **Roaming/airtime/capacity** modeling — SP1 only answers "is this client's
   SSID still provably reachable at its AP," not signal/load.
+- **Auth/encryption-method changes** — an auth transition or PSK rotation can
+  disrupt clients while preserving SSID coverage. SP1 does not model auth
+  compatibility or credential validity; those edits are a deferred wireless-auth
+  safety check, not part of this coverage-loss check.
 - **AP up/down or radio state** — coverage is judged from WLAN config scope, not
   live AP health.
 - **Wired clients** — unaffected; `ssid` stays `None` for them.
+
+## Implementation baseline
+
+Implement SP1 on top of `origin/main` **after PR #27** (`df39798` or newer). The
+design relies on the post-#27 decision model where checks still run in the
+presence of derived/device-profile coverage gaps and where coverage-gap UNKNOWN
+sits **below** UNSAFE in the global decision precedence.
 
 ## §1 The invariant (the check)
 
@@ -73,9 +84,11 @@ mutations that would otherwise resolve falsely SAFE.
   survivors (below).
 - **Impact set** = active wireless clients whose `Client.ssid` ∈ affected SSIDs.
 - **Unknown-SSID clients** = active **wireless** clients with `Client.ssid is
-  None` (telemetry fetched a row but without an SSID). When affected SSIDs is
-  non-empty these cannot be confirmed unaffected, so they are **never** allowed to
-  fall into "zero impacted → SAFE" — they degrade to `.unverified` (§3, P1).
+  None` after normalization (telemetry fetched a row but without a usable SSID;
+  missing/empty/whitespace raw values all normalize to `None`). When affected
+  SSIDs is non-empty these cannot be confirmed unaffected, so they are **never**
+  allowed to fall into "zero impacted → SAFE" — they degrade to `.unverified`
+  (§3, P1).
 
 ## §2 Provable coverage — `_covers(wlan, ap_id) -> yes | no | unknown`
 
@@ -91,26 +104,41 @@ A client on AP *X* is **provably still served** for SSID *S* iff some **enabled*
 proposed WLAN `W'` has `W'.ssid == S` **and** `_covers(W', X) == yes`. If every
 candidate is `no` or `unknown`, the client is **impacted** (fail-closed).
 
-**Unmappable client AP** (`Client.attach_id` not resolvable to a known AP): only
-a `"site"`-scoped survivor proves coverage; `"aps"`/`"wxtags"` survivors are
-`unknown` → fail-closed. (Note: today `ClientsIngester` skips clients on unknown
-APs, so this is a defensive rule, not a common path — stated so the boundary is
-explicit and future-proof.)
+**Unmappable client AP** (`Client.attach_id` not resolvable to a known AP) is a
+future boundary, not an SP1 active path: on current `main`, `ClientsIngester`
+skips wireless clients whose AP is unknown, and `IRBuilder` rejects unknown AP
+attachments. SP1 does **not** add a side channel for retained unknown-AP clients.
+If a future ingester keeps such clients, only a `"site"`-scoped survivor proves
+coverage; `"aps"`/`"wxtags"` survivors are `unknown` → fail-closed.
 
 ## §3 Verdict matrix
 
-Rows are evaluated together; the **most severe** outcome wins (UNSAFE > REVIEW > SAFE).
+Rows are evaluated together inside this check; the **most severe** check-local
+outcome wins (UNSAFE > REVIEW > SAFE). In the full engine, the normal global
+decision precedence still applies:
+- a hard rejection / fatal L0 / unusable baseline can still make the final verdict
+  `UNKNOWN` before this check matters;
+- a derived/device-profile coverage gap from PR #27 can make a check-local PASS
+  become coverage-gap `UNKNOWN`;
+- a coverage gap **does not mask** this check's `coverage_lost` FAIL, because the
+  merged decision precedence is `hard-UNKNOWN > UNSAFE > coverage-gap UNKNOWN >
+  REVIEW > SAFE`.
 
 | Situation | Finding | Verdict |
 |---|---|---|
-| Wireless-client telemetry **not fetched** (`CLIENTS_ACTIVE` absent either side) | `…client_impact.unverified` (OPERATIONAL, WARNING) | **REVIEW**-floor |
+| `affected_ssids` non-empty AND wireless-client telemetry **not fetched** (`CLIENTS_ACTIVE` absent either side) | `…client_impact.unverified` (OPERATIONAL, WARNING) | **REVIEW**-floor |
 | Telemetry fetched; ≥1 impacted client (no provable survivor, or unverifiable) | `…client_impact.coverage_lost` (NETWORK, ERROR, HIGH) — evidence lists impacted clients (mac, ap, ssid) | **UNSAFE** |
 | Telemetry fetched; affected SSIDs non-empty AND ≥1 **unknown-SSID** wireless client, with no `coverage_lost` | `…client_impact.unverified` — "active wireless client(s) with unknown SSID — cannot confirm unaffected" | **REVIEW**-floor |
+| `affected_ssids` empty (for example added-only WLANs, or edits to already-disabled WLANs) | none | **SAFE** / PASS — no baseline coverage was removed |
 | Telemetry fetched; **zero** impacted clients, **all** clients' SSID known (all provably roam, or no clients on affected SSIDs) | none | **SAFE**, coverage **COMPLETE** + plain note |
 
 The point-in-time note ("client impact assessed from point-in-time wireless
 telemetry") is **informational text on COMPLETE coverage** — NOT a `PARTIAL` note
 (PARTIAL would floor REVIEW and contradict SAFE).
+
+All PASS rows must return an evaluated `CheckResult` with `status=PASS`,
+`coverage=COMPLETE`, and `confidence=HIGH`; otherwise the decision layer will
+correctly floor the result to REVIEW instead of SAFE.
 
 ### Finding shape (pinned)
 
@@ -118,7 +146,9 @@ telemetry") is **informational text on COMPLETE coverage** — NOT a `PARTIAL` n
 - `source = CHECK`, `category = NETWORK` (NETWORK + ERROR is what drives UNSAFE;
   OPERATIONAL never does), `severity = Severity.ERROR`, `confidence = HIGH`
   (Status `FAIL`).
-- `subject = ObjectRef("wlan", <changed_wlan_id>, <ssid>)` — the headline WLAN.
+- `subject = ObjectRef("wlan", <headline_wlan_id>, <ssid>)` — the deterministic
+  headline WLAN, chosen as the lowest sorted changed WLAN id carrying this
+  affected SSID. All changed WLAN rows for the SSID still appear in `caused_by`.
 - `affected_entities` = the impacted clients' IR ids (deduped) — feeds the
   client-impact/visual-attribution surface.
 - `caused_by = ctx.delta_index.causes("wlan", [<changed wlan ids carrying this SSID>])`
@@ -160,7 +190,14 @@ impacted-client list — never one finding per changed WLAN row.
 ## §6 `Client.ssid` (observational, non-load-bearing)
 
 - Add `ssid: str | None = None` to `Client` (`ir/entities.py`); populate from the
-  raw wireless client's `ssid` in `ClientsIngester` (`None` for wired).
+  raw wireless client's `ssid` in `ClientsIngester` (`None` for wired). Normalize
+  with `str(value).strip()` and store `None` for missing, empty, or whitespace-only
+  values so unusable SSIDs enter the `.unverified` path instead of being treated
+  as a known-but-unmatched SSID.
+- This is a deliberate placement choice: `ssid` lives on `Client` beside
+  observation-time `vlan`/`ip`, not on `ClientEnrichment`, because the check's
+  service-coverage join is over the active client entity itself. The tradeoff is
+  accepted explicitly by adding the diff ignore and pinning it with a test.
 - Add `"client": frozenset({"ssid"})` to `_IGNORED_BY_KIND` in `ir/diff.py` so a
   client's observed SSID never registers as a config diff.
 - **Diff-isolation test**: two IRs identical except a wireless client's `ssid`
@@ -173,8 +210,9 @@ impacted-client list — never one finding per changed WLAN row.
   non-empty payload → UNKNOWN** (P2).
 - **ownership gate**: deleting an inherited WLAN → UNKNOWN/rejected with the
   inherited reason; deleting a site-owned WLAN → proceeds.
-- **ingest**: `Client.ssid` set for wireless from raw `ssid`, `None` for wired;
-  diff-isolation test (above).
+- **ingest**: `Client.ssid` set for wireless from normalized raw `ssid`, empty /
+  whitespace / missing SSID → `None`, `None` for wired; diff-isolation test
+  (above).
 - **check e2e** (each asserts decision + the right finding code):
   1. delete WLAN, active client on its SSID, no survivor → **UNSAFE** + client listed.
   2. disable (`enabled: true→false`), active client → **UNSAFE**.
@@ -182,15 +220,18 @@ impacted-client list — never one finding per changed WLAN row.
   4. **scope shrink** (`apply_to: site→aps` excluding the client's AP) → **UNSAFE**.
   5. delete, but a provable **site-scope** survivor WLAN with same SSID → **SAFE** + note.
   6. survivor exists only via **wxtag** scope → **UNSAFE** (fail-closed).
-  7. telemetry **not fetched** → `.unverified` → **REVIEW**.
-  8. telemetry fetched, **zero** clients on the SSID → **SAFE**, COMPLETE coverage, note present, no PARTIAL.
+  7. telemetry **not fetched** and `affected_ssids` non-empty → `.unverified` → **REVIEW**.
+  7b. telemetry **not fetched** but `affected_ssids` empty (added-only WLAN) → **SAFE** / PASS.
+  8. telemetry fetched, **zero** clients on the SSID → **SAFE**, COMPLETE coverage, HIGH confidence, note present, no PARTIAL.
   9. two changed WLANs share one SSID, one impacted client → **one** finding (aggregation).
   10. **disabled baseline WLAN** (already `enabled=False`) deleted/renamed, active client on that SSID → **NOT** flagged (no affected SSID) (P1).
   11. telemetry fetched, coverage change, active wireless client with **unknown SSID** (`Client.ssid is None`), no provable-loss client → **REVIEW** via `.unverified` (P1).
 - **finding shape** (P2): on a `coverage_lost` finding assert `category == NETWORK`,
   `severity == ERROR`, `affected_entities` == the impacted client ids, and
   `caused_by` is non-empty (the changed WLAN); on `.unverified` assert
-  `category == OPERATIONAL`, `severity == WARNING`.
+  `category == OPERATIONAL`, `severity == WARNING`; for multiple changed WLANs
+  on one affected SSID, `subject.id` is the lowest sorted changed WLAN id and
+  `caused_by` names all changed WLANs for that SSID.
 - **config_diffs** present on a delete verdict (before→after of the removed WLAN).
 - goldens + `docs/ROADMAP.md` entry.
 

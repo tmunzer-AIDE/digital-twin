@@ -147,12 +147,22 @@ state on its own. Cheap: the data is already fetched and in the IR.
 - ✅ **Open guest SSID without isolation** (GS33) —
   `wireless.wlan.open_guest`. Enabled open-auth WLAN with no client isolation;
   scope-aware (empty scope silent, unresolved → note). [done 2026-06-20]
+- ✅ **Site WLAN coverage-loss client impact** (SP1) —
+  `wireless.wlan.client_impact`. Site-local WLAN delete/disable/rename/scope
+  reduction reports active wireless clients on the affected SSID as UNSAFE when
+  no same-SSID survivor provably covers their AP; missing/unknown client SSID
+  telemetry floors to REVIEW, and provable survivors/zero clients reach SAFE.
+  [done 2026-06-28]
 
-All four are **delta-conditioned** via the shared `run_delta_lint` core
+The four config-lint checks are **delta-conditioned** via the shared `run_delta_lint` core
 (introduced → WARNING/REVIEW; pre-existing → INFO context, never floors an
 unrelated change) and rest on the new `Wlan` IR entity (secret-free) + WLAN as
 a simulable site object. Live-verified 2026-06-20: `mist-guest` (open WITH
 isolation) correctly NOT flagged; ingest clean.
+
+The site WLAN client-impact check is a separate delta-conditioned impact check:
+it is not a single-state config lint, and SP2/SP3 remain deferred for org/template
+WLAN delete ripple and NAC/role-profile interactions.
 
 - 🔵 **WLAN auth-type transition (psk/eap → open) → sharp GS33** — the twin
   models only `auth.type`, but Mist replaces the whole `auth` ROOT, so a

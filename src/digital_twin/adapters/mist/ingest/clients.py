@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from digital_twin.ir import (
     AttachKind,
     Client,
@@ -22,6 +24,13 @@ from digital_twin.ir import (
 )
 
 from .base import IngestContext
+
+
+def _ssid(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 class ClientsIngester:
@@ -49,6 +58,7 @@ class ClientsIngester:
                     attach_id=ap,
                     vlan=int(vlan) if vlan is not None else None,
                     ip=w.get("ip"),
+                    ssid=_ssid(w.get("ssid")),
                 )
             )
         for w in ctx.raw.wired_clients:

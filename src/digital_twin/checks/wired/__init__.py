@@ -25,6 +25,7 @@ from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
 from .unmodeled_change import PortUnmodeledChangeCheck
 from .vlan_collision import VlanCollisionCheck
+from .wlan_client_impact import WlanClientImpactCheck
 from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
 
@@ -48,6 +49,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     AdminDisableCheck(),
     AuthAccessChangeCheck(),
     ClientImpactCheck(),
+    WlanClientImpactCheck(),
     WlanOpenGuestCheck(),
     WlanDuplicateSsidCheck(),
     SubnetOverlapCheck(),
@@ -81,6 +83,7 @@ __all__ = [
     "StpEdgeOnUplinkCheck",
     "StpRootChangeCheck",
     "WlanDuplicateSsidCheck",
+    "WlanClientImpactCheck",
     "WlanOpenGuestCheck",
     "PortUnmodeledChangeCheck",
 ]
