@@ -17,11 +17,14 @@ SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 # Org-level object types simulated by fan-out (NOT single-site). networktemplate
 # carries the SAME modeled config layer as a site_setting, so its raw field gate
 # reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
+# wlantemplate is delete-only in SP3; updates are rejected in the org pipeline
+# because Mist's generic Template body is open-ended.
 ORG_OBJECT_TYPES: tuple[str, ...] = (
     "networktemplate",
     "gatewaytemplate",
     "sitetemplate",
     "wlan",
+    "wlantemplate",
 )
 
 # Org-level NAC rules (GS34). SEPARATE from SUPPORTED_OBJECT_TYPES (the site
