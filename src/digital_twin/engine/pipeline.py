@@ -459,6 +459,25 @@ def simulate(
                     adapter_findings=adapter_findings, run=run,
                     state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
+            if op.action == "delete":
+                site_diffs.append(object_config_diff(
+                    object_type=op.object_type, object_id=op.object_id,
+                    name=current.get("name"), action=op.action,
+                    before=current, after=None))
+                rejection = screen_op(op.object_type, current, current)
+                if rejection:
+                    return _unknown(
+                        rejection, adapter_findings=adapter_findings, run=run,
+                        state_meta=state_meta, config_diffs=tuple(site_diffs),
+                    )
+                applied = adapter.apply(proposed_raw, (op,))
+                if isinstance(applied, Rejection):
+                    return _unknown(
+                        applied, adapter_findings=adapter_findings, run=run,
+                        state_meta=state_meta, config_diffs=tuple(site_diffs),
+                    )
+                proposed_raw = applied
+                continue
             conflicts = update_conflicts(op.payload)
             if conflicts:
                 return _unknown(

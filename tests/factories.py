@@ -89,7 +89,10 @@ def wired_client(mac: str, port_id: str, vlan: int | None = None) -> Client:
     )
 
 
-def wireless_client(mac: str, ap_id: str, vlan: int | None = None) -> Client:
+def wireless_client(
+    mac: str, ap_id: str, vlan: int | None = None, *, ssid: str | None = None
+) -> Client:
     return Client(
-        mac=mac, kind=ClientKind.WIRELESS, attach_kind=AttachKind.AP, attach_id=ap_id, vlan=vlan
+        mac=mac, kind=ClientKind.WIRELESS, attach_kind=AttachKind.AP, attach_id=ap_id,
+        vlan=vlan, ssid=ssid
     )

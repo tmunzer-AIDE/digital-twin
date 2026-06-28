@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.checks.registry import CheckRegistry
+from digital_twin.checks.wired.wlan_client_impact import WlanClientImpactCheck
 from digital_twin.contracts import (
     Finding,
     FindingCategory,
@@ -36,6 +37,7 @@ SWITCH = {
     "name": "sw-a",
     "port_config": {"ge-0/0/0-1": {"usage": "office"}},
 }
+AP = {"mac": "cc0000000001", "id": "ap-a", "type": "ap", "model": "AP45", "name": "ap-a"}
 
 
 def _raw() -> RawSiteState:
@@ -77,6 +79,55 @@ def _op(object_type="site_setting", object_id=SITE, payload=None, order=0):
         "object_id": object_id,
         "payload": payload if payload is not None else dict(SETTING),
     }
+
+
+def _delete_op(object_type="wlan", object_id="w1", order=0):
+    return {
+        "action": "delete",
+        "order": order,
+        "object_type": object_type,
+        "object_id": object_id,
+        "payload": {},
+    }
+
+
+def _wlan(wid="w1", *, ssid="corp", enabled=True, for_site=True, template_id=None):
+    row = {
+        "id": wid,
+        "name": f"{ssid}-{wid}",
+        "ssid": ssid,
+        "enabled": enabled,
+        "for_site": for_site,
+        "isolation": False,
+        "apply_to": "site",
+    }
+    if template_id is not None:
+        row["template_id"] = template_id
+    return row
+
+
+def _wireless_client(mac="11:22:33:44:55:66", *, ssid="corp"):
+    return {"mac": mac, "ap_mac": AP["mac"], "ssid": ssid, "vlan_id": 10}
+
+
+def _raw_wlan(*wlans, clients=()):
+    return dc_replace(
+        _raw(),
+        devices=(SWITCH, AP),
+        wlans=tuple(wlans),
+        wireless_clients=tuple(clients),
+        wired_clients=(),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC),
+            host="t",
+            fetched=("devices", "wlans", "wireless_clients", "wired_clients"),
+            failures=(),
+        ),
+    )
+
+
+def _wlan_registry():
+    return CheckRegistry([WlanClientImpactCheck()])
 
 
 class NeverFetch:
@@ -433,6 +484,77 @@ def test_site_apply_reject_carries_config_diff(monkeypatch):
     assert v.decision is Decision.UNKNOWN
     cds = {d.object_id: d for d in v.config_diffs}
     assert SITE in cds
+
+
+def test_site_wlan_delete_with_active_client_is_unsafe_and_carries_config_diff():
+    raw = _raw_wlan(_wlan("w1"), clients=(_wireless_client(),))
+    v = simulate(
+        _plan([_delete_op("wlan", "w1")]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in v.findings)
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["w1"].object_type == "wlan"
+    assert cds["w1"].action == "delete"
+    assert any(c.path == "ssid" and c.kind == "removed" for c in cds["w1"].changes)
+
+
+def test_site_wlan_disable_with_active_client_is_unsafe_and_carries_config_diff():
+    raw = _raw_wlan(_wlan("w1"), clients=(_wireless_client(),))
+    v = simulate(
+        _plan([_op(object_type="wlan", object_id="w1", payload={"enabled": False})]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in v.findings)
+    cds = {d.object_id: d for d in v.config_diffs}
+    by = {c.path: c for c in cds["w1"].changes}
+    assert by["enabled"].kind == "changed"
+    assert by["enabled"].before is True and by["enabled"].after is False
+
+
+def test_site_wlan_delete_with_site_scope_survivor_is_safe_and_carries_config_diff():
+    raw = _raw_wlan(_wlan("w1"), _wlan("w2"), clients=(_wireless_client(),))
+    v = simulate(
+        _plan([_delete_op("wlan", "w1")]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.check_results[0].status is Status.PASS
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["w1"].action == "delete"
+
+
+def test_inherited_wlan_delete_is_unknown_and_keeps_computable_diff():
+    raw = _raw_wlan(
+        _wlan("w1", for_site=False, template_id="tmpl1"),
+        clients=(_wireless_client(),),
+    )
+    v = simulate(
+        _plan([_delete_op("wlan", "w1")]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.UNKNOWN
+    assert any("inherited" in reason for reason in v.decision_reasons)
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["w1"].action == "delete"
+
+
+def test_missing_wlan_delete_is_unknown_without_fabricated_diff():
+    raw = _raw_wlan(_wlan("w1"), clients=(_wireless_client(),))
+    v = simulate(
+        _plan([_delete_op("wlan", "missing")]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.UNKNOWN
+    assert any("no wlan with id 'missing'" in reason for reason in v.decision_reasons)
+    assert v.config_diffs == ()
 
 
 def test_port_config_overwrite_disable_is_simulated_not_unknown():

@@ -471,6 +471,7 @@ class Client:
     attach_id: str  # a port id (wired) or an ap device id (wireless)
     vlan: int | None = None
     ip: str | None = None
+    ssid: str | None = None
     active: bool = True
     meta: FactMeta = OBSERVED_META
 

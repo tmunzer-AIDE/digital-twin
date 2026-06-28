@@ -14,6 +14,7 @@ from digital_twin.scope.allowlist import NAC_OBJECT_TYPES, ORG_OBJECT_TYPES, SUP
 _STAGE = "object_gate"
 _M1_SOURCE = "mist"
 _M1_ACTION = "update"
+_M1_SITE_DELETE_OBJECT_TYPES = ("wlan",)
 _NAC_ACTIONS = ("create", "update", "delete")
 _ORG_ACTIONS = ("update", "delete")
 
@@ -66,12 +67,18 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
                 )
         # duplicate (object_type, object_id) is NOT checked here — the envelope
         # (parse_change_plan) already rejects "two ops target the same object".
-    else:  # SITE mode + everything else — UNCHANGED from today
+    else:  # SITE mode + everything else
         for op in ops:
-            if op.action != _M1_ACTION:
+            if op.action == "delete" and op.object_type in _M1_SITE_DELETE_OBJECT_TYPES:
+                if op.payload:
+                    reasons.append(
+                        f"ops[order={op.order}]: delete payload must be empty "
+                        "(a delete has no proposed object)"
+                    )
+            elif op.action != _M1_ACTION:
                 reasons.append(
                     f"ops[order={op.order}]: unsupported action {op.action!r} "
-                    "(M1 supports only 'update')"
+                    "(M1 supports only 'update' plus site-local 'wlan' delete)"
                 )
         if not plan.scope.site_id:
             reasons.append("scope.site_id is required (M1 simulates exactly one site)")

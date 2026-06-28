@@ -78,6 +78,23 @@ def test_delete_action_rejects_even_for_supported_object_type():
     assert any("delete" in reason for reason in r.reasons)
 
 
+def test_site_wlan_delete_allowed():
+    assert check_objects(_plan([_op(object_type="wlan", object_id="w1", action="delete")])) is None
+
+
+def test_site_wlan_delete_with_nonempty_payload_rejected():
+    op = ChangeOp(
+        action="delete",
+        order=0,
+        object_type="wlan",
+        object_id="w1",
+        payload={"ssid": "corp"},
+    )
+    r = check_objects(_plan([op]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete payload must be empty" in reason for reason in r.reasons)
+
+
 def test_all_offending_ops_reported():
     plan = _plan(
         [

@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from digital_twin.contracts import ChangeOp, Rejection
 from digital_twin.providers.base import RawSiteState
 
-from .objects import get_object, replace_object
+from .objects import delete_object, get_object, replace_object
 
 _STAGE = "apply"
 
@@ -37,5 +37,11 @@ def apply_plan(raw: RawSiteState, ops: Sequence[ChangeOp]) -> RawSiteState | Rej
                     f"{op.object_id!r} in fetched state",
                 ),
             )
-        state = replace_object(state, op.object_type, op.object_id, op.payload)
+        if op.action == "delete":
+            try:
+                state = delete_object(state, op.object_type, op.object_id)
+            except ValueError as e:
+                return Rejection(stage=_STAGE, reasons=(f"ops[order={op.order}]: {e}",))
+        else:
+            state = replace_object(state, op.object_type, op.object_id, op.payload)
     return state

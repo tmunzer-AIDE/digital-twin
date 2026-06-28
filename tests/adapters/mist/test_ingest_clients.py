@@ -18,9 +18,27 @@ def _ingest(wireless=(), wired=()):
 
 
 def test_wireless_client_attaches_to_ap_with_vlan():
-    ir = _ingest(wireless=[{"mac": "11:22:33:44:55:66", "ap_mac": "cc0000000001", "vlan_id": 30}])
+    ir = _ingest(
+        wireless=[{
+            "mac": "11:22:33:44:55:66",
+            "ap_mac": "cc0000000001",
+            "vlan_id": 30,
+            "ssid": "Corp",
+        }]
+    )
     c = ir.clients[0]
     assert c.attach_kind is AttachKind.AP and c.attach_id == "cc0000000001" and c.vlan == 30
+    assert c.ssid == "Corp"
+
+
+def test_wireless_client_blank_or_missing_ssid_becomes_none():
+    ir = _ingest(
+        wireless=[
+            {"mac": "11:22:33:44:55:66", "ap_mac": "cc0000000001", "ssid": "   "},
+            {"mac": "11:22:33:44:55:77", "ap_mac": "cc0000000001"},
+        ]
+    )
+    assert [c.ssid for c in ir.clients] == [None, None]
 
 
 def test_wired_client_attaches_to_port():
@@ -32,6 +50,7 @@ def test_wired_client_attaches_to_port():
     c = ir.clients[0]
     assert c.attach_kind is AttachKind.PORT and c.attach_id == "aa0000000001:ge-0/0/0"
     assert c.vlan == 10
+    assert c.ssid is None
 
 
 def test_client_referencing_unknown_attachment_is_skipped_not_fatal():
