@@ -110,6 +110,13 @@ Allowed actions for `wlantemplate` in v1:
 
 This may be expressed either in `object_gate` or in the early
 `simulate_org_plan` branch, but it must happen before any path can return SAFE.
+One detail is load-bearing for the current codebase: the generic org object gate
+allows `update` for every `ORG_OBJECT_TYPES` member. If `wlantemplate` joins
+that tuple, `update` can pass `object_gate`. The `wlantemplate` branch in
+`simulate_org_plan` must therefore reject every non-`delete` action explicitly
+before resolving or falling through to the layer-template path. A
+`wlantemplate` update must return a deliberate UNKNOWN, not accidentally call
+`resolve_org_template` with an object type it does not own.
 
 ### `OrgWlanTemplateContext`
 
@@ -193,6 +200,11 @@ can target the same derived row id; allowing both without conflict resolution
 would make proposed row presence depend on overlay order. The safe MVP boundary
 is UNKNOWN until an overlap-aware conflict rule is designed.
 
+This is new cross-op logic. The current object gate checks org-vs-site shape and
+per-op actions; it does not reject particular org object type combinations. The
+implementation may put this guard in `object_gate` or in `simulate_org_plan`,
+but it must run before overlays are applied.
+
 Multiple distinct `wlantemplate` deletes are allowed. A derived WLAN row has one
 `template_id`, so two template deletes cannot both own the same row unless the
 provider returns inconsistent data; if that happens, the row-removal operation is
@@ -241,6 +253,12 @@ requested template returns `FetchError`.
 ## Pipeline
 
 `simulate_org_plan` adds a branch for `op.object_type == "wlantemplate"`.
+
+The branch is mandatory. `engine/org_overlay.py` currently has a layer-template
+helper whose default branch pins unknown template-like objects as
+`networktemplate`. A `wlantemplate` overlay must never reach that fallback.
+`apply_overlays` must dispatch `wlantemplate` to the new template-row WLAN
+pinning path explicitly.
 
 Delete flow:
 
@@ -322,6 +340,9 @@ SP3 depends on existing behavior:
 - Other WLAN rows remain untouched.
 - Multiple rows per site are removed together.
 - `assigned_site_ids` must equal the row-map keys.
+- A `wlantemplate` overlay leaves `raw.networktemplate` untouched and mutates
+  only `raw.wlans`. This pins the explicit-dispatch requirement and prevents the
+  layer-template `_pin` fallback from silently mis-pinning the overlay.
 
 ### End-to-end org plan
 
@@ -339,6 +360,9 @@ SP3 depends on existing behavior:
   REVIEW / coverage-gap UNKNOWN, never SAFE.
 - `config_diffs` are present on delete and on UNKNOWN after successful template
   lookup.
+- Config diff rendering/redaction covers open-ended template bodies. A template
+  snapshot with a secret-like value under an arbitrary additional property must
+  redact that value in the displayed diff.
 
 ## Implementation notes
 
