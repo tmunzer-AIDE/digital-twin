@@ -8,6 +8,7 @@ from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
+    OrgWlanTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -87,6 +88,11 @@ def test_state_provider_is_a_protocol():
         def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
             raise NotImplementedError
 
+        def resolve_org_wlan_template(
+            self, scope: OrgScope, template_id: str
+        ) -> OrgWlanTemplateContext | FetchError:
+            raise NotImplementedError
+
         def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
             raise NotImplementedError
 
@@ -122,3 +128,17 @@ def test_org_wlan_context():
     )
     assert ctx.wlan["id"] == "w1"
     assert ctx.derived_rows_by_site["s1"]["enabled"] is True
+
+
+def test_org_wlan_template_context():
+    ctx = OrgWlanTemplateContext(
+        template={"id": "tmpl1", "name": "Guest template"},
+        derived_rows_by_site={
+            "s1": (
+                {"id": "w1", "ssid": "guest", "template_id": "tmpl1"},
+                {"id": "w2", "ssid": "iot", "template_id": "tmpl1"},
+            )
+        },
+    )
+    assert ctx.template["id"] == "tmpl1"
+    assert [row["id"] for row in ctx.derived_rows_by_site["s1"]] == ["w1", "w2"]

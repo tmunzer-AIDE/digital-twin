@@ -87,6 +87,7 @@ def test_plan2_public_api():
         OrgScope,
         OrgTemplateContext,
         OrgWlanContext,
+        OrgWlanTemplateContext,
         RawSiteState,
         SiteScope,
         StateProvider,
@@ -107,6 +108,7 @@ def test_plan2_public_api():
             OrgScope,
             OrgTemplateContext,
             OrgWlanContext,
+            OrgWlanTemplateContext,
             StateProvider,
             NacFetch,
         )

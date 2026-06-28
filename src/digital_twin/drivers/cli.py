@@ -29,6 +29,7 @@ from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
+    OrgWlanTemplateContext,
     RawSiteState,
     SiteScope,
     StateProvider,
@@ -71,6 +72,11 @@ class _RecordingProvider:
 
     def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
         return self._inner.resolve_org_wlan(scope, wlan_id)
+
+    def resolve_org_wlan_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgWlanTemplateContext | FetchError:
+        return self._inner.resolve_org_wlan_template(scope, template_id)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         return self._inner.resolve_org_nac(scope)

@@ -22,6 +22,7 @@ from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
+    OrgWlanTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -389,6 +390,21 @@ class FixtureProvider:
             if match is not None:
                 by_site[sid] = match
         return OrgWlanContext(wlan=dict(wlan), derived_rows_by_site=by_site)
+
+    def resolve_org_wlan_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgWlanTemplateContext | FetchError:
+        return FetchError(
+            scope=scope,
+            failures=(
+                FetchFailure(
+                    object="org_wlantemplate",
+                    error="resolve_org_wlan_template not implemented for replay fixtures",
+                ),
+            ),
+            acquired_at=self._acquired_at,
+            host=self._host,
+        )
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         if self._wrong_org(scope):
