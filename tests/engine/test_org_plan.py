@@ -370,6 +370,28 @@ def test_org_wlan_delete_with_survivor_same_ssid_is_safe():
     assert not _has_wlan_coverage_loss(ov.per_site["s1"])
 
 
+def test_org_wlan_multisite_mixed_safe_and_unsafe_rolls_up_to_unsafe():
+    w1_s1 = _wlan_row("w1")
+    w1_s2 = _wlan_row("w1")
+    s1 = _wlan_site("s1", wlans=(w1_s1, _wlan_row("w2")), clients=(_client(),))
+    s2 = _wlan_site("s2", wlans=(w1_s2,), clients=(_client(),))
+    provider = FakeProvider(
+        {"s1": s1, "s2": s2},
+        {},
+        org_wlans={"w1": _wlan_row("w1")},
+        wlan_membership={"w1": {"s1": w1_s1, "s2": w1_s2}},
+    )
+
+    ov = simulate_org_plan(_plan(_del("wlan", "w1")), provider=provider)
+
+    assert ov.decision is Decision.UNSAFE
+    assert ov.driving_sites == ("s2",)
+    assert ov.per_site["s1"].decision is Decision.SAFE
+    assert not _has_wlan_coverage_loss(ov.per_site["s1"])
+    assert ov.per_site["s2"].decision is Decision.UNSAFE
+    assert _has_wlan_coverage_loss(ov.per_site["s2"])
+
+
 def test_org_wlan_delete_missing_client_telemetry_is_review():
     row = _wlan_row()
     site = _wlan_site("s1", wlans=(row,), clients=(), clients_fetched=False)
@@ -394,6 +416,19 @@ def test_org_wlan_assignment_edit_is_unknown_and_keeps_config_diff():
     assert any(r.stage == "field_gate" for r in ov.org_rejections)
     assert any("site_ids" in reason for r in ov.org_rejections for reason in r.reasons)
     assert ov.config_diffs
+
+
+def test_org_wlan_missing_object_is_unknown_without_config_diff():
+    ov = simulate_org_plan(
+        _plan(_del("wlan", "missing")),
+        provider=FakeProvider({}, {}, org_wlans={}, wlan_membership={}),
+    )
+
+    assert ov.decision is Decision.UNKNOWN
+    assert ov.per_site == {}
+    assert ov.config_diffs == ()
+    assert any(r.stage == "fetch" for r in ov.org_rejections)
+    assert any("org_wlan" in reason for r in ov.org_rejections for reason in r.reasons)
 
 
 # --- THE PROOF: two ops, one shared site, combined collapse ----------------
