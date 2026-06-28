@@ -48,6 +48,29 @@ def test_secret_under_sensitive_parent_masked():
     assert "OLD" not in repr(d.changes) and "NEW" not in repr(d.changes)
 
 
+def test_open_ended_wlantemplate_body_secrets_redacted():
+    d = object_config_diff(
+        object_type="wlantemplate",
+        object_id="tmpl1",
+        name="Guest template",
+        action="delete",
+        before={
+            "id": "tmpl1",
+            "name": "Guest template",
+            "additional": {"portal_psk": "SUPERSECRET"},
+            "vendorBlob": {"api_token": "eyJhbGciOiJI.eyJzdWIiOiIxMjMifQ.signature"},
+        },
+        after=None,
+    )
+
+    blob = repr(d)
+    assert "SUPERSECRET" not in blob
+    assert "eyJhbGciOiJI.eyJzdWIiOiIxMjMifQ.signature" not in blob
+    by = {c.path: c for c in d.changes}
+    assert by["additional.portal_psk"].before == "‹redacted›"
+    assert by["vendorBlob.api_token"].before == "‹redacted›"
+
+
 def test_object_identity_kept_raw():
     d = _d("update", {"order": 2}, {"order": 0}, oid="rule-42", name="guest")
     assert d.object_id == "rule-42" and d.name == "guest"
