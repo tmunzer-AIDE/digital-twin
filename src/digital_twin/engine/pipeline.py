@@ -58,6 +58,7 @@ from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
+    OrgWlanTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -682,6 +683,41 @@ def simulate_org_plan(
                 baseline=snapshot, proposed=proposed_org_wlan,
                 wlan_baseline_by_site=baseline_by_site,
                 wlan_proposed_by_site=proposed_by_site,
+            ))
+            continue
+
+        if op.object_type == "wlantemplate":
+            if op.action != "delete":
+                return org_unknown((Rejection(
+                    stage="scope.pre",
+                    reasons=("wlantemplate supports delete only in SP3",),
+                ),),
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
+            resolved_wlan_template = provider.resolve_org_wlan_template(org_scope, op.object_id)
+            if not isinstance(resolved_wlan_template, OrgWlanTemplateContext):
+                return org_unknown((Rejection(stage="fetch", reasons=tuple(
+                    f"org-wlantemplate lookup failed: {f.object}: {f.error}"
+                    for f in resolved_wlan_template.failures
+                ) or ("org-wlantemplate lookup failed",)),),
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
+            snapshot = dict(resolved_wlan_template.template)
+            name = snapshot.get("name")
+            ref = ObjectRef(op.object_type, op.object_id, name=name)
+            changes[i] = OrgChange(ref=ref, action=op.action)
+            org_diffs.append(object_config_diff(
+                object_type=op.object_type, object_id=op.object_id,
+                name=name, action=op.action, before=snapshot, after=None))
+            rows_by_site = {
+                sid: tuple(dict(row) for row in rows)
+                for sid, rows in resolved_wlan_template.derived_rows_by_site.items()
+            }
+            overlays.append(OrgOverlay(
+                object_type=op.object_type, object_id=op.object_id, name=name,
+                action=op.action, assigned_site_ids=frozenset(rows_by_site),
+                baseline=snapshot, proposed=None,
+                wlan_template_rows_by_site=rows_by_site,
             ))
             continue
 

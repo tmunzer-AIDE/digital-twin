@@ -158,8 +158,16 @@ state on its own. Cheap: the data is already fetched and in the IR.
   affected site set from each site's effective WLAN rows, then reuse the SP1
   per-site impact check. Baseline coverage is pinned from the derived row, not
   the org snapshot, so stale/divergent org metadata cannot hide a real coverage
-  loss. Assignment-field mutations stay UNKNOWN; SP3 template/container WLAN
-  changes remain deferred. [done 2026-06-28]
+  loss. Assignment-field mutations stay UNKNOWN. [done 2026-06-28]
+- ✅ **WLAN template delete coverage-loss fan-out** (SP3) —
+  no-site `wlantemplate` delete plans map Mist's generic org `Template`
+  (`/orgs/{org_id}/templates/{template_id}`) to the concrete per-site derived
+  WLAN rows carrying that `template_id`, remove all those rows from proposed
+  `RawSiteState.wlans`, and reuse SP1's per-site impact check. Membership comes
+  only from `listSiteWlansDerived`; open-ended template bodies are not
+  interpreted. Update/create, assignment/filtering fields (`applies`,
+  `exceptions`, `deviceprofile_ids`, `filter_by_deviceprofile`), and arbitrary
+  `additionalProperties` semantics remain UNKNOWN/deferred. [done 2026-06-28]
 
 The four config-lint checks are **delta-conditioned** via the shared `run_delta_lint` core
 (introduced → WARNING/REVIEW; pre-existing → INFO context, never floors an
@@ -168,8 +176,8 @@ a simulable site object. Live-verified 2026-06-20: `mist-guest` (open WITH
 isolation) correctly NOT flagged; ingest clean.
 
 The WLAN client-impact checks are separate delta-conditioned impact checks: they
-are not single-state config lint. SP3 remains deferred for wlantemplate/template-
-container WLAN changes and NAC/role-profile interactions.
+are not single-state config lint. Remaining WLAN-template debt is update /
+assignment simulation and NAC/role-profile interactions.
 
 - 🔵 **WLAN auth-type transition (psk/eap → open) → sharp GS33** — the twin
   models only `auth.type`, but Mist replaces the whole `auth` ROOT, so a

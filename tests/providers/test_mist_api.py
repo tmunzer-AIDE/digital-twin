@@ -28,6 +28,7 @@ class FakeProvider(MistApiProvider):
         gatewaytemplates: dict[str, dict[str, Any]] | None = None,
         sitetemplates: dict[str, dict[str, Any]] | None = None,
         org_wlans: dict[str, dict[str, Any]] | None = None,
+        org_wlantemplates: dict[str, dict[str, Any]] | None = None,
         wlans_by_site: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self._host = "test"
@@ -40,6 +41,7 @@ class FakeProvider(MistApiProvider):
         self._gatewaytemplates = gatewaytemplates or {}
         self._sitetemplates = sitetemplates or {}
         self._org_wlans = org_wlans or {}
+        self._org_wlantemplates = org_wlantemplates or {}
         self._wlans_by_site = wlans_by_site or {}
         self.nt_calls: list[str] = []
 
@@ -87,6 +89,9 @@ class FakeProvider(MistApiProvider):
 
     def _org_wlan(self, s: Any, wlan_id: str) -> dict[str, Any]:
         return self._org_wlans[wlan_id]
+
+    def _org_wlan_template(self, s: Any, template_id: str) -> dict[str, Any]:
+        return self._org_wlantemplates[template_id]
 
 
 def _sites(*ids: str, nt: str | None = None) -> list[dict[str, Any]]:
@@ -255,6 +260,63 @@ def test_resolve_org_wlan_membership_probe_failure_is_fetch_error():
 
     assert isinstance(result, FetchError)
     assert result.failures[0].object == "org_wlan_membership"
+
+
+def test_resolve_org_wlan_template_uses_derived_template_rows_for_membership():
+    from digital_twin.providers.base import OrgScope, OrgWlanTemplateContext
+
+    p = FakeProvider(
+        sites=_sites("s1", "s2", "s3"),
+        ports=[],
+        wired=[],
+        org_wlantemplates={"tmpl1": {"id": "tmpl1", "name": "guest-template"}},
+        wlans_by_site={
+            "s1": [
+                {"id": "w2", "ssid": "iot", "template_id": "tmpl1"},
+                {"id": "w1", "ssid": "guest", "template_id": "tmpl1"},
+            ],
+            "s2": [
+                {"id": "other", "ssid": "guest", "template_id": "other-template"},
+                {"id": "site-owned", "ssid": "corp"},
+            ],
+            "s3": [{"id": "w3", "ssid": "guest", "template_id": "tmpl1"}],
+        },
+    )
+
+    ctx = p.resolve_org_wlan_template(OrgScope("o1"), "tmpl1")
+
+    assert isinstance(ctx, OrgWlanTemplateContext)
+    assert ctx.template == {"id": "tmpl1", "name": "guest-template"}
+    assert set(ctx.derived_rows_by_site) == {"s1", "s3"}
+    assert [row["id"] for row in ctx.derived_rows_by_site["s1"]] == ["w1", "w2"]
+    assert [row["id"] for row in ctx.derived_rows_by_site["s3"]] == ["w3"]
+
+
+def test_resolve_org_wlan_template_missing_template_is_fetch_error():
+    p = FakeProvider(sites=_sites("s1"), ports=[], wired=[], org_wlantemplates={})
+
+    result = p.resolve_org_wlan_template(OrgScope("o1"), "missing")
+
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "org_wlantemplate"
+
+
+def test_resolve_org_wlan_template_membership_probe_failure_is_fetch_error():
+    class WlanProbeBoom(FakeProvider):
+        def _wlans(self, s: Any) -> list[dict[str, Any]]:
+            raise RuntimeError(f"wlans unavailable for {s.site_id}")
+
+    p = WlanProbeBoom(
+        sites=_sites("s1"),
+        ports=[],
+        wired=[],
+        org_wlantemplates={"tmpl1": {"id": "tmpl1", "name": "guest-template"}},
+    )
+
+    result = p.resolve_org_wlan_template(OrgScope("o1"), "tmpl1")
+
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "org_wlantemplate_membership"
 
 
 # ---- Task 6: typed resolve_org_template + per-site gateway/site template tests ----

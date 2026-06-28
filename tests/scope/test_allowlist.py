@@ -93,7 +93,9 @@ def test_org_object_types_includes_all_fanout_types():
         "gatewaytemplate",
         "sitetemplate",
         "wlan",
+        "wlantemplate",
     }
+    assert "wlantemplate" not in set(SUPPORTED_OBJECT_TYPES)
 
 
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():

@@ -196,7 +196,7 @@ def test_safe_noop_exits_0_human(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 def test_is_org_plan_recognizes_all_org_types():
-    for t in ("networktemplate", "gatewaytemplate", "sitetemplate", "wlan"):
+    for t in ("networktemplate", "gatewaytemplate", "sitetemplate", "wlan", "wlantemplate"):
         plan = {
             "source": "mist",
             "scope": {"org_id": "o1"},

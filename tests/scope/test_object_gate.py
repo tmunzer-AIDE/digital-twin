@@ -126,6 +126,38 @@ def test_org_mode_wlan_update_and_delete_allowed():
     assert check_objects(_org_plan([_del("wlan", "w1")])) is None
 
 
+def test_org_mode_wlantemplate_delete_allowed():
+    assert check_objects(_org_plan([_del("wlantemplate", "tmpl1")])) is None
+
+
+def test_org_mode_wlantemplate_delete_with_nonempty_payload_rejected():
+    r = check_objects(_org_plan([_del("wlantemplate", "tmpl1", payload={"name": "x"})]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("delete payload must be empty" in reason for reason in r.reasons)
+
+
+def test_site_scoped_wlantemplate_rejected():
+    r = check_objects(_plan([_del("wlantemplate", "tmpl1")]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("wlantemplate" in reason for reason in r.reasons)
+
+
+def test_org_mode_mixed_wlan_and_wlantemplate_rejected():
+    r = check_objects(_org_plan([
+        _del("wlantemplate", "tmpl1", order=0),
+        _del("wlan", "w1", order=1),
+    ]))
+    assert isinstance(r, Rejection) and r.stage == "object_gate"
+    assert any("wlantemplate" in reason and "wlan" in reason for reason in r.reasons)
+
+
+def test_org_mode_mixed_wlantemplate_and_layer_template_allowed():
+    assert check_objects(_org_plan([
+        _del("wlantemplate", "tmpl1", order=0),
+        _del("networktemplate", "nt1", order=1),
+    ])) is None
+
+
 def test_org_mode_wlan_delete_with_nonempty_payload_rejected():
     r = check_objects(_org_plan([_del("wlan", "w1", payload={"ssid": "corp"})]))
     assert isinstance(r, Rejection) and r.stage == "object_gate"

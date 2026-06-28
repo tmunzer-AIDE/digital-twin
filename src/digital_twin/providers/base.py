@@ -105,6 +105,15 @@ class OrgWlanContext:
 
 
 @dataclass(frozen=True)
+class OrgWlanTemplateContext:
+    """Resolution of an org WLAN template delete: the current template snapshot
+    plus each affected site's derived WLAN rows produced by that template."""
+
+    template: JsonObj
+    derived_rows_by_site: Mapping[str, tuple[JsonObj, ...]]
+
+
+@dataclass(frozen=True)
 class NacFetch:
     """Org-level NAC fetch result: rule payloads + tag payloads (vendor-shaped).
 
@@ -162,6 +171,14 @@ class StateProvider(Protocol):
     def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
         """Fetch the org WLAN snapshot and determine affected sites from their
         derived WLAN rows. A lookup or membership-probe failure is a FetchError."""
+        ...
+
+    def resolve_org_wlan_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgWlanTemplateContext | FetchError:
+        """Fetch the org WLAN template snapshot and determine affected sites from
+        derived WLAN rows carrying that template_id. A lookup or membership-probe
+        failure is a FetchError."""
         ...
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:

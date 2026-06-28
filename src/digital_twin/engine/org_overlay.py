@@ -15,7 +15,7 @@ from digital_twin.providers.base import RawSiteState
 
 @dataclass(frozen=True)
 class OrgOverlay:
-    # networktemplate | gatewaytemplate | sitetemplate | wlan
+    # networktemplate | gatewaytemplate | sitetemplate | wlan | wlantemplate
     object_type: str
     object_id: str
     name: str | None
@@ -25,8 +25,16 @@ class OrgOverlay:
     proposed: Mapping[str, Any] | None         # None == REMOVED (layer absent)
     wlan_baseline_by_site: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     wlan_proposed_by_site: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict)
+    wlan_template_rows_by_site: Mapping[str, tuple[Mapping[str, Any], ...]] = (
+        field(default_factory=dict)
+    )
 
     def __post_init__(self) -> None:
+        if self.object_type == "wlantemplate":
+            row_sites = frozenset(self.wlan_template_rows_by_site)
+            if row_sites != self.assigned_site_ids:
+                raise ValueError("wlantemplate overlay row sites must equal assigned_site_ids")
+            return
         if self.object_type != "wlan":
             return
         baseline_sites = frozenset(self.wlan_baseline_by_site)
@@ -78,6 +86,26 @@ def _pin_wlan(
     return dc_replace(raw, wlans=tuple(out_rows))
 
 
+def _pin_wlan_template(
+    raw: RawSiteState,
+    template_id: str,
+    captured_rows: tuple[Mapping[str, Any], ...],
+    replacement_rows: tuple[Mapping[str, Any], ...] | None,
+) -> RawSiteState:
+    captured_ids = {str(row.get("id")) for row in captured_rows if row.get("id") is not None}
+    filtered_rows = tuple(
+        row for row in raw.wlans
+        if str(row.get("template_id") or "") != template_id
+        and str(row.get("id") or "") not in captured_ids
+    )
+    if replacement_rows is None:
+        return dc_replace(raw, wlans=filtered_rows)
+    rows = tuple(
+        sorted((dict(row) for row in replacement_rows), key=lambda row: str(row.get("id") or ""))
+    )
+    return dc_replace(raw, wlans=(*filtered_rows, *rows))
+
+
 def apply_overlays(
     fetched: RawSiteState, site_id: str, overlays: tuple[OrgOverlay, ...]
 ) -> tuple[RawSiteState, RawSiteState]:
@@ -94,6 +122,10 @@ def apply_overlays(
         if o.object_type == "wlan":
             base_raw = _pin_wlan(base_raw, o.object_id, o.wlan_baseline_by_site[site_id])
             prop_raw = _pin_wlan(prop_raw, o.object_id, o.wlan_proposed_by_site[site_id])
+        elif o.object_type == "wlantemplate":
+            captured_rows = tuple(o.wlan_template_rows_by_site[site_id])
+            base_raw = _pin_wlan_template(base_raw, o.object_id, captured_rows, captured_rows)
+            prop_raw = _pin_wlan_template(prop_raw, o.object_id, captured_rows, None)
         else:
             base_raw = _pin(base_raw, o.object_type, o.baseline)
             prop_raw = _pin(prop_raw, o.object_type, o.proposed)

@@ -37,6 +37,7 @@ from .base import (
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
+    OrgWlanTemplateContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -214,6 +215,57 @@ class MistApiProvider(StateProvider):
                 host=self._host,
             )
         return OrgWlanContext(wlan=dict(wlan), derived_rows_by_site=by_site)
+
+    def resolve_org_wlan_template(
+        self, scope: OrgScope, template_id: str
+    ) -> OrgWlanTemplateContext | FetchError:
+        try:
+            template = self._org_wlan_template(scope, template_id)
+        except Exception as exc:  # noqa: BLE001 — total lookup failure is a VALUE
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlantemplate", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        if template is None:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(object="org_wlantemplate", error=f"{template_id} not found"),
+                ),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        try:
+            sites = self._org_sites(scope)
+            by_site: dict[str, tuple[_Json, ...]] = {}
+            for site in sites:
+                sid = site.get("id")
+                if sid is None:
+                    continue
+                site_id = str(sid)
+                rows = tuple(
+                    sorted(
+                        (
+                            dict(row)
+                            for row in self._wlans(SiteScope(scope.org_id, site_id))
+                            if str(row.get("template_id") or "") == template_id
+                            and row.get("id") is not None
+                        ),
+                        key=lambda row: str(row.get("id") or ""),
+                    )
+                )
+                if rows:
+                    by_site[site_id] = rows
+        except Exception as exc:  # noqa: BLE001 — membership cannot be guessed safely
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlantemplate_membership", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         try:
@@ -469,6 +521,12 @@ class MistApiProvider(StateProvider):
 
     def _org_wlan(self, s: OrgScope, wlan_id: str) -> _Json:
         resp = mistapi.api.v1.orgs.wlans.getOrgWLAN(self._session, s.org_id, wlan_id)
+        return dict(resp.data)
+
+    def _org_wlan_template(self, s: OrgScope, template_id: str) -> _Json:
+        resp = mistapi.api.v1.orgs.templates.getOrgTemplate(
+            self._session, s.org_id, template_id
+        )
         return dict(resp.data)
 
     def _org_networks(self, s: SiteScope) -> list[_Json]:

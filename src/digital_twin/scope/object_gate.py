@@ -17,6 +17,7 @@ _M1_ACTION = "update"
 _M1_SITE_DELETE_OBJECT_TYPES = ("wlan",)
 _NAC_ACTIONS = ("create", "update", "delete")
 _ORG_ACTIONS = ("update", "delete")
+_ORG_WLAN_ROW_TYPES = {"wlan", "wlantemplate"}
 
 
 def check_objects(plan: ChangePlan) -> Rejection | None:
@@ -54,6 +55,12 @@ def check_objects(plan: ChangePlan) -> Rejection | None:
         and not plan.scope.site_id
     )
     if is_org:
+        org_types = {op.object_type for op in ops}
+        if _ORG_WLAN_ROW_TYPES <= org_types:
+            reasons.append(
+                "org plans cannot mix 'wlan' and 'wlantemplate' ops "
+                "(derived WLAN row overlap is not modeled in SP3)"
+            )
         for op in ops:
             if op.action not in _ORG_ACTIONS:
                 reasons.append(
