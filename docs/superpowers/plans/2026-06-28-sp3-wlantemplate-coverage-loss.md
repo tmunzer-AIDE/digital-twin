@@ -94,7 +94,7 @@ Add tests:
 Do not add a test that expects `object_gate` to reject `wlantemplate` update.
 The current org action gate allows `update` for every org object type, and the
 spec requires the `simulate_org_plan` branch to reject non-delete actions
-deliberately. That assertion belongs in Task 4.
+deliberately. That assertion belongs in Task 5.
 
 ### GREEN
 
