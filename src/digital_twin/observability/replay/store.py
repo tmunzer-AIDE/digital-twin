@@ -21,6 +21,7 @@ from digital_twin.providers.base import (
     NacFetch,
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -150,6 +151,7 @@ class FixtureProvider:
         self._sites: dict[str, RawSiteState] = {}
         self._site_docs: dict[str, dict[str, Any]] = {}
         self._template: dict[str, Any] | None = None
+        self._org_wlans: dict[str, dict[str, Any]] = {}
         self._fetch_failures: frozenset[str] = frozenset()
         self._raw: RawSiteState | None = None  # set only for single-site fixtures
         self._multisite = "sites" in data
@@ -176,6 +178,10 @@ class FixtureProvider:
                 template = self._template
                 nt_map = self._templates.setdefault("networktemplate", {})
                 nt_map.setdefault(str(template["id"]), template)
+            self._org_wlans = {
+                str(wlan_id): dict(wlan)
+                for wlan_id, wlan in (data.get("org_wlans") or {}).items()
+            }
         else:  # single-site fixture (unchanged)
             self._raw = load_fixture_doc(data)
             self._host = self._raw.meta.host
@@ -331,6 +337,58 @@ class FixtureProvider:
             if str((doc.get("site") or {}).get(id_field) or "") == template_id
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
+
+    def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+        if not self._multisite:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="org_wlan",
+                        error="resolve_org_wlan not supported for single-site fixtures",
+                    ),
+                ),
+                acquired_at=datetime.now(UTC),
+                host=self._host,
+            )
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="fixture",
+                        error=f"fixture holds org {self._org_id}, not the requested {scope.org_id}",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        wlan = self._org_wlans.get(wlan_id)
+        if wlan is None:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(
+                        object="org_wlan",
+                        error=f"{wlan_id} not found in the multi-site fixture",
+                    ),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        by_site: dict[str, dict[str, Any]] = {}
+        for sid, doc in self._site_docs.items():
+            match = next(
+                (
+                    dict(row)
+                    for row in doc.get("wlans", ())
+                    if str(row.get("id") or "") == wlan_id
+                ),
+                None,
+            )
+            if match is not None:
+                by_site[sid] = match
+        return OrgWlanContext(wlan=dict(wlan), derived_rows_by_site=by_site)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         if self._wrong_org(scope):

@@ -36,6 +36,7 @@ from .base import (
     NacFetch,
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -172,6 +173,47 @@ class MistApiProvider(StateProvider):
             if s.get("id") and str(s.get(id_field) or "") == template_id
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
+
+    def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+        try:
+            wlan = self._org_wlan(scope, wlan_id)
+        except Exception as exc:  # noqa: BLE001 — total lookup failure is a VALUE
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlan", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        if wlan is None:
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlan", error=f"{wlan_id} not found"),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        try:
+            sites = self._org_sites(scope)
+            by_site: dict[str, _Json] = {}
+            for site in sites:
+                sid = site.get("id")
+                if sid is None:
+                    continue
+                site_id = str(sid)
+                rows = self._wlans(SiteScope(scope.org_id, site_id))
+                match = next(
+                    (dict(row) for row in rows if str(row.get("id") or "") == wlan_id),
+                    None,
+                )
+                if match is not None:
+                    by_site[site_id] = match
+        except Exception as exc:  # noqa: BLE001 — membership cannot be guessed safely
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlan_membership", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        return OrgWlanContext(wlan=dict(wlan), derived_rows_by_site=by_site)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         try:
@@ -424,6 +466,10 @@ class MistApiProvider(StateProvider):
         # twin would then falsely "know" there are no WLAN requirements.
         resp = mistapi.api.v1.sites.wlans.listSiteWlansDerived(self._session, s.site_id)
         return [dict(d) for d in mistapi.get_all(self._session, resp)]
+
+    def _org_wlan(self, s: OrgScope, wlan_id: str) -> _Json:
+        resp = mistapi.api.v1.orgs.wlans.getOrgWLAN(self._session, s.org_id, wlan_id)
+        return dict(resp.data)
 
     def _org_networks(self, s: SiteScope) -> list[_Json]:
         # the GATEWAY's network namespace: org networks carry name + vlan_id +

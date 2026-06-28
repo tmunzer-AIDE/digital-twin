@@ -25,6 +25,7 @@ from digital_twin.providers.base import (
     FetchFailure,
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -40,7 +41,9 @@ from digital_twin.verdict.decision import Decision
 # rides to its exit over BOTH trunks, so removing ONE leaves redundancy.
 EDGE = "aa0000000001"
 HUB = "aa0000000002"
+AP = "cc0000000001"
 WIRED_CLIENT = "ddccbbaa0001"
+WIRELESS_CLIENT = "001122334455"
 
 _SETTING = {
     "networks": {"corp": {"vlan_id": 10}},
@@ -74,6 +77,10 @@ def _hub() -> dict[str, Any]:
     }
 
 
+def _ap() -> dict[str, Any]:
+    return {"mac": AP, "id": "ap-1", "type": "ap", "model": "AP45", "name": "ap-1"}
+
+
 def _port_stats() -> tuple[dict[str, Any], ...]:
     return tuple(
         {"mac": a, "port_id": p, "up": True, "neighbor_mac": b, "neighbor_port_desc": p}
@@ -89,6 +96,13 @@ def _meta() -> StateMeta:
         fetched=("site", "setting", "devices", "wired_clients", "wireless_clients"),
         failures=(),
     )
+
+
+def _wlan_meta(*, clients: bool = True) -> StateMeta:
+    fetched = ("site", "setting", "devices", "wlans")
+    if clients:
+        fetched = (*fetched, "wired_clients", "wireless_clients")
+    return StateMeta(acquired_at=datetime.now(UTC), host="t", fetched=fetched, failures=())
 
 
 def _site(
@@ -107,6 +121,38 @@ def _site(
     )
 
 
+def _wlan_site(
+    sid: str,
+    *,
+    wlans: tuple[dict[str, Any], ...],
+    clients: tuple[dict[str, Any], ...] = (),
+    clients_fetched: bool = True,
+) -> RawSiteState:
+    return RawSiteState(
+        scope=SiteScope("o1", sid),
+        site={"id": sid},
+        setting={},
+        networktemplate=None,
+        sitetemplate=None,
+        devices=(_ap(),),
+        device_stats=(),
+        port_stats=(),
+        wireless_clients=clients,
+        wired_clients=(),
+        wlans=wlans,
+        derived_setting=None,
+        meta=_wlan_meta(clients=clients_fetched),
+    )
+
+
+def _client(*, ssid: str = "corp") -> dict[str, Any]:
+    return {"mac": WIRELESS_CLIENT, "ap_mac": AP, "ssid": ssid}
+
+
+def _wlan_row(wid: str = "w1", *, ssid: str = "corp", enabled: bool = True) -> dict[str, Any]:
+    return {"id": wid, "ssid": ssid, "enabled": enabled, "apply_to": "site", "for_site": False}
+
+
 class FakeProvider:
     """resolve_org_template -> OrgTemplateContext(body, assigned_ids); fetch_sites ->
     per-site RawSiteState map. `templates` maps object_type -> {id: (body, assigned_ids)};
@@ -116,9 +162,13 @@ class FakeProvider:
         self,
         sites: dict[str, RawSiteState | FetchError],
         templates: dict[str, dict[str, tuple[dict[str, Any], list[str]]]],
+        org_wlans: dict[str, dict[str, Any]] | None = None,
+        wlan_membership: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._sites = sites
         self._templates = templates
+        self._org_wlans = org_wlans or {}
+        self._wlan_membership = wlan_membership or {}
 
     def resolve_org_template(
         self, scope: OrgScope, template_id: str, object_type: str
@@ -132,6 +182,18 @@ class FakeProvider:
             )
         body, assigned = by_id[template_id]
         return OrgTemplateContext(template=body, assigned_site_ids=tuple(assigned))
+
+    def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+        if wlan_id not in self._org_wlans:
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_wlan", error=f"{wlan_id} not found"),),
+                acquired_at=datetime.now(UTC), host="h",
+            )
+        return OrgWlanContext(
+            wlan=self._org_wlans[wlan_id],
+            derived_rows_by_site=self._wlan_membership.get(wlan_id, {}),
+        )
 
     def fetch_sites(
         self, scope: OrgScope, site_ids: Any = None, *, include_derived: bool = False
@@ -244,6 +306,129 @@ def test_zero_site_delete_is_safe_with_change_named():
     assert ov.per_site == {}
     assert len(ov.changes) == 1 and ov.changes[0].action == "delete"
     assert any("no assigned sites" in r for r in ov.decision_reasons)
+
+
+# --- org WLAN coverage loss ----------------------------------------------
+
+def _org_wlan_provider(
+    *,
+    site_row: dict[str, Any] | None = None,
+    org_row: dict[str, Any] | None = None,
+    site: RawSiteState | None = None,
+) -> FakeProvider:
+    row = site_row or _wlan_row()
+    return FakeProvider(
+        {"s1": site or _wlan_site("s1", wlans=(row,), clients=(_client(),))},
+        {},
+        org_wlans={"w1": org_row or _wlan_row()},
+        wlan_membership={"w1": {"s1": row}},
+    )
+
+
+def _has_wlan_coverage_loss(verdict: Any) -> bool:
+    return any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in verdict.findings)
+
+
+def test_org_wlan_delete_with_active_client_is_unsafe_and_carries_config_diff():
+    ov = simulate_org_plan(_plan(_del("wlan", "w1")), provider=_org_wlan_provider())
+
+    assert ov.decision is Decision.UNSAFE
+    assert ov.per_site["s1"].decision is Decision.UNSAFE
+    assert _has_wlan_coverage_loss(ov.per_site["s1"])
+    assert ov.config_diffs and ov.config_diffs[0].action == "delete"
+
+
+def test_org_wlan_delete_uses_derived_row_not_stale_org_snapshot():
+    prov = _org_wlan_provider(org_row=_wlan_row(enabled=False), site_row=_wlan_row(enabled=True))
+
+    ov = simulate_org_plan(_plan(_del("wlan", "w1")), provider=prov)
+
+    assert ov.decision is Decision.UNSAFE
+    assert _has_wlan_coverage_loss(ov.per_site["s1"])
+
+
+def test_org_wlan_disable_update_with_active_client_is_unsafe():
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", {"enabled": False})),
+        provider=_org_wlan_provider(),
+    )
+
+    assert ov.decision is Decision.UNSAFE
+    assert _has_wlan_coverage_loss(ov.per_site["s1"])
+
+
+def test_org_wlan_delete_with_survivor_same_ssid_is_safe():
+    w1 = _wlan_row("w1")
+    w2 = _wlan_row("w2")
+    site = _wlan_site("s1", wlans=(w1, w2), clients=(_client(),))
+    ov = simulate_org_plan(
+        _plan(_del("wlan", "w1")),
+        provider=_org_wlan_provider(site_row=w1, site=site),
+    )
+
+    assert ov.decision is Decision.SAFE
+    assert not _has_wlan_coverage_loss(ov.per_site["s1"])
+
+
+def test_org_wlan_multisite_mixed_safe_and_unsafe_rolls_up_to_unsafe():
+    w1_s1 = _wlan_row("w1")
+    w1_s2 = _wlan_row("w1")
+    s1 = _wlan_site("s1", wlans=(w1_s1, _wlan_row("w2")), clients=(_client(),))
+    s2 = _wlan_site("s2", wlans=(w1_s2,), clients=(_client(),))
+    provider = FakeProvider(
+        {"s1": s1, "s2": s2},
+        {},
+        org_wlans={"w1": _wlan_row("w1")},
+        wlan_membership={"w1": {"s1": w1_s1, "s2": w1_s2}},
+    )
+
+    ov = simulate_org_plan(_plan(_del("wlan", "w1")), provider=provider)
+
+    assert ov.decision is Decision.UNSAFE
+    assert ov.driving_sites == ("s2",)
+    assert ov.per_site["s1"].decision is Decision.SAFE
+    assert not _has_wlan_coverage_loss(ov.per_site["s1"])
+    assert ov.per_site["s2"].decision is Decision.UNSAFE
+    assert _has_wlan_coverage_loss(ov.per_site["s2"])
+
+
+def test_org_wlan_delete_missing_client_telemetry_is_review():
+    row = _wlan_row()
+    site = _wlan_site("s1", wlans=(row,), clients=(), clients_fetched=False)
+    ov = simulate_org_plan(
+        _plan(_del("wlan", "w1")),
+        provider=_org_wlan_provider(site_row=row, site=site),
+    )
+
+    assert ov.decision is Decision.REVIEW
+    assert any(
+        f.code == "wireless.wlan.client_impact.unverified" for f in ov.per_site["s1"].findings
+    )
+
+
+def test_org_wlan_assignment_edit_is_unknown_and_keeps_config_diff():
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", {"site_ids": ["s2"]})),
+        provider=_org_wlan_provider(),
+    )
+
+    assert ov.decision is Decision.UNKNOWN
+    assert any(r.stage == "field_gate" for r in ov.org_rejections)
+    assert any("site_ids" in reason for r in ov.org_rejections for reason in r.reasons)
+    assert ov.config_diffs
+
+
+def test_org_wlan_missing_object_is_unknown_without_config_diff():
+    ov = simulate_org_plan(
+        _plan(_del("wlan", "missing")),
+        provider=FakeProvider({}, {}, org_wlans={}, wlan_membership={}),
+    )
+
+    assert ov.decision is Decision.UNKNOWN
+    assert ov.per_site == {}
+    assert ov.config_diffs == ()
+    assert any(r.stage == "fetch" for r in ov.org_rejections)
+    assert any("org_wlan" in reason for r in ov.org_rejections for reason in r.reasons)
 
 
 # --- THE PROOF: two ops, one shared site, combined collapse ----------------

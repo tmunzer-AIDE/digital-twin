@@ -2,9 +2,8 @@
 
 The tool itself NEVER throws to the agent (spec) — any internal error becomes
 an UNKNOWN verdict document with the error in decision_reasons.
-For ORG (networktemplate/gatewaytemplate/sitetemplate) plans the tool
-auto-detects the mode and returns an OrgVerdict dict; for SITE plans it
-returns the standard Verdict dict.
+For ORG fan-out plans the tool auto-detects the mode and returns an
+OrgVerdict dict; for SITE plans it returns the standard Verdict dict.
 """
 
 from __future__ import annotations
@@ -113,8 +112,8 @@ def simulate_change_tool(
 ) -> dict[str, Any]:
     """Simulate a Mist ChangePlan against the live network state; returns the
     verdict document (decision: safe|review|unsafe|unknown + findings).
-    For org/template plans (ops all have object_type in networktemplate/
-    gatewaytemplate/sitetemplate and no site_id in scope), returns an
+    For org fan-out plans (ops all have object_type in ORG_OBJECT_TYPES and
+    no site_id in scope), returns an
     OrgVerdict document with per-site rollup.
     Payloads follow Mist update semantics: root attributes present in the
     payload replace the current values wholesale, omitted roots persist, and

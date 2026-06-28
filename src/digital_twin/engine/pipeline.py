@@ -57,6 +57,7 @@ from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff, diff_ir
 from digital_twin.providers.base import (
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -411,13 +412,13 @@ def simulate(
 
     # 3 — fetch
     with trace.stage("fetch"):
-        if plan.scope.site_id is None:  # an ORG (template) plan reached single-site simulate
+        if plan.scope.site_id is None:  # an org fan-out plan reached single-site simulate
             return _unknown(
                 Rejection(
                     stage="scope.pre",
                     reasons=(
-                        "org/template plan has no site_id"
-                        " — call simulate_org_template, not simulate",
+                        "org fan-out plan has no site_id"
+                        " — call simulate_org_plan, not simulate",
                     ),
                 ),
                 adapter_findings=adapter_findings, run=run,
@@ -625,6 +626,65 @@ def simulate_org_plan(
     template_findings: list[Finding] = []
     org_diffs: list[ObjectConfigDiff] = []
     for i, op in enumerate(plan.ops):
+        if op.object_type == "wlan":
+            resolved_wlan = provider.resolve_org_wlan(org_scope, op.object_id)
+            if not isinstance(resolved_wlan, OrgWlanContext):
+                return org_unknown((Rejection(stage="fetch", reasons=tuple(
+                    f"org-wlan lookup failed: {f.object}: {f.error}"
+                    for f in resolved_wlan.failures
+                ) or ("org-wlan lookup failed",)),),
+                    template_findings=tuple(template_findings), changes=tuple(changes),
+                    config_diffs=tuple(org_diffs))
+            snapshot = dict(resolved_wlan.wlan)
+            name = snapshot.get("name") or snapshot.get("ssid")
+            ref = ObjectRef(op.object_type, op.object_id, name=name)
+            changes[i] = OrgChange(ref=ref, action=op.action)
+            baseline_by_site = {
+                sid: dict(row) for sid, row in resolved_wlan.derived_rows_by_site.items()
+            }
+            proposed_by_site: dict[str, Mapping[str, Any] | None]
+            if op.action == "delete":
+                proposed_org_wlan: Mapping[str, Any] | None = None
+                proposed_by_site = {sid: None for sid in baseline_by_site}
+                org_diffs.append(object_config_diff(
+                    object_type=op.object_type, object_id=op.object_id,
+                    name=name, action=op.action, before=snapshot, after=None))
+            else:
+                proposed_wlan = effective_update(snapshot, op.payload)
+                org_diffs.append(object_config_diff(
+                    object_type=op.object_type, object_id=op.object_id,
+                    name=name, action=op.action, before=snapshot, after=proposed_wlan))
+                l0 = adapter.validate(replace(op, payload=proposed_wlan),
+                    scope_roots=None if l0_full_object else _changed_roots(op.payload))
+                if l0.fatal:
+                    return org_unknown((Rejection(stage="l0",
+                        reasons=(f"structurally-fatal L0 on proposed {op.object_type} "
+                                 f"{op.object_id}",)),),
+                        template_findings=tuple(template_findings), changes=tuple(changes),
+                        config_diffs=tuple(org_diffs))
+                template_findings.extend(_stamp(l0.findings, ref))
+                fg = screen_op(
+                    op.object_type,
+                    snapshot,
+                    proposed_wlan,
+                    enforce_wlan_site_ownership=False,
+                )
+                if fg:
+                    return org_unknown((fg,), template_findings=tuple(template_findings),
+                                       changes=tuple(changes), config_diffs=tuple(org_diffs))
+                proposed_org_wlan = proposed_wlan
+                proposed_by_site = {
+                    sid: effective_update(row, op.payload) for sid, row in baseline_by_site.items()
+                }
+            overlays.append(OrgOverlay(
+                object_type=op.object_type, object_id=op.object_id, name=name,
+                action=op.action, assigned_site_ids=frozenset(baseline_by_site),
+                baseline=snapshot, proposed=proposed_org_wlan,
+                wlan_baseline_by_site=baseline_by_site,
+                wlan_proposed_by_site=proposed_by_site,
+            ))
+            continue
+
         resolved = provider.resolve_org_template(org_scope, op.object_id, op.object_type)
         # P3: thread template_findings through EVERY short-circuit so earlier ops'
         # non-fatal L0 findings stay auditable even if a LATER op fails.
@@ -638,7 +698,7 @@ def simulate_org_plan(
         ref = ObjectRef(op.object_type, op.object_id, name=snapshot.get("name"))
         changes[i] = OrgChange(ref=ref, action=op.action)  # hydrate the resolved name
         if op.action == "delete":
-            proposed: Mapping[str, Any] | None = None
+            proposed_layer: Mapping[str, Any] | None = None
             org_diffs.append(object_config_diff(
                 object_type=op.object_type, object_id=op.object_id,
                 name=snapshot.get("name"), action=op.action, before=snapshot, after=None))
@@ -664,11 +724,11 @@ def simulate_org_plan(
             if fg:
                 return org_unknown((fg,), template_findings=tuple(template_findings),
                                    changes=tuple(changes), config_diffs=tuple(org_diffs))
-            proposed = proposed_t
+            proposed_layer = proposed_t
         overlays.append(OrgOverlay(
             object_type=op.object_type, object_id=op.object_id, name=snapshot.get("name"),
             action=op.action, assigned_site_ids=frozenset(resolved.assigned_site_ids),
-            baseline=snapshot, proposed=proposed,
+            baseline=snapshot, proposed=proposed_layer,
         ))
         # (the old org_diffs.append(...) at ~558 is removed — built above)
 

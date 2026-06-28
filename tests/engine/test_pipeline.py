@@ -390,7 +390,7 @@ def test_simulate_rejects_org_plan_with_unknown_not_crash():
                      "object_id": "nt1", "payload": {}}]}
     v = simulate(plan, provider=_AnyProvider())  # guarded before fetch — never touches provider
     assert v.decision is Decision.UNKNOWN
-    assert any("simulate_org_template" in r for r in v.decision_reasons)
+    assert any("simulate_org_plan" in r for r in v.decision_reasons)
 
 
 def test_site_update_carries_config_diff():

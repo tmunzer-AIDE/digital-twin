@@ -28,6 +28,7 @@ from digital_twin.providers.base import (
     NacFetch,
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateProvider,
@@ -68,6 +69,9 @@ class _RecordingProvider:
     ) -> OrgTemplateContext | FetchError:
         return self._inner.resolve_org_template(scope, template_id, object_type)
 
+    def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+        return self._inner.resolve_org_wlan(scope, wlan_id)
+
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         return self._inner.resolve_org_nac(scope)
 
@@ -85,8 +89,7 @@ def _is_org_nac_plan(plan_data: object) -> bool:
 
 
 def _is_org_plan(plan_data: object) -> bool:
-    """Return True if plan_data looks like an ORG-template plan (networktemplate,
-    gatewaytemplate, or sitetemplate).
+    """Return True if plan_data looks like an ORG fan-out plan.
 
     Defensive: any malformed plan (missing/wrong-typed fields) returns False so
     it falls through to the SITE path, which will envelope-reject it properly.

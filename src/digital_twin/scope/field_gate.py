@@ -31,7 +31,11 @@ def changed_paths(current: Mapping[str, Any], payload: Mapping[str, Any]) -> tup
 
 
 def screen_op(
-    object_type: str, current: Mapping[str, Any], payload: Mapping[str, Any]
+    object_type: str,
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    enforce_wlan_site_ownership: bool = True,
 ) -> Rejection | None:
     if object_type == "device" and current.get("type") != "switch":
         return Rejection(
@@ -41,7 +45,11 @@ def screen_op(
                 "(switch config only — AP/gateway devices are out of scope)",
             ),
         )
-    if object_type == "wlan" and wlan_is_inherited(current):
+    if (
+        object_type == "wlan"
+        and enforce_wlan_site_ownership
+        and wlan_is_inherited(current)
+    ):
         return Rejection(
             stage=_STAGE,
             reasons=(

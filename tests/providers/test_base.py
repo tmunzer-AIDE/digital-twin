@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from digital_twin.providers.base import (
     FetchError,
     FetchFailure,
+    NacFetch,
     OrgScope,
     OrgTemplateContext,
+    OrgWlanContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -82,6 +84,12 @@ def test_state_provider_is_a_protocol():
         ) -> OrgTemplateContext | FetchError:
             raise NotImplementedError
 
+        def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
+            raise NotImplementedError
+
+        def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+            raise NotImplementedError
+
     provider: StateProvider = Fake()
     assert provider is not None
 
@@ -105,3 +113,12 @@ def test_org_template_context_and_orgscope_fetch_error():
         scope=OrgScope(org_id="o1"), failures=(), acquired_at=datetime.now(UTC), host="h"
     )
     assert err.scope.org_id == "o1"
+
+
+def test_org_wlan_context():
+    ctx = OrgWlanContext(
+        wlan={"id": "w1", "enabled": False},
+        derived_rows_by_site={"s1": {"id": "w1", "enabled": True}},
+    )
+    assert ctx.wlan["id"] == "w1"
+    assert ctx.derived_rows_by_site["s1"]["enabled"] is True
