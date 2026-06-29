@@ -130,9 +130,11 @@ def test_disabled_not_in_scope_on_port_config():
     assert "port_config.*.disabled" not in set(RAW_ALLOWLIST["device"])
 
 
-def test_no_local_overwrite_stays_out_of_scope():
-    # a lone no_local_overwrite flip could activate unmodeled local leaves -> UNKNOWN
-    assert "port_config.*.no_local_overwrite" not in set(RAW_ALLOWLIST["device"])
+def test_no_local_overwrite_is_in_scope():
+    # no_local_overwrite is modeled (resolve_effective_ports/_overridable). A lone
+    # flip activating an UNMODELED local leaf is caught by field_gate's
+    # _local_overwrite_ripple, not by blanket-gating the flag itself.
+    assert "port_config.*.no_local_overwrite" in set(RAW_ALLOWLIST["device"])
 
 
 def test_local_dynamic_usage_still_out_of_scope():

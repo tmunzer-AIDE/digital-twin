@@ -105,6 +105,53 @@ def test_port_description_is_in_scope_on_every_inline_map():
         assert screen_op("device", SWITCH_CUR, payload) is None, key
 
 
+def test_port_config_critical_is_in_scope():
+    # `critical` is an inert metadata flag (no effect on the resolved port) — a
+    # change to it must pass the gate (decidable), not fall through to UNKNOWN.
+    cur = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "office"}}}
+    payload = {**SWITCH_CUR, "port_config": {
+        "ge-0/0/0": {"usage": "office", "critical": True}}}
+    assert screen_op("device", cur, payload) is None
+
+
+def test_no_local_overwrite_flip_passes_when_no_local_entry():
+    # no_local_overwrite is in scope; a flip with no local_port_config entry (or an
+    # entry of only modeled leaves) has no unmodeled ripple -> decidable.
+    cur = {
+        **SWITCH_CUR,
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
+    }
+    payload = {
+        **SWITCH_CUR,
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}},
+    }
+    assert screen_op("device", cur, payload) is None
+
+
+def test_no_local_overwrite_flip_passes_over_modeled_local_leaf():
+    cur = {
+        "type": "switch",
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
+        "local_port_config": {"ge-0/0/0": {"usage": "uplink"}},  # modeled leaf
+    }
+    payload = {**cur, "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    assert screen_op("device", cur, payload) is None
+
+
+def test_no_local_overwrite_flip_rejects_over_unmodeled_local_leaf():
+    # the false-SAFE the guard protected: flipping the flag activates use_vstp,
+    # an unmodeled STP leaf the resolver never projects -> must gate to UNKNOWN.
+    cur = {
+        "type": "switch",
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
+        "local_port_config": {"ge-0/0/0": {"usage": "office", "use_vstp": True}},
+    }
+    payload = {**cur, "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    r = screen_op("device", cur, payload)
+    assert isinstance(r, Rejection)
+    assert any("no_local_overwrite flip" in reason and "use_vstp" in reason for reason in r.reasons)
+
+
 def test_unmodeled_overwrite_leaf_still_rejects():
     # the resolver honors port_network/poe_disabled/disabled/speed/duplex/mac_limit from
     # port_config_overwrite — poe_keep_state_when_reboot et al. stay out of scope (leaf-tightened)
