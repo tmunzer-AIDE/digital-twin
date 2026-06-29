@@ -97,6 +97,14 @@ def test_modeled_port_config_overwrite_leaf_passes():
     assert screen_op("device", SWITCH_CUR, payload) is None
 
 
+def test_port_description_is_in_scope_on_every_inline_map():
+    # `description` is a cosmetic per-port label with no modeled forwarding/security
+    # effect — it must be decidable (no findings), not gated to UNKNOWN.
+    for key in ("port_config", "local_port_config", "port_config_overwrite"):
+        payload = {**SWITCH_CUR, key: {"ge-0/0/0": {"description": "Disabled by admin"}}}
+        assert screen_op("device", SWITCH_CUR, payload) is None, key
+
+
 def test_unmodeled_overwrite_leaf_still_rejects():
     # the resolver honors port_network/poe_disabled/disabled/speed/duplex/mac_limit from
     # port_config_overwrite — poe_keep_state_when_reboot et al. stay out of scope (leaf-tightened)
