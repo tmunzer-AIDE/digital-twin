@@ -371,11 +371,26 @@ def test_normal_verdict_carries_diagrams():
 
 
 def test_unknown_short_circuit_has_no_diagrams():
-    # an out-of-scope raw path returns via _unknown() -> no diagrams
+    # a HARD short-circuit (apply stage: no such object) returns via _unknown()
+    # before any simulation -> no diagrams
+    v = simulate(
+        _plan([_op(object_type="device", object_id="ghost", payload={"name": "x"})]),
+        provider=FakeProvider(),
+    )
+    assert v.decision is Decision.UNKNOWN
+    assert v.diagrams == ()
+
+
+def test_out_of_scope_leaf_is_a_coverage_gap_not_a_hard_short_circuit():
+    # an out-of-scope raw leaf no longer short-circuits: the simulation runs (so
+    # a modeled UNSAFE could still surface) and the decision floors at UNKNOWN —
+    # never SAFE — via the coverage-gap path, NOT a hard rejection.
     bad = {**SETTING, "dhcpd_config": {"corp": {"ip": "9.9.9.9"}}}
     v = simulate(_plan([_op(payload=bad)]), provider=FakeProvider())
     assert v.decision is Decision.UNKNOWN
-    assert v.diagrams == ()
+    # checks actually ran this time (coverage-gap path), so the verdict carries the
+    # gap reasons rather than a bare hard-UNKNOWN
+    assert any("COVERAGE GAP" in r or "coverage" in r.lower() for r in v.decision_reasons)
 
 
 def test_simulate_rejects_org_plan_with_unknown_not_crash():

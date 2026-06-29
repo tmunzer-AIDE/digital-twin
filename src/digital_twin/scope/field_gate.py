@@ -31,13 +31,23 @@ def changed_paths(current: Mapping[str, Any], payload: Mapping[str, Any]) -> tup
     return changed_leaf_paths(current, payload, ignore_top=IGNORED_RAW_FIELDS)
 
 
-def screen_op(
+def screen_op_split(
     object_type: str,
     current: Mapping[str, Any],
     payload: Mapping[str, Any],
     *,
     enforce_wlan_site_ownership: bool = True,
-) -> Rejection | None:
+) -> tuple[Rejection | None, tuple[Rejection, ...]]:
+    """Split the screen into (hard, gaps).
+
+    HARD = object-level "cannot simulate this object at all" (wrong device role,
+    inherited WLAN) -> the engine short-circuits to UNKNOWN, no checks run.
+    GAPS = field-level "cannot model these specific leaves" (out-of-scope raw
+    leaves, no_local_overwrite ripple). These are COVERAGE gaps: the simulation
+    still runs on the in-scope projection, the decision floors at UNKNOWN (never
+    SAFE — same invariant as the derived gate), but a confidently-modeled UNSAFE
+    from the rest of the change still wins (decision precedence: UNSAFE > coverage
+    UNKNOWN). The IR never carries the out-of-scope leaf, so it cannot leak in."""
     if object_type == "device" and current.get("type") != "switch":
         return Rejection(
             stage=_STAGE,
@@ -45,7 +55,7 @@ def screen_op(
                 f"device type {current.get('type')!r} is not modeled in M1 "
                 "(switch config only — AP/gateway devices are out of scope)",
             ),
-        )
+        ), ()
     if (
         object_type == "wlan"
         and enforce_wlan_site_ownership
@@ -57,7 +67,7 @@ def screen_op(
                 f"WLAN {current.get('id')!r} is inherited from an org wlantemplate "
                 "(not a site-writable object) — simulate the change at the org/template level",
             ),
-        )
+        ), ()
     allowlist = RAW_ALLOWLIST.get(object_type, ())
     changed = changed_paths(current, payload)
     reasons = [_offense_reason(p, current, payload) for p in changed if not allowed(p, allowlist)]
@@ -66,10 +76,31 @@ def screen_op(
         # member's local_port_config entry wholesale — including UNMODELED local
         # leaves the raw diff doesn't surface (the flag changed, not the leaves) and
         # the derived gate can't see (the resolver never projects them). Re-screen
-        # those leaves here so a flip over an unmodeled local leaf -> UNKNOWN.
+        # those leaves here so a flip over an unmodeled local leaf -> coverage gap.
         reasons.extend(_local_overwrite_ripple(changed, current, payload, allowlist))
-    if reasons:
-        return Rejection(stage=_STAGE, reasons=tuple(reasons))
+    gaps = (Rejection(stage=_STAGE, reasons=tuple(reasons)),) if reasons else ()
+    return None, gaps
+
+
+def screen_op(
+    object_type: str,
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    enforce_wlan_site_ownership: bool = True,
+) -> Rejection | None:
+    """Back-compat combined view: any hard rejection OR field gap collapses to a
+    single Rejection (callers that don't separate coverage from hard treat both as
+    UNKNOWN). The single-object engine path uses screen_op_split to keep field gaps
+    as coverage gaps; org/NAC paths stay conservative via this combined form."""
+    hard, gaps = screen_op_split(
+        object_type, current, payload,
+        enforce_wlan_site_ownership=enforce_wlan_site_ownership,
+    )
+    if hard is not None:
+        return hard
+    if gaps:
+        return Rejection(stage=_STAGE, reasons=tuple(r for g in gaps for r in g.reasons))
     return None
 
 

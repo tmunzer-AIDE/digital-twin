@@ -68,7 +68,7 @@ from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT
 from digital_twin.scope.derived_gate import check_derived_gaps
 from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
-from digital_twin.scope.field_gate import changed_paths, screen_op
+from digital_twin.scope.field_gate import changed_paths, screen_op, screen_op_split
 from digital_twin.scope.object_gate import check_objects
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
@@ -228,6 +228,8 @@ def _simulate_site_state(
     adapter_findings: tuple[Finding, ...] = (),
     gateway_screen_full: bool = False,
     profile_proposed: IngestOutcome | None = None,
+    extra_coverage_gaps: tuple[Rejection, ...] = (),
+    extra_coverage_findings: tuple[Finding, ...] = (),
 ) -> Verdict:
     """Stages 5-10 for ONE site: ingest baseline + proposed, dynamic gate,
     derived gate, diff + checks, verdict. Both `simulate` (single-site) and
@@ -284,8 +286,8 @@ def _simulate_site_state(
         adapter_findings += tuple(
             unresolved_dhcp_range_findings(baseline.site_effective, proposed.site_effective)
         )
-    coverage_gaps: list[Rejection] = []
-    coverage_gap_findings: list[Finding] = []
+    coverage_gaps: list[Rejection] = list(extra_coverage_gaps)
+    coverage_gap_findings: list[Finding] = list(extra_coverage_findings)
     with trace.stage("derived_gate"):
         site_gaps = check_derived_gaps(
             _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
@@ -450,6 +452,12 @@ def simulate(
     # roots persist, "-attr" deletes), L0-validate it, field-gate it, apply.
     proposed_raw = raw
     site_diffs: list[ObjectConfigDiff] = []
+    # Field-gate COVERAGE gaps (out-of-scope leaves / no_local_overwrite ripple):
+    # unlike a HARD rejection these do not short-circuit — the simulation runs on
+    # the in-scope projection and the decision floors at UNKNOWN (never SAFE),
+    # while a modeled UNSAFE still wins.
+    field_gaps: list[Rejection] = []
+    field_gap_findings: list[Finding] = []
     with trace.stage("l0+scope.post+apply", note=f"{len(plan.ops)} op(s)"):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
@@ -466,10 +474,12 @@ def simulate(
                     object_type=op.object_type, object_id=op.object_id,
                     name=current.get("name"), action=op.action,
                     before=current, after=None))
-                rejection = screen_op(op.object_type, current, current)
-                if rejection:
+                # delete diffs current vs current -> no changed leaves, so only the
+                # HARD object-level screen can fire here.
+                hard, _ = screen_op_split(op.object_type, current, current)
+                if hard:
                     return _unknown(
-                        rejection, adapter_findings=adapter_findings, run=run,
+                        hard, adapter_findings=adapter_findings, run=run,
                         state_meta=state_meta, config_diffs=tuple(site_diffs),
                     )
                 applied = adapter.apply(proposed_raw, (op,))
@@ -516,11 +526,16 @@ def simulate(
                     l0_fatal=True, state_meta=state_meta,
                     config_diffs=tuple(site_diffs),
                 )
-            rejection = screen_op(op.object_type, current, effective)
-            if rejection:
+            hard, gaps = screen_op_split(op.object_type, current, effective)
+            if hard:
                 return _unknown(
-                    rejection, adapter_findings=adapter_findings, run=run,
+                    hard, adapter_findings=adapter_findings, run=run,
                     state_meta=state_meta, config_diffs=tuple(site_diffs),
+                )
+            for gap in gaps:
+                _record_coverage_gap(
+                    field_gaps, field_gap_findings, gap,
+                    artifact=op.object_type, subject=subject,
                 )
             applied = adapter.apply(proposed_raw, (op,))  # apply owns the semantics
             if isinstance(applied, Rejection):
@@ -568,6 +583,8 @@ def simulate(
         adapter=adapter, registry=registry, run=run,
         state_meta=state_meta, adapter_findings=adapter_findings,
         profile_proposed=profile_proposed,
+        extra_coverage_gaps=tuple(field_gaps),
+        extra_coverage_findings=tuple(field_gap_findings),
     )
     return replace(verdict, config_diffs=tuple(site_diffs))
 
