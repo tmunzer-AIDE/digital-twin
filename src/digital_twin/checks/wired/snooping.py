@@ -109,6 +109,28 @@ def _egress_trust(
     return ("blocked", tuple(sorted(pid for _, pid in candidates)), links)
 
 
+def _baseline_egress_state(
+    actx: AnalysisContext,
+    base_ir: IR,
+    base_root: dict[str, str],
+    did: str,
+    vlan: int,
+    source: str,
+) -> str | None:
+    """The baseline egress state for the SAME (did, vlan, source), or None when
+    there is no baseline parity to compare (the vlan was not snooped by `did`, or
+    the source was absent). Lets the run() loop tell a delta-introduced abstention
+    (drives PARTIAL) from a pre-existing, ambient one (must not — GS22 rule)."""
+    if vlan not in snooped_vlans(base_ir, did):
+        return None
+    bv = base_ir.vlans.get(vlan)
+    if bv is None or source not in bv.dhcp_sources:
+        return None
+    return _egress_trust(
+        actx, base_ir, base_root, node_for(base_root, did), vlan, node_for(base_root, source)
+    )[0]
+
+
 class DhcpSnoopingCheck:
     id = "wired.dhcp.snooping"
     title = "DHCP snooping with no trusted path to the vlan's DHCP source"
@@ -134,11 +156,22 @@ class DhcpSnoopingCheck:
                 sources = prop_ir.vlans[vlan].dhcp_sources
                 has_site = "site" in sources
                 if has_site:
-                    notes.append(
-                        f"{did} vlan {vlan}: a \"site\" DHCP source is unlocatable — "
-                        "site-hosted service placement is unmodeled, snooping trust "
-                        "toward it cannot be verified"
+                    # A "site" abstention only floors coverage when the delta
+                    # introduced it. If the vlan was already snooped with a "site"
+                    # source in baseline, the blind spot is ambient — it must not
+                    # drag an unrelated change to REVIEW via the coverage side door.
+                    bv_site = base_ir.vlans.get(vlan)
+                    site_pre = (
+                        vlan in snooped_vlans(base_ir, did)
+                        and bv_site is not None
+                        and "site" in bv_site.dhcp_sources
                     )
+                    if not site_pre:
+                        notes.append(
+                            f"{did} vlan {vlan}: a \"site\" DHCP source is unlocatable — "
+                            "site-hosted service placement is unmodeled, snooping trust "
+                            "toward it cannot be verified"
+                        )
                 for source in sources:
                     if source == "site":
                         continue
@@ -148,35 +181,32 @@ class DhcpSnoopingCheck:
                     state, blocked, path_links = _egress_trust(
                         ctx.proposed, prop_ir, prop_root, node, vlan, src_node
                     )
+                    # Baseline parity for the SAME (did, vlan, source): an abstention
+                    # (unknown/unreachable) that held identically in baseline is a
+                    # pre-existing blind spot, NOT introduced by this delta — like the
+                    # INFO-demotion of pre-existing CONCLUSIONS, it must not set PARTIAL
+                    # (GS22 rule: the coverage side door floors unrelated changes).
+                    base_state = _baseline_egress_state(
+                        ctx.baseline, base_ir, base_root, did, vlan, source
+                    )
                     if state == "unknown":
-                        notes.append(
-                            f"{did} vlan {vlan}: trust or carriage toward DHCP source "
-                            f"{source} is unknown — cannot conclude offers drop"
-                        )
+                        if base_state != "unknown":
+                            notes.append(
+                                f"{did} vlan {vlan}: trust or carriage toward DHCP source "
+                                f"{source} is unknown — cannot conclude offers drop"
+                            )
                         continue
                     if state == "unreachable":
-                        notes.append(
-                            f"{did} vlan {vlan}: DHCP source {source} is not locatable "
-                            "in the modeled topology for this vlan — snooping trust "
-                            "unverifiable"
-                        )
+                        if base_state != "unreachable":
+                            notes.append(
+                                f"{did} vlan {vlan}: DHCP source {source} is not locatable "
+                                "in the modeled topology for this vlan — snooping trust "
+                                "unverifiable"
+                            )
                         continue
                     if state == "ok":
                         continue
-                    pre = (
-                        vlan in snooped_vlans(base_ir, did)
-                        and (bv := base_ir.vlans.get(vlan)) is not None
-                        and source in bv.dhcp_sources
-                        and _egress_trust(
-                            ctx.baseline,
-                            base_ir,
-                            base_root,
-                            node_for(base_root, did),
-                            vlan,
-                            node_for(base_root, source),
-                        )[0]
-                        == "blocked"
-                    )
+                    pre = base_state == "blocked"
                     src_dev = prop_ir.devices.get(source)
                     blind = src_dev is not None and (
                         src_dev.l3_unmodeled or src_dev.dhcp_unresolved

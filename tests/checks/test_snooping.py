@@ -87,6 +87,26 @@ def test_preexisting_blocked_with_blind_gateway_stays_complete():
     assert r.coverage.state is CoverageState.COMPLETE
 
 
+def test_preexisting_site_abstention_stays_complete():
+    # GS22 extended to ABSTENTIONS: a "site" source unlocatable in BOTH baseline
+    # and proposed is an ambient blind spot, not delta-introduced — it must not
+    # floor an unrelated change to REVIEW via PARTIAL coverage.
+    r = _run(_ir(sources=("site",)), _ir(sources=("site",)))  # snooped+site on BOTH
+    assert not r.findings
+    assert r.coverage.state is CoverageState.COMPLETE
+
+
+def test_preexisting_unknown_trust_abstention_stays_complete():
+    r = _run(_ir(trust=None), _ir(trust=None))  # snooped+unknown trust on BOTH
+    assert not r.findings
+    assert r.coverage.state is CoverageState.COMPLETE
+
+
+def test_preexisting_unreachable_abstention_stays_complete():
+    r = _run(_ir(trust=False, linked=False), _ir(trust=False, linked=False))
+    assert r.coverage.state is CoverageState.COMPLETE
+
+
 def test_trusted_port_going_untrusted_under_existing_snooping_is_introduced():
     # ACTIVITY not pair (native-mismatch lesson): the snooping was on, but the
     # delta removed the last trusted path
