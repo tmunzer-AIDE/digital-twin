@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from digital_twin.adapters.mist.ingest.ports import expand_port_map
 from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
@@ -58,13 +59,49 @@ def screen_op(
             ),
         )
     allowlist = RAW_ALLOWLIST.get(object_type, ())
-    offending = [p for p in changed_paths(current, payload) if not allowed(p, allowlist)]
-    if offending:
-        return Rejection(
-            stage=_STAGE,
-            reasons=tuple(_offense_reason(p, current, payload) for p in offending),
-        )
+    changed = changed_paths(current, payload)
+    reasons = [_offense_reason(p, current, payload) for p in changed if not allowed(p, allowlist)]
+    if object_type == "device":
+        # no_local_overwrite is in scope, but flipping it activates/deactivates the
+        # member's local_port_config entry wholesale — including UNMODELED local
+        # leaves the raw diff doesn't surface (the flag changed, not the leaves) and
+        # the derived gate can't see (the resolver never projects them). Re-screen
+        # those leaves here so a flip over an unmodeled local leaf -> UNKNOWN.
+        reasons.extend(_local_overwrite_ripple(changed, current, payload, allowlist))
+    if reasons:
+        return Rejection(stage=_STAGE, reasons=tuple(reasons))
     return None
+
+
+def _local_overwrite_ripple(
+    changed: tuple[str, ...],
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    allowlist: tuple[str, ...],
+) -> list[str]:
+    """Members whose no_local_overwrite flipped AND whose effective local_port_config
+    entry carries an out-of-scope leaf — the flip silently activates/deactivates it."""
+    if not any(".no_local_overwrite" in p for p in changed):
+        return []
+    cur_pc = expand_port_map(current.get("port_config") or {})
+    new_pc = expand_port_map(payload.get("port_config") or {})
+    cur_local = expand_port_map(current.get("local_port_config") or {})
+    new_local = expand_port_map(payload.get("local_port_config") or {})
+    out: list[str] = []
+    for member in cur_pc.keys() | new_pc.keys():
+        # default true (OAS): local discarded unless explicitly allowed
+        cur_flag = (cur_pc.get(member) or {}).get("no_local_overwrite", True)
+        new_flag = (new_pc.get(member) or {}).get("no_local_overwrite", True)
+        if cur_flag == new_flag:
+            continue
+        entry = new_local.get(member, cur_local.get(member)) or {}
+        for leaf in entry:
+            if not allowed(f"local_port_config.{member}.{leaf}", allowlist):
+                out.append(
+                    f"out-of-scope local leaf gated by a no_local_overwrite flip on {member}: "
+                    f"local_port_config.{member}.{leaf} (not in the M1 allowlist)"
+                )
+    return out
 
 
 def _offense_reason(path: str, current: Mapping[str, Any], payload: Mapping[str, Any]) -> str:

@@ -110,7 +110,7 @@ def expand_port_members(key: str) -> list[str]:
     return members
 
 
-def _expand_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def expand_port_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """{port-or-range key -> attrs} -> {member -> attrs} (later keys win per member)."""
     out: dict[str, dict[str, Any]] = {}
     for key, attrs in config.items():
@@ -136,9 +136,9 @@ def resolve_port_bases(eff: dict[str, Any]) -> dict[str, dict[str, Any]]:
     NOT merged here (it tweaks effective attrs in resolve_effective_ports and
     carries no usage/dynamic_usage). A port present only in local_port_config is
     included."""
-    pc = _expand_map(eff.get("port_config") or {})
+    pc = expand_port_map(eff.get("port_config") or {})
     out: dict[str, dict[str, Any]] = {m: dict(a) for m, a in pc.items()}
-    for member, attrs in _expand_map(eff.get("local_port_config") or {}).items():
+    for member, attrs in expand_port_map(eff.get("local_port_config") or {}).items():
         if _overridable(pc.get(member)):
             out[member] = {**out.get(member, {}), **attrs}
     return out
@@ -157,9 +157,9 @@ def resolve_effective_ports(
     `resolution` states where the usage came from: "explicit"/"system"/
     "unresolved" (see usage_definition) or "none" (no usage name).
     """
-    pc = _expand_map(eff.get("port_config") or {})
-    overwrite = _expand_map(eff.get("port_config_overwrite") or {})
-    local = _expand_map(eff.get("local_port_config") or {})
+    pc = expand_port_map(eff.get("port_config") or {})
+    overwrite = expand_port_map(eff.get("port_config_overwrite") or {})
+    local = expand_port_map(eff.get("local_port_config") or {})
     bases = resolve_port_bases(eff)
     for member in sorted(set(bases) | set(overwrite)):
         usage_name = (bases.get(member) or {}).get("usage")
