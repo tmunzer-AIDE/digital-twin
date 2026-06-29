@@ -176,13 +176,17 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 #   - local_port_config: the full usage-override set + stp_edge, but NOT dynamic_usage
 #     (dynamic_usage is a port_config-only runtime-profile pointer)
 # port_config_overwrite is honored for port_network + poe_disabled ONLY.
+# `description` is a cosmetic per-port label on every inline port map — it has no
+# modeled forwarding/security effect, so it is in scope (decidable, no findings)
+# rather than gated to UNKNOWN.
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
     "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
-    "speed", "duplex", "disable_autoneg",
+    "speed", "duplex", "disable_autoneg", "description",
 )
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(f"port_config.*.{a}" for a in _PORT_CONFIG_ATTRS)
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}" for a in ("usage", "stp_edge", "disabled", *_MODELED_USAGE_ATTRS)
+    f"local_port_config.*.{a}"
+    for a in ("usage", "stp_edge", "disabled", "description", *_MODELED_USAGE_ATTRS)
 )
 _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.port_network",
@@ -191,6 +195,7 @@ _OVERWRITE_LEAVES: tuple[str, ...] = (
     "port_config_overwrite.*.speed",
     "port_config_overwrite.*.duplex",
     "port_config_overwrite.*.mac_limit",
+    "port_config_overwrite.*.description",
 )
 _DEVICE_PORT_LEAVES: tuple[str, ...] = (
     *_PORT_CONFIG_LEAVES,
