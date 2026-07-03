@@ -701,16 +701,24 @@ def test_mac_limit_lowered_below_clients_is_review():
     assert v.decision is Decision.REVIEW
 
 
-def test_enable_qos_change_is_review_not_unknown():
+def test_enable_qos_change_is_safe_not_unmodeled_change():
+    # Spec 1 moved enable_qos to the benign SAFE group: it never reaches
+    # PortMisc (ignored by ingest entirely), so an enable_qos-only delta must
+    # NOT wake wired.port.unmodeled_change end-to-end. `usage` is included in
+    # the local_port_config payload (unlike the sibling mac_limit/enable_qos
+    # tests above) so the assertion isn't confounded by the pre-existing,
+    # unrelated l0.schema.violation ("'usage' is a required property") that a
+    # bare local_port_config override otherwise trips.
     sw_a = {**SWITCH, "port_config": {
         **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
     raw = dc_replace(_raw(), devices=(sw_a,))
-    payload = {"local_port_config": {"ge-0/0/0": {"enable_qos": True}}}
+    payload = {"local_port_config": {"ge-0/0/0": {"usage": "office", "enable_qos": True}}}
     v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
                  provider=FakeProvider(raw=raw))
     assert v.decision is not Decision.UNKNOWN, v.decision_reasons
-    assert any(c.startswith("wired.port.unmodeled_change") for c in {f.code for f in v.findings})
-    assert v.decision is Decision.REVIEW
+    codes = {f.code for f in v.findings}
+    assert not any(c.startswith("wired.port.unmodeled_change") for c in codes)
+    assert v.decision is Decision.SAFE, v.decision_reasons
 
 
 def test_simulate_twice_same_plan_and_provider_is_idempotent(tmp_path):

@@ -13,6 +13,26 @@ def test_mac_limit_normalizer():
     assert isinstance(_mac_limit({"x": 1}), str)  # object -> token, not None
 
 
+def test_port_misc_reads_the_spec1_reviewed_knobs():
+    from digital_twin.adapters.mist.ingest.switch import _port_misc
+
+    assert _port_misc({}) is None
+    assert _port_misc({"enable_qos": True}) is None  # benign: ignored by ingest
+    m = _port_misc({"poe_priority": "high", "community_vlan_id": 811,
+                    "stp_p2p": True})
+    assert m is not None
+    assert m.poe_priority == "high"
+    assert m.community_vlan_id == 811
+    assert m.stp_p2p is True
+    # scalar honesty: templated/unparseable values stay diff-bearing tokens,
+    # never collapsed to None/default/bool (the GS27 metric false-SAFE scar)
+    t = _port_misc({"community_vlan_id": "{{pvlan}}"})
+    assert t is not None and t.community_vlan_id == "unresolved:{{pvlan}}"
+    b = _port_misc({"use_vstp": "{{vstp}}"})
+    assert b is not None and b.use_vstp == "unresolved:{{vstp}}"  # NOT True
+    assert _port_misc({"stp_p2p": False}) is None  # explicit default == absent
+
+
 def _ingest() -> IngestContext:
     ctx = IngestContext(
         raw=raw_site(),

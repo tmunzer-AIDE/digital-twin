@@ -1,5 +1,6 @@
-"""wired.port.unmodeled_change: inter_switch_link/storm_control/enable_qos changes
-are recognized and floored to REVIEW (impact not modeled). Never SAFE/UNSAFE."""
+"""wired.port.unmodeled_change: inter_switch_link/storm_control/the Spec-1
+reviewed knobs changed are recognized and floored to REVIEW (impact not
+modeled). Never SAFE/UNSAFE. enable_qos left this surface in Spec 1 (benign)."""
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.unmodeled_change import PortUnmodeledChangeCheck
@@ -22,11 +23,40 @@ def _run(base, prop):
         baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)))
 
 
-def test_enable_qos_change_is_review():
-    r = _run(_ir(None), _ir(PortMisc(enable_qos=True)))
-    assert r.status is Status.WARN
-    assert r.findings[0].code == "wired.port.unmodeled_change.recognized"
-    assert r.findings[0].severity is Severity.WARNING
+def _run_with_misc_flip(knob, value):
+    return _run(_ir(None), _ir(PortMisc(**{knob: value})))
+
+
+def test_each_new_reviewed_knob_is_review():
+    # poe_priority (str), community_vlan_id (int), and the PVLAN/STP booleans
+    # each wake the recognized-but-unmodeled REVIEW carrier (Spec 1)
+    cases = [
+        ("poe_priority", "high"),
+        ("community_vlan_id", 811),
+        ("inter_isolation_network_link", True),
+        ("stp_required", True),
+        ("stp_no_root_port", True),
+        ("stp_p2p", True),
+        ("use_vstp", True),
+    ]
+    for knob, value in cases:
+        result = _run_with_misc_flip(knob, value)
+        f = result.findings[0]
+        assert f.code == "wired.port.unmodeled_change.recognized", knob
+        assert f.severity is Severity.WARNING, knob
+        assert f.confidence.level is ConfidenceLevel.MEDIUM, knob
+        assert knob in f.evidence["knobs"], knob
+
+
+def test_enable_qos_no_longer_wakes_the_check():
+    # Spec 1 moved enable_qos to the benign SAFE group: it must not enter
+    # PortMisc, so an enable_qos-only delta produces NO unmodeled_change
+    # finding. (Replaces test_enable_qos_change_is_review; the SAFE end-to-end
+    # lives in the pipeline suite.)
+    from digital_twin.adapters.mist.ingest.switch import _port_misc
+
+    result = _run(_ir(None), _ir(_port_misc({"enable_qos": True})))
+    assert result.status is Status.PASS and not result.findings
 
 
 def test_inter_switch_link_change_is_review():
@@ -61,4 +91,4 @@ def test_misc_object_flip_without_recognized_knob_is_silent():
 
 def test_no_change_is_silent():
     assert _run(_ir(None), _ir(None)).findings == ()
-    assert _run(_ir(PortMisc(enable_qos=True)), _ir(PortMisc(enable_qos=True))).findings == ()
+    assert _run(_ir(PortMisc(stp_p2p=True)), _ir(PortMisc(stp_p2p=True))).findings == ()

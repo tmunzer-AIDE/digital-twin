@@ -435,11 +435,46 @@ def _storm_digest(sc: Any) -> str | None:
     return ";".join(f"{k}={nondefault[k]}" for k in sorted(nondefault))
 
 
+def _int_token(v: Any) -> int | str | None:
+    """Concrete int / None (absent/empty/bool) / a stable `unresolved:` token
+    (templated/unparseable — NEVER collapsed, it must stay change-detecting)."""
+    if v is None or v == "" or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if s.isdigit():
+            return int(s)
+        return f"unresolved:{s}" if s else None
+    return f"unresolved:{v!r}"
+
+
+def _bool_token(v: Any) -> bool | str:
+    """Concrete bool / False (absent/None/empty) / a stable `unresolved:` token
+    (templated/unparseable — NEVER collapsed to a bool; bool("{{vstp}}") would be
+    True and hide the change from the diff)."""
+    if v is None or v == "":
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        return f"unresolved:{s}" if s else False
+    return f"unresolved:{v!r}"
+
+
 def _port_misc(usage: dict[str, Any]) -> PortMisc | None:
     m = PortMisc(
         inter_switch_link=bool(usage.get("inter_switch_link")),
-        enable_qos=bool(usage.get("enable_qos")),
         storm_control=_storm_digest(usage.get("storm_control")),
+        poe_priority=usage.get("poe_priority") or None,
+        community_vlan_id=_int_token(usage.get("community_vlan_id")),
+        inter_isolation_network_link=_bool_token(usage.get("inter_isolation_network_link")),
+        stp_required=_bool_token(usage.get("stp_required")),
+        stp_no_root_port=_bool_token(usage.get("stp_no_root_port")),
+        stp_p2p=_bool_token(usage.get("stp_p2p")),
+        use_vstp=_bool_token(usage.get("use_vstp")),
     )
     return m if m != PortMisc() else None
 
