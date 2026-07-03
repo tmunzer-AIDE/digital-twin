@@ -1,6 +1,6 @@
 # Port-profile attribute completion — curated SAFE + REVIEW coverage
 
-**Status:** PROPOSED
+**Status:** Implemented (2026-07-03; plan docs/superpowers/plans/2026-07-03-port-profile-attribute-completion.md)
 **Date:** 2026-06-29
 **Author:** brainstormed with the repo owner
 

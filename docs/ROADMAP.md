@@ -451,6 +451,37 @@ modeling" below.
 - ✅ Switch L1 link-parameter mismatch — speed/duplex/autoneg (SP2 of the port-config attribute-modeling program) — done 2026-06-25
 - ✅ Switch wired-auth (802.1X / MAC-auth, whole surface, policy-floor) (SP3 of the port-config attribute-modeling program) — done 2026-06-25
 - ✅ Switch port-config misc — voip_network (voice VLAN) + mac_limit + recognized→REVIEW knobs (SP4, final of the port-config attribute-modeling program) — done 2026-06-26
+- ✅ **Port-profile attribute completion** (Spec-1, the next installment after the
+  SP1-SP4 program) — done 2026-07-03. Curated SAFE for non-connectivity
+  port-profile metadata/timing leaves (`ui_evpntopo_id` OAS-refresh-gated;
+  `enable_qos` moved OUT of the REVIEW allowlist to benign SAFE); a
+  recognized→REVIEW surface (`wired.port.unmodeled_change`) for admission,
+  PoE-priority, STP, PVLAN, and runtime-protection knobs whose real impact
+  isn't modeled yet (`inter_switch_link`, `storm_control`, `poe_priority`,
+  `community_vlan_id`, `inter_isolation_network_link`, `stp_required`,
+  `stp_no_root_port`, `stp_p2p`, `use_vstp`); auth-surface REVIEW additions
+  (`server_fail_retry_interval`, `bypass_auth_when_server_down_for_voip` —
+  the latter ingested as auth surface but gated as usage-only per the
+  refreshed OAS, per the spec's own contingency clause). No new check ids;
+  only fields added on existing surfaces (`wired.port.unmodeled_change` +
+  the SAFE/REVIEW gate tables). Spec:
+  `docs/superpowers/specs/2026-06-29-port-profile-attribute-completion-design.md`;
+  plan: `docs/superpowers/plans/2026-07-03-port-profile-attribute-completion.md`.
+  **Deferred follow-up specs:**
+  - **PVLAN impact model** — `community_vlan_id` and
+    `inter_isolation_network_link` can move from REVIEW to modeled SAFE/UNSAFE
+    once the twin has a PVLAN graph.
+  - **STP/VSTP policy model** — `stp_required`, `stp_no_root_port`, `stp_p2p`,
+    and `use_vstp` can move from REVIEW to precise STP risk findings.
+  - **RADIUS outage behavior** — `server_fail_retry_interval` and
+    `bypass_auth_when_server_down_for_voip` can become more precise once the
+    twin models RADIUS availability/fail-open state.
+  - **PoE budget model** — `poe_priority` can become a real risk check once
+    switch budget and all powered draw/priority inputs are available.
+  - **`PortMisc.inter_switch_link` harmonization** — bring it onto the
+    `_bool_token` unresolved-token handling used by the other Spec-1 misc
+    knobs; today it keeps the legacy `bool()` coercion, which is #38-pinned
+    behavior, so changing it needs its own review.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
