@@ -141,10 +141,14 @@ def test_unrouted_vlan_never_fires():
 
 
 def _routed_ir(*, gateway="10.0.0.1", gw_unresolved=False, intf_ip="10.0.0.1",
-               with_intf=True):
-    from digital_twin.ir.entities import L3Intf, L3Role
+               with_intf=True, blind_gateway=False):
+    from digital_twin.ir.entities import Device, DeviceRole, L3Intf, L3Role
 
     b = IRBuilder().add_device(sw("S"))
+    if blind_gateway:
+        b.add_device(
+            Device(id="GW", role=DeviceRole.GATEWAY, site="s1", l3_unmodeled=True)
+        )
     b.add_vlan(Vlan(vlan_id=10, name="corp", subnet="10.0.0.0/24",
                     gateway=gateway, gateway_unresolved=gw_unresolved))
     if with_intf:
@@ -177,6 +181,26 @@ def test_owner_ip_moved_while_g_unchanged_is_error():
     f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
     assert f.severity is Severity.ERROR
     assert f.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_broken_owner_with_blind_gateway_demotes_to_warning_medium():
+    # the never-false-SAFE demotion on the .gateway_unowned ERROR path: the
+    # baseline owner breaks (G moves away), but a blind gateway (network
+    # namespace unmodeled) may hold the invisible replacement interface — the
+    # blind-gateway cap lowers confidence to MEDIUM, and an ERROR that is not
+    # HIGH must demote to WARNING (a confident-UNSAFE claim needs confident
+    # facts; MEDIUM evidence only earns a REVIEW)
+    base = _routed_ir(gateway="10.0.0.1", blind_gateway=True)
+    prop = _routed_ir(gateway="10.0.0.9", blind_gateway=True)
+    r = _run(base, prop)
+    f = next(x for x in r.findings if x.code.endswith("gateway_unowned"))
+    assert f.code == "wired.l3.gateway_gap.gateway_unowned"
+    assert f.severity is Severity.WARNING  # demoted from ERROR by the not-HIGH gate
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+    assert r.status is Status.WARN
+    # the WARNING is a real conclusion -> the blind-gateway note attaches
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("unmodeled" in n for n in r.coverage.notes)
 
 
 def test_never_owned_is_warning_medium():

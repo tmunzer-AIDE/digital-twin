@@ -573,6 +573,93 @@ def test_preexisting_blind_peer_untouched_device_no_note():
     assert res.coverage.state is CoverageState.COMPLETE and res.status is Status.PASS
 
 
+def test_peer_unreachable_backstop_fires_on_attribution_gap():
+    # The defensive backstop: a telemetry-CONFIRMED peer break whose structural
+    # attribution failed must still surface as ERROR/HIGH, never a silent PASS.
+    # Honest trigger: the interface moves to area 1 (away from the area-0 peer,
+    # so the break is confirmed — an area-mismatched candidate is not a valid
+    # cover, hence NOT unevaluable-blind) while the vlan simultaneously loses
+    # its routedness in proposed (subnet gone, no L3 intf) — section 3 then
+    # skips .area_changed for the retained pair, leaving the break unowned.
+    telemetry = [("S", "198.51.10.5", "0", "Full")]
+    base = _ir([ospf("S", 10, name="c", area="0")],
+               subnets={10: "198.51.10.0/24"}, telemetry=telemetry)
+    prop = _ir([ospf("S", 10, name="c", area="1")],
+               subnets={10: None}, telemetry=telemetry)
+    r = _run(base, prop)
+    f = next(f for f in r.findings
+             if f.code == "wired.l3.ospf_withdrawal.peer_unreachable")
+    assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["broken_peers"] == ["198.51.10.5"]
+    assert r.status is Status.FAIL  # confirmed break -> UNSAFE despite no structural owner
+
+
+def test_egress_lost_owner_matched_via_affected_vlans_escalates():
+    # Whole-device OSPF collapse with a live peer on an affected vlan: the
+    # egress_lost evidence carries no "vlan" key, only "affected_vlans" — the
+    # owner match must fall through to the affected_vlans branch and escalate
+    # the EXISTING finding to ERROR/HIGH (full blast radius on one finding),
+    # never emit a duplicate .peer_unreachable backstop for an owned break.
+    telemetry = [("S", "198.51.10.5", "0", "Full")]
+    base = _ir([ospf("S", 10, name="transit")], telemetry=telemetry)
+    prop = _ir([], telemetry=telemetry)
+    r = _run(base, prop)
+    f = next(f for f in r.findings if f.code.endswith(".egress_lost"))
+    # no observed clients -> structurally WARNING/MEDIUM; the confirmed peer
+    # break escalates it to ERROR/HIGH and names the peer
+    assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["broken_peers"] == ["198.51.10.5"]
+    assert "198.51.10.5" in f.message
+    assert not any(x.code.endswith(".peer_unreachable") for x in r.findings)
+    assert r.status is Status.FAIL
+
+
+def test_owner_match_skips_non_adjacency_finding_and_escalates_the_right_one():
+    # _owner_idx must skip a non-adjacency-affecting finding (metric_changed on
+    # vlan 10 comes FIRST in the findings list) and attach the broken vlan-20
+    # peer to the real owner (.passive_flip). Escalating the wrong finding
+    # would leave the actual break understated at WARNING.
+    telemetry = [("S", "198.51.20.5", "0", "Full")]
+    base = _ir([ospf("S", 10, name="a", metric=5), ospf("S", 20, name="b")],
+               telemetry=telemetry)
+    prop = _ir([ospf("S", 10, name="a", metric=20), ospf("S", 20, name="b", passive=True)],
+               telemetry=telemetry)
+    r = _run(base, prop)
+    flip = next(f for f in r.findings if f.code.endswith(".passive_flip"))
+    assert flip.severity is Severity.ERROR
+    assert flip.confidence.level is ConfidenceLevel.HIGH
+    assert flip.evidence["broken_peers"] == ["198.51.20.5"]
+    metric = next(f for f in r.findings if f.code.endswith(".metric_changed"))
+    assert metric.severity is Severity.WARNING  # NOT escalated: not adjacency-affecting
+    assert metric.confidence.level is ConfidenceLevel.MEDIUM
+    assert not any(x.code.endswith(".peer_unreachable") for x in r.findings)
+
+
+def test_collapse_with_no_routed_vlans_suppresses_egress_lost():
+    # A device whose ONLY OSPF vlan is not routed (no subnet, no L3 interface)
+    # loses all OSPF participation: there is no routed segment to lose egress,
+    # so .egress_lost must NOT fire (the empty-`affected` continue) — and the
+    # same non-routedness suppresses .advertised_removed. Silence is honest
+    # here: nothing routed was withdrawn.
+    def build(with_ospf):
+        b = IRBuilder().add_device(sw("S"))
+        b.add_vlan(Vlan(vlan_id=10, subnet=None))
+        if with_ospf:
+            b.add_ospf_intf(ospf("S", 10, name="mgmt"))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        b.with_capability(IRCapability.CLIENTS_ACTIVE)
+        return b.build()
+
+    r = _run(build(True), build(False))
+    assert not any(f.code.endswith(".egress_lost") for f in r.findings)
+    assert r.findings == ()
+    assert r.status is Status.PASS
+    assert r.coverage.state is CoverageState.COMPLETE
+    assert r.confidence.level is ConfidenceLevel.HIGH  # no findings -> HIGH check confidence
+
+
 def test_baseline_blind_peer_on_touched_device_emits_note():
     # Metric edit on device S touches it (structural OSPF finding on S).
     # Peer 203.0.113.9 NOT in any S subnet -> blind in baseline.

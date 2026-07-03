@@ -124,6 +124,40 @@ def test_area_move_with_subnet_unresolved_is_broken_not_unevaluable():
     assert unevaluable_peers(base, prop) == []
 
 
+def test_unparseable_peer_ip_is_blind_never_broken():
+    # escalate-only design: an unparseable peer IP cannot be placed in ANY
+    # coverage model, so covering_dev_vlan bails to None — the peer classifies
+    # as not-covered (blind, an unverifiable unknown), and can never become a
+    # CONFIRMED break (broken_peers requires baseline coverage it cannot have)
+    from digital_twin.analysis.ospf_reachability import covering_dev_vlan
+
+    nb = [OspfNeighbor(device_id="d1", peer_ip="not-an-ip", area="0", state="Full")]
+    ir = _switch_ir(
+        vlans=[Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24")],
+        intfs=[OspfIntf(device_id="d1", vlan_id=10, area="0", network_name="c")],
+        neighbors=nb)
+    assert covering_dev_vlan(ir.ospf_neighbors[0], ir) is None
+    assert covered(ir.ospf_neighbors[0], ir) is False
+    assert ir.ospf_neighbors[0] in blind_peers(ir)
+    assert broken_peers(ir, ir) == []
+
+
+def test_peer_is_not_covered_by_another_devices_subnet():
+    # the covering-interface loop must skip other devices: an OSPF subnet that
+    # numerically contains the peer IP but lives on d2 does NOT cover a peer
+    # observed on d1 — adjacency is per-device, and a cross-device "cover"
+    # would hide a real break on d1 behind d2's unrelated interface
+    b = IRBuilder().add_device(sw("d1")).add_device(sw("d2"))
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.OSPF_TELEMETRY)
+    b.add_vlan(Vlan(vlan_id=10, name="c", subnet="10.0.0.0/24"))
+    b.add_ospf_intf(OspfIntf(device_id="d2", vlan_id=10, area="0", network_name="c"))
+    b.set_ospf_neighbors(
+        [OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Full")], 0)
+    ir = b.build()
+    assert covered(ir.ospf_neighbors[0], ir) is False
+    assert ir.ospf_neighbors[0] in blind_peers(ir)
+
+
 def test_non_established_never_broken():
     nb = [OspfNeighbor(device_id="d1", peer_ip="10.0.0.5", area="0", state="Init")]
     base = _switch_ir(
