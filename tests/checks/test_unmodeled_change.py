@@ -1,12 +1,14 @@
 """wired.port.unmodeled_change: inter_switch_link/storm_control/the Spec-1
 reviewed knobs changed are recognized and floored to REVIEW (impact not
 modeled). Never SAFE/UNSAFE. enable_qos left this surface in Spec 1 (benign)."""
+import dataclasses
+
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.unmodeled_change import PortUnmodeledChangeCheck
 from digital_twin.contracts import Severity
 from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
-from digital_twin.ir.entities import PortMisc
+from digital_twin.ir.entities import PortMisc, StpPolicy
 from tests.factories import sw
 
 
@@ -18,6 +20,13 @@ def _ir(misc):
     return b.build()
 
 
+def _ir_with_port(port):
+    b = IRBuilder().add_device(sw("S"))
+    b.add_port(port)
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
 def _run(base, prop):
     return PortUnmodeledChangeCheck().run(CheckContext(
         baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff_ir(base, prop)))
@@ -25,6 +34,13 @@ def _run(base, prop):
 
 def _run_with_misc_flip(knob, value):
     return _run(_ir(None), _ir(PortMisc(**{knob: value})))
+
+
+def _run_with_stp_policy_flip(knob, value):
+    base_port = Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1",
+                      mode=PortMode.ACCESS, native_vlan=10)
+    prop_port = dataclasses.replace(base_port, stp_policy=StpPolicy(**{knob: value}))
+    return _run(_ir_with_port(base_port), _ir_with_port(prop_port))
 
 
 def test_each_new_reviewed_knob_is_review():
@@ -92,3 +108,31 @@ def test_no_change_is_silent():
     assert _run(
         _ir(PortMisc(inter_switch_link=True)), _ir(PortMisc(inter_switch_link=True))
     ).findings == ()
+
+
+def test_stp_policy_knobs_no_longer_wake_unmodeled_change():
+    # Spec-2: the four knobs moved to Port.stp_policy / wired.stp.policy —
+    # a knobs-only flip produces NO unmodeled_change finding (the new check's
+    # floor carries the REVIEW; pinned in tests/checks/test_stp_policy.py)
+    for knob in ("stp_required", "stp_no_root_port", "stp_p2p", "use_vstp"):
+        base_ir = _ir_with_port(Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1",
+                                      mode=PortMode.ACCESS, native_vlan=10))
+        prop_port = dataclasses.replace(
+            list(base_ir.ports.values())[0], stp_policy=StpPolicy(**{knob: True}))
+        prop_ir = _ir_with_port(prop_port)
+        # non-vacuity: the flip must actually produce a changed port (else the
+        # PASS below would be vacuous — the check never ran on a real delta)
+        assert base_ir.ports != prop_ir.ports, knob
+        diff = diff_ir(base_ir, prop_ir)
+        assert diff.touches("port"), knob
+
+        result = _run_with_stp_policy_flip(knob, True)
+        assert result.status is Status.PASS and not result.findings, knob
+
+
+def test_remaining_misc_knobs_still_wake_unmodeled_change():
+    for knob, value in [("inter_switch_link", True), ("storm_control", "no_broadcast=True"),
+                        ("poe_priority", "high"), ("community_vlan_id", 811),
+                        ("inter_isolation_network_link", True)]:
+        result = _run_with_misc_flip(knob, value)
+        assert result.findings and result.findings[0].severity is Severity.WARNING, knob
