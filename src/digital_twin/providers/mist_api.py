@@ -16,6 +16,14 @@ Network templates are fetched once per unique id and reused across sites.
 
 NOTE: SDK call names below are probe-validated (tools/probe_fetch.py); re-run the
 probe after an SDK bump before trusting the equivalence gate.
+
+FAIL-CLOSED GUARD: the mistapi SDK never raises for HTTP failures — non-429
+errors, connection drops and proxy failures return a normal-looking APIResponse
+whose .data is {} (or the error body). Unchecked `.data` access would compile an
+empty-but-accepted baseline (a "confident wrong answer" — the one thing this
+system must never produce). Every response therefore goes through _checked(),
+and list endpoints page via _pages() (mistapi.get_all silently truncates when a
+later page fails). See tests/providers/test_mist_api_response_guard.py.
 """
 
 from __future__ import annotations
@@ -45,6 +53,40 @@ from .base import (
 )
 
 _Json = dict[str, Any]
+
+
+class MistApiError(RuntimeError):
+    """A Mist API call failed (HTTP error, connection/proxy failure, or an error
+    body). Raised by _checked() so the attempt()/guardrail machinery records the
+    failure (StateMeta or FetchError -> UNKNOWN) instead of accepting {} as data."""
+
+
+def _checked(resp: Any) -> Any:
+    """Validate a mistapi APIResponse; raise MistApiError on any failure shape.
+
+    status_code is None when requests never got a response (connection/proxy
+    failure); the SDK retries only 429s, so anything >= 400 here is final."""
+    url = getattr(resp, "url", "?")
+    if getattr(resp, "proxy_error", False):
+        raise MistApiError(f"proxy error calling {url}")
+    status = getattr(resp, "status_code", None)
+    if status is None:
+        raise MistApiError(f"no HTTP response (connection failure) calling {url}")
+    if status >= 400:
+        raise MistApiError(f"HTTP {status} calling {url}")
+    data = getattr(resp, "data", None)
+    if isinstance(data, dict) and data.get("error"):
+        raise MistApiError(f"error body {data.get('error')!r} (HTTP {status}) calling {url}")
+    return resp
+
+
+def _page_rows(data: Any, url: str) -> list[_Json]:
+    """One page's rows; a shape we don't recognize raises (fail closed, never guess)."""
+    if isinstance(data, list):
+        return [dict(d) for d in data]
+    if isinstance(data, dict) and "results" in data:
+        return [dict(d) for d in data["results"]]
+    raise MistApiError(f"unexpected page shape ({type(data).__name__}) from {url}")
 
 
 def _nactag_fetch_finding(error: str) -> Finding:
@@ -268,18 +310,24 @@ class MistApiProvider(StateProvider):
         return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
+        # _pages (not .data): the raw read took only the FIRST page, and a failed
+        # call yielded data={} -> rules=() accepted as a successful empty ruleset
         try:
-            rules = mistapi.api.v1.orgs.nacrules.listOrgNacRules(self._session, scope.org_id).data
+            rules = self._pages(
+                mistapi.api.v1.orgs.nacrules.listOrgNacRules(self._session, scope.org_id)
+            )
         except Exception as e:  # noqa: BLE001 — errors-as-values at the boundary
             return FetchError(scope=scope, failures=(FetchFailure("nacrules", str(e)),),
                               acquired_at=datetime.now(UTC), host=self._host)
         tag_findings: tuple[Finding, ...] = ()
         try:
-            tags = mistapi.api.v1.orgs.nactags.listOrgNacTags(self._session, scope.org_id).data
+            tags = self._pages(
+                mistapi.api.v1.orgs.nactags.listOrgNacTags(self._session, scope.org_id)
+            )
         except Exception as e:  # noqa: BLE001 — labels-only, NOT fatal
             tags = []
             tag_findings = (_nactag_fetch_finding(str(e)),)
-        return NacFetch(rules=tuple(rules or ()), tags=tuple(tags or ()),
+        return NacFetch(rules=tuple(rules), tags=tuple(tags),
                         tag_findings=tag_findings)
 
     # -- shared per-site assembly ---------------------------------------------
@@ -433,59 +481,86 @@ class MistApiProvider(StateProvider):
             return _raise
         return lambda sid: grouped.get(sid, [])
 
+    def _pages(self, resp: Any) -> list[_Json]:
+        """All pages of a list endpoint, validating EVERY page. mistapi.get_all
+        silently truncates instead: a failed later page has data={} and
+        next=None, which just ends its loop (and an error BODY would splice
+        garbage rows in). Here any bad page raises MistApiError."""
+        resp = _checked(resp)
+        rows = _page_rows(resp.data, resp.url)
+        while resp.next:
+            nxt = mistapi.get_next(self._session, resp)
+            if nxt is None:  # pragma: no cover — get_next contract: next was falsy
+                break
+            resp = _checked(nxt)
+            rows += _page_rows(resp.data, resp.url)
+        return rows
+
     # -- one private helper per endpoint (probe-validated names) ---------------
     def _site(self, s: SiteScope) -> _Json:
-        return dict(mistapi.api.v1.sites.sites.getSiteInfo(self._session, s.site_id).data)
+        return dict(
+            _checked(mistapi.api.v1.sites.sites.getSiteInfo(self._session, s.site_id)).data
+        )
 
     def _setting(self, s: SiteScope) -> _Json:
-        return dict(mistapi.api.v1.sites.setting.getSiteSetting(self._session, s.site_id).data)
+        return dict(
+            _checked(mistapi.api.v1.sites.setting.getSiteSetting(self._session, s.site_id)).data
+        )
 
     def _derived(self, s: SiteScope) -> _Json:
         return dict(
-            mistapi.api.v1.sites.setting.getSiteSettingDerived(self._session, s.site_id).data
+            _checked(
+                mistapi.api.v1.sites.setting.getSiteSettingDerived(self._session, s.site_id)
+            ).data
         )
 
     def _networktemplate(self, s: SiteScope, nt_id: str) -> _Json:
         return dict(
-            mistapi.api.v1.orgs.networktemplates.getOrgNetworkTemplate(
-                self._session, s.org_id, nt_id
+            _checked(
+                mistapi.api.v1.orgs.networktemplates.getOrgNetworkTemplate(
+                    self._session, s.org_id, nt_id
+                )
             ).data
         )
 
     def _gatewaytemplate(self, s: SiteScope, gt_id: str) -> _Json:
         return dict(
-            mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
-                self._session, s.org_id, gt_id
+            _checked(
+                mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                    self._session, s.org_id, gt_id
+                )
             ).data
         )
 
     def _sitetemplate(self, s: SiteScope, st_id: str) -> _Json:
         return dict(
-            mistapi.api.v1.orgs.sitetemplates.getOrgSiteTemplate(
-                self._session, s.org_id, st_id
+            _checked(
+                mistapi.api.v1.orgs.sitetemplates.getOrgSiteTemplate(
+                    self._session, s.org_id, st_id
+                )
             ).data
         )
 
     def _devices(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.devices.listSiteDevices(self._session, s.site_id, type="all")
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _device_stats(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.stats.listSiteDevicesStats(self._session, s.site_id, type="all")
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _port_stats(self, s: SiteScope) -> list[_Json]:
         # get_all pages the search response — never just the first 1000 results
         resp = mistapi.api.v1.sites.stats.searchSiteSwOrGwPorts(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _wireless_clients(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.stats.listSiteWirelessClientsStats(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _wired_clients(self, s: SiteScope) -> list[_Json]:
         resp = mistapi.api.v1.sites.wired_clients.searchSiteWiredClients(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _nac_clients(self, s: SiteScope) -> list[_Json]:
         # OBSERVATIONAL enrichment for the client.impact report (fingerprint +
@@ -495,20 +570,20 @@ class MistApiProvider(StateProvider):
         resp = mistapi.api.v1.orgs.nac_clients.searchOrgNacClients(
             self._session, s.org_id, site_id=s.site_id, duration="1d"
         )
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _ospf_neighbors(self, s: SiteScope) -> list[_Json]:
         # OBSERVATIONAL OSPF adjacency telemetry (GS27). A failure is NON-FATAL —
         # `attempt` records it in StateMeta.failures and the OspfNeighborIngester
         # degrades to telemetry-blind, never UNKNOWN.
         resp = mistapi.api.v1.sites.stats.searchSiteOspfStats(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _bgp_neighbors(self, s: SiteScope) -> list[_Json]:
         # OBSERVATIONAL BGP adjacency telemetry (GS28). Non-fatal: `attempt` records
         # any failure in StateMeta.failures and BgpNeighborIngester degrades to blind.
         resp = mistapi.api.v1.sites.stats.searchSiteBgpStats(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _wlans(self, s: SiteScope) -> list[_Json]:
         # site WLAN config (AP VLAN requirements) — the DERIVED list, which
@@ -517,17 +592,17 @@ class MistApiProvider(StateProvider):
         # the plain per-site list EMPTY (found in real use, 2026-06-10) — the
         # twin would then falsely "know" there are no WLAN requirements.
         resp = mistapi.api.v1.sites.wlans.listSiteWlansDerived(self._session, s.site_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _org_wlan(self, s: OrgScope, wlan_id: str) -> _Json:
         resp = mistapi.api.v1.orgs.wlans.getOrgWLAN(self._session, s.org_id, wlan_id)
-        return dict(resp.data)
+        return dict(_checked(resp).data)
 
     def _org_wlan_template(self, s: OrgScope, template_id: str) -> _Json:
         resp = mistapi.api.v1.orgs.templates.getOrgTemplate(
             self._session, s.org_id, template_id
         )
-        return dict(resp.data)
+        return dict(_checked(resp).data)
 
     def _org_networks(self, s: SiteScope) -> list[_Json]:
         # the GATEWAY's network namespace: org networks carry name + vlan_id +
@@ -536,12 +611,12 @@ class MistApiProvider(StateProvider):
         # found in real use 2026-06-11). NOTE: the list endpoint omits unset
         # fields; vlan_id is present on the full objects where configured.
         resp = mistapi.api.v1.orgs.networks.listOrgNetworks(self._session, s.org_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     # -- org-batched endpoints (payload identical to the per-site call) --------
     def _org_sites(self, s: OrgScope) -> list[_Json]:
         resp = mistapi.api.v1.orgs.sites.listOrgSites(self._session, s.org_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _org_device_stats(self, s: OrgScope) -> list[_Json]:
         # fields="*" is REQUIRED at org scope — without it the rows are lean and
@@ -549,12 +624,12 @@ class MistApiProvider(StateProvider):
         resp = mistapi.api.v1.orgs.stats.listOrgDevicesStats(
             self._session, s.org_id, type="all", fields="*"
         )
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _org_port_stats(self, s: OrgScope) -> list[_Json]:
         resp = mistapi.api.v1.orgs.stats.searchOrgSwOrGwPorts(self._session, s.org_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
 
     def _org_wired_clients(self, s: OrgScope) -> list[_Json]:
         resp = mistapi.api.v1.orgs.wired_clients.searchOrgWiredClients(self._session, s.org_id)
-        return [dict(d) for d in mistapi.get_all(self._session, resp)]
+        return self._pages(resp)
