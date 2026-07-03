@@ -237,11 +237,13 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # likewise simulated with no findings. `no_local_overwrite` IS modeled
 # (resolve_effective_ports/_overridable gate whether local_port_config applies),
 # but a lone flip activates or deactivates the member's local entry wholesale —
-# including any UNMODELED local leaf (e.g. a not-yet-reviewed knob) the gates
-# cannot otherwise see. So it is in scope, AND field_gate re-screens the
-# affected member's local leaves on a flip (screen_op -> _local_overwrite_ripple),
-# keeping the false-SAFE closed. (use_vstp/stp_p2p/stp_no_root_port were the
-# motivating unmodeled example pre-Spec-1; they are reviewed+modeled now.)
+# including any local leaf the gates cannot otherwise see. So it is in scope,
+# AND field_gate re-screens the affected member's local leaves on a flip
+# (screen_op -> _local_overwrite_ripple), keeping the false-SAFE closed.
+# (The Spec-1 STP knobs use_vstp/stp_p2p/stp_no_root_port are now REVIEWED via
+# PortMisc — they were the motivating pre-Spec-1 unmodeled example, but the
+# ripple remains as the backstop for the still-unmodeled remainder of the
+# OAS local_port_config map, e.g. `note`.)
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
     "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
     "speed", "duplex", "disable_autoneg", "description", "critical",

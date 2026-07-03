@@ -1,5 +1,15 @@
+import json
+from pathlib import Path
+
 from digital_twin.contracts import Rejection
+from digital_twin.scope.allowlist import RAW_ALLOWLIST
 from digital_twin.scope.field_gate import changed_paths, screen_op
+from digital_twin.scope.paths import allowed
+
+_DEVICE_SWITCH_OAS_PATH = (
+    Path(__file__).parents[2]
+    / "src/digital_twin/adapters/mist/oas/device_switch.schema.json"
+)
 
 CURRENT = {
     "id": "s1",
@@ -154,6 +164,55 @@ def test_no_local_overwrite_flip_rejects_over_unmodeled_local_leaf():
     r = screen_op("device", cur, payload)
     assert isinstance(r, Rejection)
     assert any("no_local_overwrite flip" in reason and "not_a_real_knob" in reason
+               for reason in r.reasons)
+
+
+def test_no_local_overwrite_flip_over_reviewed_stp_leaves_is_decidable():
+    # Spec 1: use_vstp/stp_p2p/stp_no_root_port are now REVIEWED local leaves
+    # (they reach PortMisc via _MISC_ATTRS/_MODELED_USAGE_ATTRS), so a
+    # no_local_overwrite flip over a local entry containing only them must PASS
+    # the field gate (the PortMisc diff carries the REVIEW) — no coverage gap.
+    cur = {
+        "type": "switch",
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
+        "local_port_config": {
+            "ge-0/0/0": {"use_vstp": True, "stp_p2p": False, "stp_no_root_port": True},
+        },
+    }
+    payload = {**cur, "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    assert screen_op("device", cur, payload) is None
+
+
+def test_no_local_overwrite_flip_over_an_unmodeled_local_leaf_still_gaps():
+    # Dormant backstop: the ripple guard survives Spec 1. Derive the
+    # still-unmodeled local leaf from the committed device_switch OAS minus
+    # the allowlisted local attrs (do NOT invent a fake leaf); pick
+    # sorted(...)[0] deterministically. If the set is empty, that emptiness
+    # itself is the assertion (the guard-path unit lives in the fabricated-leaf
+    # test above it, kept as-is).
+    with open(_DEVICE_SWITCH_OAS_PATH) as f:
+        schema = json.load(f)
+    local_props = set(
+        schema["properties"]["local_port_config"]["additionalProperties"]["properties"]
+    )
+    device_allowlist = RAW_ALLOWLIST["device"]
+    unmodeled = sorted(
+        leaf for leaf in local_props
+        if not allowed(f"local_port_config.ge-0/0/0.{leaf}", device_allowlist)
+    )
+    if not unmodeled:
+        assert unmodeled == []
+        return
+    leaf = unmodeled[0]
+    cur = {
+        "type": "switch",
+        "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
+        "local_port_config": {"ge-0/0/0": {"usage": "office", leaf: True}},
+    }
+    payload = {**cur, "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    r = screen_op("device", cur, payload)
+    assert isinstance(r, Rejection)
+    assert any("no_local_overwrite flip" in reason and leaf in reason
                for reason in r.reasons)
 
 
