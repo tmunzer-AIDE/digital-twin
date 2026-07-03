@@ -5,7 +5,7 @@ tests must remain passing after that extension.
 """
 
 from digital_twin.analysis.context import AnalysisContext
-from digital_twin.checks.base import CheckContext, Status
+from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.bgp_adjacency import BgpAdjacencyCheck, is_established
 from digital_twin.contracts import Severity
 from digital_twin.ir import BgpNeighbor, BgpPeer, DeviceRole, IRBuilder, IRCapability, diff_ir
@@ -161,6 +161,48 @@ def test_stable_fuzzy_peer_does_not_floor_unrelated_change():
                _ir([a, _peer("10.0.0.3", neighbor_as=65002)]))
     assert "wired.l3.bgp_adjacency.as_changed" in _codes(res)
     assert not any("ambiguous" in n or "differing" in n for n in res.coverage.notes)
+
+
+def test_non_literal_peer_key_is_note_not_finding():
+    # ingest keeps a non-literal neighbor-IP map key (e.g. a {{var}}) with
+    # unresolved=True: the peering cannot be identified, so a change touching
+    # it must abstain — a PARTIAL coverage note (-> REVIEW floor), never a
+    # confident .peering_added that pretends to know what was added
+    res = _run(_ir([]), _ir([_peer("{{peer}}", unresolved=True)]))
+    assert not res.findings
+    assert any("not a literal IP" in n for n in res.coverage.notes)
+    assert res.coverage.state is CoverageState.PARTIAL
+    assert res.status is Status.PASS  # the doubt lives in coverage, not a fake finding
+
+
+def test_retained_peer_templated_as_is_note_not_as_changed():
+    # a RETAINED active peering whose AS goes templated on one side: the value
+    # compare would see 65001 -> None and either false-fire .as_changed or
+    # silently pass — the token guard abstains with a note instead (the
+    # absent->templated false-SAFE scar tissue, spec GS28)
+    res = _run(_ir([_peer(neighbor_as=65001)]),
+               _ir([_peer(neighbor_as=None, neighbor_as_unresolved="{{asn}}")]))
+    assert "wired.l3.bgp_adjacency.as_changed" not in _codes(res)
+    assert any("templated AS on one side" in n for n in res.coverage.notes)
+    assert res.coverage.state is CoverageState.PARTIAL
+
+
+def test_retained_gateway_peer_templated_via_is_note_not_transport_changed():
+    # transport is gateway-only; a via that goes templated on one side cannot
+    # be compared — abstain with a note, never a confident .transport_changed
+    # (and never a silent pass over a possibly-changed session path)
+    def g(**kw: object) -> BgpPeer:
+        return BgpPeer(device_id="g1", role=DeviceRole.GATEWAY, session_name="s",
+                       neighbor_ip="203.0.113.1", **kw)  # type: ignore[arg-type]
+
+    def gw_ir(peer: BgpPeer):
+        return (IRBuilder().add_device(Device(id="g1", role=DeviceRole.GATEWAY, site="x"))
+                .with_capability(IRCapability.WIRED_L2).add_bgp_peer(peer).build())
+
+    res = _run(gw_ir(g(via="wan")), gw_ir(g(via=None, via_unresolved="{{transport}}")))
+    assert "wired.l3.bgp_adjacency.transport_changed" not in _codes(res)
+    assert any("templated transport" in n for n in res.coverage.notes)
+    assert res.coverage.state is CoverageState.PARTIAL
 
 
 # ---------------------------------------------------------------------------
