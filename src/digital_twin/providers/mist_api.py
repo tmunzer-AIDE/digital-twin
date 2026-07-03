@@ -546,7 +546,16 @@ class MistApiProvider(StateProvider):
         return self._pages(resp)
 
     def _device_stats(self, s: SiteScope) -> list[_Json]:
-        resp = mistapi.api.v1.sites.stats.listSiteDevicesStats(self._session, s.site_id, type="all")
+        # fields="*" is EXPLICIT here for the same reason as _org_device_stats:
+        # the twin depends on lldp_stat (AP-uplink detection), and the per-site
+        # endpoint returning it without fields is an undocumented SDK/API default
+        # — ask for full rows instead of relying on it. The SDK wrapper
+        # (listSiteDevicesStats) does not expose `fields`, so this issues the
+        # same GET through the session directly (same URI/paging/_checked path).
+        resp = self._session.mist_get(
+            uri=f"/api/v1/sites/{s.site_id}/stats/devices",
+            query={"type": "all", "fields": "*"},
+        )
         return self._pages(resp)
 
     def _port_stats(self, s: SiteScope) -> list[_Json]:
