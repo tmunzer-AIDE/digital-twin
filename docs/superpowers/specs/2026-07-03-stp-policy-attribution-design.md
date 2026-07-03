@@ -102,10 +102,14 @@ conservatively:
 | observed wired client, no modeled bridge peer | HIGH | ERROR |
 | modeled peer port with `bpdu_filter`, two-sided link | HIGH | ERROR |
 | any of the above with a one-sided tie | MEDIUM | WARNING |
-| unknown / no peer evidence | MEDIUM | WARNING |
 
-The rule is uniform: **ERROR iff the peer evidence is HIGH**; every sub-HIGH
-tier is WARNING (the floor still carries REVIEW). Evidence: `peer`, `peer_kind` (`ap`/`client`/`bpdu_filter`/
+The rule is uniform: **ERROR iff the peer evidence is HIGH**; a one-sided tie
+still names a CANDIDATE non-BPDU peer, so it stays `.blocking_risk` at
+WARNING/MEDIUM. **Unknown / no peer evidence does NOT qualify** — the model
+cannot claim "peer won't send BPDUs" about a peer it cannot see. That case
+falls through to the `.policy_change` floor with a coverage/evidence note
+("stp_required enabled on <port>: peer unobserved — blocking outcome not
+assessable"), review finding P2. Evidence: `peer`, `peer_kind` (`ap`/`client`/`bpdu_filter`/
 `unknown`), tie provenance, `occupants_behind` (clients/APs on the port —
 reuses the occupancy helpers), `severity_reason`.
 
@@ -185,9 +189,10 @@ check).
   `unmodeled_change`; each DOES wake `stp.policy` (floor at minimum). The five
   remaining PortMisc knobs still wake `unmodeled_change` (#38/#40 pins green).
 - **blocking_risk tiers:** one fixture per row of the peer-evidence table
-  (severity + confidence + evidence pinned); disable-direction (True→False)
-  produces floor only, never risk; pre-existing True untouched → INFO/nothing
-  per the pre-existing convention.
+  (severity + confidence + evidence pinned); an unknown/no-peer-evidence
+  fixture asserts the FLOOR + peer-unobserved note and NO `.blocking_risk`
+  (P2); disable-direction (True→False) produces floor only, never risk;
+  pre-existing True untouched → INFO/nothing per the pre-existing convention.
 - **root_protect_risk:** only-path + HIGH election → ERROR/HIGH; redundant
   path → floor only; election not HIGH (invalid priority in component) →
   WARNING + note; root external → WARNING + note.
