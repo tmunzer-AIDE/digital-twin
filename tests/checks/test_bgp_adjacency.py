@@ -8,7 +8,15 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.bgp_adjacency import BgpAdjacencyCheck, is_established
 from digital_twin.contracts import Severity
-from digital_twin.ir import BgpNeighbor, BgpPeer, DeviceRole, IRBuilder, IRCapability, diff_ir
+from digital_twin.ir import (
+    BgpNeighbor,
+    BgpPeer,
+    ConfidenceLevel,
+    DeviceRole,
+    IRBuilder,
+    IRCapability,
+    diff_ir,
+)
 from digital_twin.ir.entities import Device
 
 
@@ -58,6 +66,8 @@ def test_peering_removed_is_review():
     assert "wired.l3.bgp_adjacency.peering_removed" in _codes(res)
     assert res.status is Status.WARN
     assert all(f.severity is Severity.WARNING for f in res.findings)
+    # structural codes are reachability-unconfirmed (no RIB) -> MEDIUM
+    assert all(f.confidence.level is ConfidenceLevel.MEDIUM for f in res.findings)
 
 
 def test_peering_disabled_is_review():
@@ -226,6 +236,7 @@ def test_removed_established_peer_escalates_to_error():
     res = _run(base, prop)
     f = next(f for f in res.findings if f.code.endswith(".peering_removed"))
     assert f.severity is Severity.ERROR and res.status is Status.FAIL
+    assert f.confidence.level is ConfidenceLevel.HIGH  # telemetry-escalated
     assert f.evidence["broken_peers"] == ["10.0.0.2"]
     assert f.evidence["baseline_neighbor_as"] == 65001 and f.evidence["vrf"] == "default"
 
@@ -249,6 +260,7 @@ def test_added_peer_does_not_escalate():
     )
     res = _run(base, prop)
     assert all(f.severity is Severity.WARNING for f in res.findings)
+    assert all(f.confidence.level is ConfidenceLevel.MEDIUM for f in res.findings)
 
 
 def test_telemetry_blind_note_when_no_capability_and_session_breaking():

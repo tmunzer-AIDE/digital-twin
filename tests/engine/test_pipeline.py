@@ -713,6 +713,34 @@ def test_enable_qos_change_is_review_not_unknown():
     assert v.decision is Decision.REVIEW
 
 
+def test_simulate_twice_same_plan_and_provider_is_idempotent(tmp_path):
+    # e2e idempotence: the SAME plan against the SAME FixtureProvider must yield
+    # the SAME verdict twice — guards shared-state mutation (the plan dict, the
+    # provider's loaded fixture, module-level registries) between runs. GS1
+    # world: de-vlanning the sole carrier of vlan 999 -> UNSAFE both times.
+    from digital_twin.observability.replay.store import FixtureProvider
+    from tests.golden.builders import (
+        EDGE,
+        EDGE_UPLINK_PORT,
+        augmented_doc,
+        device_op,
+        plan_for,
+        write_doc,
+    )
+
+    doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=False)
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
+    )
+    provider = FixtureProvider(write_doc(doc, tmp_path / "fx.json"))
+    v1 = simulate(plan, provider=provider)
+    v2 = simulate(plan, provider=provider)
+    assert v1.decision is Decision.UNSAFE, v1.decision_reasons
+    assert v2.decision is v1.decision
+    assert sorted(f.code for f in v2.findings) == sorted(f.code for f in v1.findings)
+    assert v2.decision_reasons == v1.decision_reasons
+
+
 def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
     # pinning one end of a trunk uplink to a forced speed/duplex while the peer
     # autonegotiates must SIMULATE (REVIEW via autoneg_mismatch), not UNKNOWN.

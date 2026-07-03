@@ -9,7 +9,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.l1_param_mismatch import L1ParamMismatchCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, IRCapability, Port, PortMode, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
 from digital_twin.ir.provenance import Provenance, fact_meta
 from tests.factories import link, sw
 
@@ -49,6 +49,8 @@ def test_forced_vs_forced_different_speed_is_error():
     assert r.status is Status.FAIL
     assert r.findings[0].code == "wired.l1.link_param_mismatch.speed_conflict"
     assert r.findings[0].severity is Severity.ERROR
+    # ERROR requires HIGH (config ports + two-sided-LLDP link, min = HIGH)
+    assert r.findings[0].confidence.level is ConfidenceLevel.HIGH
 
 
 def test_forced_vs_forced_different_duplex_is_error():
@@ -66,6 +68,7 @@ def test_forced_vs_autonegotiating_is_warning():
     f = r.findings[0]
     assert f.code == "wired.l1.link_param_mismatch.autoneg_mismatch"
     assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH  # both ends config-stated
 
 
 def test_forced_vs_no_config_peer_is_unverified_not_autoneg():
@@ -75,6 +78,8 @@ def test_forced_vs_no_config_peer_is_unverified_not_autoneg():
     r = _run(base, prop)
     assert r.findings[0].code == "wired.l1.link_param_mismatch.unverified"
     assert r.findings[0].severity is Severity.WARNING
+    # .unverified is floored by _UNVERIFIED (no peer config facts) -> MEDIUM
+    assert r.findings[0].confidence.level is ConfidenceLevel.MEDIUM
 
 
 def test_both_autonegotiating_is_silent():
@@ -96,6 +101,7 @@ def test_introduced_mismatch_not_upgraded_by_baseline_observed_half():
     prop = _ir(_forced("S:ge-0/0/1"), _p("T:ge-0/0/1", observed_duplex="half"))
     r = _run(base, prop)
     assert r.findings[0].severity is Severity.WARNING  # not escalated
+    assert r.findings[0].confidence.level is ConfidenceLevel.HIGH  # config provenance only
 
 
 def test_preexisting_conflict_clean_negotiation_suppressed():
@@ -115,6 +121,7 @@ def test_preexisting_conflict_no_clean_obs_is_info():
     r = _run(base, base)  # unchanged
     f = r.findings[0]
     assert f.code == "wired.l1.link_param_mismatch.preexisting" and f.severity is Severity.INFO
+    assert f.confidence.level is ConfidenceLevel.HIGH  # port/link meta min, no floor
     assert r.status is Status.PASS  # INFO does not floor
 
 
@@ -137,3 +144,4 @@ def test_unknown_peer_becoming_config_stated_auto_is_not_demoted():
     f = r.findings[0]
     assert f.code == "wired.l1.link_param_mismatch.autoneg_mismatch"
     assert f.severity is Severity.WARNING  # NOT preexisting/INFO
+    assert f.confidence.level is ConfidenceLevel.HIGH  # peer now config-stated

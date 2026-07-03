@@ -5,7 +5,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.l2_vlan_segmentation import L2VlanSegmentationCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
 from tests.factories import access_port, link, sw, trunk_port
 
 
@@ -41,6 +41,7 @@ def test_split_is_info_context():
     assert result.status is Status.PASS
     f = next(f for f in result.findings if f.code == "wired.l2.vlan_segmentation.split")
     assert f.severity is Severity.INFO
+    assert f.confidence.level is ConfidenceLevel.HIGH  # structural graph compare
 
 
 def test_contraction_without_split_is_info_pass():
@@ -49,6 +50,7 @@ def test_contraction_without_split_is_info_pass():
     result = L2VlanSegmentationCheck().run(_ctx(base, prop))
     assert result.status is Status.PASS
     assert all(f.severity is Severity.INFO for f in result.findings)
+    assert all(f.confidence.level is ConfidenceLevel.HIGH for f in result.findings)
 
 
 def test_no_structural_change_passes_quietly():

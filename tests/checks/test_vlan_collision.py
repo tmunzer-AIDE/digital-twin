@@ -2,7 +2,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.vlan_collision import VlanCollisionCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRCapability, Vlan
+from digital_twin.ir import ConfidenceLevel, IRCapability, Vlan
 from digital_twin.ir.diff import diff_ir
 from digital_twin.ir.model import IRBuilder
 
@@ -38,6 +38,8 @@ def test_preexisting_collision_is_info():
     res = VlanCollisionCheck().run(_ctx(ir, ir))
     assert res.status is Status.PASS
     assert res.findings[0].severity is Severity.INFO
+    # config-lint tier is HIGH by design (deterministic config facts)
+    assert res.findings[0].confidence.level is ConfidenceLevel.HIGH
     assert res.findings[0].code.endswith(".preexisting")
 
 

@@ -2,7 +2,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.wlan_open_guest import WlanOpenGuestCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRCapability, Wlan
+from digital_twin.ir import ConfidenceLevel, IRCapability, Wlan
 from digital_twin.ir.diff import diff_ir
 from digital_twin.ir.model import IRBuilder
 
@@ -40,6 +40,7 @@ def test_preexisting_open_no_isolation_is_info_not_warn():
     ir = _ir(Wlan(id="w1", isolation=False, **_OPEN))
     f = WlanOpenGuestCheck().run(_ctx(ir, ir)).findings[0]
     assert f.severity is Severity.INFO and f.code.endswith(".preexisting")
+    assert f.confidence.level is ConfidenceLevel.HIGH  # config-lint tier, HIGH by design
 
 
 def test_empty_explicit_scope_is_silent():

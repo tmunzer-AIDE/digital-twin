@@ -5,7 +5,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.mac_limit import MacLimitExceededCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, IRCapability, Port, PortMode, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
 from tests.factories import sw, wired_client
 
 
@@ -36,6 +36,8 @@ def test_lowered_below_observed_is_review_exceeded():
     f = r.findings[0]
     assert f.code == "wired.port.mac_limit_exceeded.exceeded"
     assert f.severity is Severity.WARNING and r.status is Status.WARN
+    # the observed-count-over-cap comparison is certain -> HIGH
+    assert f.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_within_limit_with_clients_is_silent():

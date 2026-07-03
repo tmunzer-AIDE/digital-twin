@@ -7,7 +7,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.scope_lint import DhcpScopeLintCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import DhcpScope, IRBuilder, IRCapability, diff_ir
+from digital_twin.ir import ConfidenceLevel, DhcpScope, IRBuilder, IRCapability, diff_ir
 from tests.factories import sw
 
 
@@ -42,6 +42,7 @@ def test_introduced_overlap_is_warning():
     assert r.status is Status.WARN
     f = r.findings[0]
     assert f.code == "wired.dhcp.scope_lint.overlap" and f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH  # config-derived lint, always HIGH
     assert sorted(f.evidence["scopes"]) == ["site:a", "site:b"]
 
 
@@ -49,6 +50,7 @@ def test_preexisting_unchanged_overlap_is_info_only():
     r = _run(_ir(A, B_OVERLAP), _ir(A, B_OVERLAP))
     assert r.status is Status.PASS
     assert [f.severity for f in r.findings] == [Severity.INFO]
+    assert r.findings[0].confidence.level is ConfidenceLevel.HIGH
 
 
 def test_altered_still_overlapping_range_forfeits_demotion():
@@ -57,6 +59,7 @@ def test_altered_still_overlapping_range_forfeits_demotion():
                       ip_start="10.0.0.60", ip_end="10.0.1.10")
     r = _run(_ir(A, B_OVERLAP), _ir(A, moved))
     assert r.findings[0].severity is Severity.WARNING
+    assert r.findings[0].confidence.level is ConfidenceLevel.HIGH
 
 
 def test_unparseable_range_abstains_with_partial_when_delta_touches_scopes():
@@ -88,9 +91,11 @@ def test_out_of_subnet_gateway_is_warning_and_same_violation_demotes():
     r = _run(_ir(A), _ir(bad))
     f = next(x for x in r.findings if x.code == "wired.dhcp.scope_lint.out_of_subnet")
     assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH
     r2 = _run(_ir(bad), _ir(bad))
     f2 = next(x for x in r2.findings if x.code == "wired.dhcp.scope_lint.out_of_subnet")
     assert f2.severity is Severity.INFO
+    assert f2.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_changed_bad_value_is_still_warning():
@@ -99,6 +104,7 @@ def test_changed_bad_value_is_still_warning():
     r = _run(_ir(bad1), _ir(bad2))
     f = next(x for x in r.findings if x.code == "wired.dhcp.scope_lint.out_of_subnet")
     assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_no_subnet_intent_is_not_a_violation():
@@ -184,6 +190,7 @@ def test_introduced_gateway_mismatch_is_warning():
     r = _run(_ir(), _ir(M_BAD))
     f = next(x for x in r.findings if x.code.endswith("gateway_mismatch"))
     assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH
     assert f.evidence["handed"] == "10.4.0.254"
     assert f.evidence["declared"] == "10.4.0.1"
 
@@ -197,11 +204,13 @@ def test_preexisting_mismatch_is_info_and_any_value_change_forfeits():
     r = _run(_ir(M_BAD), _ir(M_BAD))
     f = next(x for x in r.findings if x.code.endswith("gateway_mismatch"))
     assert f.severity is Severity.INFO
+    assert f.confidence.level is ConfidenceLevel.HIGH
     moved = DhcpScope(provider="site", network="m", vlan=40,
                       gateway="10.4.0.253", network_gateway="10.4.0.1")
     r2 = _run(_ir(M_BAD), _ir(moved))
     f2 = next(x for x in r2.findings if x.code.endswith("gateway_mismatch"))
     assert f2.severity is Severity.WARNING
+    assert f2.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_missing_either_side_is_silent():

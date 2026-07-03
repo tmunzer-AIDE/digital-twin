@@ -1,6 +1,7 @@
 from digital_twin.checks.base import Coverage, CoverageState, Status
 from digital_twin.checks.wired.config_lint import Violation, run_delta_lint, touched_ids
 from digital_twin.contracts import Cause, ObjectRef, Severity
+from digital_twin.ir import ConfidenceLevel
 from digital_twin.ir.diff import EntityRef, IRDiff, Modified
 
 
@@ -30,6 +31,8 @@ def test_introduced_is_warning_preexisting_is_info():
     by_code = {f.code: f for f in res.findings}
     assert by_code["wired.l2.vlan_collision.introduced"].severity is Severity.WARNING
     assert by_code["wired.l2.vlan_collision.preexisting"].severity is Severity.INFO
+    # the lint tier is HIGH-confidence by design (deterministic config facts)
+    assert all(f.confidence.level is ConfidenceLevel.HIGH for f in res.findings)
     assert res.status is Status.WARN   # an introduced violation
 
 
@@ -40,6 +43,7 @@ def test_all_preexisting_is_pass():
     )
     assert res.status is Status.PASS
     assert all(f.severity is Severity.INFO for f in res.findings)
+    assert all(f.confidence.level is ConfidenceLevel.HIGH for f in res.findings)
 
 
 def test_changed_facts_same_subject_reads_as_introduced():
@@ -60,3 +64,4 @@ def test_caused_by_suppressed_on_preexisting():
     res = run_delta_lint(check_id="x", base=[v], proposed=[v],
                          coverage=Coverage(state=CoverageState.COMPLETE))
     assert res.findings[0].severity is Severity.INFO and res.findings[0].caused_by == ()
+    assert res.findings[0].confidence.level is ConfidenceLevel.HIGH

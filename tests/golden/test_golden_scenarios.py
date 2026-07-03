@@ -816,6 +816,38 @@ def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
     assert f.evidence["vlan"] == 2
 
 
+def test_mixed_delta_worst_wins_and_weaker_findings_survive(tmp_path):
+    # ONE plan mixing two check families on the shared fixture world:
+    #   op0 (GS25b): enable snooping on the gw-facing HUB with the gw port
+    #       distrusted -> wired.dhcp.snooping.untrusted_path (WARNING -> REVIEW alone)
+    #   op1 (GS1):   de-vlan the EDGE uplink, stranding the vlan-999 member
+    #       -> wired.l2.blackhole.exit_lost (ERROR -> UNSAFE alone)
+    # The combined verdict must be the WORST of the two (UNSAFE) AND the weaker
+    # snooping finding must still ride the verdict — not swallowed by the winner.
+    doc = _gs25_doc()
+    sw, gw_port = _gs25b_target(doc)
+    assert sw["mac"] != EDGE  # two ops, two distinct devices — a true mixed delta
+    sw["port_config"][gw_port]["no_local_overwrite"] = False  # allow local override
+    snoop_op = {
+        "action": "update", "order": 0, "object_type": "device",
+        "object_id": sw["id"],
+        "payload": {
+            "dhcp_snooping": {"enabled": True, "networks": ["vlan2"]},
+            "local_port_config": {gw_port: {"allow_dhcpd": False}},
+        },
+    }
+    cut_op = device_op(
+        doc, EDGE, order=1, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"}
+    )
+    v = _simulate(doc, plan_for(doc, [snoop_op, cut_op]), tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.l2.blackhole.exit_lost" in codes  # the winner
+    snoop = next(f for f in v.findings if f.code == "wired.dhcp.snooping.untrusted_path")
+    assert snoop.severity is Severity.WARNING  # the weaker family, un-swallowed
+    assert snoop.evidence["vlan"] == 2
+
+
 def test_gs25b_variant_trusted_uplink_is_safe(tmp_path):
     # same snooping enable WITHOUT distrusting the port: the gateway-facing
     # trunk is trusted by default -> one trusted path is enough -> SAFE

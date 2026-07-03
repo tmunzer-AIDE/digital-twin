@@ -98,11 +98,24 @@ def _sites(*ids: str, nt: str | None = None) -> list[dict[str, Any]]:
     return [{"id": i, **({"networktemplate_id": nt} if nt else {})} for i in ids]
 
 
-def test_group_by_site_drops_rows_without_site_id():
+def test_group_by_site_drops_rows_without_site_id(caplog):
     rows = [{"site_id": "a", "x": 1}, {"x": 2}, {"site_id": "a", "x": 3}, {"site_id": "b"}]
-    grouped = _group_by_site(rows)
+    with caplog.at_level("WARNING", logger="digital_twin.providers.mist_api"):
+        grouped = _group_by_site(rows, "org_port_stats")
     assert sorted(grouped) == ["a", "b"]
     assert len(grouped["a"]) == 2
+    # the drop is observable: one warning naming the endpoint and the count
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "org_port_stats" in warnings[0].message and "1" in warnings[0].message
+    assert "site_id" in warnings[0].message
+
+
+def test_group_by_site_is_silent_when_every_row_has_a_site_id(caplog):
+    with caplog.at_level("WARNING", logger="digital_twin.providers.mist_api"):
+        grouped = _group_by_site([{"site_id": "a"}], "org_port_stats")
+    assert sorted(grouped) == ["a"]
+    assert not caplog.records  # no drops -> no noise
 
 
 def test_fetch_sites_partitions_org_rows_by_site():
