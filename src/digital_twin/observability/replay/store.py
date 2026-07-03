@@ -8,6 +8,7 @@ and the golden-scenario suite.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -30,23 +31,17 @@ from digital_twin.providers.base import (
 
 from .redaction import REDACTION_VERSION, redact
 
-_RAW_FIELDS = (
-    "site",
-    "setting",
-    "networktemplate",
-    "devices",
-    "device_stats",
-    "port_stats",
-    "wireless_clients",
-    "wired_clients",
-    "wlans",
-    "org_networks",
-    "derived_setting",
-    "sitetemplate",
-    "gatewaytemplate",
-    "nac_clients",
-    "ospf_neighbors",
-    "bgp_neighbors",
+# Every RawSiteState field the save path serializes verbatim (redacted).
+# DERIVED from the dataclass — a field added to RawSiteState can never be
+# silently dropped from captured fixtures. `scope` and `meta` are excluded
+# because _raw_doc serializes them structurally (redacted scope ids; isoformat
+# timestamp + fetch bookkeeping). Ordering is cosmetic: _write dumps with
+# sort_keys=True, so fixture diffs are unaffected. The LOAD path
+# (load_fixture_doc) stays hand-written for per-field legacy defaults; the
+# round-trip test in tests/observability/test_replay_store.py enforces it.
+_STRUCTURAL_FIELDS = frozenset({"scope", "meta"})
+_RAW_FIELDS = tuple(
+    f.name for f in dataclasses.fields(RawSiteState) if f.name not in _STRUCTURAL_FIELDS
 )
 
 

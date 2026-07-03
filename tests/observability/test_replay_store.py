@@ -1,12 +1,18 @@
 import dataclasses
 import json
+from datetime import UTC, datetime
 
 from digital_twin.observability.replay.store import (
     FixtureProvider,
     ReplayStore,
     load_fixture_raw,
 )
-from digital_twin.providers.base import RawSiteState, SiteScope
+from digital_twin.providers.base import (
+    FetchFailure,
+    RawSiteState,
+    SiteScope,
+    StateMeta,
+)
 from tests.adapters.mist.fixtures import raw_site
 
 
@@ -535,6 +541,57 @@ def test_bgp_neighbors_round_trip_and_default_when_absent(tmp_path):
     state = load_fixture_doc(doc)
     assert len(state.bgp_neighbors) == 1
     assert state.bgp_neighbors[0]["peer_ip"] == "10.0.0.2"
+
+
+def _sentinel_raw_site_state() -> RawSiteState:
+    """A RawSiteState with EVERY dataclass field set to a distinguishable,
+    redaction-stable sentinel. Enumerated via dataclasses.fields so a field
+    added to RawSiteState is covered automatically — no hand-synced list."""
+    kwargs: dict[str, object] = {}
+    for f in dataclasses.fields(RawSiteState):
+        if f.name == "scope":
+            kwargs[f.name] = SiteScope(org_id="org sentinel", site_id="site sentinel")
+        elif f.name == "meta":
+            kwargs[f.name] = StateMeta(
+                acquired_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+                host="host sentinel",
+                fetched=("fetched sentinel",),
+                failures=(FetchFailure(object="object sentinel", error="error sentinel"),),
+            )
+        elif str(f.type).startswith("tuple"):
+            kwargs[f.name] = ({"marker": f"sentinel {f.name}"},)
+        else:  # JsonObj / JsonObj | None — a dict sentinel catches a None default
+            kwargs[f.name] = {"marker": f"sentinel {f.name}"}
+    return RawSiteState(**kwargs)  # type: ignore[arg-type]
+
+
+def test_every_raw_field_round_trips_save_then_load(tmp_path):
+    # THE enforcing test for the save/load shadow contract: a field added to
+    # RawSiteState but dropped from either the save path (_RAW_FIELDS) or the
+    # hand-written load path (load_fixture_doc) must fail here, not silently
+    # vanish from every captured fixture. Sentinels are lowercase words so
+    # redaction (MAC/IP/UUID/name/entropy rules) leaves them byte-identical.
+    original = _sentinel_raw_site_state()
+    store = ReplayStore(tmp_path)
+    path = store.save_raw("round-trip", original)
+
+    # save path: every field's sentinel must reach the JSON document
+    doc = json.loads(path.read_text())
+    for f in dataclasses.fields(RawSiteState):
+        if f.name in ("scope", "meta"):
+            continue  # handled structurally; asserted via the whole-object check
+        assert doc[f.name], f"save path dropped RawSiteState.{f.name}"
+        assert f"sentinel {f.name}" in json.dumps(doc[f.name]), (
+            f"save path corrupted RawSiteState.{f.name}"
+        )
+
+    # load path: nothing lost, nothing defaulted
+    loaded = load_fixture_raw(path)
+    for f in dataclasses.fields(RawSiteState):
+        assert getattr(loaded, f.name) == getattr(original, f.name), (
+            f"load path lost/defaulted RawSiteState.{f.name}"
+        )
+    assert loaded == original
 
 
 def test_save_run_includes_plan_verdict_and_trace(tmp_path):

@@ -43,7 +43,13 @@ from digital_twin.analysis.ospf_reachability import (
     covering_dev_vlan,
     unevaluable_peers,
 )
-from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.base import (
+    CheckContext,
+    CheckResult,
+    Coverage,
+    CoverageState,
+    status_from_findings,
+)
 from digital_twin.contracts import (
     Cause,
     Finding,
@@ -588,11 +594,7 @@ class OspfWithdrawalCheck:
                         "subnet) — adjacency state is unverifiable for this peer"
                     )
 
-        worst = Status.PASS
-        for f in findings:
-            this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
-            if this is Status.FAIL or worst is Status.PASS:
-                worst = this
+        worst = status_from_findings(findings)
         return CheckResult(
             check_id=self.id,
             status=worst,

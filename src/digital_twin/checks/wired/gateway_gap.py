@@ -25,7 +25,13 @@ violation.
 
 from __future__ import annotations
 
-from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.base import (
+    CheckContext,
+    CheckResult,
+    Coverage,
+    CoverageState,
+    status_from_findings,
+)
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
@@ -261,12 +267,8 @@ class GatewayGapCheck:
                     ))) if code == "gateway_unowned" and severity is not Severity.INFO else (),
                 )
             )
-        worst = Status.PASS
         conclusions = [f for f in findings if f.severity is not Severity.INFO]
-        for f in conclusions:
-            this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
-            if this is Status.FAIL or worst is Status.PASS:
-                worst = this
+        worst = status_from_findings(findings)
         # INFO .preexisting is context (excluded from verdict floors): only a
         # real CONCLUSION lets the blind-gateway notes degrade coverage;
         # abstain notes attach whenever generated (already delta-scoped)

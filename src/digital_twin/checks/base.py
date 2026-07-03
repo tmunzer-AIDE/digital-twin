@@ -8,6 +8,7 @@ that invariant is what keeps FAIL -> UNSAFE an always-confident assertion.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -25,6 +26,33 @@ class Status(StrEnum):
     NOT_APPLICABLE = "not_applicable"
     INSUFFICIENT_DATA = "insufficient_data"
     CHECK_ERROR = "check_error"
+
+
+def status_from_findings(
+    findings: Sequence[Finding],
+    *,
+    exclude: frozenset[Severity] = frozenset({Severity.INFO}),
+) -> Status:
+    """Roll a check's findings up to its Status (PASS | WARN | FAIL).
+
+    ``Severity.INFO`` is excluded by default because INFO findings are context,
+    never conclusions: a preexisting-condition or explanatory note attached for
+    the reader must not floor an otherwise clean check to WARN/FAIL. ERROR and
+    CRITICAL both map to FAIL — mapping CRITICAL below ERROR would risk a false
+    SAFE. Any other non-excluded severity maps to WARN.
+    """
+    worst = Status.PASS
+    for f in findings:
+        if f.severity in exclude:
+            continue
+        this = (
+            Status.FAIL
+            if f.severity in (Severity.ERROR, Severity.CRITICAL)
+            else Status.WARN
+        )
+        if this is Status.FAIL or worst is Status.PASS:
+            worst = this
+    return worst
 
 
 class CoverageState(StrEnum):
