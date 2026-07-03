@@ -21,7 +21,13 @@ Honesty rails (the review-series lessons, applied from birth):
 
 from __future__ import annotations
 
-from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.base import (
+    CheckContext,
+    CheckResult,
+    Coverage,
+    CoverageState,
+    status_from_findings,
+)
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
@@ -130,11 +136,7 @@ class DhcpPathCheck:
             )
         if findings and blind_notes:
             notes.extend(blind_notes)
-        worst = Status.PASS
-        for f in findings:
-            this = Status.FAIL if f.severity is Severity.ERROR else Status.WARN
-            if this is Status.FAIL or worst is Status.PASS:
-                worst = this
+        worst = status_from_findings(findings)
         return CheckResult(
             check_id=self.id,
             status=worst,
