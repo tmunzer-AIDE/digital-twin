@@ -663,3 +663,24 @@ def test_token_end_is_excluded_from_mismatch_and_floors_only():
     f = _find(result, "wired.stp.policy.policy_change")
     assert "use_vstp" in f.evidence["knobs"]
     assert any("unresolved" in n for n in result.coverage.notes)
+
+
+def test_delta_resolving_a_preexisting_mismatch_is_floor_only():
+    # carried-over pin from Task 6's review: baseline has a use_vstp mismatch
+    # (A:up=True, B:down=False); the delta RESOLVES it (A:up flips to False,
+    # matching B:down's default False) -> both ends agree in the proposed
+    # state, so .link_mismatch must NOT fire (neither WARNING — no fresh
+    # disagreement — nor INFO — no disagreement survives to be "pre-existing
+    # context" of). The changed port still floors .policy_change WARNING
+    # (use_vstp changed on A:up), since the bridge-domain impact of the
+    # RESOLUTION itself is not provable either.
+    base_up = StpPolicy(use_vstp=True)
+    prop_up = StpPolicy(use_vstp=False)
+    base_ir = _link_mismatch_ir(up_policy=base_up, down_policy=None).build()
+    prop_ir = _link_mismatch_ir(up_policy=prop_up, down_policy=None).build()
+    result = _run(base_ir, prop_ir)
+    mm = _findall(result, "wired.stp.policy.link_mismatch")
+    assert not mm, mm
+    f = _find(result, "wired.stp.policy.policy_change")
+    assert f.severity is Severity.WARNING
+    assert "use_vstp" in f.evidence["knobs"]
