@@ -21,6 +21,7 @@ from .poe_disconnect import PoeDisconnectCheck
 from .scope_lint import DhcpScopeLintCheck
 from .snooping import DhcpSnoopingCheck
 from .stp_edge import StpEdgeOnUplinkCheck
+from .stp_policy import StpPolicyCheck
 from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
 from .unmodeled_change import PortUnmodeledChangeCheck
@@ -38,6 +39,7 @@ ALL_WIRED_CHECKS: list[Check] = [
     MtuMismatchCheck(),
     L1ParamMismatchCheck(),
     StpEdgeOnUplinkCheck(),
+    StpPolicyCheck(),
     StpRootChangeCheck(),
     GatewayGapCheck(),
     OspfWithdrawalCheck(),
@@ -81,6 +83,7 @@ __all__ = [
     "OspfWithdrawalCheck",
     "PoeDisconnectCheck",
     "StpEdgeOnUplinkCheck",
+    "StpPolicyCheck",
     "StpRootChangeCheck",
     "WlanDuplicateSsidCheck",
     "WlanClientImpactCheck",
