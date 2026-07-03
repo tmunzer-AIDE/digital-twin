@@ -421,6 +421,47 @@ def test_root_protect_with_redundant_path_is_floor_only():
     assert _find(result, "wired.stp.policy.policy_change")
 
 
+def test_root_protect_on_one_of_two_parallel_links_is_floor_only():
+    # A has TWO standalone links to root B; stp_no_root_port lands on only
+    # one (A:up1<->B:down1). Removing that port's edge from the component
+    # MultiGraph leaves the sibling edge (A:up2<->B:down2) -> NOT only-path
+    # -> no false root_protect_risk (a false fire here would be an UNSAFE
+    # salience bug, cf. PR #24).
+    target_pid = "A:up1"
+    base_policy = StpPolicy(stp_no_root_port=False)
+    prop_policy = StpPolicy(stp_no_root_port=True)
+    base_port = Port(id=target_pid, device_id="A", name="up1", mode=PortMode.TRUNK,
+                      tagged_vlans=(10,), stp_policy=base_policy)
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+
+    def _build_parallel(port: Port):
+        b = IRBuilder()
+        b.add_device(sw("A", stp_priority=32768)).add_device(sw("B", stp_priority=4096))
+        b.add_port(port)
+        b.add_port(Port(id="B:down1", device_id="B", name="down1", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_port(Port(id="A:up2", device_id="A", name="up2", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_port(Port(id="B:down2", device_id="B", name="down2", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_link(link(target_pid, "B:down1"))
+        b.add_link(link("A:up2", "B:down2"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    result = _run(_build_parallel(base_port), _build_parallel(prop_port))
+    assert not _findall(result, "wired.stp.policy.root_protect_risk")
+    f = _find(result, "wired.stp.policy.policy_change")
+    assert f.severity is Severity.WARNING
+    # sibling-fixture pair: the chain topology (single link, no parallel path)
+    # still produces the risk -- proving this test's parallel-link topology
+    # is what suppresses it, not some other change.
+    chain_result = _run_enable_no_root_port(
+        topology="chain", priorities={"A": 32768, "B": 4096}
+    )
+    assert _find(chain_result, "wired.stp.policy.root_protect_risk")
+
+
 def test_root_protect_with_unprovable_election_is_warning_plus_note():
     # any stp_priority_invalid / default-assumed priority in the component:
     # ERROR requires the elected root known at HIGH — degrade, never guess
