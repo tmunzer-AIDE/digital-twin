@@ -21,11 +21,29 @@ port's .policy_change (most-specific precedence wins). Disabling
 stp_required (True -> False) is never a risk -- floor only. A pre-existing
 True left untouched by the delta (some OTHER knob on the port changed) is
 INFO context, per the .preexisting convention used elsewhere in this check
-family."""
+family.
+
+.root_protect_risk fires ONLY when the delta enables stp_no_root_port
+(False/absent -> True; unresolved: tokens never reach this code) on a port
+that is the device's ONLY graph path to the component's elected root (drop
+the port's edge on the proposed L2 component graph; if the elected root
+becomes unreachable from the port's device, it was the only path). Election
+reuses stp_root.py:_root_of (same cross-check reuse rule as .blocking_risk):
+ERROR/HIGH requires the root known at HIGH confidence (_root_of returned a
+tuple AND any_default_assumed is False -- _root_of already folds
+stp_priority_invalid into its _ABSTAIN sentinel, so a tuple result is never
+riding on an uninterpretable priority). An only-path port whose election is
+NOT HIGH (default-assumed priority, or _root_of abstained) degrades to
+WARNING with a coverage note -- never guess at ERROR. A redundant path, or
+the device itself being the elected root, is no risk code at all (the
+.policy_change floor covers it). A fire suppresses that port's
+.policy_change (same most-specific precedence as .blocking_risk)."""
 
 from __future__ import annotations
 
 import dataclasses
+
+import networkx as nx
 
 from digital_twin.checks.base import (
     CheckContext,
@@ -34,6 +52,7 @@ from digital_twin.checks.base import (
     CoverageState,
     status_from_findings,
 )
+from digital_twin.checks.wired.stp_root import _root_of
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
@@ -45,7 +64,7 @@ from digital_twin.ir import (
     min_confidence,
 )
 from digital_twin.ir.entities import Client, DeviceRole, Port, PortMode, StpPolicy
-from digital_twin.ir.indexes import clients_by_ap, clients_by_port
+from digital_twin.ir.indexes import clients_by_ap, clients_by_port, node_for, vc_root_map
 from digital_twin.ir.model import IR
 
 _MEDIUM = Confidence(
@@ -57,6 +76,11 @@ _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _ONE_SIDED_TIE = Confidence(
     level=ConfidenceLevel.MEDIUM,
     reasons=("the peer tie is one-sided LLDP, not corroborated by both ends",),
+)
+_UNPROVABLE_ELECTION = Confidence(
+    level=ConfidenceLevel.MEDIUM,
+    reasons=("the elected root is not known at HIGH confidence (a default-assumed "
+             "priority or an uninterpretable priority is present in the component)",),
 )
 
 
@@ -231,19 +255,29 @@ class StpPolicyCheck:
                     f"prediction is possible, floored to REVIEW"
                 )
 
-            risk_finding: Finding | None = None
+            risk_findings: list[Finding] = []
             if "stp_required" in knobs and new_policy.stp_required is True:
                 # False/absent -> True only; an unresolved: token never reaches
                 # here (it is filtered into unresolved_knobs above, and a token
                 # is never `is True`).
-                risk_finding, note = self._blocking_risk(
+                blocking_finding, note = self._blocking_risk(
                     ctx, pid, ap_peers, bpdu_filter_peers, wired
                 )
+                if blocking_finding is not None:
+                    risk_findings.append(blocking_finding)
                 if note is not None:
                     notes.append(note)
 
-            if risk_finding is not None:
-                findings.append(risk_finding)
+            if "stp_no_root_port" in knobs and new_policy.stp_no_root_port is True:
+                # False/absent -> True only; same unresolved-token exclusion.
+                root_protect_finding, note = self._root_protect_risk(ctx, pid)
+                if root_protect_finding is not None:
+                    risk_findings.append(root_protect_finding)
+                if note is not None:
+                    notes.append(note)
+
+            if risk_findings:
+                findings.extend(risk_findings)
             else:
                 findings.append(
                     Finding(
@@ -405,4 +439,97 @@ class StpPolicyCheck:
             None,
             f"stp_required enabled on {pid}: peer unobserved — blocking outcome "
             f"not assessable",
+        )
+
+    def _root_protect_risk(
+        self, ctx: CheckContext, pid: str,
+    ) -> tuple[Finding | None, str | None]:
+        """Classify a port whose stp_no_root_port just went True: is it the
+        device's ONLY graph path to the component's elected root? Election
+        reuses stp_root.py:_root_of over the PROPOSED component (the state
+        this port's new policy applies to). ERROR/HIGH requires the root
+        known at HIGH confidence; only-path with a lower-confidence election
+        degrades to WARNING + note; a redundant path or the device itself
+        being the root is no risk code (falls through to the .policy_change
+        floor, no note needed -- there is nothing unprovable to flag)."""
+        prop_ir = ctx.proposed.ir
+        port = prop_ir.ports[pid]
+        vc_root = vc_root_map(prop_ir)
+        device_node = node_for(vc_root, port.device_id)
+
+        graph = ctx.proposed.l2_graph()
+        if device_node not in graph:
+            return None, None  # nothing to elect a root over
+
+        component = frozenset(nx.node_connected_component(graph, device_node))
+        elected = _root_of(prop_ir, component)
+        if elected is None or not isinstance(elected, tuple):
+            # no election to disturb (fewer than two switches), or the
+            # election itself abstained (uninterpretable priority in the
+            # component) -- root-protect risk cannot even be framed without
+            # a candidate root, so this falls through to the floor.
+            return None, None
+        root_id, any_default_assumed = elected
+        root_node = node_for(vc_root, root_id)
+        if root_node == device_node:
+            # the device IS the elected root -- no root to lose the path to.
+            return None, None
+
+        # only-path mechanics: drop this port's edge(s) on a working copy of
+        # the proposed component graph; if the root becomes unreachable from
+        # the device, this port was the only path.
+        subgraph = graph.subgraph(component).copy()
+        edges_to_drop = [
+            (u, v, k)
+            for u, v, k, data in subgraph.edges(keys=True, data="data")
+            if pid in data.member_ports
+        ]
+        subgraph.remove_edges_from(edges_to_drop)
+        only_path = not nx.has_path(subgraph, device_node, root_node)
+        if not only_path:
+            # a redundant path survives -- the .policy_change floor covers
+            # this port; no risk code, nothing unprovable to note either.
+            return None, None
+
+        port_ref = ObjectRef("port", pid)
+        election_high = not any_default_assumed
+        if election_high:
+            severity = Severity.ERROR
+            confidence = _HIGH
+            confidence_label = "high"
+            reason = (
+                "only graph path to the elected root, root known at HIGH "
+                "confidence — the port can never accept its root port and "
+                "the device blocks toward the root"
+            )
+            note = None
+        else:
+            severity = Severity.WARNING
+            confidence = _UNPROVABLE_ELECTION
+            confidence_label = "unprovable"
+            reason = (
+                "only graph path to a candidate root, but the root election "
+                "itself is not provable at HIGH confidence — never assert "
+                "ERROR on a guessed root"
+            )
+            note = (
+                f"port {pid}: root election not provable — root-protect risk "
+                f"assessed at reduced confidence"
+            )
+        return (
+            Finding(
+                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk", severity=severity, confidence=confidence,
+                message=f"port {pid}: stp_no_root_port enabled — this is the device's "
+                        f"only path to the elected root {root_id}; the port can never "
+                        f"become root port and the device may black-hole toward the root",
+                affected_entities=(pid, root_id), subject=port_ref,
+                evidence={
+                    "port": pid, "elected_root": root_id, "only_path": True,
+                    "election_confidence": confidence_label,
+                    "severity_reason": reason,
+                },
+                caused_by=ctx.delta_index.causes("port", [pid]),
+            ),
+            note,
         )

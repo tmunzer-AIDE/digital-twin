@@ -332,3 +332,153 @@ def test_new_port_with_stp_required_true_and_ap_peer_is_error_high():
     result = _run(base_ir, prop_ir)
     f = _find(result, "wired.stp.policy.blocking_risk")
     assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
+
+
+# --- .root_protect_risk: stp_no_root_port enabled on a port that is the only --
+# path to the elected root -----------------------------------------------------
+#
+# .root_protect_risk fires ONLY when the delta enables stp_no_root_port
+# (False/absent -> True) on a port that is the device's ONLY graph path to the
+# component's elected root. ERROR/HIGH requires the elected root known at HIGH
+# (_root_of returned a tuple with any_default_assumed False); only-path with a
+# non-HIGH election degrades to WARNING + a coverage note. A redundant path
+# means the floor covers the change (no risk code). The device itself being
+# the elected root also means no risk code.
+
+def _root_protect_target_port(**kw) -> Port:
+    return Port(id=_TARGET, device_id="A", name="ge-0/0/1", mode=PortMode.ACCESS,
+                native_vlan=10, **kw)
+
+
+def _build_root_protect(
+    *, topology: str, priorities: dict[str, int | None], target_port: Port
+) -> IRBuilder:
+    """`topology="chain"`: A<->B only (the target port IS the only path from A
+    to the elected root). `topology="triangle"`: A<->B, A<->C, B<->C — a
+    redundant path from A to the root exists via C even if the target port
+    (A<->B) is disabled for root-port purposes.
+
+    `priorities` maps device id -> stp_priority (None leaves the platform
+    default / assumed)."""
+    b = IRBuilder()
+    for did in priorities:
+        b.add_device(sw(did, stp_priority=priorities[did]))
+    b.add_port(target_port)
+    b.add_port(Port(id="B:down", device_id="B", name="down", mode=PortMode.TRUNK,
+                     tagged_vlans=(10,)))
+    b.add_link(link(_TARGET, "B:down"))
+    if topology == "triangle":
+        b.add_port(Port(id="A:c", device_id="A", name="c", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_port(Port(id="C:a", device_id="C", name="a", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_port(Port(id="B:c", device_id="B", name="c", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_port(Port(id="C:b", device_id="C", name="b", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_link(link("A:c", "C:a"))
+        b.add_link(link("B:c", "C:b"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b
+
+
+def _run_enable_no_root_port(
+    *, topology: str, priorities: dict[str, int | None], disable: bool = False
+):
+    base_policy = StpPolicy(stp_no_root_port=disable)
+    prop_policy = StpPolicy(stp_no_root_port=not disable)
+    base_port = _root_protect_target_port(stp_policy=base_policy if disable else None)
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+    base_ir = _build_root_protect(
+        topology=topology, priorities=priorities, target_port=base_port
+    ).build()
+    prop_ir = _build_root_protect(
+        topology=topology, priorities=priorities, target_port=prop_port
+    ).build()
+    return _run(base_ir, prop_ir)
+
+
+def test_root_protect_on_only_path_to_high_root_is_error_high():
+    # A(prio 32768) - B(prio 4096, root); the only A->B edge gets
+    # stp_no_root_port=True -> A can never accept its root port -> blocks
+    result = _run_enable_no_root_port(topology="chain", priorities={"A": 32768, "B": 4096})
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["elected_root"] == "B" and f.evidence["only_path"] is True
+    assert not _findall(result, "wired.stp.policy.policy_change")
+    decision, _ = decide(
+        DecisionInputs(rejections=(), l0_fatal=False, baseline_unavailable=False,
+                       check_results=(result,))
+    )
+    assert decision is Decision.UNSAFE
+
+
+def test_root_protect_with_redundant_path_is_floor_only():
+    result = _run_enable_no_root_port(
+        topology="triangle", priorities={"A": 32768, "B": 4096, "C": 32768}
+    )
+    assert not _findall(result, "wired.stp.policy.root_protect_risk")
+    assert _find(result, "wired.stp.policy.policy_change")
+
+
+def test_root_protect_with_unprovable_election_is_warning_plus_note():
+    # any stp_priority_invalid / default-assumed priority in the component:
+    # ERROR requires the elected root known at HIGH — degrade, never guess
+    result = _run_enable_no_root_port(topology="chain", priorities={"A": None, "B": 4096})
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.WARNING
+    assert any("root election" in n for n in result.coverage.notes)
+
+
+def test_root_protect_device_is_elected_root_is_no_risk():
+    # A itself has the lowest priority -> A is the elected root; disabling its
+    # own root-port acceptance on a link to a non-root peer is not a
+    # root-protect risk (there is no root to lose the path to).
+    result = _run_enable_no_root_port(topology="chain", priorities={"A": 4096, "B": 32768})
+    assert not _findall(result, "wired.stp.policy.root_protect_risk")
+    assert _find(result, "wired.stp.policy.policy_change")
+
+
+def test_root_protect_disable_direction_is_floor_only():
+    # True -> False is the disable direction: never a risk finding, floor only
+    result = _run_enable_no_root_port(
+        topology="chain", priorities={"A": 32768, "B": 4096}, disable=True
+    )
+    assert not _findall(result, "wired.stp.policy.root_protect_risk")
+    f = _find(result, "wired.stp.policy.policy_change")
+    assert f.severity is Severity.WARNING
+
+
+def _build_root_protect_bpdu_filter_peer(
+    *, priorities: dict[str, int | None], target_port: Port
+) -> IRBuilder:
+    # like _build_root_protect(topology="chain") but B:down has bpdu_filter=True
+    # so .blocking_risk (stp_required) has a candidate peer to fire on, in
+    # addition to .root_protect_risk (stp_no_root_port, only-path to root).
+    b = IRBuilder()
+    for did in priorities:
+        b.add_device(sw(did, stp_priority=priorities[did]))
+    b.add_port(target_port)
+    b.add_port(Port(id="B:down", device_id="B", name="down", mode=PortMode.ACCESS,
+                     native_vlan=10, bpdu_filter=True))
+    b.add_link(link(_TARGET, "B:down"))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b
+
+
+def test_blocking_risk_and_root_protect_risk_coexist_on_one_port():
+    # both stp_required and stp_no_root_port enabled together on the SAME
+    # port: both risk codes can fire independently for one delta.
+    base_policy = StpPolicy(stp_required=False, stp_no_root_port=False)
+    prop_policy = StpPolicy(stp_required=True, stp_no_root_port=True)
+    base_port = _root_protect_target_port(stp_policy=base_policy)
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+    base_ir = _build_root_protect_bpdu_filter_peer(
+        priorities={"A": 32768, "B": 4096}, target_port=base_port
+    ).build()
+    prop_ir = _build_root_protect_bpdu_filter_peer(
+        priorities={"A": 32768, "B": 4096}, target_port=prop_port
+    ).build()
+    result = _run(base_ir, prop_ir)
+    assert _find(result, "wired.stp.policy.blocking_risk")
+    assert _find(result, "wired.stp.policy.root_protect_risk")

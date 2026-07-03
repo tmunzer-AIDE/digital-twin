@@ -106,6 +106,10 @@ _NOT_VISUALIZED = {
     "peer_kind",            # "ap"/"client"/"bpdu_filter" classification tag
     "tie_provenance",       # LLDP provenance label for the peer tie (string)
     "occupants_behind",     # occupant counts behind the port (dict of scalars)
+    # --- stp_policy.root_protect_risk: "port" and "elected_root" (added to
+    #     _NODE_EV_KEYS) already paint the entities; these are scalars ---
+    "only_path",            # boolean — always True when this code fires
+    "election_confidence",  # "high"/"unprovable" classification tag (string)
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
 }
