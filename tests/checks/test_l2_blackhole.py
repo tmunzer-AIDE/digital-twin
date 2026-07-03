@@ -452,3 +452,68 @@ def test_inferred_uplink_last_uplink_removed_stays_unlocatable():
     # proposed -> NONE -> exit_unlocatable (unchanged; the exit genuinely vanished)
     result = L2BlackholeCheck().run(_ctx(_ab(), _ab(uplink_disabled=True)))
     assert any(f.code == "wired.l2.blackhole.exit_unlocatable" for f in result.findings)
+
+
+# --- exit-confidence degradation with unchanged components (review finding C2) ------
+
+
+def _irb_vs_inferred(*, irb_exit: bool):
+    """A(member)--B; the exit is an IRB on B (HIGH) or only B's is_uplink trunk
+    (INFERRED_UPLINK, LOW). Nodes, members and reachability are IDENTICAL either
+    way -- only the exit's kind/confidence differs."""
+    b = IRBuilder()
+    b.add_device(sw("A")).add_device(sw("B"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    b.add_port(access_port("A", "acc", 10))
+    b.add_port(trunk_port("A", "up", tagged=(10,)))
+    b.add_port(trunk_port("B", "down", tagged=(10,)))
+    b.add_link(link("A:up", "B:down"))
+    b.add_port(_uplink("B", "core", 10))  # rule-3 candidate in BOTH states
+    if irb_exit:
+        b.add_l3intf(irb("B", 10))  # rule 1 wins -> HIGH IRB exit
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    return b.build()
+
+
+def test_exit_confidence_degradation_floors_review_even_with_unchanged_components():
+    # the delta removes the SVI; B's is_uplink trunk still carries vlan 10, so
+    # every component fact (nodes, members, reaches_exit) is unchanged -- but the
+    # exit went IRB/HIGH -> INFERRED_UPLINK/LOW. The stale-HIGH bug reported
+    # PASS/HIGH here (SAFE-able); the honest conclusion is PASS/LOW -> REVIEW.
+    result = L2BlackholeCheck().run(
+        _ctx(_irb_vs_inferred(irb_exit=True), _irb_vs_inferred(irb_exit=False))
+    )
+    assert result.status is Status.PASS
+    assert not result.findings  # nothing stranded; this is purely a confidence story
+    assert result.confidence is not None
+    assert result.confidence.level is ConfidenceLevel.LOW
+    decision, _ = decide(
+        DecisionInputs(rejections=(), l0_fatal=False, baseline_unavailable=False,
+                       check_results=(result,))
+    )
+    assert decision is Decision.REVIEW  # never SAFE on a degraded exit
+
+
+def test_unchanged_low_exit_on_untouched_vlan_still_does_not_taint():
+    # anti-flood twin: vlan 10's LOW inferred exit exists UNCHANGED in both
+    # states and the delta touches only vlan 99 -- the pre-existing LOW exit is
+    # ambient context and must NOT floor every unrelated change to REVIEW
+    def site(suffix: str):
+        b = IRBuilder()
+        b.add_device(sw("A")).add_device(sw("B"))
+        b.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+        b.add_port(access_port("A", "acc", 10))
+        b.add_port(trunk_port("A", "up", tagged=(10,)))
+        b.add_port(trunk_port("B", "down", tagged=(10,)))
+        b.add_link(link("A:up", "B:down"))
+        b.add_port(_uplink("B", "core", 10))  # LOW inferred exit, both states
+        b.add_vlan(Vlan(vlan_id=99, name="x", scope="s1"))
+        b.add_port(access_port("A", f"acc-{suffix}", 99))  # the only delta
+        b.add_l3intf(irb("A", 99))  # vlan 99's own HIGH exit
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site("a"), site("b")))
+    assert result.status is Status.PASS
+    assert result.confidence is not None
+    assert result.confidence.level is ConfidenceLevel.HIGH  # LOW exit not consulted

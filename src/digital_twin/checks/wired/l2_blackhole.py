@@ -206,14 +206,17 @@ class L2BlackholeCheck:
         if (
             any(c.has_members for c in components)
             and proposed_exit.confidence is not None
-            and _vlan_changed(ctx, vid)
+            and (_vlan_changed(ctx, vid) or _exit_changed(ctx, vid))
         ):
             # the exit bounds the conclusion's confidence ONLY when member
             # reachability actually relies on it (a LOW exit = a LOW "still
             # reachable"); a transit-only vlan never consulted its exit, and an
-            # UNCHANGED vlan's conclusion is pre-existing context — neither may
+            # UNTOUCHED vlan's conclusion is pre-existing context — neither may
             # taint the check (else every delta on a site with assumed-carriage
-            # uplinks floods REVIEW)
+            # uplinks floods REVIEW). "Touched" must include an EXIT-only change:
+            # components don't carry the exit's confidence, so a delta that swaps
+            # a HIGH exit for a LOW one without moving nodes/members/reachability
+            # would otherwise keep a stale HIGH conclusion (false-SAFE-able).
             confidences.append(proposed_exit.confidence)
         stranded = [c for c in components if c.has_members and not c.reaches_exit]
         if not stranded:
@@ -388,6 +391,16 @@ def _vlan_changed(ctx: CheckContext, vid: int) -> bool:
     """Did the delta touch this vlan's structure? Components capture nodes,
     member ports, wireless members and exit reach — equality means unchanged."""
     return ctx.baseline.vlan_components(vid) != ctx.proposed.vlan_components(vid)
+
+
+def _exit_changed(ctx: CheckContext, vid: int) -> bool:
+    """Did the delta change this vlan's EXIT resolution (kind, owner nodes, or
+    confidence)? Components are blind to this: removing an SVI while an
+    is_uplink trunk still carries the vlan leaves every component fact equal,
+    yet the exit went IRB/HIGH -> INFERRED_UPLINK/LOW. Such a degradation is
+    delta-caused, not ambient, so it must taint the conclusion's confidence
+    (an exit UNCHANGED in both states still stays context and does not)."""
+    return ctx.baseline.exit_for(vid) != ctx.proposed.exit_for(vid)
 
 
 _ORDER = [Status.PASS, Status.INSUFFICIENT_DATA, Status.WARN, Status.FAIL]
