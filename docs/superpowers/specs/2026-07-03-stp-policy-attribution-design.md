@@ -1,6 +1,6 @@
 # STP policy attribution (`wired.stp.policy`) — Design
 
-**Status:** PROPOSED
+**Status:** Implemented (2026-07-03; plan docs/superpowers/plans/2026-07-03-stp-policy-attribution.md)
 **Date:** 2026-07-03
 **Author:** brainstormed with the repo owner
 

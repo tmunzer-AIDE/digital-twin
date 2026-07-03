@@ -471,8 +471,10 @@ modeling" below.
   - **PVLAN impact model** — `community_vlan_id` and
     `inter_isolation_network_link` can move from REVIEW to modeled SAFE/UNSAFE
     once the twin has a PVLAN graph.
-  - **STP/VSTP policy model** — `stp_required`, `stp_no_root_port`, `stp_p2p`,
-    and `use_vstp` can move from REVIEW to precise STP risk findings.
+  - **STP/VSTP policy model** — DONE 2026-07-03, see the **STP policy
+    attribution (Spec-2)** entry below: `stp_required`, `stp_no_root_port`,
+    `stp_p2p`, and `use_vstp` moved from `wired.port.unmodeled_change` REVIEW
+    to precise `wired.stp.policy` findings (still never SAFE).
   - **RADIUS outage behavior** — `server_fail_retry_interval` and
     `bypass_auth_when_server_down_for_voip` can become more precise once the
     twin models RADIUS availability/fail-open state.
@@ -482,6 +484,29 @@ modeling" below.
     `_bool_token` unresolved-token handling used by the other Spec-1 misc
     knobs; today it keeps the legacy `bool()` coercion, which is #38-pinned
     behavior, so changing it needs its own review.
+- ✅ **STP policy attribution** (Spec-2, the follow-on to Spec-1's STP/VSTP
+  policy model deferral) — done 2026-07-03. The four STP policy knobs
+  (`stp_required`, `stp_no_root_port`, `stp_p2p`, `use_vstp`) graduated out of
+  `PortMisc`/`wired.port.unmodeled_change` into a dedicated `Port.stp_policy`
+  (`StpPolicy`, `bool | str` fields, unresolved-token honest) and a new check
+  `wired.stp.policy` (29th check) with three codes: `.blocking_risk`
+  (`stp_required` enabled on a port with a no-BPDU peer — AP-facing, wired
+  peer without BPDU visibility, or unobserved — tiered ERROR/WARNING by peer
+  confidence), `.root_protect_risk` (`stp_no_root_port` enabled on a device's
+  only path to the predicted root — HIGH-confidence ERROR/UNSAFE gate), and
+  `.link_mismatch` (`use_vstp`/`stp_p2p` disagree across a modeled link,
+  introduced/altered by the delta — WARNING/REVIEW). **Policy floor: an STP
+  policy change never resolves SAFE in this slice** — even a provably-benign
+  flip floors REVIEW, pinned by an e2e never-SAFE guard over the fixture
+  corpus. Pre-existing untouched knobs read as INFO context, never floor an
+  unrelated change. Spec:
+  `docs/superpowers/specs/2026-07-03-stp-policy-attribution-design.md`; plan:
+  `docs/superpowers/plans/2026-07-03-stp-policy-attribution.md`. **Deferred:**
+  the **STP tree/convergence engine** (per-VLAN root election + port roles +
+  blocked-set, validated against live `stp_state`) remains the prerequisite
+  for ever granting SAFE here; per-VLAN priority divergence (Mist config
+  cannot express it); mixed-protocol (VSTP↔RSTP) interop simulation; LAG/
+  ESI-LAG path costs (aggregates unmodeled).
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
