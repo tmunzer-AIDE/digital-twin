@@ -28,16 +28,14 @@ def _run_with_misc_flip(knob, value):
 
 
 def test_each_new_reviewed_knob_is_review():
-    # poe_priority (str), community_vlan_id (int), and the PVLAN/STP booleans
-    # each wake the recognized-but-unmodeled REVIEW carrier (Spec 1)
+    # poe_priority (str), community_vlan_id (int), and the PVLAN boolean each
+    # wake the recognized-but-unmodeled REVIEW carrier (Spec 1). The four STP
+    # knobs (stp_required, stp_no_root_port, stp_p2p, use_vstp) graduated to
+    # StpPolicy in Spec 2 — they no longer flow through PortMisc/this check.
     cases = [
         ("poe_priority", "high"),
         ("community_vlan_id", 811),
         ("inter_isolation_network_link", True),
-        ("stp_required", True),
-        ("stp_no_root_port", True),
-        ("stp_p2p", True),
-        ("use_vstp", True),
     ]
     for knob, value in cases:
         result = _run_with_misc_flip(knob, value)
@@ -91,4 +89,6 @@ def test_misc_object_flip_without_recognized_knob_is_silent():
 
 def test_no_change_is_silent():
     assert _run(_ir(None), _ir(None)).findings == ()
-    assert _run(_ir(PortMisc(stp_p2p=True)), _ir(PortMisc(stp_p2p=True))).findings == ()
+    assert _run(
+        _ir(PortMisc(inter_switch_link=True)), _ir(PortMisc(inter_switch_link=True))
+    ).findings == ()

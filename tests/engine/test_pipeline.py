@@ -919,6 +919,9 @@ def test_poe_priority_change_is_review_via_unmodeled_change():
             "use_vstp",
             {"use_vstp": True},
             id="port_usages.use_vstp",
+            marks=pytest.mark.skip(
+                reason="Spec-2 Task 3 replaces this route with wired.stp.policy"
+            ),
         ),
     ],
 )
