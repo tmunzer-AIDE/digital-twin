@@ -307,3 +307,85 @@ def test_below_profile_stp_edit_on_profiled_switch_is_unknown():
     assert len(gaps) == 1
     assert "stp_config.bridge_priority" in gaps[0].evidence["paths"]
     assert "stp_config.bridge_priority" in gaps[0].message
+
+
+def test_below_profile_poe_priority_edit_on_profiled_switch_is_unknown():
+    """Spec 1 third-gate regression: poe_priority is a reviewed usage leaf, so
+    it MUST be in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"] — a
+    below-profile edit on a device-profiled switch resolves UNKNOWN (the
+    profile may override it invisibly), never REVIEW or SAFE."""
+    new_setting = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "office": {"mode": "access", "port_network": "corp", "poe_priority": "high"},
+            "uplink": {"mode": "trunk", "networks": ["corp"]},
+        },
+    }
+    site_op = _site_op(new_setting, order=0)
+
+    provider = FakeProvider(_raw())
+    verdict = simulate(_plan([site_op]), provider=provider)
+
+    assert verdict.decision is Decision.UNKNOWN and any(
+        r.startswith("COVERAGE GAP [device_profile_gate]")
+        for r in verdict.decision_reasons
+    ), (
+        f"a below-profile poe_priority edit on a profiled switch must be UNKNOWN via "
+        f"device_profile_gate; got {verdict.decision}: {verdict.decision_reasons}"
+    )
+    gaps = _coverage_gap_findings(verdict)
+    assert len(gaps) == 1
+    assert "port_usages.office.poe_priority" in gaps[0].evidence["paths"]
+    assert "port_usages.office.poe_priority" in gaps[0].message
+
+
+def test_below_profile_benign_edit_on_profiled_switch_is_not_unknown():
+    """The benign twin: ui_evpntopo_id is ignored by the IR, so the same
+    below-profile situation must NOT taint to UNKNOWN."""
+    new_setting = {
+        "networks": {"corp": {"vlan_id": 10}},
+        "port_usages": {
+            "office": {"mode": "access", "port_network": "corp", "ui_evpntopo_id": "esi-1"},
+            "uplink": {"mode": "trunk", "networks": ["corp"]},
+        },
+    }
+    site_op = _site_op(new_setting, order=0)
+
+    provider = FakeProvider(_raw())
+    verdict = simulate(_plan([site_op]), provider=provider)
+
+    # ui_evpntopo_id is allowed by the raw/effective gates (_BENIGN_USAGE_LEAVES)
+    # but NOT in the switch device-profile overridable surface, so this resolves
+    # SAFE (no modeled leaf changed, no findings) rather than UNKNOWN.
+    assert verdict.decision is not Decision.UNKNOWN and not any(
+        "device_profile_gate" in r for r in verdict.decision_reasons
+    ), (
+        f"a below-profile ui_evpntopo_id edit is IR-ignored and must not taint via "
+        f"device_profile_gate; got {verdict.decision}: {verdict.decision_reasons}"
+    )
+    assert not _coverage_gap_findings(verdict)
+
+
+def test_below_profile_benign_local_enable_qos_is_not_unknown():
+    """Device-map benign twin (review P1 round 2): local_port_config.*.enable_qos
+    reaches raw+effective via _BENIGN_DEVICE_PORT_LEAVES but is NOT in the
+    switch device-profile overridable list — a below-profile edit of it on a
+    profiled switch must NOT taint to UNKNOWN."""
+    dev = copy.deepcopy(PROFILED_SWITCH)
+    dev["local_port_config"] = {"ge-0/0/0": {"enable_qos": True}}
+    op = _device_op("dev-p1", dev)
+
+    provider = FakeProvider(_raw())
+    verdict = simulate(_plan([op]), provider=provider)
+
+    # local_port_config.*.enable_qos is allowed by the raw/effective gates
+    # (_BENIGN_DEVICE_PORT_LEAVES) but NOT in the switch device-profile
+    # overridable surface, so this must not resolve UNKNOWN via the gate.
+    assert verdict.decision is not Decision.UNKNOWN or not any(
+        "device_profile_gate" in r for r in verdict.decision_reasons
+    ), (
+        f"a below-profile local_port_config.*.enable_qos edit is IR-ignored and "
+        f"must not taint via device_profile_gate; got {verdict.decision}: "
+        f"{verdict.decision_reasons}"
+    )
+    assert not _coverage_gap_findings(verdict)
