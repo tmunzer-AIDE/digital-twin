@@ -225,15 +225,21 @@ def test_spec1_benign_leaves_are_raw_and_effective_but_not_device_profile():
         "port_usages.*.poe_keep_state_when_reboot",
         "port_usages.*.server_fail_retry_interval",
     )
+    # the two benign DEVICE-map leaves ride the same contract as the usage ones
+    benign_device = (
+        "local_port_config.*.enable_qos",
+        "port_config_overwrite.*.poe_keep_state_when_reboot",
+    )
     for leaf in benign:
         assert leaf in RAW_ALLOWLIST["site_setting"], leaf
+    for leaf in (*benign, *benign_device):
         assert leaf in RAW_ALLOWLIST["device"], leaf
         assert leaf in EFFECTIVE_ALLOWLIST, leaf
         # benign = ignored by IR; a device-profile overriding it changes nothing,
-        # so it must NOT taint profiled switches to UNKNOWN
+        # so it must NOT taint profiled switches to UNKNOWN (review P1 round 2:
+        # the local/overwrite benign leaves must not leak in through
+        # _DEVICE_PORT_LEAVES either)
         assert leaf not in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"], leaf
-    assert "local_port_config.*.enable_qos" in RAW_ALLOWLIST["device"]
-    assert "port_config_overwrite.*.poe_keep_state_when_reboot" in RAW_ALLOWLIST["device"]
 
 
 def test_spec1_reviewed_leaves_are_in_all_three_gates():
@@ -341,6 +347,17 @@ _BENIGN_PROFILE_USAGE_ATTRS: tuple[str, ...] = (
 _BENIGN_USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}" for a in _BENIGN_PROFILE_USAGE_ATTRS
 )
+# Benign leaves on the DEVICE inline maps (refreshed OAS: enable_qos also lives
+# on local_port_config; poe_keep_state_when_reboot also on port_config_overwrite).
+# A SEPARATE tuple on purpose: _LOCAL_PORT_CONFIG_LEAVES/_OVERWRITE_LEAVES feed
+# _DEVICE_PORT_LEAVES, which feeds the switch device-profile overridable list —
+# benign leaves must reach ONLY the raw + effective gates, never the
+# device-profile modeled surface (IR-ignored: a profile overriding one changes
+# nothing, so it must not taint profiled switches to UNKNOWN).
+_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = (
+    "local_port_config.*.enable_qos",
+    "port_config_overwrite.*.poe_keep_state_when_reboot",
+)
 ```
 
 (d) Extend `_USAGE_LEAVES` to include the usage-only reviewed attrs:
@@ -357,21 +374,14 @@ _USAGE_LEAVES: tuple[str, ...] = tuple(
 )
 ```
 
-(e) `_LOCAL_PORT_CONFIG_LEAVES`: `enable_qos` left `_MODELED_USAGE_ATTRS`, but the OAS keeps it on `local_port_config` as benign — re-add it explicitly:
+(e) `_LOCAL_PORT_CONFIG_LEAVES` and `_OVERWRITE_LEAVES` are NOT extended with benign leaves — they feed `_DEVICE_PORT_LEAVES` and therefore the switch device-profile overridable list, where benign leaves must never appear (review P1 round 2). `_LOCAL_PORT_CONFIG_LEAVES` simply loses `enable_qos` when it leaves `_MODELED_USAGE_ATTRS`; the local/overwrite benign coverage comes from `_BENIGN_DEVICE_PORT_LEAVES` (step c) instead.
 
-```python
-_LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
-    f"local_port_config.*.{a}"
-    # "enable_qos" is BENIGN (ignored by ingest) but OAS-present on
-    # local_port_config, so it stays field-gate-decidable here.
-    for a in ("usage", "stp_edge", "disabled", "description", "enable_qos",
-              *_MODELED_USAGE_ATTRS)
-)
-```
+(f) Add the benign leaves to raw + effective ONLY:
+- `RAW_ALLOWLIST["site_setting"]`: `*_BENIGN_USAGE_LEAVES,` (right after `*_USAGE_LEAVES,`)
+- `RAW_ALLOWLIST["device"]`: `*_BENIGN_USAGE_LEAVES, *_BENIGN_DEVICE_PORT_LEAVES,` (after `*_DEVICE_PORT_LEAVES,`)
+- `EFFECTIVE_ALLOWLIST`: `*_BENIGN_USAGE_LEAVES, *_BENIGN_DEVICE_PORT_LEAVES,`
 
-(f) `_OVERWRITE_LEAVES`: append `"port_config_overwrite.*.poe_keep_state_when_reboot"` with a `# benign (Spec 1)` comment.
-
-(g) Add `*_BENIGN_USAGE_LEAVES,` to `RAW_ALLOWLIST["site_setting"]`, `RAW_ALLOWLIST["device"]`, and `EFFECTIVE_ALLOWLIST` (place right after `*_USAGE_LEAVES,` in each). `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` is untouched — reviewed leaves arrive there automatically via `_USAGE_LEAVES`; benign leaves stay out by construction.
+(g) `DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE` is untouched — reviewed leaves arrive there automatically via `_USAGE_LEAVES`; benign leaves stay out by construction on BOTH the usage path (not in `_MODELED_USAGE_ATTRS`) and the device-map path (not in `_LOCAL_PORT_CONFIG_LEAVES`/`_OVERWRITE_LEAVES`).
 
 - [ ] **Step 4: Run scope suites**
 
@@ -707,9 +717,17 @@ def test_below_profile_benign_edit_on_profiled_switch_is_not_unknown():
     # The benign twin: ui_evpntopo_id is ignored by the IR, so the same
     # below-profile situation must NOT taint to UNKNOWN.
     ...
+
+
+def test_below_profile_benign_local_enable_qos_is_not_unknown():
+    # Device-map benign twin (review P1 round 2): local_port_config.*.enable_qos
+    # reaches raw+effective via _BENIGN_DEVICE_PORT_LEAVES but is NOT in the
+    # switch device-profile overridable list — a below-profile edit of it on a
+    # profiled switch must NOT taint to UNKNOWN.
+    ...
 ```
 
-Fill both bodies from the existing below-profile STP test's harness (same fixture, different leaf). Assert `Decision.UNKNOWN` for the first; for the second assert the decision is NOT UNKNOWN.
+Fill all three bodies from the existing below-profile STP test's harness (same fixture, different leaf/map). Assert `Decision.UNKNOWN` for the first; for the two benign ones assert the decision is NOT UNKNOWN.
 
 - [ ] **Step 2: Run: both should PASS given Tasks 2–4 (they are pins, not drivers). If the first FAILS, the third gate is broken — stop and fix `_USAGE_LEAVES` wiring before proceeding.**
 
