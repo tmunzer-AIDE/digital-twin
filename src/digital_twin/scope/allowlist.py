@@ -69,7 +69,57 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     *_AUTH_ATTRS,
     "inter_switch_link",
     "storm_control",
+    # Spec 1 reviewed STP knobs — local-capable per the refreshed OAS, so they
+    # ride the same local+usage surface as inter_switch_link/storm_control.
+    # (enable_qos moved OUT of this tuple: it is benign — allowed by the gates
+    # but deliberately ignored by IR; see _BENIGN_PROFILE_USAGE_ATTRS.)
+    "stp_no_root_port",
+    "stp_p2p",
+    "use_vstp",
+)
+
+# Spec 1 reviewed leaves the refreshed OAS documents on port_usages ONLY (never
+# local_port_config / inline maps). They enter _USAGE_LEAVES — and therefore the
+# raw, effective AND device-profile gates — but must NOT ride
+# _MODELED_USAGE_ATTRS, which also feeds the local_port_config leaf set (a
+# local leaf the OAS says cannot exist would be a dead allow violating the
+# placement contract). bypass_auth_when_server_down_for_voip is auth-surface
+# (PortAuth) but usage-only, unlike the 14 local-capable _AUTH_ATTRS.
+_USAGE_ONLY_REVIEWED_ATTRS: tuple[str, ...] = (
+    "bypass_auth_when_server_down_for_voip",
+    "poe_priority",
+    "community_vlan_id",
+    "inter_isolation_network_link",
+    "stp_required",
+)
+
+# Spec 1 benign SAFE leaves: allowed by the raw + effective gates, deliberately
+# NEVER read by ingest and NEVER in the device-profile modeled surface (a
+# profile overriding a leaf the IR ignores changes nothing, so it must not
+# taint profiled switches to UNKNOWN). ui_evpntopo_id: UI selection helper for
+# ESI-LAG profiles (uuid string — pinned by the OAS placement test).
+# enable_qos: scheduling knob, M1 usability ruling. poe_keep_state_when_reboot:
+# reboot-time behavior only. server_fail_retry_interval: RADIUS retry timing —
+# explicit M1 tradeoff, revisit with a RADIUS-outage model (spec 2026-06-29).
+_BENIGN_PROFILE_USAGE_ATTRS: tuple[str, ...] = (
+    "ui_evpntopo_id",
     "enable_qos",
+    "poe_keep_state_when_reboot",
+    "server_fail_retry_interval",
+)
+_BENIGN_USAGE_LEAVES: tuple[str, ...] = tuple(
+    f"port_usages.*.{a}" for a in _BENIGN_PROFILE_USAGE_ATTRS
+)
+# Benign leaves on the DEVICE inline maps (refreshed OAS: enable_qos also lives
+# on local_port_config; poe_keep_state_when_reboot also on port_config_overwrite).
+# A SEPARATE tuple on purpose: _LOCAL_PORT_CONFIG_LEAVES/_OVERWRITE_LEAVES feed
+# _DEVICE_PORT_LEAVES, which feeds the switch device-profile overridable list —
+# benign leaves must reach ONLY the raw + effective gates, never the
+# device-profile modeled surface (IR-ignored: a profile overriding one changes
+# nothing, so it must not taint profiled switches to UNKNOWN).
+_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = (
+    "local_port_config.*.enable_qos",
+    "port_config_overwrite.*.poe_keep_state_when_reboot",
 )
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
@@ -163,7 +213,12 @@ _OSPF_LEAVES: tuple[str, ...] = (
 )
 _USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}"
-    for a in (*_MODELED_USAGE_ATTRS, *_DYNAMIC_PROFILE_ATTRS, *_STP_USAGE_ATTRS)
+    for a in (
+        *_MODELED_USAGE_ATTRS,
+        *_USAGE_ONLY_REVIEWED_ATTRS,
+        *_DYNAMIC_PROFILE_ATTRS,
+        *_STP_USAGE_ATTRS,
+    )
 )
 # Device/site-level STP: bridge priority feeds Device.stp_priority (root
 # election, wired.stp.root_change).
@@ -182,10 +237,11 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # likewise simulated with no findings. `no_local_overwrite` IS modeled
 # (resolve_effective_ports/_overridable gate whether local_port_config applies),
 # but a lone flip activates or deactivates the member's local entry wholesale —
-# including UNMODELED local leaves (use_vstp, stp_p2p, stp_no_root_port) the
-# gates cannot otherwise see. So it is in scope, AND field_gate re-screens the
+# including any UNMODELED local leaf (e.g. a not-yet-reviewed knob) the gates
+# cannot otherwise see. So it is in scope, AND field_gate re-screens the
 # affected member's local leaves on a flip (screen_op -> _local_overwrite_ripple),
-# keeping the false-SAFE closed.
+# keeping the false-SAFE closed. (use_vstp/stp_p2p/stp_no_root_port were the
+# motivating unmodeled example pre-Spec-1; they are reviewed+modeled now.)
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
     "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
     "speed", "duplex", "disable_autoneg", "description", "critical",
@@ -218,6 +274,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "site_setting": (
         *_NETWORK_LEAVES,
         *_USAGE_LEAVES,
+        *_BENIGN_USAGE_LEAVES,
         *_STP_CONFIG_LEAVES,
         *_DHCP_LEAVES,
         *_SNOOPING_LEAVES,
@@ -229,6 +286,8 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_NETWORK_LEAVES,
         *_USAGE_LEAVES,
         *_DEVICE_PORT_LEAVES,
+        *_BENIGN_USAGE_LEAVES,
+        *_BENIGN_DEVICE_PORT_LEAVES,
         *_STP_CONFIG_LEAVES,
         *_IRB_LEAVES,
         *_SNOOPING_LEAVES,
@@ -297,6 +356,8 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_NETWORK_LEAVES,
     *_USAGE_LEAVES,
     *_DEVICE_PORT_LEAVES,
+    *_BENIGN_USAGE_LEAVES,
+    *_BENIGN_DEVICE_PORT_LEAVES,
     *_STP_CONFIG_LEAVES,
     *_IRB_LEAVES,
     *_DHCP_LEAVES,

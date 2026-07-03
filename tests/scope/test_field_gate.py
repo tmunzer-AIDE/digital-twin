@@ -60,14 +60,16 @@ def test_unmodeled_leaf_inside_allowed_subtree_rejects():
 
 
 def test_unmodeled_usage_leaf_rejects():
-    # SP4 moved mac_limit into scope; use_vstp stays unmodeled
+    # SP4 moved mac_limit into scope; Spec 1 moved use_vstp into scope too (a
+    # reviewed STP knob) — use a still-fictional leaf to pin the unmodeled case
     payload = {
         **CURRENT,
-        "port_usages": {"office": {"mode": "access", "port_network": "corp", "use_vstp": True}},
+        "port_usages": {"office": {"mode": "access", "port_network": "corp",
+                                    "not_a_real_knob": True}},
     }
     r = screen_op("site_setting", CURRENT, payload)
     assert isinstance(r, Rejection)
-    assert any("use_vstp" in reason for reason in r.reasons)
+    assert any("not_a_real_knob" in reason for reason in r.reasons)
 
 
 def test_whole_subtree_removal_of_allowed_field_passes():
@@ -139,27 +141,33 @@ def test_no_local_overwrite_flip_passes_over_modeled_local_leaf():
 
 
 def test_no_local_overwrite_flip_rejects_over_unmodeled_local_leaf():
-    # the false-SAFE the guard protected: flipping the flag activates use_vstp,
-    # an unmodeled STP leaf the resolver never projects -> must gate to UNKNOWN.
+    # the false-SAFE the guard protected: flipping the flag activates an
+    # unmodeled leaf the resolver never projects -> must gate to UNKNOWN.
+    # (Spec 1 moved use_vstp into scope as a reviewed STP knob, so this now
+    # uses a still-fictional leaf to pin the unmodeled case.)
     cur = {
         "type": "switch",
         "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": True}},
-        "local_port_config": {"ge-0/0/0": {"usage": "office", "use_vstp": True}},
+        "local_port_config": {"ge-0/0/0": {"usage": "office", "not_a_real_knob": True}},
     }
     payload = {**cur, "port_config": {"ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
     r = screen_op("device", cur, payload)
     assert isinstance(r, Rejection)
-    assert any("no_local_overwrite flip" in reason and "use_vstp" in reason for reason in r.reasons)
+    assert any("no_local_overwrite flip" in reason and "not_a_real_knob" in reason
+               for reason in r.reasons)
 
 
 def test_unmodeled_overwrite_leaf_still_rejects():
-    # the resolver honors port_network/poe_disabled/disabled/speed/duplex/mac_limit from
-    # port_config_overwrite — poe_keep_state_when_reboot et al. stay out of scope (leaf-tightened)
+    # the resolver honors port_network/poe_disabled/disabled/speed/duplex/mac_limit
+    # from port_config_overwrite, plus the Spec 1 benign poe_keep_state_when_reboot
+    # (allowed by the gates but IR-ignored) — mtu stays genuinely unmodeled there
+    # (the resolver doesn't read overwrite.mtu; see test_mtu_is_in_scope) and must
+    # still reject (leaf-tightened).
     payload = {**SWITCH_CUR, "port_config_overwrite": {
-        "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
+        "ge-0/0/0": {"mtu": 9200}}}
     r = screen_op("device", SWITCH_CUR, payload)
     assert isinstance(r, Rejection)
-    assert any("port_config_overwrite.ge-0/0/0.poe_keep_state_when_reboot" in reason
+    assert any("port_config_overwrite.ge-0/0/0.mtu" in reason
                for reason in r.reasons)
 
 
@@ -388,3 +396,41 @@ def test_auth_in_port_config_or_overwrite_is_unknown():
 def test_auth_in_local_port_config_passes_for_device():
     payload = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"port_auth": "dot1x"}}}
     assert screen_op("device", SWITCH_CUR, payload) is None
+
+
+def test_spec1_benign_leaves_are_in_scope_no_findings():
+    # Spec 1 benign leaves: IR-ignored but gate-allowed — a payload changing
+    # ONLY one of these must be decidable (no rejection, no coverage gap),
+    # mirroring the `description` cosmetic idiom above.
+    payload = {**SWITCH_CUR, "port_usages": {"office": {"mode": "access",
+                                                         "ui_evpntopo_id": "abc-123"}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+    payload = {**SWITCH_CUR, "port_usages": {"office": {"mode": "access",
+                                                         "enable_qos": True}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+    payload = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"enable_qos": True}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+    payload = {**SWITCH_CUR, "port_usages": {"office": {
+        "mode": "access", "poe_keep_state_when_reboot": True}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+    payload = {**SWITCH_CUR, "port_config_overwrite": {
+        "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+    payload = {**SWITCH_CUR, "port_usages": {"office": {
+        "mode": "access", "server_fail_retry_interval": 30}}}
+    assert screen_op("device", SWITCH_CUR, payload) is None
+
+
+def test_fabricated_unknown_leaf_still_coverage_gap():
+    # regression: an unclassified leaf must still be an out-of-scope gap, not a
+    # silent pass — the cardinal never-false-SAFE rule.
+    payload = {**SWITCH_CUR, "port_usages": {"office": {
+        "mode": "access", "not_a_real_knob": True}}}
+    r = screen_op("device", SWITCH_CUR, payload)
+    assert isinstance(r, Rejection)
+    assert any("not_a_real_knob" in reason for reason in r.reasons)
