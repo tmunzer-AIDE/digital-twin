@@ -1489,6 +1489,18 @@ def test_reauth_65000_int_equals_str():
     assert _reauth(65000) == _reauth("65000") == "65000"
 
 
+def test_port_auth_lone_voip_bypass_flip_is_non_default():
+    # PortAuth invariant: Port.auth is None ONLY when the whole surface is
+    # default. A lone False->True flip of the voip bypass must produce a
+    # non-default PortAuth so wired.auth.access_change wakes (Spec 1).
+    from digital_twin.adapters.mist.ingest.switch import _port_auth
+
+    assert _port_auth({}) is None
+    assert _port_auth({"bypass_auth_when_server_down_for_voip": False}) is None
+    a = _port_auth({"bypass_auth_when_server_down_for_voip": True})
+    assert a is not None and a.bypass_auth_when_server_down_for_voip is True
+
+
 def test_voip_sets_voice_vlan_and_access_membership():
     eff = {
         "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 30}},

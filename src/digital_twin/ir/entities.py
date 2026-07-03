@@ -128,6 +128,7 @@ class PortAuth:
     guest_network: str | None = None
     bypass_auth_when_server_down: bool = False
     bypass_auth_when_server_down_for_unknown_client: bool = False
+    bypass_auth_when_server_down_for_voip: bool = False
     persist_mac: bool = False
     reauth_interval: str | None = None     # canonical (see ingest _reauth)
 

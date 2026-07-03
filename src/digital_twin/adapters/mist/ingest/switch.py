@@ -477,6 +477,9 @@ def _port_auth(usage: dict[str, Any]) -> PortAuth | None:
         bypass_auth_when_server_down_for_unknown_client=bool(
             usage.get("bypass_auth_when_server_down_for_unknown_client")
         ),
+        bypass_auth_when_server_down_for_voip=bool(
+            usage.get("bypass_auth_when_server_down_for_voip")
+        ),
         persist_mac=bool(usage.get("persist_mac")),
         reauth_interval=_reauth(usage.get("reauth_interval")),
     )
