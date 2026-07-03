@@ -99,6 +99,40 @@ def test_invalid_priority_abstains_instead_of_predicting():
     assert any("abstain" in n for n in result.coverage.notes)
 
 
+def test_invalid_baseline_priority_abstains_with_note():
+    # the symmetric twin of the proposed-side abstention above: when the
+    # BASELINE component holds an uninterpretable priority, "did the root
+    # move?" is unanswerable — the baseline election must abstain (PARTIAL
+    # note -> REVIEW floor), never predict from the 32768 default and either
+    # invent or hide a root move
+    from digital_twin.checks.base import CoverageState
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    def ir(invalid):
+        b = IRBuilder()
+        b.add_device(sw("aa01", stp_priority=4096))
+        if invalid:
+            b.add_device(
+                Device(id="bb02", role=DeviceRole.SWITCH, site="s1", stp_priority_invalid=True)
+            )
+        else:
+            b.add_device(sw("bb02"))
+        b.add_port(trunk_port("aa01", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_port(trunk_port("bb02", "ge-0/0/1", tagged=(20,), native=10))
+        b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    # baseline invalid -> proposed clean: the proposed election succeeds but
+    # the baseline comparison must abstain, not claim "no move"
+    result = _run(ir(True), ir(False))
+    assert result.findings == ()
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("baseline component" in n and "abstained" in n for n in result.coverage.notes)
+    # no findings -> the check-level confidence stays HIGH; the doubt lives in coverage
+    assert result.confidence.level is ConfidenceLevel.HIGH
+
+
 def test_single_switch_component_is_silent():
     def lone(prio):
         b = IRBuilder().add_device(sw("aa01", stp_priority=prio))
