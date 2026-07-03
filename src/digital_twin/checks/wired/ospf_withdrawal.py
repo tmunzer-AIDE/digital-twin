@@ -115,10 +115,6 @@ class _Seg:
     ambiguous_areas: set[str] = field(default_factory=set)
 
     @property
-    def active(self) -> bool:
-        return any(not r.passive for r in self.by_area.values())
-
-    @property
     def areas(self) -> set[str]:
         return set(self.by_area)
 
