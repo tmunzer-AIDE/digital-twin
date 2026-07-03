@@ -197,6 +197,84 @@ def test_edge_not_carrying_the_vlan_is_unreachable_not_ok():
     assert r.coverage.state is CoverageState.PARTIAL
 
 
+def test_source_replacement_makes_blockage_introduced_not_preexisting():
+    # baseline-parity return None: the baseline vlan is snooped but its
+    # dhcp_sources lack THIS source (delta swaps GW2 -> GW). No parity to
+    # compare -> the blockage toward GW is delta-INTRODUCED (WARNING), never
+    # demoted to INFO off a baseline probe against a different source.
+    from digital_twin.ir import ConfidenceLevel
+    r = _run(_ir(trust=False, sources=("GW2",)), _ir(trust=False, sources=("GW",)))
+    f = r.findings[0]
+    assert f.code == "wired.dhcp.snooping.untrusted_path"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH
+
+
+def _zero_egress_ir():
+    """S snoops corp toward GW; its only local port is admin-disabled."""
+    b = IRBuilder()
+    b.add_device(replace(sw("S"), dhcp_snooping=("corp",)))
+    b.add_device(Device(id="GW", role=DeviceRole.GATEWAY, site="s1"))
+    b.add_port(replace(trunk_port("S", "down", tagged=(10,)), disabled=True))
+    b.add_port(trunk_port("GW", "ge-0/0/0", tagged=(10,)))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", dhcp_sources=("GW",)))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b.build()
+
+
+def _zero_egress_graph():
+    """A vlan-10 graph whose only S->GW edge offers NO usable local egress port:
+    a pid absent from the IR, S's admin-disabled port, and the PEER side's port.
+    build_l2_graph drops disabled/unknown ports, so this pins _egress_trust's own
+    trust-boundary filters against a graph/IR disagreement."""
+    import networkx as nx
+
+    from digital_twin.ir import Confidence, ConfidenceLevel
+    from digital_twin.representations.graph_data import L2Edge
+
+    g: nx.MultiGraph = nx.MultiGraph()
+    g.add_node("S")
+    g.add_node("GW")
+    g.add_edge("S", "GW", data=L2Edge(
+        vlans={10}, kind="physical", bundle_id=None, link_ids=["GW:ge-0/0/0__S:down"],
+        member_ports=["S:ghost", "S:down", "GW:ge-0/0/0"],
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+    ))
+    return g
+
+
+def test_zero_usable_egress_candidates_classify_unreachable():
+    # unit pin on _egress_trust: a path to the source EXISTS, but every member
+    # port is filtered (unmodeled pid / disabled / peer-side) -> ("unreachable",
+    # no blocked ports, the path links) — never a blocked conclusion.
+    from digital_twin.checks.wired.snooping import _egress_trust
+    from digital_twin.ir.indexes import vc_root_map
+
+    ir = _zero_egress_ir()
+    actx = AnalysisContext(ir)
+    actx._vlan_graphs[10] = _zero_egress_graph()
+    state, blocked, links = _egress_trust(actx, ir, vc_root_map(ir), "S", 10, "GW")
+    assert state == "unreachable"
+    assert blocked == ()
+    assert links == ("GW:ge-0/0/0__S:down",)
+
+
+def test_zero_usable_egress_is_partial_abstention_when_delta_introduced():
+    # the check-level effect of the same graph: snooping newly enabled but zero
+    # usable egress -> abstention NOTE + PARTIAL coverage, no untrusted_path
+    # finding (a filtered boundary is blindness, not a dropped-offer verdict)
+    base = _ir(snooping=None, trust=False, linked=False)
+    prop_ir = _zero_egress_ir()
+    pctx = AnalysisContext(prop_ir)
+    pctx._vlan_graphs[10] = _zero_egress_graph()
+    r = DhcpSnoopingCheck().run(CheckContext(
+        baseline=AnalysisContext(base), proposed=pctx, diff=diff_ir(base, prop_ir)))
+    assert r.status is Status.PASS
+    assert r.findings == ()
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("not locatable" in n for n in r.coverage.notes)
+
+
 # --- caused_by attribution tests ---
 
 

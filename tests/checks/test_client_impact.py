@@ -5,7 +5,8 @@ HIGH confidence (observed clients), currently-connected-only caveat in coverage.
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.client_impact import ClientImpactCheck
-from digital_twin.ir import IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.contracts import Severity
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
 from tests.factories import access_port, irb, link, sw, trunk_port, wired_client
 
 
@@ -74,6 +75,62 @@ def test_wireless_client_on_isolated_ap_flags_blackhole():
     assert result.status is Status.WARN
     impacts = result.findings[0].evidence["impacts"]
     assert any(i["impact"] == "blackhole" and i["mac"] == "ww:01" for i in impacts)
+
+
+def test_attach_port_removed_flags_disconnect():
+    # the client's attach port disappears from IR' -> "disconnect" impact
+    def site(with_acc_port: bool):
+        b = IRBuilder()
+        b.add_device(sw("A")).add_device(sw("B"))
+        for vid in (10, 20):
+            b.add_vlan(Vlan(vlan_id=vid, name=f"v{vid}", scope="s1"))
+        if with_acc_port:
+            b.add_port(access_port("A", "acc", 10))
+        b.add_port(trunk_port("A", "up", tagged=(10, 20)))
+        b.add_port(trunk_port("B", "down", tagged=(10, 20)))
+        b.add_link(link("A:up", "B:down"))
+        b.add_l3intf(irb("B", 10))
+        if with_acc_port:
+            b.add_client(wired_client("aa:aa", "A:acc", vlan=10))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.CLIENTS_ACTIVE)
+        b.with_capability(IRCapability.L3_EXITS)
+        return b.build()
+
+    result = ClientImpactCheck().run(_ctx(site(True), site(False)))
+    assert result.status is Status.WARN
+    f = result.findings[0]
+    assert f.code == "wired.client.impact.active_clients"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.affected_entities == ("aa:aa",)
+    impact = f.evidence["impacts"][0]
+    assert impact["impact"] == "disconnect"
+    assert impact["detail"] == "attach port removed"
+    assert impact["mac"] == "aa:aa"
+    assert impact["attachment"] == "A:acc"
+    # the removed attach port is the delta cause
+    assert any(c.ref.kind == "port" and c.ref.id == "A:acc" for c in f.caused_by)
+
+
+def test_client_on_unmodeled_baseline_port_is_silently_skipped():
+    # the client's attach port is unmodeled in BASELINE -> _impact_of returns
+    # None: no finding, no phantom "disconnect" from blindness. IRBuilder itself
+    # rejects a client on an unknown port, so this guards an IR built elsewhere:
+    # inject the ghost-attached client onto a validly built IR via replace().
+    from dataclasses import replace
+
+    def site():
+        b = IRBuilder()
+        b.add_device(sw("A"))
+        b.add_vlan(Vlan(vlan_id=10, name="v10", scope="s1"))
+        b.add_port(trunk_port("A", "up", tagged=(10,)))
+        b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.CLIENTS_ACTIVE)
+        return replace(b.build(), clients=(wired_client("aa:aa", "A:ghost", vlan=10),))
+
+    result = ClientImpactCheck().run(_ctx(site(), site()))
+    assert result.status is Status.PASS
+    assert result.findings == ()
+    assert result.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_no_clients_affected_passes_with_caveat():
