@@ -4,7 +4,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.wired.unmodeled_change import PortUnmodeledChangeCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, IRCapability, Port, PortMode, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
 from digital_twin.ir.entities import PortMisc
 from tests.factories import sw
 
@@ -27,6 +27,36 @@ def test_enable_qos_change_is_review():
     assert r.status is Status.WARN
     assert r.findings[0].code == "wired.port.unmodeled_change.recognized"
     assert r.findings[0].severity is Severity.WARNING
+
+
+def test_inter_switch_link_change_is_review():
+    r = _run(_ir(None), _ir(PortMisc(inter_switch_link=True)))
+    assert r.status is Status.WARN
+    f = r.findings[0]
+    assert f.code == "wired.port.unmodeled_change.recognized"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM  # unmodeled impact, never HIGH
+    assert f.evidence["knobs"] == ["inter_switch_link"]
+
+
+def test_storm_control_change_is_review():
+    r = _run(_ir(PortMisc(storm_control="pct:80")), _ir(PortMisc(storm_control="pct:50")))
+    assert r.status is Status.WARN
+    f = r.findings[0]
+    assert f.code == "wired.port.unmodeled_change.recognized"
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+    assert f.evidence["knobs"] == ["storm_control"]
+
+
+def test_misc_object_flip_without_recognized_knob_is_silent():
+    # None vs all-default PortMisc(): the misc OBJECTS differ, but no recognized
+    # knob changed -> the `continue` guard keeps the check silent (no phantom
+    # REVIEW off a representation-only difference)
+    r = _run(_ir(None), _ir(PortMisc()))
+    assert r.status is Status.PASS
+    assert r.findings == ()
+    assert r.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_no_change_is_silent():
