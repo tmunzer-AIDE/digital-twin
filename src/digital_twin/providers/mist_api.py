@@ -28,6 +28,7 @@ later page fails). See tests/providers/test_mist_api_response_guard.py.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -53,6 +54,8 @@ from .base import (
 )
 
 _Json = dict[str, Any]
+
+_log = logging.getLogger(__name__)
 
 
 class MistApiError(RuntimeError):
@@ -104,13 +107,29 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _group_by_site(rows: list[_Json]) -> dict[str, list[_Json]]:
-    """Index org-wide rows by their `site_id` (rows lacking one are dropped)."""
+def _group_by_site(rows: list[_Json], endpoint: str = "org rows") -> dict[str, list[_Json]]:
+    """Index org-wide rows by their `site_id`.
+
+    A row lacking `site_id` cannot be attributed to any site, so it is dropped —
+    but the drop is SURFACED as a module-level warning (endpoint + count) rather
+    than being silent, so an operator can see the data loss. Deliberately a log,
+    not a StateMeta failure: a per-site FetchFailure would mark every site of the
+    batch incomplete for what is usually a handful of unassigned-device rows,
+    and this signal must never floor or otherwise change a verdict."""
     grouped: dict[str, list[_Json]] = {}
+    dropped = 0
     for row in rows:
         sid = row.get("site_id")
         if sid is not None:
             grouped.setdefault(str(sid), []).append(row)
+        else:
+            dropped += 1
+    if dropped:
+        _log.warning(
+            "%s: dropped %d org row(s) without site_id — not attributable to any site",
+            endpoint,
+            dropped,
+        )
     return grouped
 
 
@@ -161,9 +180,9 @@ class MistApiProvider(StateProvider):
         except Exception:  # noqa: BLE001 — degrades to per-site baseline failure below
             sites = {}
         targets = [str(s) for s in site_ids] if site_ids is not None else list(sites)
-        port_slice = self._org_slice(lambda: self._org_port_stats(scope))
-        wired_slice = self._org_slice(lambda: self._org_wired_clients(scope))
-        device_slice = self._org_slice(lambda: self._org_device_stats(scope))
+        port_slice = self._org_slice(lambda: self._org_port_stats(scope), "org_port_stats")
+        wired_slice = self._org_slice(lambda: self._org_wired_clients(scope), "org_wired_clients")
+        device_slice = self._org_slice(lambda: self._org_device_stats(scope), "org_device_stats")
         nt_cache: dict[str, _Json | None] = {}
         out: dict[str, RawSiteState | FetchError] = {}
         for sid in targets:
@@ -468,11 +487,14 @@ class MistApiProvider(StateProvider):
         nt_cache[nt_id] = result
         return result
 
-    def _org_slice(self, fetch: Callable[[], list[_Json]]) -> Callable[[str], list[_Json]]:
+    def _org_slice(
+        self, fetch: Callable[[], list[_Json]], endpoint: str = "org rows"
+    ) -> Callable[[str], list[_Json]]:
         """Fetch an org-wide list ONCE and index by site_id. On fetch failure the
-        returned indexer RAISES, so each site records the gap in its own meta."""
+        returned indexer RAISES, so each site records the gap in its own meta.
+        Rows without a site_id are dropped with a warning (see _group_by_site)."""
         try:
-            grouped = _group_by_site(fetch())
+            grouped = _group_by_site(fetch(), endpoint)
         except Exception as e:  # noqa: BLE001 — replayed per site via the indexer
 
             def _raise(_sid: str, _e: Exception = e) -> list[_Json]:
