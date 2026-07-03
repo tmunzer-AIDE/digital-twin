@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-29-port-profile-attribute-completion-design.md` (approved after 3 review rounds).
 
-**Baseline:** branch `feat/port-profile-completion` off main@`2f1e578` (includes PRs #35–#39; note #38 added `test_inter_switch_link_change_is_review`, `test_storm_control_change_is_review`, `test_misc_object_flip_without_recognized_knob_is_silent` to `tests/checks/test_unmodeled_change.py` — they must keep passing, and Task 4 REPLACES `test_enable_qos_change_is_review_not_unknown`).
+**Baseline:** branch `feat/port-profile-completion` off main@`2bd2ab8` (includes PRs #35–#40; #40 added confidence assertions to `tests/checks/test_unmodeled_change.py` that Task 4's rewrite must preserve, and #38 added `test_inter_switch_link_change_is_review`, `test_storm_control_change_is_review`, `test_misc_object_flip_without_recognized_knob_is_silent` to `tests/checks/test_unmodeled_change.py` — they must keep passing, and Task 4 REPLACES `test_enable_qos_change_is_review_not_unknown`).
 
 ---
 
