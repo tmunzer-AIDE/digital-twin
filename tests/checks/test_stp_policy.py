@@ -11,7 +11,7 @@ from digital_twin.checks.base import CheckContext, CheckResult, CoverageState, S
 from digital_twin.checks.wired.stp_policy import StpPolicyCheck
 from digital_twin.contracts import Finding, Severity
 from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Port, PortMode, diff_ir
-from digital_twin.ir.entities import StpPolicy
+from digital_twin.ir.entities import StpMode, StpPolicy
 from digital_twin.ir.provenance import Provenance
 from digital_twin.verdict.decision import Decision, DecisionInputs, decide
 from tests.factories import ap, link, sw, wired_client
@@ -523,3 +523,143 @@ def test_blocking_risk_and_root_protect_risk_coexist_on_one_port():
     result = _run(base_ir, prop_ir)
     assert _find(result, "wired.stp.policy.blocking_risk")
     assert _find(result, "wired.stp.policy.root_protect_risk")
+
+
+# --- .link_mismatch: both ends of a modeled link disagree on use_vstp/stp_p2p -
+#
+# .link_mismatch fires when both ends of a MODELED link disagree on use_vstp
+# or stp_p2p (effective value, tokens excluded), and the delta introduced or
+# changed the disagreement. WARNING/MEDIUM by default; confidence follows the
+# LINK's own tie confidence (HIGH two-sided, MEDIUM below) same as
+# .blocking_risk's _tie_confidence. Keyed by (link, knob): both knobs
+# mismatched on the same link -> two separate findings. Pre-existing
+# disagreement merely touched (some OTHER knob changed) -> INFO context, which
+# never satisfies the .policy_change floor (spec P2 round 2).
+
+_UP, _DOWN = "A:up", "B:down"
+
+
+def _link_mismatch_ir(
+    *, up_policy: StpPolicy | None, down_policy: StpPolicy | None,
+    tie: str = "two_sided", up_stp_mode: StpMode | None = None,
+    down_stp_mode: StpMode | None = None,
+) -> IRBuilder:
+    prov = Provenance.LLDP_TWO_SIDED if tie == "two_sided" else Provenance.LLDP_ONE_SIDED
+    up_port = Port(id=_UP, device_id="A", name="up", mode=PortMode.TRUNK,
+                   tagged_vlans=(10,), stp_policy=up_policy)
+    down_port = Port(id=_DOWN, device_id="B", name="down", mode=PortMode.TRUNK,
+                     tagged_vlans=(10,), stp_policy=down_policy)
+    if up_stp_mode is not None:
+        up_port = dataclasses.replace(up_port, stp_mode=up_stp_mode)
+    if down_stp_mode is not None:
+        down_port = dataclasses.replace(down_port, stp_mode=down_stp_mode)
+    b = IRBuilder().add_device(sw("A")).add_device(sw("B"))
+    b.add_port(up_port).add_port(down_port)
+    b.add_link(link(_UP, _DOWN, prov=prov))
+    b.with_capability(IRCapability.WIRED_L2)
+    return b
+
+
+def _run_one_end_flip(*knobs: str, tie: str = "two_sided"):
+    """Baseline: both ends default (no mismatch). Proposed: A:up flips the
+    given knob(s) to True, B:down stays default -> a fresh mismatch per knob."""
+    base_ir = _link_mismatch_ir(up_policy=None, down_policy=None, tie=tie).build()
+    prop_up_policy = StpPolicy(**{k: True for k in knobs})
+    prop_ir = _link_mismatch_ir(
+        up_policy=prop_up_policy, down_policy=None, tie=tie
+    ).build()
+    return _run(base_ir, prop_ir)
+
+
+def test_use_vstp_mismatch_on_modeled_link_is_warning():
+    result = _run_one_end_flip("use_vstp")  # A:up use_vstp=True, B:down default
+    f = _find(result, "wired.stp.policy.link_mismatch")
+    assert f.severity is Severity.WARNING
+    assert f.evidence["knob"] == "use_vstp"
+
+
+def test_both_knobs_mismatched_yield_two_findings_keyed_by_link_and_knob():
+    result = _run_one_end_flip("use_vstp", "stp_p2p")
+    mm = _findall(result, "wired.stp.policy.link_mismatch")
+    assert {f.evidence["knob"] for f in mm} == {"use_vstp", "stp_p2p"}
+    assert len({(f.evidence["link"], f.evidence["knob"]) for f in mm}) == 2
+
+
+def test_preexisting_mismatch_touched_is_info():
+    # both states mismatch identically on use_vstp; the delta touches another
+    # stp_policy knob (stp_p2p) on the SAME port -> use_vstp mismatch is
+    # pre-existing context (INFO), not a fresh WARNING
+    base_up = StpPolicy(use_vstp=True)
+    prop_up = StpPolicy(use_vstp=True, stp_p2p=True)
+    base_ir = _link_mismatch_ir(up_policy=base_up, down_policy=None).build()
+    prop_ir = _link_mismatch_ir(up_policy=prop_up, down_policy=None).build()
+    result = _run(base_ir, prop_ir)
+    mm = _findall(result, "wired.stp.policy.link_mismatch")
+    info = [f for f in mm if f.severity is Severity.INFO]
+    warn = [f for f in mm if f.severity is Severity.WARNING]
+    assert any(f.evidence["knob"] == "use_vstp" for f in info)
+    assert not any(f.evidence["knob"] == "use_vstp" for f in warn)
+    # stp_p2p is a fresh mismatch introduced by the delta -> WARNING
+    assert any(f.evidence["knob"] == "stp_p2p" for f in warn)
+
+
+def _run_value_change_with_preexisting_mismatch():
+    # use_vstp mismatched identically in both states (pre-existing, untouched
+    # by the delta); stp_p2p VALUE changes on the same port (True -> a
+    # different truthy value is impossible for bool, so flip False -> True,
+    # which is itself the "value change" the floor must cover)
+    base_up = StpPolicy(use_vstp=True, stp_p2p=False)
+    prop_up = StpPolicy(use_vstp=True, stp_p2p=True)
+    base_ir = _link_mismatch_ir(up_policy=base_up, down_policy=None).build()
+    prop_ir = _link_mismatch_ir(up_policy=prop_up, down_policy=None).build()
+    return _run(base_ir, prop_ir)
+
+
+def test_info_mismatch_never_satisfies_the_floor():
+    # spec P2 round 2: a knob VALUE change on a port with a pre-existing
+    # (unchanged) mismatch must yield the INFO context finding AND a
+    # delta-caused WARNING .policy_change — INFO-only would be SAFE-able
+    result = _run_value_change_with_preexisting_mismatch()
+    infos = [f for f in result.findings if f.severity is Severity.INFO]
+    warns = [f for f in result.findings if f.severity is Severity.WARNING]
+    assert infos and warns
+    assert any(f.code == "wired.stp.policy.policy_change" for f in warns)
+    assert result.status is Status.WARN  # never PASS on INFO alone
+
+
+def test_observed_stp_mode_lands_in_evidence_when_present():
+    base_ir = _link_mismatch_ir(up_policy=None, down_policy=None).build()
+    prop_up_policy = StpPolicy(use_vstp=True)
+    prop_ir = _link_mismatch_ir(
+        up_policy=prop_up_policy, down_policy=None,
+        up_stp_mode=StpMode.VSTP, down_stp_mode=StpMode.RSTP,
+    ).build()
+    result = _run(base_ir, prop_ir)
+    f = _find(result, "wired.stp.policy.link_mismatch")
+    assert f.evidence["observed_modes"] == {_UP: StpMode.VSTP, _DOWN: StpMode.RSTP}
+
+
+def test_link_mismatch_confidence_follows_link_tie_one_sided_is_medium():
+    result = _run_one_end_flip("use_vstp", tie="one_sided")
+    f = _find(result, "wired.stp.policy.link_mismatch")
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+
+
+def test_link_mismatch_confidence_follows_link_tie_two_sided_is_high():
+    result = _run_one_end_flip("use_vstp", tie="two_sided")
+    f = _find(result, "wired.stp.policy.link_mismatch")
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.severity is Severity.WARNING  # degradation, not outage — never ERROR
+
+
+def test_token_end_is_excluded_from_mismatch_and_floors_only():
+    # one end's use_vstp is an unresolved: token — token -> floor path, never
+    # a mismatch claim (tokens can't produce a precise prediction)
+    prop_up_policy = StpPolicy(use_vstp="unresolved:{{v}}")
+    base_ir = _link_mismatch_ir(up_policy=None, down_policy=None).build()
+    prop_ir = _link_mismatch_ir(up_policy=prop_up_policy, down_policy=None).build()
+    result = _run(base_ir, prop_ir)
+    assert not _findall(result, "wired.stp.policy.link_mismatch")
+    f = _find(result, "wired.stp.policy.policy_change")
+    assert "use_vstp" in f.evidence["knobs"]
+    assert any("unresolved" in n for n in result.coverage.notes)

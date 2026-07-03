@@ -37,7 +37,24 @@ NOT HIGH (default-assumed priority, or _root_of abstained) degrades to
 WARNING with a coverage note -- never guess at ERROR. A redundant path, or
 the device itself being the elected root, is no risk code at all (the
 .policy_change floor covers it). A fire suppresses that port's
-.policy_change (same most-specific precedence as .blocking_risk)."""
+.policy_change (same most-specific precedence as .blocking_risk).
+
+.link_mismatch fires when both ends of a MODELED link disagree on the
+EFFECTIVE (default False when absent) value of use_vstp or stp_p2p, and the
+delta introduced or changed that disagreement on either end. Keyed by
+(link, knob): use_vstp and stp_p2p mismatched on the same link are two
+separate findings, each carrying both ends' values and (when observed) each
+end's live Port.stp_mode as corroborating evidence -- never a gate. WARNING
+always (a link-level degradation, not an outage); confidence follows the
+LINK's own tie confidence via the same _tie_confidence used by .blocking_risk
+(HIGH two-sided, MEDIUM below). A disagreement already identical in the
+baseline, merely touched by some OTHER knob changing on one of the ports, is
+INFO context instead. A token end is excluded from the comparison entirely
+(tokens never produce a mismatch claim -- see .policy_change). Per-link
+findings COEXIST with per-port findings and never suppress the .policy_change
+floor -- only .blocking_risk/.root_protect_risk (port-level, WARNING-or-above)
+do that; an INFO .link_mismatch in particular must never be mistaken for
+floor satisfaction (spec P2 round 2)."""
 
 from __future__ import annotations
 
@@ -63,7 +80,7 @@ from digital_twin.ir import (
     Link,
     min_confidence,
 )
-from digital_twin.ir.entities import Client, DeviceRole, Port, PortMode, StpPolicy
+from digital_twin.ir.entities import Client, DeviceRole, Port, PortMode, StpMode, StpPolicy
 from digital_twin.ir.indexes import clients_by_ap, clients_by_port, node_for, vc_root_map
 from digital_twin.ir.model import IR
 
@@ -83,6 +100,13 @@ _UNPROVABLE_ELECTION = Confidence(
              "priority or an uninterpretable priority is present in the component)",),
 )
 
+# .link_mismatch only ever compares these two knobs: stp_required and
+# stp_no_root_port are per-port BPDU-handling/root-eligibility switches with
+# no "the two ends must agree" semantics (a root-protect port and its peer are
+# expected to differ). use_vstp/stp_p2p are link-level protocol/handshake
+# settings where the two ends disagreeing is itself the anomaly.
+_LINK_MISMATCH_KNOBS = ("use_vstp", "stp_p2p")
+
 
 def _changed_knobs(old: StpPolicy | None, new: StpPolicy | None) -> list[str]:
     o, n = old or StpPolicy(), new or StpPolicy()
@@ -94,6 +118,12 @@ def _changed_knobs(old: StpPolicy | None, new: StpPolicy | None) -> list[str]:
 
 def _is_unresolved(value: object) -> bool:
     return isinstance(value, str) and value.startswith("unresolved:")
+
+
+def _effective_knob(policy: StpPolicy | None, knob: str) -> bool | str:
+    """A port's effective value for one StpPolicy knob; default False when
+    the port carries no StpPolicy at all (Port.stp_policy is None)."""
+    return getattr(policy, knob) if policy is not None else False
 
 
 # --- .blocking_risk peer classification --------------------------------------
@@ -311,6 +341,7 @@ class StpPolicyCheck:
                         caused_by=(),
                     )
                 )
+        findings.extend(self._link_mismatch(ctx))
         coverage = (
             Coverage(state=CoverageState.PARTIAL, notes=tuple(notes))
             if notes
@@ -533,3 +564,83 @@ class StpPolicyCheck:
             ),
             note,
         )
+
+    def _link_mismatch(self, ctx: CheckContext) -> list[Finding]:
+        """For every MODELED link present in the proposed IR, compare each
+        end's EFFECTIVE use_vstp/stp_p2p value (tokens excluded — a token
+        never produces a mismatch claim, it stays on the .policy_change floor
+        path). A disagreement introduced or changed by the delta on either
+        end -> one WARNING finding per (link, knob), confidence = the link's
+        own tie confidence (HIGH two-sided, MEDIUM below, same _tie_confidence
+        as .blocking_risk). A disagreement that already existed identically in
+        the baseline, merely touched by some other knob changing on one of the
+        ports -> INFO context. These findings COEXIST with port-level findings
+        and never suppress the .policy_change floor for the same port."""
+        base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
+        out: list[Finding] = []
+        for lnk in prop_ir.links:
+            pa = prop_ir.ports.get(lnk.a_port)
+            pb = prop_ir.ports.get(lnk.b_port)
+            if pa is None or pb is None:
+                continue  # not a fully modeled link
+            base_pa = base_ir.ports.get(lnk.a_port)
+            base_pb = base_ir.ports.get(lnk.b_port)
+            for knob in _LINK_MISMATCH_KNOBS:
+                a_new, b_new = _effective_knob(pa.stp_policy, knob), _effective_knob(
+                    pb.stp_policy, knob
+                )
+                if _is_unresolved(a_new) or _is_unresolved(b_new):
+                    continue  # token end -> floor path, never a mismatch claim
+                if a_new == b_new:
+                    continue  # both ends agree in the proposed state
+                changed_here = (
+                    base_pa is None or base_pb is None
+                    or _effective_knob(base_pa.stp_policy, knob) != a_new
+                    or _effective_knob(base_pb.stp_policy, knob) != b_new
+                )
+                conf = _tie_confidence(lnk)
+                observed_modes = {
+                    p.id: p.stp_mode
+                    for p in (pa, pb)
+                    if p.stp_mode is not StpMode.NONE
+                }
+                evidence = {
+                    "link": lnk.id, "knob": knob,
+                    "values": {pa.id: a_new, pb.id: b_new},
+                    "observed_modes": observed_modes,
+                }
+                if changed_here:
+                    out.append(
+                        Finding(
+                            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                            code=f"{self.id}.link_mismatch", severity=Severity.WARNING,
+                            confidence=conf,
+                            message=f"link {pa.id} <-> {pb.id}: {knob} disagreement "
+                                    f"({a_new} vs {b_new}) introduced or changed by "
+                                    f"this delta",
+                            affected_entities=(pa.id, pb.id), subject=ObjectRef("link", lnk.id),
+                            evidence=evidence,
+                            caused_by=tuple(
+                                c for c in (
+                                    ctx.delta_index.cause("port", pa.id),
+                                    ctx.delta_index.cause("port", pb.id),
+                                    ctx.delta_index.cause("link", lnk.id),
+                                ) if c is not None
+                            ),
+                        )
+                    )
+                else:
+                    out.append(
+                        Finding(
+                            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                            code=f"{self.id}.link_mismatch", severity=Severity.INFO,
+                            confidence=conf,
+                            message=f"link {pa.id} <-> {pb.id}: pre-existing {knob} "
+                                    f"disagreement ({a_new} vs {b_new}), unchanged by "
+                                    f"this delta (context)",
+                            affected_entities=(pa.id, pb.id), subject=ObjectRef("link", lnk.id),
+                            evidence=evidence,
+                            caused_by=(),
+                        )
+                    )
+        return out

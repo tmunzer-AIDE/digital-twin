@@ -110,6 +110,11 @@ _NOT_VISUALIZED = {
     #     _NODE_EV_KEYS) already paint the entities; these are scalars ---
     "only_path",            # boolean — always True when this code fires
     "election_confidence",  # "high"/"unprovable" classification tag (string)
+    # --- stp_policy.link_mismatch: "link" (already painted) carries the pair;
+    #     these are per-knob detail, not additional entity references ---
+    "values",                # {port_id: effective knob value} — port ids already
+                              # painted via affected_entities/"link", values are bools/tokens
+    "observed_modes",        # {port_id: StpMode} corroborating context, not a new entity
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
 }
