@@ -128,19 +128,30 @@ class PortAuth:
     guest_network: str | None = None
     bypass_auth_when_server_down: bool = False
     bypass_auth_when_server_down_for_unknown_client: bool = False
+    bypass_auth_when_server_down_for_voip: bool = False
     persist_mac: bool = False
     reauth_interval: str | None = None     # canonical (see ingest _reauth)
 
 
 @dataclass(frozen=True)
 class PortMisc:
-    """SP4 recognized-but-unmodeled port knobs (inter_switch_link / enable_qos /
-    storm_control). Frozen + comparable; Port.misc is None ONLY when all are
-    default, so a lone flip is detectable."""
+    """Recognized-but-unmodeled port knobs (SP4 + Spec 1), surfaced as REVIEW by
+    wired.port.unmodeled_change. Frozen + comparable; Port.misc is None ONLY
+    when all are default, so a lone flip is detectable. enable_qos left this
+    surface in Spec 1 (benign SAFE — ignored by ingest entirely). Spec-1 scalar
+    honesty: the new boolean knobs are `bool | str` — a templated/unparseable
+    value stays a diff-bearing `unresolved:` token, never collapsed to a bool
+    (blanket bool() would turn "{{vstp}}" into True and hide the change)."""
 
     inter_switch_link: bool = False
-    enable_qos: bool = False
     storm_control: str | None = None  # canonical digest of the storm_control object
+    poe_priority: str | None = None  # "low" | "high" | None
+    community_vlan_id: int | str | None = None  # int, or "unresolved:<raw>" token
+    inter_isolation_network_link: bool | str = False
+    stp_required: bool | str = False
+    stp_no_root_port: bool | str = False
+    stp_p2p: bool | str = False
+    use_vstp: bool | str = False
 
 
 def requires_auth(a: PortAuth | None) -> bool:

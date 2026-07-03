@@ -1,11 +1,14 @@
-"""wired.port.unmodeled_change — inter_switch_link / storm_control / enable_qos
-changed. These have no reachability/connectivity model the twin reasons about
-(inter_switch_link enables the unmodeled networks.isolation feature; storm_control
-is a runtime traffic-protection knob; enable_qos is pure scheduling), so the twin
-recognizes the change and floors REVIEW — never SAFE, never ERROR/UNSAFE.
+"""wired.port.unmodeled_change — a recognized port-profile knob changed whose
+impact the twin does not model yet (inter_switch_link, storm_control,
+poe_priority, community_vlan_id, inter_isolation_network_link, stp_required,
+stp_no_root_port, stp_p2p, use_vstp). The twin recognizes the change and floors
+REVIEW — never SAFE, never ERROR/UNSAFE. (enable_qos left this surface in
+Spec 1: benign SAFE.)
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
@@ -14,20 +17,16 @@ from digital_twin.ir.entities import PortMisc
 
 _MEDIUM = Confidence(
     level=ConfidenceLevel.MEDIUM,
-    reasons=("the changed knob has no modeled connectivity impact",),
+    reasons=("the changed knob's impact is not modeled",),
 )
 
 
 def _changed(old: PortMisc | None, new: PortMisc | None) -> list[str]:
     o, n = old or PortMisc(), new or PortMisc()
-    out: list[str] = []
-    if o.inter_switch_link != n.inter_switch_link:
-        out.append("inter_switch_link")
-    if o.enable_qos != n.enable_qos:
-        out.append("enable_qos")
-    if o.storm_control != n.storm_control:
-        out.append("storm_control")
-    return out
+    return [
+        f.name for f in dataclasses.fields(PortMisc)
+        if getattr(o, f.name) != getattr(n, f.name)
+    ]
 
 
 class PortUnmodeledChangeCheck:

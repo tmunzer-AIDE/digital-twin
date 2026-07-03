@@ -44,6 +44,15 @@ def test_persist_mac_only_change_floors_review():
     assert r.findings[0].code == "wired.auth.access_change.policy_change"
 
 
+def test_voip_bypass_only_change_floors_review():
+    # the false-SAFE guard: bypass_auth_when_server_down_for_voip-only (no
+    # port_auth) still surfaces, same as the persist_mac-only case
+    r = _run(_ir(None), _ir(PortAuth(bypass_auth_when_server_down_for_voip=True)))
+    assert r.status is Status.WARN
+    assert r.findings[0].code == "wired.auth.access_change.policy_change"
+    assert r.findings[0].severity is Severity.WARNING
+
+
 def test_no_change_is_silent():
     assert _run(_ir(PortAuth(port_auth="dot1x")), _ir(PortAuth(port_auth="dot1x"))).findings == ()
     assert _run(_ir(None), _ir(None)).findings == ()

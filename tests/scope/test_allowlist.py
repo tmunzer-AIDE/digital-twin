@@ -31,7 +31,10 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     assert "port_config_overwrite.*.port_network" in device
     assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
     assert "port_config_overwrite.*.mac_limit" in device  # SP4: resolver-honored + modeled
-    assert "port_config_overwrite.*.poe_keep_state_when_reboot" not in device  # still unmodeled
+    # Spec 1: poe_keep_state_when_reboot is now allowed here as a BENIGN leaf
+    # (IR-ignored, kept out of the device-profile modeled surface) rather than
+    # unmodeled-denied — see _BENIGN_DEVICE_PORT_LEAVES.
+    assert "port_config_overwrite.*.poe_keep_state_when_reboot" in device
 
 
 def test_l1_attrs_in_scope():
@@ -186,3 +189,65 @@ def test_misc_knobs_in_scope_usage_local_not_port_config():
         assert f"port_usages.*.{a}" in dev and f"local_port_config.*.{a}" in dev
         assert f"port_config.*.{a}" not in dev
         assert f"port_config_overwrite.*.{a}" not in dev
+
+
+def test_spec1_benign_leaves_are_raw_and_effective_but_not_device_profile():
+    from digital_twin.scope.allowlist import (
+        DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE,
+        EFFECTIVE_ALLOWLIST,
+        RAW_ALLOWLIST,
+    )
+
+    benign = (
+        "port_usages.*.ui_evpntopo_id",
+        "port_usages.*.enable_qos",
+        "port_usages.*.poe_keep_state_when_reboot",
+        "port_usages.*.server_fail_retry_interval",
+    )
+    # the two benign DEVICE-map leaves ride the same contract as the usage ones
+    benign_device = (
+        "local_port_config.*.enable_qos",
+        "port_config_overwrite.*.poe_keep_state_when_reboot",
+    )
+    for leaf in benign:
+        assert leaf in RAW_ALLOWLIST["site_setting"], leaf
+    for leaf in (*benign, *benign_device):
+        assert leaf in RAW_ALLOWLIST["device"], leaf
+        assert leaf in EFFECTIVE_ALLOWLIST, leaf
+        # benign = ignored by IR; a device-profile overriding it changes nothing,
+        # so it must NOT taint profiled switches to UNKNOWN (review P1 round 2:
+        # the local/overwrite benign leaves must not leak in through
+        # _DEVICE_PORT_LEAVES either)
+        assert leaf not in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"], leaf
+
+
+def test_spec1_reviewed_leaves_are_in_all_three_gates():
+    from digital_twin.scope.allowlist import (
+        DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE,
+        EFFECTIVE_ALLOWLIST,
+        RAW_ALLOWLIST,
+    )
+
+    reviewed = (
+        "bypass_auth_when_server_down_for_voip", "poe_priority", "community_vlan_id",
+        "inter_isolation_network_link", "stp_required", "stp_no_root_port",
+        "stp_p2p", "use_vstp",
+    )
+    for attr in reviewed:
+        leaf = f"port_usages.*.{attr}"
+        assert leaf in RAW_ALLOWLIST["site_setting"], leaf
+        assert leaf in EFFECTIVE_ALLOWLIST, leaf
+        # the third gate — absent here, a below-profile edit on a profiled
+        # switch would resolve REVIEW/SAFE instead of UNKNOWN (false-SAFE)
+        assert leaf in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"], leaf
+
+
+def test_spec1_usage_only_leaves_are_not_dead_allowed_on_local():
+    # refreshed OAS: these do NOT exist on local_port_config — allowing them
+    # there would violate the placement contract (spec: "allowlisted only on
+    # the maps documented")
+    from digital_twin.scope.allowlist import RAW_ALLOWLIST
+
+    for attr in ("bypass_auth_when_server_down_for_voip", "poe_priority",
+                 "community_vlan_id", "inter_isolation_network_link", "stp_required"):
+        assert f"local_port_config.*.{attr}" not in RAW_ALLOWLIST["device"], attr

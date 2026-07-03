@@ -944,6 +944,31 @@
       "description": "Only if `mode`!=`dynamic`. Network/vlan for voip traffic, must also set port_network. to authenticate device, set port_auth",
       "nullable": true,
       "type": "string"
+     },
+     "bypass_auth_when_server_down_for_voip": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Bypass auth for VOIP if set to true when RADIUS server is down",
+      "type": "boolean"
+     },
+     "poe_keep_state_when_reboot": {
+      "default": false,
+      "description": "Only if `mode`!=`dynamic`. Whether Perpetual PoE is enabled; keeps PoE state across reboots",
+      "type": "boolean"
+     },
+     "poe_priority": {
+      "description": "PoE priority. enum: `low`, `high`",
+      "enum": [
+       "low",
+       "high"
+      ],
+      "type": "string"
+     },
+     "server_fail_retry_interval": {
+      "default": 120,
+      "description": "Only if `mode`!=`dynamic` and `port_auth`==`dot1x`. Interval, in seconds. Sets the wait time before retrying authentication after RADIUS failure to reduce client flapping. Range 120-65535",
+      "maximum": 65535,
+      "minimum": 120,
+      "type": "integer"
      }
     },
     "type": "object"

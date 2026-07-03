@@ -52,12 +52,14 @@ _AUTH_ATTRS = (
     "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
     "persist_mac", "reauth_interval",
 )
-# SP4 misc attrs: OAS-present on local_port_config + port_usages ONLY (mac_limit
-# also on port_config_overwrite). Applied from local here (+ overwrite for
-# mac_limit); usage-level flows via usage_definition. NOT in _USAGE_OVERRIDE_ATTRS
-# (the port_config inline layer — none of these are on port_config).
+# Misc attrs local_port_config can contribute to the effective usage (OAS:
+# present on local_port_config + port_usages; mac_limit also on overwrite).
+# Spec 1: + the local-capable reviewed STP knobs; enable_qos REMOVED (benign,
+# never read by ingest); usage-only knobs (poe_priority, community_vlan_id,
+# inter_isolation_network_link, stp_required, bypass_..._for_voip) are NOT here.
 _MISC_ATTRS = (
-    "voip_network", "mac_limit", "storm_control", "enable_qos", "inter_switch_link",
+    "voip_network", "mac_limit", "storm_control", "inter_switch_link",
+    "use_vstp", "stp_p2p", "stp_no_root_port",
 )
 # local_port_config may additionally carry the admin-down boolean (OAS).
 _LOCAL_ATTRS = (*_USAGE_OVERRIDE_ATTRS, "disabled", *_AUTH_ATTRS, *_MISC_ATTRS)
