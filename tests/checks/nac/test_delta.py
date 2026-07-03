@@ -2,7 +2,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.nac.delta import NacDeltaCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, NacRule, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, NacRule, diff_ir
 
 
 def _ir(*rules):
@@ -25,6 +25,7 @@ def test_modify_emits_one_warning_with_cause():
     assert res.status is Status.WARN and len(res.findings) == 1
     f = res.findings[0]
     assert f.code == "nac.rule.change" and f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.HIGH  # the rule change itself is certain
     assert f.caused_by[0].ref.id == "r1" and "action" in f.caused_by[0].fields
 
 

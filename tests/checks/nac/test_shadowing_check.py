@@ -2,7 +2,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.checks.base import CheckContext, Status
 from digital_twin.checks.nac.shadowing import NacShadowingCheck
 from digital_twin.contracts import Severity
-from digital_twin.ir import IRBuilder, NacRule, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, NacRule, diff_ir
 
 
 def _ir(*rules):
@@ -30,6 +30,7 @@ def test_introduced_shadow_by_reorder_warns():
     res = _run(base, prop)
     f = next(f for f in res.findings if f.code.endswith("introduced"))
     assert f.severity is Severity.WARNING and f.subject.id == "b"
+    assert f.confidence.level is ConfidenceLevel.HIGH  # provable-superset proof
     assert f.evidence["shadower"]["id"] == "a"
     assert res.status is Status.WARN
 
@@ -54,6 +55,8 @@ def test_preexisting_is_info():
     res = _run(base, prop)
     assert any(f.code.endswith("preexisting") and f.severity is Severity.INFO
                for f in res.findings)
+    f = next(f for f in res.findings if f.code.endswith("preexisting"))
+    assert f.confidence.level is ConfidenceLevel.HIGH
 
 
 def test_indeterminate_baseline_is_suppressed():
