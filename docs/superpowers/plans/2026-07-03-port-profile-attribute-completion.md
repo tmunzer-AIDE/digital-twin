@@ -96,11 +96,38 @@ def _map_props(schema_file: str, map_name: str) -> set[str]:
     return set()
 
 
-def test_port_usages_carries_all_spec1_attrs_in_all_three_schemas():
+def _every_port_usages_occurrence(schema_file: str) -> list[tuple[str, set[str]]]:
+    """(json-path, value-schema property set) for EVERY `port_usages` node in the
+    file — site_setting carries a SECOND copy nested at
+    properties.switch.allOf[0].properties.port_usages, and updating only the
+    top-level one would leave the nested copy stale (review finding P2)."""
+    schema = json.loads((OAS / f"{schema_file}.schema.json").read_text())
+    found: list[tuple[str, set[str]]] = []
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                p = f"{path}.{k}"
+                if k == "port_usages" and isinstance(v, dict):
+                    props = (v.get("additionalProperties") or {}).get("properties") or {}
+                    found.append((p, set(props)))
+                walk(v, p)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+
+    walk(schema, schema_file)
+    return found
+
+
+def test_every_port_usages_occurrence_carries_all_spec1_attrs():
+    # walks ALL occurrences (site_setting has 2: top-level + switch.allOf[0])
     for f in ("site_setting", "networktemplate", "device_switch"):
-        props = _map_props(f, "port_usages")
-        missing = [a for a in SPEC1_ATTRS if a not in props]
-        assert not missing, f"{f}.port_usages missing {missing}"
+        occurrences = _every_port_usages_occurrence(f)
+        assert occurrences, f"{f}: no port_usages found"
+        for path, props in occurrences:
+            missing = [a for a in SPEC1_ATTRS if a not in props]
+            assert not missing, f"{path} missing {missing}"
 
 
 def test_inline_map_placement_matches_the_spec_table():
@@ -129,11 +156,11 @@ def test_ui_evpntopo_id_is_still_a_cosmetic_selection_id():
 - [ ] **Step 2: Run it to make sure it fails**
 
 Run: `uv run pytest tests/adapters/mist/test_oas_port_usage_placement.py -v`
-Expected: `test_port_usages_carries_all_spec1_attrs_in_all_three_schemas` FAILS naming the 4 missing attrs for site_setting and networktemplate; the other two tests PASS.
+Expected: `test_every_port_usages_occurrence_carries_all_spec1_attrs` FAILS naming the 4 missing attrs for site_setting (BOTH occurrences) and networktemplate; the other two tests PASS.
 
 - [ ] **Step 3: Refresh the two stale extracts**
 
-Copy these 4 property definitions **verbatim from `device_switch.schema.json`'s `port_usages` value-schema** into the `port_usages` value-schema `properties` of BOTH `site_setting.schema.json` and `networktemplate.schema.json` (alphabetical position within the existing properties, matching the files' ordering):
+Copy these 4 property definitions **verbatim from `device_switch.schema.json`'s `port_usages` value-schema** into EVERY stale `port_usages` value-schema `properties` — that is THREE insertion points: `site_setting.schema.json` at `properties.port_usages` AND at `properties.switch.allOf[0].properties.port_usages` (the nested per-switch defaults copy — review finding P2), plus `networktemplate.schema.json` at `properties.port_usages` (alphabetical position within the existing properties, matching the files' ordering):
 
 ```json
 "bypass_auth_when_server_down_for_voip": {
@@ -370,7 +397,7 @@ git commit -m "feat(scope): Spec-1 benign + usage-only-reviewed port-profile lea
 **Files:**
 - Modify: `src/digital_twin/ir/entities.py` (PortAuth)
 - Modify: `src/digital_twin/adapters/mist/ingest/switch.py` (`_port_auth`)
-- Test: `tests/checks/test_auth_change.py` (extend), `tests/adapters/mist/test_ingest_switch.py` (extend)
+- Test: `tests/checks/test_auth_access_change.py` (extend), `tests/adapters/mist/test_ingest_switch.py` (extend)
 
 - [ ] **Step 1: Write the failing ingest test** (in `tests/adapters/mist/test_ingest_switch.py`, next to the existing `_port_auth` tests — find them with `grep -n "port_auth" tests/adapters/mist/test_ingest_switch.py`):
 
@@ -403,14 +430,14 @@ In `switch.py` `_port_auth`, add the matching line where the other bypass fields
         ),
 ```
 
-- [ ] **Step 4: Write the check-level test** (append to `tests/checks/test_auth_change.py`, reusing its fixture idiom):
+- [ ] **Step 4: Write the check-level test** (append to `tests/checks/test_auth_access_change.py`, reusing its fixture idiom):
 
 A baseline port with default auth, proposed identical except `bypass_auth_when_server_down_for_voip=True` on the resolved usage → `wired.auth.access_change.policy_change` finding, `Severity.WARNING`, confidence pinned to whatever the existing policy_change tests pin (read them; do not guess), result status floors REVIEW at the decision layer (assert via the file's existing pattern if it has one, else omit the decision assertion — the e2e in Task 7 covers it).
 
 - [ ] **Step 5: Run + commit**
 
 ```bash
-uv run pytest tests/adapters/mist/test_ingest_switch.py tests/checks/test_auth_change.py -q
+uv run pytest tests/adapters/mist/test_ingest_switch.py tests/checks/test_auth_access_change.py -q
 git add -A && git commit -m "feat(auth): bypass_auth_when_server_down_for_voip joins PortAuth (policy-floor REVIEW)"
 ```
 
@@ -476,9 +503,12 @@ def test_port_misc_reads_the_spec1_reviewed_knobs():
     assert m.community_vlan_id == 811
     assert m.stp_p2p is True
     # scalar honesty: templated/unparseable values stay diff-bearing tokens,
-    # never collapsed to None/default (the GS27 metric false-SAFE scar)
+    # never collapsed to None/default/bool (the GS27 metric false-SAFE scar)
     t = _port_misc({"community_vlan_id": "{{pvlan}}"})
     assert t is not None and t.community_vlan_id == "unresolved:{{pvlan}}"
+    b = _port_misc({"use_vstp": "{{vstp}}"})
+    assert b is not None and b.use_vstp == "unresolved:{{vstp}}"  # NOT True
+    assert _port_misc({"stp_p2p": False}) is None  # explicit default == absent
 ```
 
 - [ ] **Step 2: Run to verify failures.**
@@ -491,18 +521,26 @@ class PortMisc:
     """Recognized-but-unmodeled port knobs (SP4 + Spec 1), surfaced as REVIEW by
     wired.port.unmodeled_change. Frozen + comparable; Port.misc is None ONLY
     when all are default, so a lone flip is detectable. enable_qos left this
-    surface in Spec 1 (benign SAFE — ignored by ingest entirely)."""
+    surface in Spec 1 (benign SAFE — ignored by ingest entirely). Spec-1 scalar
+    honesty: the new boolean knobs are `bool | str` — a templated/unparseable
+    value stays a diff-bearing `unresolved:` token, never collapsed to a bool
+    (blanket bool() would turn "{{vstp}}" into True and hide the change)."""
 
     inter_switch_link: bool = False
     storm_control: str | None = None  # canonical digest of the storm_control object
     poe_priority: str | None = None  # "low" | "high" | None
     community_vlan_id: int | str | None = None  # int, or "unresolved:<raw>" token
-    inter_isolation_network_link: bool = False
-    stp_required: bool = False
-    stp_no_root_port: bool = False
-    stp_p2p: bool = False
-    use_vstp: bool = False
+    inter_isolation_network_link: bool | str = False
+    stp_required: bool | str = False
+    stp_no_root_port: bool | str = False
+    stp_p2p: bool | str = False
+    use_vstp: bool | str = False
 ```
+
+(`inter_switch_link` keeps its legacy `bool()` coercion deliberately — it predates
+Spec 1 and its behavior is pinned by #38's tests; harmonizing it to the token
+parser is a separate follow-up because it CHANGES pinned behavior. Note it in
+the ROADMAP entry in Task 9.)
 
 (`enable_qos` field REMOVED — grep `src/` and `tests/` for `PortMisc(` constructions and `\.enable_qos` on misc objects and update every site; `tests/golden/builders.py` may construct PortMisc.)
 
@@ -524,17 +562,31 @@ def _int_token(v: Any) -> int | str | None:
     return f"unresolved:{v!r}"
 
 
+def _bool_token(v: Any) -> bool | str:
+    """Concrete bool / False (absent/None/empty) / a stable `unresolved:` token
+    (templated/unparseable — NEVER collapsed to a bool; bool("{{vstp}}") would be
+    True and hide the change from the diff)."""
+    if v is None or v == "":
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        return f"unresolved:{s}" if s else False
+    return f"unresolved:{v!r}"
+
+
 def _port_misc(usage: dict[str, Any]) -> PortMisc | None:
     m = PortMisc(
         inter_switch_link=bool(usage.get("inter_switch_link")),
         storm_control=_storm_digest(usage.get("storm_control")),
         poe_priority=usage.get("poe_priority") or None,
         community_vlan_id=_int_token(usage.get("community_vlan_id")),
-        inter_isolation_network_link=bool(usage.get("inter_isolation_network_link")),
-        stp_required=bool(usage.get("stp_required")),
-        stp_no_root_port=bool(usage.get("stp_no_root_port")),
-        stp_p2p=bool(usage.get("stp_p2p")),
-        use_vstp=bool(usage.get("use_vstp")),
+        inter_isolation_network_link=_bool_token(usage.get("inter_isolation_network_link")),
+        stp_required=_bool_token(usage.get("stp_required")),
+        stp_no_root_port=_bool_token(usage.get("stp_no_root_port")),
+        stp_p2p=_bool_token(usage.get("stp_p2p")),
+        use_vstp=_bool_token(usage.get("use_vstp")),
     )
     return m if m != PortMisc() else None
 ```
