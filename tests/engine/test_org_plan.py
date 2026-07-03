@@ -380,6 +380,20 @@ def test_org_wlan_disable_update_with_active_client_is_unsafe():
     assert _has_wlan_coverage_loss(ov.per_site["s1"])
 
 
+def test_org_wlan_noop_update_equal_to_snapshot_is_safe():
+    # an update whose payload EQUALS the resolved org snapshot is a no-op —
+    # nothing changes on any member site -> SAFE (never REVIEW/UNKNOWN), and
+    # the site with an active client on that SSID reports no coverage loss.
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", dict(_wlan_row()))),
+        provider=_org_wlan_provider(),
+    )
+
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+    assert ov.per_site["s1"].decision is Decision.SAFE
+    assert not _has_wlan_coverage_loss(ov.per_site["s1"])
+
+
 def test_org_wlan_delete_with_survivor_same_ssid_is_safe():
     w1 = _wlan_row("w1")
     w2 = _wlan_row("w2")
