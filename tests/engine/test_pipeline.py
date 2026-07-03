@@ -856,4 +856,157 @@ def test_l1_forced_vs_autonegotiating_peer_is_simulated_not_unknown():
     assert v.decision is not Decision.UNKNOWN, v.decision_reasons
     codes = {f.code for f in v.findings}
     assert "wired.l1.link_param_mismatch.autoneg_mismatch" in codes, codes
+
+
+# Spec 1's REVIEW surface: attributes the twin RECOGNIZES but does not model the
+# impact of (or whose outcome depends on RADIUS/NAC it cannot observe) must
+# reach REVIEW end-to-end, never SAFE and never UNKNOWN. `usage` padding is not
+# needed here — these are site_setting/port_usages deltas, not local_port_config
+# device payloads (no required-key confound).
+
+
+def test_bypass_auth_when_server_down_for_voip_is_review_via_policy_change():
+    # PortAuth surface change (None -> non-default) with no observed wired
+    # clients on the port -> the auth-surface check floors REVIEW via
+    # .policy_change (not .clients_at_risk, since there is no enrichment to
+    # escalate on); the policy floor is WARNING severity, MEDIUM/_INFERRED
+    # confidence (RADIUS/NAC outcome unmodeled).
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"],
+                       "bypass_auth_when_server_down_for_voip": True},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.auth.access_change.policy_change"]
+    assert findings, {f.code for f in v.findings}
+    assert all(f.severity is Severity.WARNING for f in findings)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_poe_priority_change_is_review_via_unmodeled_change():
+    # poe_priority is a recognized-but-unmodeled PortMisc knob -> REVIEW via
+    # .recognized, WARNING severity, evidence knobs == ["poe_priority"] (the
+    # sole PortMisc field touched).
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], "poe_priority": "high"},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.port.unmodeled_change.recognized"]
+    assert findings, {f.code for f in v.findings}
+    assert all(f.severity is Severity.WARNING for f in findings)
+    assert any(f.evidence.get("knobs") == ["poe_priority"] for f in findings), findings
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+@pytest.mark.parametrize(
+    "leaf, extra",
+    [
+        pytest.param(
+            "community_vlan_id",
+            {"community_vlan_id": 42},  # OAS: integer
+            id="port_usages.community_vlan_id",
+        ),
+        pytest.param(
+            "use_vstp",
+            {"use_vstp": True},
+            id="port_usages.use_vstp",
+        ),
+    ],
+)
+def test_pvlan_and_stp_leaf_change_is_review_via_unmodeled_change(leaf, extra):
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], **extra},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.port.unmodeled_change.recognized"]
+    assert findings, {f.code for f in v.findings}
+    assert all(f.severity is Severity.WARNING for f in findings)
+    assert any(f.evidence.get("knobs") == [leaf] for f in findings), findings
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_safe_leaf_plus_review_leaf_in_one_op_is_review():
+    # precedence: ui_evpntopo_id (SAFE bucket) + poe_priority (REVIEW bucket)
+    # changed in the SAME op -> the weaker (REVIEW) evidence must not be
+    # swallowed by the benign leaf; decision floors at REVIEW.
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {
+                **SETTING["port_usages"]["office"],
+                "ui_evpntopo_id": "11111111-1111-1111-1111-111111111111",
+                "poe_priority": "high",
+            },
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.port.unmodeled_change.recognized"]
+    assert findings, {f.code for f in v.findings}
+    assert any(f.evidence.get("knobs") == ["poe_priority"] for f in findings), findings
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_safe_leaf_plus_unsafe_devlan_in_one_plan_is_unsafe_with_benign_diff_surfaced(tmp_path):
+    # precedence: a benign SAFE leaf change (site_setting) combined with an
+    # existing UNSAFE scenario (device de-vlan, reused verbatim from
+    # test_simulate_twice_same_plan_and_provider_is_idempotent's GS1 world) in
+    # ONE plan -> the plan-wide decision must floor at UNSAFE (weaker evidence
+    # never swallowed by the benign op), AND the benign leaf's diff must still
+    # SURVIVE in config_diffs — proving it wasn't dropped just because a
+    # stronger finding elsewhere already determined the verdict.
+    from digital_twin.observability.replay.store import FixtureProvider
+    from tests.golden.builders import (
+        EDGE,
+        EDGE_UPLINK_PORT,
+        augmented_doc,
+        device_op,
+        plan_for,
+        write_doc,
+    )
+
+    doc = augmented_doc(parallel_carries_gs=False, with_wireless_client=False)
+    benign_setting = {
+        **doc["setting"],
+        "port_usages": {
+            **doc["setting"]["port_usages"],
+            "office": {
+                **doc["setting"]["port_usages"].get("office", {"mode": "access"}),
+                "ui_evpntopo_id": "11111111-1111-1111-1111-111111111111",
+            },
+        },
+    }
+    benign_op = {
+        "action": "update",
+        "order": 0,
+        "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": benign_setting,
+    }
+    devlan_op = device_op(
+        doc, EDGE, order=1, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"}
+    )
+    plan = plan_for(doc, [benign_op, devlan_op])
+    provider = FixtureProvider(write_doc(doc, tmp_path / "fx.json"))
+    v = simulate(plan, provider=provider)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    assert v.config_diffs
+    assert any(
+        "ui_evpntopo_id" in c.path for d in v.config_diffs for c in d.changes
+    ), v.config_diffs
     assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
