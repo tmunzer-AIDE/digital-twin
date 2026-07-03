@@ -77,6 +77,15 @@ def _is_unresolved(value: object) -> bool:
 # Cloned (small idiom, not imported) from checks/wired/admin_disable.py:
 # _ap_ports-style AP ties and _nonap_peer_links(base_ir) returning a
 # port -> Link map so classification can read the LINK's own tie confidence.
+#
+# Each per-IR helper is unioned across baseline AND proposed (see _union_ties
+# below) rather than read from a single state, per sibling-check convention
+# (admin_disable.py, poe_disconnect.py, l2_isolation.py all read baseline) —
+# defense-in-depth against baseline/proposed ingestion divergence. Today the
+# two states never actually differ for these delta shapes (apply_plan has no
+# device/link-add path), so the union is a no-op in practice; it exists so a
+# future ingestion path that DOES let baseline and proposed disagree on peer
+# evidence can't silently under-escalate an ERROR to the floor.
 
 def _ap_peer_links(ir: IR) -> dict[str, tuple[str, Link]]:
     """switch-port id -> (ap_device_id, the LLDP link) for every AP peer."""
@@ -119,6 +128,39 @@ def _tie_confidence(lk: Link) -> Confidence:
     return _HIGH if lk.meta.confidence.level is ConfidenceLevel.HIGH else _ONE_SIDED_TIE
 
 
+def _union_ties[Peer](
+    base: dict[str, tuple[Peer, Link]], prop: dict[str, tuple[Peer, Link]]
+) -> dict[str, tuple[Peer, Link]]:
+    """Union two port -> (peer, Link) maps (AP or bpdu_filter peers). A port
+    tied in either state qualifies; if BOTH provide a tie, keep the one with
+    the higher tie confidence (HIGH beats one-sided) so the finding reports
+    the strongest evidence actually available."""
+    out = dict(base)
+    for pid, (peer, lk) in prop.items():
+        if pid not in out:
+            out[pid] = (peer, lk)
+            continue
+        _, base_lk = out[pid]
+        if _tie_confidence(lk).level is ConfidenceLevel.HIGH and (
+            _tie_confidence(base_lk).level is not ConfidenceLevel.HIGH
+        ):
+            out[pid] = (peer, lk)
+    return out
+
+
+def _union_wired_clients(
+    base: dict[str, list[Client]], prop: dict[str, list[Client]]
+) -> dict[str, list[Client]]:
+    """Union two port -> observed-wired-clients maps, de-duplicated by MAC —
+    a client observed in EITHER state counts as evidence on that port."""
+    out: dict[str, list[Client]] = {}
+    for pid in base.keys() | prop.keys():
+        by_mac = {c.mac: c for c in base.get(pid, ())}
+        by_mac.update({c.mac: c for c in prop.get(pid, ())})
+        out[pid] = list(by_mac.values())
+    return out
+
+
 # Cloned (small idiom) from checks/wired/l2_isolation.py:_occupants — here
 # scoped to a single node (the device behind the changed port) rather than
 # every node in a component: who is BEHIND this blocking port.
@@ -132,7 +174,7 @@ def _occupants_behind(ir: IR, device_id: str) -> dict[str, int]:
         if port.mode is PortMode.ACCESS and port.native_vlan is not None and not port.disabled:
             out["member_ports"] += 1
         out["clients"] += len(wired.get(port.id, []))
-    if ir.devices[device_id].role is DeviceRole.AP:
+    if device_id in ir.devices and ir.devices[device_id].role is DeviceRole.AP:
         out["wlan_aps"] += len(ap_clients.get(device_id, []))
     return out
 
@@ -158,12 +200,16 @@ class StpPolicyCheck:
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
-        # peer/occupancy evidence reads the PROPOSED topology: the question is
-        # "will the port's peer, as it will exist, send BPDUs" — this also
-        # covers a port ADD, where the tie/peer only exists in `prop_ir`.
-        ap_peers = _ap_peer_links(prop_ir)
-        bpdu_filter_peers = _bpdu_filter_peer_links(prop_ir)
-        wired = clients_by_port(prop_ir)
+        # peer/occupancy evidence unions baseline AND proposed (see the
+        # _union_ties docstring above): a port ADD (whose peer only exists in
+        # `prop_ir`) still classifies correctly from the proposed side, while
+        # a port whose peer evidence only exists in `base_ir` (defense against
+        # future ingestion divergence between the two states) is not missed.
+        ap_peers = _union_ties(_ap_peer_links(base_ir), _ap_peer_links(prop_ir))
+        bpdu_filter_peers = _union_ties(
+            _bpdu_filter_peer_links(base_ir), _bpdu_filter_peer_links(prop_ir)
+        )
+        wired = _union_wired_clients(clients_by_port(base_ir), clients_by_port(prop_ir))
         findings: list[Finding] = []
         notes: list[str] = []
         for pid in sorted(base_ir.ports.keys() | prop_ir.ports.keys()):
@@ -260,8 +306,15 @@ class StpPolicyCheck:
         just went True. Order: (1) LLDP-tied AP, (2) observed wired client with
         no modeled bridge peer, (3) modeled bpdu_filter peer, (4) unknown ->
         None (falls through to the .policy_change floor) + a coverage note."""
-        prop_ir = ctx.proposed.ir
+        prop_ir, base_ir = ctx.proposed.ir, ctx.baseline.ir
         port_ref = ObjectRef("port", pid)
+
+        def occupants_ir(device_id: str) -> IR:
+            # occupant counts read whichever state actually models the peer
+            # device — proposed preferred (the union's baseline-only ties are
+            # the rare/defensive case), falling back to baseline so a
+            # peer that exists only there doesn't KeyError/zero out.
+            return prop_ir if device_id in prop_ir.devices else base_ir
 
         ap = ap_peers.get(pid)
         if ap is not None:
@@ -283,7 +336,7 @@ class StpPolicyCheck:
                     evidence={
                         "port": pid, "peer": ap_id, "peer_kind": "ap",
                         "tie_provenance": lk.meta.provenance.value,
-                        "occupants_behind": _occupants_behind(prop_ir, ap_id),
+                        "occupants_behind": _occupants_behind(occupants_ir(ap_id), ap_id),
                         "severity_reason": reason,
                     },
                     caused_by=ctx.delta_index.causes("port", [pid]),
@@ -336,7 +389,9 @@ class StpPolicyCheck:
                     evidence={
                         "port": pid, "peer": peer_port.id, "peer_kind": "bpdu_filter",
                         "tie_provenance": lk.meta.provenance.value,
-                        "occupants_behind": _occupants_behind(prop_ir, peer_port.device_id),
+                        "occupants_behind": _occupants_behind(
+                            occupants_ir(peer_port.device_id), peer_port.device_id
+                        ),
                         "severity_reason": reason,
                     },
                     caused_by=ctx.delta_index.causes("port", [pid]),

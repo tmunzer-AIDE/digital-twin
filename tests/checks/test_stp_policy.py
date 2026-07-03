@@ -288,6 +288,39 @@ def test_preexisting_stp_required_on_ap_port_untouched_is_info_context():
     assert change.severity is Severity.WARNING
 
 
+def test_blocking_risk_fires_from_baseline_only_ap_tie():
+    # Regression for the review finding: peer/occupancy evidence must be
+    # UNIONED across baseline+proposed, not read from proposed alone. This
+    # state (baseline has the AP tie, proposed lacks it) can't arise from
+    # apply_plan today -- built directly via the fixtures to prove the union,
+    # not just document it.
+    base_policy = StpPolicy(stp_required=False)
+    prop_policy = StpPolicy(stp_required=True)
+    base_port = _base_target_port(stp_policy=base_policy)
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+    base_ir = _build(target_port=base_port, peer="ap", tie="two_sided").build()
+    # proposed: same topology minus the AP device/port/link -- the AP tie
+    # exists ONLY in baseline.
+    prop_ir = (
+        IRBuilder().add_device(sw("A")).add_device(sw("B"))
+        .add_port(prop_port)
+        .add_port(Port(id="A:up", device_id="A", name="up", mode=PortMode.TRUNK,
+                       tagged_vlans=(10,)))
+        .add_port(Port(id="B:down", device_id="B", name="down", mode=PortMode.TRUNK,
+                       tagged_vlans=(10,)))
+        .add_link(link("A:up", "B:down"))
+        .with_capability(IRCapability.WIRED_L2)
+        .build()
+    )
+    result = _run(base_ir, prop_ir)
+    f = _find(result, "wired.stp.policy.blocking_risk")
+    assert f.severity is Severity.ERROR and f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["peer_kind"] == "ap"
+    assert f.evidence["peer"] == "AP1"
+    assert result.status is Status.FAIL
+    assert not _findall(result, "wired.stp.policy.policy_change")
+
+
 def test_new_port_with_stp_required_true_and_ap_peer_is_error_high():
     # port ADD carrying stp_required=True counts as an enable per spec
     prop_port = _base_target_port(stp_policy=StpPolicy(stp_required=True))
