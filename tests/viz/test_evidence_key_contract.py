@@ -100,6 +100,12 @@ _NOT_VISUALIZED = {
     # --- misc config-knob scalars ---
     "disabled",             # admin_disable boolean; "port" already paints
     "knobs",                # unmodeled_change knob names (strings)
+    # --- stp_policy.blocking_risk: entities already paint via "port"/
+    #     affected_entities; these are classification/explanatory scalars ---
+    "knob",                 # the single changed knob name (stp_required), a string
+    "peer_kind",            # "ap"/"client"/"bpdu_filter" classification tag
+    "tie_provenance",       # LLDP provenance label for the peer tie (string)
+    "occupants_behind",     # occupant counts behind the port (dict of scalars)
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
 }
