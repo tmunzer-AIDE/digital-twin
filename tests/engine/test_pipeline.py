@@ -501,6 +501,44 @@ def test_site_apply_reject_carries_config_diff(monkeypatch):
     assert SITE in cds
 
 
+def test_update_op_on_ap_device_is_hard_field_gate_unknown():
+    # a HARD field-gate rejection (device role: AP is not a modeled switch) on a
+    # NON-delete op must short-circuit the per-op loop to UNKNOWN — no checks run,
+    # but the already-built config diff is carried out.
+    raw = dc_replace(_raw(), devices=(SWITCH, AP))
+    v = simulate(
+        _plan([_op(object_type="device", object_id="ap-a", payload={"name": "renamed"})]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert v.decision is Decision.UNKNOWN
+    assert any("field_gate" in r and "not modeled in M1" in r for r in v.decision_reasons), (
+        v.decision_reasons
+    )
+    assert v.check_results == ()  # short-circuit: the simulation never ran
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert "ap-a" in cds and cds["ap-a"].action == "update"  # diff built before the gate
+
+
+def test_wlan_delete_apply_reject_is_unknown_and_keeps_diff(monkeypatch):
+    # the DELETE-path apply rejection (distinct early return from the update
+    # path's) must short-circuit to UNKNOWN and keep the already-built diff
+    from digital_twin.adapters.mist.adapter import MistAdapter
+    from digital_twin.contracts import Rejection
+    monkeypatch.setattr(MistAdapter, "apply",
+                        lambda self, raw, ops: Rejection(stage="apply", reasons=("forced",)))
+    raw = _raw_wlan(_wlan("w1"))
+    v = simulate(
+        _plan([_delete_op("wlan", "w1")]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+    assert v.decision is Decision.UNKNOWN
+    assert any("apply" in r and "forced" in r for r in v.decision_reasons), v.decision_reasons
+    assert v.check_results == ()
+    cds = {d.object_id: d for d in v.config_diffs}
+    assert cds["w1"].object_type == "wlan" and cds["w1"].action == "delete"
+
+
 def test_site_wlan_delete_with_active_client_is_unsafe_and_carries_config_diff():
     raw = _raw_wlan(_wlan("w1"), clients=(_wireless_client(),))
     v = simulate(
