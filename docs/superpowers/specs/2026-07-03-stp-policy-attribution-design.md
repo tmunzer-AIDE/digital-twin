@@ -148,8 +148,14 @@ Per **port**: most specific code wins — `blocking_risk`/`root_protect_risk`
 different knobs) suppress that port's `.policy_change`. Per **link**:
 `.link_mismatch` findings are keyed `(link_id, knob)` and coexist with
 port-level findings (a mismatch is not a substitute for the floor on OTHER
-changed knobs of the same port). Invariant: **every port with a changed
-`stp_policy` yields at least one finding** — the floor makes falling through
+changed knobs of the same port). **Only a delta-caused WARNING-or-worse
+finding satisfies the floor: an INFO finding never does.** In particular, a
+port whose `stp_policy` changed while a PRE-EXISTING link mismatch is present
+gets the INFO context finding AND `.policy_change` WARNING — the INFO must not
+replace the floor, else a value change coinciding with a pre-existing mismatch
+could become INFO-only and SAFE-able (review P2, round 2). Invariant restated
+precisely: **every port with a changed `stp_policy` yields at least one
+delta-caused finding at WARNING or above** — the floor makes falling through
 to SAFE structurally impossible.
 
 ## Never-false-SAFE
@@ -198,7 +204,10 @@ check).
   WARNING + note; root external → WARNING + note.
 - **link_mismatch:** (link, knob) keying — both knobs mismatched on one link →
   2 findings; delta-conditioned (pre-existing mismatch → INFO); observed
-  stp_mode in evidence when the fixture provides it.
+  stp_mode in evidence when the fixture provides it. **INFO-never-floors pin:**
+  a knob VALUE change on a port with a pre-existing (unchanged) mismatch →
+  the INFO context finding AND a WARNING `.policy_change`; assert the result
+  contains a delta-caused WARNING, not INFO-only.
 - **Floor + tokens:** `use_vstp="{{vstp}}"` → `.policy_change` + coverage note,
   no precise finding; any single-knob change → exactly one floor finding.
 - **applies_to:** an unrelated port change (e.g. description) does not wake

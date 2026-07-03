@@ -28,7 +28,7 @@
 - **Check test idioms:** `tests/checks/test_unmodeled_change.py` (misc-flip helper), `tests/checks/test_admin_disable.py` (peer-tie fixtures), `tests/checks/test_stp_root.py` (election fixtures), `tests/factories` (sw/access_port/trunk_port/link/irb; `link(..., prov=Provenance.LLDP_ONE_SIDED)` for one-sided ties — see `test_l2_blackhole.py:156`).
 
 **Global constraints (bind every task):**
-- Never false-SAFE: every port whose `stp_policy` changed yields ≥1 finding (`.policy_change` floor at minimum). ERROR only at HIGH evidence (`blocking_risk`: HIGH peer tie; `root_protect_risk`: HIGH election + only-path). Unknown/no-peer and `unresolved:` tokens NEVER produce precise codes — floor + note only (spec P2).
+- Never false-SAFE: every port whose `stp_policy` changed yields ≥1 **delta-caused finding at WARNING or above** (`.policy_change` floor at minimum) — **an INFO finding never satisfies the floor** (spec P2 round 2: a pre-existing INFO `link_mismatch` must not replace the WARNING floor for a changed port). ERROR only at HIGH evidence (`blocking_risk`: HIGH peer tie; `root_protect_risk`: HIGH election + only-path). Unknown/no-peer and `unresolved:` tokens NEVER produce precise codes — floor + note only (spec P2).
 - Pre-existing (not delta-caused) violations → INFO context.
 - Gates untouched: no allowlist changes (Spec-1 placed all four leaves); device-profile pins must stay green.
 - `Port.stp_policy is None` ⇔ whole surface default.
@@ -368,6 +368,18 @@ def test_preexisting_mismatch_touched_is_info():
     ...
 
 
+def test_info_mismatch_never_satisfies_the_floor():
+    # spec P2 round 2: a knob VALUE change on a port with a pre-existing
+    # (unchanged) mismatch must yield the INFO context finding AND a
+    # delta-caused WARNING .policy_change — INFO-only would be SAFE-able
+    result = _run_value_change_with_preexisting_mismatch()
+    infos = [f for f in result.findings if f.severity is Severity.INFO]
+    warns = [f for f in result.findings if f.severity is Severity.WARNING]
+    assert infos and warns
+    assert any(f.code == "wired.stp.policy.policy_change" for f in warns)
+    assert result.status is Status.WARN  # never PASS on INFO alone
+
+
 def test_observed_stp_mode_lands_in_evidence_when_present():
     ...
 ```
@@ -376,7 +388,7 @@ def test_observed_stp_mode_lands_in_evidence_when_present():
 
 - [ ] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Implement.** For each modeled link where the delta changed `use_vstp` or `stp_p2p` on either end: compare the two ends' effective values per knob (tokens excluded — token → floor path). Disagreement introduced/changed by the delta → one WARNING finding per `(link, knob)`; confidence = link tie confidence (HIGH two-sided, MEDIUM below). Pre-existing disagreement merely touched → INFO. Evidence: `link`, `knob`, `values` (both ends), `observed_modes` (both ends' `Port.stp_mode` when present). Link findings COEXIST with port-level findings and do NOT suppress the floor for other changed knobs on the same port (spec precedence).
+- [ ] **Step 3: Implement.** For each modeled link where the delta changed `use_vstp` or `stp_p2p` on either end: compare the two ends' effective values per knob (tokens excluded — token → floor path). Disagreement introduced/changed by the delta → one WARNING finding per `(link, knob)`; confidence = link tie confidence (HIGH two-sided, MEDIUM below). Pre-existing disagreement merely touched → INFO. Evidence: `link`, `knob`, `values` (both ends), `observed_modes` (both ends' `Port.stp_mode` when present). Link findings COEXIST with port-level findings and do NOT suppress the floor for other changed knobs on the same port. **Floor satisfaction is severity-gated: only a delta-caused WARNING-or-worse finding suppresses `.policy_change` for a port; an INFO (pre-existing context) finding never does** (spec precedence, P2 round 2).
 
 - [ ] **Step 4: Gate + commit**
 
