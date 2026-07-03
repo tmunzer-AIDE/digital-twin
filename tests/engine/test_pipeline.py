@@ -3,6 +3,8 @@
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 
+import pytest
+
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired.wlan_client_impact import WlanClientImpactCheck
@@ -701,6 +703,59 @@ def test_mac_limit_lowered_below_clients_is_review():
     assert v.decision is Decision.REVIEW
 
 
+# Spec 1's six benign-leaf buckets: each attribute is allowed by the raw +
+# effective gates but deliberately never read by ingest (site_setting buckets)
+# or never in the device-profile modeled surface (device buckets) — so a
+# delta touching ONLY that leaf must resolve SAFE end-to-end, with the raw
+# diff still surfacing the changed leaf as non-load-bearing evidence.
+# Bucket 2 (port_usages.*.enable_qos) supersedes the former
+# test_enable_qos_change_is_safe_not_unmodeled_change (site_setting side);
+# bucket 3 (local_port_config.*.enable_qos) is that prior test's device-side
+# case, carried over verbatim (including its `usage` padding rationale).
+_SITE_SETTING_BENIGN_BUCKETS = [
+    pytest.param(
+        "ui_evpntopo_id",
+        {"port_usages": {**SETTING["port_usages"],
+                          "office": {**SETTING["port_usages"]["office"],
+                                     "ui_evpntopo_id": "11111111-1111-1111-1111-111111111111"}}},
+        id="port_usages.ui_evpntopo_id",
+    ),
+    pytest.param(
+        "enable_qos",
+        {"port_usages": {**SETTING["port_usages"],
+                          "office": {**SETTING["port_usages"]["office"], "enable_qos": True}}},
+        id="port_usages.enable_qos",
+    ),
+    pytest.param(
+        "poe_keep_state_when_reboot",
+        {"port_usages": {**SETTING["port_usages"],
+                          "office": {**SETTING["port_usages"]["office"],
+                                     "poe_keep_state_when_reboot": True}}},
+        id="port_usages.poe_keep_state_when_reboot",
+    ),
+    pytest.param(
+        "server_fail_retry_interval",
+        # OAS: integer, range 120-65535 (default 120) — must stay in-range or
+        # this trips an unrelated l0.schema.violation, not the gate under test.
+        {"port_usages": {**SETTING["port_usages"],
+                          "office": {**SETTING["port_usages"]["office"],
+                                     "server_fail_retry_interval": 300}}},
+        id="port_usages.server_fail_retry_interval",
+    ),
+]
+
+
+@pytest.mark.parametrize("leaf, extra", _SITE_SETTING_BENIGN_BUCKETS)
+def test_site_setting_benign_leaf_change_is_safe_with_diff_surfaced(leaf, extra):
+    new_setting = {**SETTING, **extra}
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert not any("coverage" in f.code for f in v.findings)
+    assert not any(f.code.startswith("wired.port.unmodeled_change") for f in v.findings)
+    assert v.config_diffs
+    assert any(leaf in c.path for d in v.config_diffs for c in d.changes), v.config_diffs
+
+
 def test_enable_qos_change_is_safe_not_unmodeled_change():
     # Spec 1 moved enable_qos to the benign SAFE group: it never reaches
     # PortMisc (ignored by ingest entirely), so an enable_qos-only delta must
@@ -719,6 +774,30 @@ def test_enable_qos_change_is_safe_not_unmodeled_change():
     codes = {f.code for f in v.findings}
     assert not any(c.startswith("wired.port.unmodeled_change") for c in codes)
     assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.config_diffs
+    assert any("enable_qos" in c.path for d in v.config_diffs for c in d.changes), v.config_diffs
+
+
+def test_poe_keep_state_when_reboot_on_port_config_overwrite_is_safe():
+    # Device-side bucket 5: port_config_overwrite.*.poe_keep_state_when_reboot.
+    # Unlike local_port_config (bucket 3), port_config_overwrite has NO `usage`
+    # key on the OAS at all (ingest/ports.py _OVERWRITE_ATTRS: port_network,
+    # poe_disabled, disabled, speed, duplex, mac_limit) — so there is no
+    # required-key confound to pad here; the single leaf is the whole payload.
+    sw_a = {**SWITCH, "port_config": {
+        **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
+    raw = dc_replace(_raw(), devices=(sw_a,))
+    payload = {"port_config_overwrite": {
+        "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
+    v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+                 provider=FakeProvider(raw=raw))
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert not any("coverage" in c for c in codes)
+    assert not any(c.startswith("wired.port.unmodeled_change") for c in codes)
+    assert v.config_diffs
+    assert any("poe_keep_state_when_reboot" in c.path
+               for d in v.config_diffs for c in d.changes), v.config_diffs
 
 
 def test_simulate_twice_same_plan_and_provider_is_idempotent(tmp_path):
