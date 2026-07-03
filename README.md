@@ -127,34 +127,8 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   device, `{{vars}}` resolved once, `switch_matching` rules evaluated). Validated
   against Mist's own `getSiteSettingDerived` on real sites — the *equivalence gate*
   the whole simulation rests on (`tools/equivalence_gate.py`).
-- **Checks (M1)**: `wired.l2.loop` (a cycle is only a loop without STP),
-  `wired.l2.blackhole` (a member segment that loses its VLAN exit),
-  `wired.l2.isolation` (a member/client-bearing segment PHYSICALLY severed from
-  the rest of its L2 domain — e.g. disabling a switch's only uplink; needs no
-  exit modeling, the severance itself is the evidence, at the severed links'
-  LLDP confidence), `wired.l2.vlan_segmentation` (broadcast-domain shape
-  change), `wired.l2.native_mismatch` (a link whose ends disagree on the
-  native VLAN silently leaks untagged traffic between the two vlans —
-  introduced by the delta UNSAFE, pre-existing context, changed against a
-  vlan-blind peer REVIEW), `wired.l2.mtu_mismatch` (ends of a link disagreeing
-  on MTU silently drop large frames — explicit-vs-explicit introduced UNSAFE,
-  explicit-vs-platform-default or vs a blind peer REVIEW),
-  `wired.stp.edge_on_uplink` (`stp_disable`/BPDU-drop or `stp_edge` landing on
-  a switch-to-switch link — loop protection off exactly where it matters;
-  UNSAFE / REVIEW), `wired.stp.root_change` (the delta re-elects a component's
-  root bridge — spanning tree reconverges; REVIEW),
-  `wired.l3.gateway_gap` (a network that declares a subnet must have an L3
-  interface — switch IRB or gateway — somewhere; removing the only modeled one
-  UNSAFE, newly-routed-but-unserved REVIEW),
-  `wired.dhcp.path` (a vlan losing its only modeled DHCP server/relay — site
-  dhcpd_config or a gateway's own — strands its clients at lease renewal;
-  UNSAFE with observed clients, REVIEW without),
-  `wired.poe.disconnect` (cutting `poe_disabled` to a
-  port that powers a device — an LLDP-confirmed AP or one observed drawing
-  power — disconnects it and everything behind it; UNSAFE), `wired.client.impact`
-  (currently-connected wired + wireless clients affected). Checks consume only
-  the IR — never raw vendor payloads — so new vendors plug in at the adapter
-  seam.
+- **Checks**: the full inventory is the table below. Checks consume only the
+  IR — never raw vendor payloads — so new vendors plug in at the adapter seam.
 - **WLAN-aware AP VLANs**: the twin reads the site's **derived** WLAN config
   (org-template WLANs included) and records, per AP, the VLANs its enabled
   WLANs need delivered on the wired uplink — so changing an AP's switch port
@@ -197,6 +171,45 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
   a check whose requirements aren't met reports `INSUFFICIENT_DATA` (→ REVIEW),
   never a fake pass.
 
+### Check inventory
+
+The twin ships **28 checks** over the IR. The **26 wired/wireless checks** run on
+site plans (and the org-template fan-out); the **2 NAC checks** run on org-NAC
+plans. Each is **delta-aware**: a finding *introduced* by the change gates the
+verdict; a pre-existing condition the change merely touches is reported as
+context and never floors an unrelated edit.
+
+| # | Domain | Check | What it catches |
+|---|---|---|---|
+| 1 | L2 / switching | `wired.l2.loop` | a cycle that STP is not protecting |
+| 2 | L2 / switching | `wired.l2.blackhole` | a VLAN segment that loses its path to its L3 exit |
+| 3 | L2 / switching | `wired.l2.isolation` | a member/client segment physically severed from its L2 domain |
+| 4 | L2 / switching | `wired.l2.vlan_segmentation` | a broadcast-domain shape change |
+| 5 | L2 / switching | `wired.l2.native_mismatch` | link ends disagreeing on the native VLAN (silent untagged leak) |
+| 6 | L2 / switching | `wired.l2.mtu_mismatch` | link ends disagreeing on MTU (silent large-frame drops) |
+| 7 | L2 / switching | `wired.l2.vlan_collision` | the same VLAN ID minted under two names |
+| 8 | L1 / physical | `wired.l1.link_param_mismatch` | incompatible speed/duplex/autoneg across a link (invisible to reachability, wrecks throughput) |
+| 9 | Spanning tree | `wired.stp.edge_on_uplink` | BPDU-drop / edge landing on a switch-to-switch link |
+| 10 | Spanning tree | `wired.stp.root_change` | the change re-elects a component's root bridge |
+| 11 | L3 / routing | `wired.l3.gateway_gap` | a routed network with no L3 interface / an unowned gateway |
+| 12 | **L3 / routing — OSPF** | `wired.l3.ospf_withdrawal` | OSPF participation withdrawn or mutated (live-telemetry escalated) |
+| 13 | **L3 / routing — BGP** | `wired.l3.bgp_adjacency` | BGP peering removed / disabled / mutated (live-telemetry escalated) |
+| 14 | L3 / routing | `wired.l3.subnet_overlap` | overlapping IP subnets |
+| 15 | DHCP | `wired.dhcp.path` | a VLAN losing its only modeled DHCP server / relay |
+| 16 | DHCP | `wired.dhcp.scope_lint` | scope range overlap, out-of-subnet, gateway mismatch |
+| 17 | DHCP | `wired.dhcp.snooping` | a VLAN left with no trusted DHCP path |
+| 18 | Power / clients | `wired.poe.disconnect` | cutting PoE to a port that powers an AP / device |
+| 19 | Port / config | `wired.port.admin_disable` | administratively disabling a port that carries an AP, clients, or a modeled link |
+| 20 | Port / config | `wired.port.mac_limit_exceeded` | a lowered MAC limit dropping currently-connected wired clients |
+| 21 | Port / config | `wired.port.unmodeled_change` | a recognized-but-unmodeled port knob changed (`inter_switch_link`, storm control, QoS) |
+| 22 | Wired auth | `wired.auth.access_change` | a port's 802.1X / MAC-auth admission policy changed (RADIUS outcome unverifiable) |
+| 23 | Power / clients | `wired.client.impact` | currently-connected clients in the blast radius (enriched) |
+| 24 | Wireless / WLAN | `wireless.wlan.client_impact` | active wireless clients losing SSID coverage from a WLAN change |
+| 25 | Wireless / WLAN | `wireless.wlan.open_guest` | an open guest SSID with no client isolation |
+| 26 | Wireless / WLAN | `wireless.wlan.duplicate_ssid` | the same SSID on provably overlapping APs |
+| 27 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
+| 28 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+
 ## Project layout
 
 ```
@@ -205,7 +218,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the twelve wired checks + registry (the ONLY layer with severity)
+├── checks/           the 26 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)
