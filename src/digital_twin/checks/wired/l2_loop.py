@@ -12,6 +12,28 @@ when the condition is no worse than in the baseline is it pre-existing context
 proposed rank exceeds the baseline rank (or the cycle itself is new).
 requires() is wired.l2 only — STP_STATE absence degrades to the UNKNOWN row,
 which is exactly the honest answer (not INSUFFICIENT_DATA).
+
+self_loop (Spec-3): a SEPARATE pass over BASELINE ports carrying an OBSERVED
+physical self-loop (Port.self_loop_peer — LLDP: the chassis sees ITSELF on
+another port; diff-ignored, so it is read as a fact, never as a delta trigger
+itself). The trigger is a `stp_disable` delta: Port.bpdu_filter flips
+False->True on the port or its claimed peer — the ONLY config mapping of that
+leaf (Port.stp_enabled is OBSERVED telemetry, never used as a trigger). A
+contained physical mis-wire becomes an active broadcast-storm risk the moment
+STP protection is removed from either end. Tiers: triggered + reciprocal
+(both rows name each other) -> ERROR/HIGH; triggered + one-sided claim ->
+WARNING/MEDIUM (evidence-tier gate — never ERROR on unconfirmed evidence);
+the pair otherwise touched by the delta (any port diff on either end, e.g. a
+stp_edge flip) -> INFO context; untouched -> silent. One finding per PAIR.
+
+AGGREGATION (review P1): this check's `worst`/`confidences` roll-up is
+CUSTOM and, for the cycle pass, appends every finding's confidence
+unconditionally. The self_loop pass therefore contributes to BOTH `worst`
+and `confidences` ONLY for WARNING-or-worse self-loop findings; an INFO
+self-loop finding is excluded from both (mirrors status_from_findings' INFO
+exclusion) — otherwise an INFO context at sub-HIGH confidence would floor
+the whole check's result confidence and, via decision.py's confidence rule,
+cause a REVIEW that context alone should never trigger.
 """
 
 from __future__ import annotations
@@ -65,6 +87,18 @@ class L2LoopCheck:
                     findings.append(finding)
                     confidences.append(finding.confidence)
                 worst = _worse(worst, status)
+
+        for finding, status in self._self_loop_findings(ctx):
+            findings.append(finding)
+            # review P1: an INFO self-loop finding is context only — it is
+            # excluded from BOTH the worst-status ranking and the confidence
+            # roll-up (mirrors status_from_findings' INFO exclusion), so a
+            # sub-HIGH INFO confidence can never floor this check's result
+            # confidence into a decision-layer REVIEW.
+            if finding.severity is not Severity.INFO:
+                confidences.append(finding.confidence)
+                worst = _worse(worst, status)
+
         confidence = (
             min_confidence(*confidences) if confidences else Confidence(level=ConfidenceLevel.HIGH)
         )
@@ -75,6 +109,150 @@ class L2LoopCheck:
             coverage=Coverage(state=CoverageState.COMPLETE),
             confidence=confidence,
             reasoning=f"examined {len(vlan_ids)} vlan graphs for cycles",
+        )
+
+    def _self_loop_findings(self, ctx: CheckContext) -> list[tuple[Finding, Status]]:
+        """Pass over BASELINE ports carrying an OBSERVED physical self-loop
+        (Port.self_loop_peer). One finding per PAIR (not per end) — pairs are
+        visited once via a `seen` set keyed by the frozenset of the two ids
+        (a lone one-sided claim with an unmodeled/absent peer still yields a
+        single-port pair)."""
+        base_ports = ctx.baseline.ir.ports
+        out: list[tuple[Finding, Status]] = []
+        seen: set[frozenset[str]] = set()
+        for pid, port in sorted(base_ports.items()):
+            if port.self_loop_peer is None:
+                continue
+            peer_id = port.self_loop_peer
+            pair_key = frozenset({pid, peer_id})
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+
+            peer_base = base_ports.get(peer_id)
+            reciprocal = port.self_loop_reciprocal or (
+                peer_base is not None and peer_base.self_loop_reciprocal
+            )
+
+            bpdu_a = self._bpdu_filter_flip(ctx, pid)
+            bpdu_b = self._bpdu_filter_flip(ctx, peer_id)
+            triggered = bpdu_a or bpdu_b
+
+            pair_ids = tuple(sorted({pid, peer_id}))
+            caused_by = ctx.delta_index.causes("port", pair_ids)
+
+            if triggered:
+                severity = Severity.ERROR if reciprocal else Severity.WARNING
+                confidence = (
+                    Confidence(level=ConfidenceLevel.HIGH)
+                    if reciprocal
+                    else Confidence(
+                        level=ConfidenceLevel.MEDIUM,
+                        reasons=("the self-loop claim is one-sided — not corroborated "
+                                 "by the peer port",),
+                    )
+                )
+                status = Status.FAIL if reciprocal else Status.WARN
+                reason = (
+                    "reciprocal observed self-loop (both ports name each other) — "
+                    "STP protection disabled by this change"
+                    if reciprocal
+                    else "one-sided observed self-loop claim — STP protection disabled "
+                         "by this change, unconfirmed by the peer"
+                )
+                message = (
+                    f"physical self-loop observed on {pid} ↔ {peer_id}; STP "
+                    f"protection disabled by this change — broadcast-storm risk"
+                )
+                out.append((
+                    self._self_loop_finding(
+                        severity=severity, confidence=confidence, message=message,
+                        pair_ids=pair_ids, ctx=ctx, reason=reason, caused_by=caused_by,
+                    ),
+                    status,
+                ))
+                continue
+
+            pair_touched = self._pair_touched(ctx, pid, peer_id)
+            if pair_touched:
+                message = (
+                    f"physical self-loop observed on {pid} ↔ {peer_id}; unrelated "
+                    f"change on this pair this delta — context only, STP protection "
+                    f"unaffected"
+                )
+                out.append((
+                    self._self_loop_finding(
+                        severity=Severity.INFO,
+                        confidence=Confidence(level=ConfidenceLevel.HIGH),
+                        message=message, pair_ids=pair_ids, ctx=ctx,
+                        reason="observed self-loop pair touched by this delta, but STP "
+                               "protection (bpdu_filter) unaffected — context only",
+                        caused_by=caused_by,
+                    ),
+                    Status.PASS,
+                ))
+            # untouched: nothing — silent (per spec, no finding at all)
+        return out
+
+    @staticmethod
+    def _bpdu_filter_flip(ctx: CheckContext, pid: str) -> bool:
+        """True iff Port.bpdu_filter went False->True on `pid` (the ONLY
+        config mapping of the `stp_disable` leaf — stp_enabled is OBSERVED
+        telemetry, never the trigger)."""
+        old = ctx.baseline.ir.ports.get(pid)
+        new = ctx.proposed.ir.ports.get(pid)
+        if old is None or new is None:
+            return False
+        return old.bpdu_filter is False and new.bpdu_filter is True
+
+    @staticmethod
+    def _pair_touched(ctx: CheckContext, pid: str, peer_id: str) -> bool:
+        """True iff EITHER end of the pair has any port diff at all (add/
+        remove/modify) — used only after the bpdu_filter trigger has already
+        been ruled out, so this never re-classifies a triggered pair."""
+        di = ctx.delta_index
+        return di.in_delta("port", pid) or di.in_delta("port", peer_id)
+
+    def _self_loop_finding(
+        self,
+        *,
+        severity: Severity,
+        confidence: Confidence,
+        message: str,
+        pair_ids: tuple[str, ...],
+        ctx: CheckContext,
+        reason: str,
+        caused_by: tuple[Cause, ...],
+    ) -> Finding:
+        observed_states: dict[str, dict[str, str]] = {}
+        for pid in pair_ids:
+            port = ctx.proposed.ir.ports.get(pid) or ctx.baseline.ir.ports.get(pid)
+            if port is None:
+                continue
+            state: dict[str, str] = {}
+            if port.stp_state is not None:
+                state["state"] = port.stp_state
+            if port.stp_role is not None:
+                state["role"] = port.stp_role
+            if state:
+                observed_states[pid] = state
+        evidence: dict[str, object] = {
+            "ports": list(pair_ids),
+            "severity_reason": reason,
+        }
+        if observed_states:
+            evidence["observed_states"] = observed_states
+        return Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code="wired.l2.loop.self_loop",
+            severity=severity,
+            confidence=confidence,
+            message=message,
+            affected_entities=pair_ids,
+            subject=ObjectRef("port", pair_ids[0]),
+            evidence=evidence,
+            caused_by=caused_by,
         )
 
     @staticmethod

@@ -81,6 +81,9 @@ _NOT_VISUALIZED = {
     "baseline_components", "proposed_components",
     # --- l2_loop STP-protection detail (cycle_nodes/link_ids already paint) ---
     "stp_disabled_ports", "stp_unknown_ports",
+    # --- l2_loop.self_loop: "ports" (added to _PORT_EV_KEYS) already paints
+    #     the pair; observed_states is a per-port {state,role} scalar dict ---
+    "observed_states",
     # --- gateway_gap: "vlan" paints the view; these are IP/interface scalars ---
     "gateway", "subnet", "l3_interfaces", "baseline_l3_interfaces",
     # --- dhcp_path / snooping provenance scalars ---

@@ -151,7 +151,10 @@ _NODE_EV_KEYS = (
     "device", "component_nodes", "fragment_nodes", "cycle_nodes",
     "baseline_root", "proposed_root", "elected_root",
 )
-_PORT_EV_KEYS = ("port", "new_member_ports", "untrusted_egress")  # snooping blocks egress ports
+_PORT_EV_KEYS = (
+    "port", "new_member_ports", "untrusted_egress",  # snooping blocks egress ports
+    "ports",  # l2_loop.self_loop: the self-looped pair (list of port ids)
+)
 _LINK_EV_KEYS = ("link", "link_ids")  # l2_loop emits the cycle's link_ids
 
 
