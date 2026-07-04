@@ -264,6 +264,12 @@ class Port:
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None
+    stp_role: str | None = None  # OBSERVED (root/designated/backup/...; "" -> None)
+    # OBSERVED physical self-loop (LLDP: the chassis sees ITSELF). peer = the
+    # claimed other end; reciprocal = BOTH rows name each other (evidence tier
+    # gate — one-sided claims cap at WARNING/MEDIUM, spec P1-2). Diff-ignored.
+    self_loop_peer: str | None = None
+    self_loop_reciprocal: bool = False
     # STP is a LIVE fact with its own provenance, distinct from the port's config `meta`.
     # None = STP state unknown (drives the loop check to INSUFFICIENT_DATA / LOW confidence).
     stp_meta: FactMeta | None = None
