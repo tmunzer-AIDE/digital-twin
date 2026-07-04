@@ -165,11 +165,20 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
 
 ### Never-false-SAFE / never-false-UNSAFE
 
-- Escalate-only throughout: both routes ADD severity on top of contracts that
-  already floor REVIEW (`stp.policy`'s floor covers the `stp_no_root_port`
-  change; `stp_disable` is a modeled STP usage attr already in
-  scope — verify in the plan which check carries their floor today and that
-  the new ERROR only strengthens it). Absent/empty telemetry changes nothing.
+- The observed-root route is escalate-only atop an existing floor:
+  `stp.policy`'s floor already covers every `stp_no_root_port` change, so
+  the route can only strengthen, never relax.
+- **`.self_loop` is a NEW detection path, honestly stated (review round 4):
+  there is NO generic `stp_disable` floor today.** `stp_edge_on_uplink`
+  covers only modeled switch-to-switch links, and `l2_loop` ranks cycles
+  from observed `stp_enabled` on GRAPH cycles — a self-loop has neither, so
+  a `stp_disable` delta on a self-looped (or otherwise isolated) port can
+  resolve SAFE on main today. This slice closes that: a previously-invisible
+  harmful change becomes ERROR/UNSAFE, justified by the reciprocal chassis
+  self-match + `Port.bpdu_filter` False→True evidence — a strict verdict
+  TIGHTENING (SAFE→UNSAFE), the safe direction. The one-sided tier
+  (WARNING/MEDIUM → REVIEW) likewise tightens a today-SAFE case.
+  Absent/empty telemetry changes nothing (those cases keep today's behavior).
 - False-UNSAFE guardrails: the observed-root route requires the literal role
   string `"root"` (no fuzzy matching); the self-loop ERROR requires the
   chassis-MAC self-match (no hostname heuristics) AND a protection-disabling
