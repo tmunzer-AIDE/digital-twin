@@ -60,6 +60,23 @@ def test_stp_role_read_beside_state_with_empty_string_absent():
     assert ir.port("aa0000000001:bme0").stp_state is None
 
 
+def test_role_only_row_applies_and_earns_the_capability():
+    # review P2: a row with non-empty stp_role but empty stp_state is still a
+    # real STP observation — an implementation keeping the old
+    # `if not stp_state: continue` gate would pass every other test here and
+    # silently drop role-only rows
+    stats = [
+        {"mac": "aa0000000001", "port_id": "xe-0/1/3", "up": True,
+         "stp_state": "", "stp_role": "root"},
+    ]
+    ctx = _ctx(stats)
+    assert IRCapability.STP_STATE in LldpIngester().ingest(ctx)
+    p = ctx.builder.build().port("aa0000000001:xe-0/1/3")
+    assert p.stp_role == "root"
+    assert p.stp_state is None
+    assert p.stp_enabled is True
+
+
 def test_reciprocal_self_loop_sets_peer_and_reciprocal_on_both_ports():
     # shaped like the live SWB-3 rows: neighbor_mac == the row's OWN mac
     stats = [
@@ -316,6 +333,22 @@ def test_other_change_on_self_looped_port_is_info_context():
     result = _run_self_loop(reciprocal=True, flip="description")  # any non-trigger
     f = _find(result, "wired.l2.loop.self_loop")
     assert f.severity is Severity.INFO
+    # review P1: the INFO context must not taint the CHECK result — status
+    # stays PASS (nothing WARNING+ from this check) and the result confidence
+    # stays HIGH (the INFO's confidence is EXCLUDED from the roll-up), so the
+    # decision layer never floors REVIEW because of context
+    assert result.status is Status.PASS
+    assert result.confidence is not None
+    assert result.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_info_self_loop_context_does_not_change_the_verdict():
+    # e2e-shaped pin (may live in Task 5's file if the harness fits better):
+    # a benign Spec-1 leaf change (description) on a self-looped port ->
+    # INFO context present AND decision is exactly what it would be without
+    # the self-loop observation (SAFE for the benign leaf) — context never
+    # causes REVIEW
+    ...
 
 
 def test_unrelated_delta_is_silent_about_the_self_loop():
@@ -334,7 +367,18 @@ def test_observed_states_land_in_evidence_when_present():
   - triggered + `self_loop_reciprocal` → ERROR/HIGH; triggered + one-sided → WARNING/MEDIUM; pair touched otherwise (any port diff on either end) → INFO; untouched → nothing;
   - evidence: `ports` (pair or single+claim), `observed_states` (state/role each end when present), `severity_reason`; `caused_by` via `ctx.delta_index.causes("port", [...])`;
   - message: "physical self-loop observed on <a> ↔ <b>; STP protection disabled by this change — broadcast-storm risk" (ERROR wording) / context wording for INFO;
-  - status/confidence roll-up follows the check's existing aggregation (INFO excluded per `status_from_findings`).
+  - **Aggregation (review P1, explicit):** `l2_loop` uses CUSTOM `worst`/
+    `confidences` aggregation that appends a confidence for EVERY finding —
+    including INFO. Left as-is, an INFO-only self-loop context at MEDIUM
+    confidence would taint the result confidence sub-HIGH and decision.py
+    would floor REVIEW — an INFO finding CAUSING a verdict change, the exact
+    inverse of the INFO rules. The self-loop pass therefore: (a) contributes
+    its finding's confidence to the roll-up ONLY for WARNING-or-worse
+    self-loop findings; (b) INFO self-loop findings are excluded from BOTH
+    the `worst` status ranking and the `confidences` list (mirror how
+    `status_from_findings`' INFO exclusion works, but applied to this check's
+    custom aggregation — touch only the self-loop pass's contributions, do
+    NOT change the cycle-path aggregation for existing codes).
   - Dedupe: emit once per pair, not once per end.
 
 - [ ] **Step 4: Full gate; commit**
