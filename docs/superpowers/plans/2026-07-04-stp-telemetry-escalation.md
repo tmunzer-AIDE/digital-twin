@@ -111,9 +111,11 @@ def test_no_same_device_link_is_minted():
         {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,
          "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
         {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
-         "neighbor_system_name": "SW-A", "neighbor_port_desc": "ge-0/0/8"},
+         # name-fallback path: MUST be the fixture device's EXACT name —
+         # _claims matches case-sensitively; use the constant, don't hardcode
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/8"},
     ]
-    ir = _ctx(stats).builder.build()  # _ctx's device fixture must name SW-A
+    ir = _ctx(stats).builder.build()
     assert not [
         l for l in ir.links.values()
         if l.a_port.split(":")[0] == l.b_port.split(":")[0]
@@ -212,6 +214,17 @@ def test_root_protect_plus_stp_disable_in_one_delta_is_not_error():
                 if f.severity is Severity.ERROR]
 
 
+def test_root_protect_on_preexisting_bpdu_filtered_port_is_not_error():
+    # P1 final round: baseline ALREADY has bpdu_filter=True (port never
+    # processes BPDUs); enabling root-protect on it later is inert — the
+    # proposed-state guard must catch this, not just the same-delta flip
+    result = _run_enable_no_root_port(topology="chain",
+                                      priorities={"A": 32768, "B": 4096},
+                                      baseline_also={"bpdu_filter": True})
+    assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
+                if f.severity is Severity.ERROR]
+
+
 def test_root_protect_plus_stp_edge_in_one_delta_still_errors():
     # stp_edge is EXPLICITLY not in the guard (spec P1r2): edge self-heals on
     # BPDU receipt, so root-protect on the root path remains a real risk
@@ -222,23 +235,26 @@ def test_root_protect_plus_stp_edge_in_one_delta_still_errors():
     assert f.severity is Severity.ERROR
 ```
 
-(Extend `_run_enable_no_root_port` with an `also=` kwarg applying extra `dataclasses.replace` fields to the proposed port — read the helper first; keep existing callers unchanged.)
+(Extend `_run_enable_no_root_port` with `also=` (extra `dataclasses.replace` fields on the PROPOSED port) and `baseline_also=` (same, applied to BOTH baseline and proposed — a pre-existing fact) — read the helper first; keep existing callers unchanged.)
 
 - [ ] **Step 2: RED** (the stp_disable variant must FAIL on current code — that's the hole).
 
 - [ ] **Step 3: Implement** — at `_root_protect_risk`'s entry, before any route:
 
 ```python
-        # Liveness guard (route-independent, spec P1-1/P1r3-2): a port the
-        # SAME delta removed from STP participation cannot block the root
-        # path — no ERROR from ANY route. stp_edge is deliberately NOT here
-        # (edge self-heals on BPDU receipt). The graph keeps bpdu_filter'd
-        # edges, so the graph route needs this as much as the observed one.
-        if new_port.disabled or (new_port.bpdu_filter and not old_bpdu_filter):
+        # Liveness guard (route-independent, spec P1-1/P1r3-2): a port that
+        # does not participate in STP in the PROPOSED state cannot block the
+        # root path — no ERROR from ANY route. Proposed-state on purpose:
+        # covers BOTH a same-delta stp_disable flip AND a PRE-EXISTING
+        # bpdu_filter=True port later getting root-protect (inert either
+        # way; the graph keeps bpdu_filter'd edges, so without this the
+        # graph route would ERROR on both). stp_edge is deliberately NOT
+        # here (edge self-heals on BPDU receipt).
+        if new_port.disabled or new_port.bpdu_filter:
             return None  # floor / admin_disable / edge_on_uplink own the harm
 ```
 
-(adapt variable names; "removed from participation BY THE SAME DELTA" — a PRE-EXISTING bpdu_filter is a different situation: the port already didn't participate, so root-protect on it is inert too — guard on the PROPOSED state (`new_port.disabled or new_port.bpdu_filter`) and note why in the comment; verify no existing Spec-2 test used a bpdu-filtered fixture expecting ERROR — if one did, STOP and report, that's a spec conflict.)
+(Adapt variable names. Verify no existing Spec-2 test used a bpdu-filtered fixture expecting ERROR — if one did, STOP and report, that's a spec conflict.)
 
 - [ ] **Step 4: Full gate; commit**
 
@@ -330,7 +346,9 @@ def test_one_sided_self_loop_evidence_caps_at_warning_medium():
 
 
 def test_other_change_on_self_looped_port_is_info_context():
-    result = _run_self_loop(reciprocal=True, flip="description")  # any non-trigger
+    # flip a REAL Port field that is not the trigger (Port has no description
+    # field — that's a config leaf, exercised by the e2e pin below)
+    result = _run_self_loop(reciprocal=True, flip="stp_edge")
     f = _find(result, "wired.l2.loop.self_loop")
     assert f.severity is Severity.INFO
     # review P1: the INFO context must not taint the CHECK result — status
