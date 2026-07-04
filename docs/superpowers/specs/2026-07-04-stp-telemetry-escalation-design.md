@@ -103,10 +103,18 @@ whose **baseline observed `stp_role == "root"`** →
   from STP participation cannot "block the root port" (there is no root port
   left to protect); the observed-role route stays silent there and the harm
   is carried by the check that owns the removing attribute (`admin_disable`
-  for the disable; the `stp.policy` floor otherwise). The graph route loses
-  the edge naturally in these cases — the shortcut must not bypass that.
-  Pinned by a negative test (enable root-protect + disable in one delta →
-  no observed-root ERROR).
+  for the disable; `wired.stp.edge_on_uplink` for a bpdu-filtered
+  inter-switch link; the `stp.policy` floor otherwise).
+  **The guard is ROUTE-INDEPENDENT (review round 3): it is a precondition of
+  `root_protect_risk` ERROR generally, not just the observed-role shortcut.**
+  The L2 graph only drops ADMIN-disabled links — a `bpdu_filter`'d link keeps
+  its edge (`l2_graph.py` ~line 112) — so without the shared guard, a
+  combined `stp_no_root_port=true` + `stp_disable=true` delta would still
+  produce a graph-route ERROR on a port that no longer processes BPDUs.
+  Pinned by negative tests asserting NO `root_protect_risk` ERROR from
+  EITHER route for: enable root-protect + `disabled=true` in one delta, and
+  enable root-protect + `stp_disable=true` in one delta (the graph-route
+  variant is the Spec-2 hole this slice closes in passing).
 - Evidence adds `observed_role: "root"` and
   `severity_reason: "port is the observed root port"`; `election_confidence`
   reports `"observed"` for this route.
@@ -142,12 +150,15 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
   precise (`changed_fields` style, Spec-2 precedent), not a blanket
   `touches("port")` if the current gate is narrower. (Grounding: read
   `l2_loop.applies_to` first; it may already be broad enough.)
-- Trigger-knob grounding (RESOLVED at spec review): `bpdu_filter` is NOT an
-  independent Mist leaf — `Port.bpdu_filter` is derived from `stp_disable` in
-  the current OAS path. The protection-disabling trigger set is therefore
-  **`stp_disable`** (the leaf that maps onto `Port.stp_enabled=False` /
-  `bpdu_filter`); the plan pins it against ingest and adds no other knob
-  without OAS evidence.
+- Trigger-knob grounding (RESOLVED, corrected review round 3): `bpdu_filter`
+  is NOT an independent Mist leaf — ingest maps the `stp_disable` config leaf
+  onto **`Port.bpdu_filter` ONLY** (switch.py, ~line 983). `Port.stp_enabled`
+  is pure OBSERVED telemetry (set from `stp_state` rows in lldp.py) and is
+  NEVER driven by config — a check keyed on `stp_enabled` changes would MISS
+  the actual config delta. **The `.self_loop` trigger is therefore pinned as:
+  the port diff shows `Port.bpdu_filter` False→True** (i.e. the `stp_disable`
+  leaf was enabled), on either end of the pair. No other knob without OAS
+  evidence.
 - Evidence: `ports` (the pair), `observed_states` (state/role both ends when
   present), the protection knob(s) the delta changed; `caused_by` via
   delta_index on the touched port.
