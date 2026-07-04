@@ -52,14 +52,23 @@ never demotes, never earns SAFE.
    proposed share the same fetch, so no spurious diffs). No new capability —
    `STP_STATE` is earned exactly as today (≥1 row with non-empty `stp_state`;
    a role-only row also counts as STP observation and earns it).
-2. **`Port.self_loop_peer: str | None`** — the full port id of the OTHER end
-   when a port-stats row's `neighbor_mac` equals the SAME device's chassis
-   MAC. Set on both ports of the pair (each row names its peer via
-   `neighbor_port_desc`; pair them within the device). OBSERVED and
-   **diff-ignored** (`_IGNORED_BY_KIND["port"]`, like `is_uplink`) — an
-   observation must never be a config diff. The existing same-device skip in
-   `_claims`/link-emission stays: self-loops still mint NO `Link` (the L2
-   graph correctly never sees them); the fact lives on the ports.
+2. **`Port.self_loop_peer: str | None`** plus
+   **`Port.self_loop_reciprocal: bool`** — when a port-stats row's
+   `neighbor_mac` equals the SAME device's chassis MAC, record the claimed
+   peer port (via `neighbor_port_desc`). **Reciprocity is evidence-tiering
+   (review P1-2):** `self_loop_reciprocal=True` ONLY when BOTH rows exist and
+   name each other (A says B and B says A) — that is the genuine two-sided
+   observation; a single self-claiming row sets `self_loop_peer` on that port
+   alone with `self_loop_reciprocal=False` (the named peer end is NOT
+   synthesized). Both fields OBSERVED and **diff-ignored**
+   (`_IGNORED_BY_KIND["port"]`, like `is_uplink`) — an observation must never
+   be a config diff.
+   **Link emission (review P2-3):** current `_emit_links` DOES mint
+   same-device links (the L2 graph silently drops them at `na == nb`). This
+   slice makes the contract explicit: after capturing the self-loop facts,
+   `_emit_links` SKIPS same-device pairs — self-loops mint NO `Link`, the
+   fact lives on the ports only, and a test pins `IR.links` containing no
+   same-device link.
    Chassis-MAC matching only — do NOT match on `neighbor_system_name` alone
    (hostnames collide; MAC is the robust key). VC nuance: match against the
    chassis/member MACs the LLDP ingest already resolves for AP-uplink ties
@@ -75,6 +84,17 @@ whose **baseline observed `stp_role == "root"`** →
 - **ERROR / HIGH** — the observation IS the election result; this route fires
   even where the graph election is unprovable (external root), which is
   precisely where the graph route must degrade to WARNING + note.
+- **Proposed-port liveness guard (review P1-1):** the ERROR requires the
+  PROPOSED port to still participate in STP forwarding — not `disabled`, not
+  `stp_disable`d, not BPDU-filtered/edge-excluded after the same delta. A
+  multi-attribute change that enables `stp_no_root_port` AND removes the port
+  from STP participation cannot "block the root port" (there is no root port
+  left to protect); the observed-role route stays silent there and the harm
+  is carried by the check that owns the removing attribute (`admin_disable`
+  for the disable; the `stp.policy` floor otherwise). The graph route loses
+  the edge naturally in these cases — the shortcut must not bypass that.
+  Pinned by a negative test (enable root-protect + disable in one delta →
+  no observed-root ERROR).
 - Evidence adds `observed_role: "root"` and
   `severity_reason: "port is the observed root port"`; `election_confidence`
   reports `"observed"` for this route.
@@ -95,8 +115,9 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
 
 | situation | finding |
 |---|---|
-| delta enables `stp_disable` or `bpdu_filter` on a self-looped port (either end of the pair) | **ERROR / HIGH → UNSAFE** — converts a contained, STP-blocked loop into a storm; confidence HIGH by construction (the chassis observes ITSELF: two-sided by definition) |
-| delta otherwise touches a self-looped port (any config change on it or its pair) | **INFO context** — "physical self-loop observed on `<port>` ↔ `<peer>`" |
+| delta disables STP protection on a self-looped port (either end), pair **reciprocal** | **ERROR / HIGH → UNSAFE** — converts a contained, STP-blocked loop into a storm; HIGH is EARNED by the two reciprocal rows, not assumed (review P1-2) |
+| same delta, self-loop evidence **one-sided** (single self-claiming row) | **WARNING / MEDIUM** — a stale/wrong `neighbor_port_desc` on one row must not manufacture UNSAFE; ERROR iff HIGH, as everywhere |
+| delta otherwise touches a self-looped port (any config change on it or its claimed pair) | **INFO context** — "physical self-loop observed on `<port>` ↔ `<peer>`" |
 | self-loop exists, delta unrelated to those ports | **silent** — ambient facts don't ride along on every verdict |
 
 - INFO never satisfies any floor (established Spec-2 rule; this check has no
@@ -109,13 +130,12 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
   precise (`changed_fields` style, Spec-2 precedent), not a blanket
   `touches("port")` if the current gate is narrower. (Grounding: read
   `l2_loop.applies_to` first; it may already be broad enough.)
-- Trigger-knob grounding (plan task 1): "protection-disabling" = the config
-  leaves that ingest maps onto `Port.stp_enabled=False` / `Port.stp_edge` /
-  `Port.bpdu_filter` — known: `stp_disable` (in `_STP_USAGE_ATTRS`); verify
-  how `bpdu_filter` is configured in Mist (own leaf vs derived from
-  `stp_edge`) and pin the exact set in the plan. If a knob turns out not to
-  be independently configurable, drop it from the trigger set rather than
-  guessing.
+- Trigger-knob grounding (RESOLVED at spec review): `bpdu_filter` is NOT an
+  independent Mist leaf — `Port.bpdu_filter` is derived from `stp_disable` in
+  the current OAS path. The protection-disabling trigger set is therefore
+  **`stp_disable`** (the leaf that maps onto `Port.stp_enabled=False` /
+  `bpdu_filter`); the plan pins it against ingest and adds no other knob
+  without OAS evidence.
 - Evidence: `ports` (the pair), `observed_states` (state/role both ends when
   present), the protection knob(s) the delta changed; `caused_by` via
   delta_index on the touched port.
@@ -136,11 +156,13 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
 
 ## Files touched
 
-- `src/digital_twin/ir/entities.py` — `Port.stp_role`, `Port.self_loop_peer`.
-- `src/digital_twin/ir/diff.py` — `self_loop_peer` into `_IGNORED_BY_KIND["port"]`
-  (stp_role mirrors stp_state: compared).
+- `src/digital_twin/ir/entities.py` — `Port.stp_role`, `Port.self_loop_peer`,
+  `Port.self_loop_reciprocal`.
+- `src/digital_twin/ir/diff.py` — `self_loop_peer` + `self_loop_reciprocal`
+  into `_IGNORED_BY_KIND["port"]` (stp_role mirrors stp_state: compared).
 - `src/digital_twin/adapters/mist/ingest/lldp.py` — `_apply_stp` reads role;
-  new self-loop pass beside the existing claim handling.
+  new self-loop pass beside the existing claim handling; `_emit_links` gains
+  the explicit same-device skip (P2-3).
 - `src/digital_twin/checks/wired/stp_policy.py` — observed-role route.
 - `src/digital_twin/checks/wired/l2_loop.py` — `.self_loop` code + gate widening.
 - Tests: ingest pins, both check matrices, e2e, never-SAFE guard extension.
@@ -150,18 +172,24 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
 ## Testing requirements
 
 - **Ingest:** role read + `""` absent (both fields, mirroring #43's pin);
-  self-loop pair minted from a chassis-MAC-match fixture shaped like the live
-  rows; NO self-loop from a normal two-device link; NO Link minted for the
-  pair; `self_loop_peer` diff-ignored (config-identical IRs with/without the
-  observation produce no port diff).
+  reciprocal pair (both rows name each other) → `self_loop_peer` both ends +
+  `self_loop_reciprocal=True`; single self-claiming row → peer set on that
+  port only, `reciprocal=False`, named end NOT synthesized; NO self-loop from
+  a normal two-device link; **`IR.links` contains no same-device link**
+  (P2-3 — this pins the NEW emission skip, not current behavior); both fields
+  diff-ignored (config-identical IRs with/without the observation produce no
+  port diff).
 - **Observed-root route:** ERROR/HIGH on observed root + enable, INCLUDING an
   external-root topology where the graph route alone yields WARNING+note (the
-  motivating case); `designated`/`backup`/empty role → graph route behavior
-  unchanged (negative pins); both-routes case unions evidence; disable
-  direction → floor.
-- **Self-loop:** ERROR/HIGH on `stp_disable` and on `bpdu_filter` (each,
-  either end of the pair); INFO on an unrelated knob change on the pair;
-  silent on a delta elsewhere; decision-level UNSAFE for the ERROR.
+  motivating case); **liveness-guard negative (P1-1): enable root-protect AND
+  disable the port (or stp_disable it) in one delta → NO observed-root ERROR**
+  (harm carried by admin_disable/floor); `designated`/`backup`/empty role →
+  graph route behavior unchanged (negative pins); both-routes case unions
+  evidence; disable direction → floor.
+- **Self-loop:** reciprocal + `stp_disable` → ERROR/HIGH (either end);
+  **one-sided + `stp_disable` → WARNING/MEDIUM, never ERROR (P1-2)**; INFO on
+  an unrelated knob change on the pair; silent on a delta elsewhere;
+  decision-level UNSAFE for the reciprocal ERROR.
 - **Never-SAFE guard:** extend Spec-2's parametrized guard to the new routes'
   fixtures.
 
