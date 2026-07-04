@@ -17,11 +17,12 @@ mostly ignores:
   graph election it must often abstain on (external/unprovable root).
 - Physical **self-loops** (a cable looped back into the same switch) have a
   clean observed signature — the LLDP `neighbor_mac` equals the device's own
-  chassis MAC — but `ingest/lldp.py` deliberately skips same-device claims
-  (line ~110) and `build_l2_graph` never sees them, so `wired.l2.loop` is
-  structurally blind to the one loop class RSTP contains silently. A config
-  delta that disables STP protections (`stp_disable`, `bpdu_filter`) on a
-  self-looped port converts that contained loop into a broadcast storm — and
+  reporting MAC — but the fact is discarded end to end today: `_emit_links`
+  mints a same-device `Link` that `build_l2_graph` silently drops at
+  `na == nb`, so `wired.l2.loop` is structurally blind to the one loop class
+  RSTP contains silently. A config delta that disables STP protection
+  (`stp_disable`) on a self-looped port converts that contained loop into a
+  broadcast storm — and
   today the twin would say nothing specific.
 
 Both gaps are fixable from data the twin already fetches, escalate-only
@@ -69,11 +70,16 @@ never demotes, never earns SAFE.
    `_emit_links` SKIPS same-device pairs — self-loops mint NO `Link`, the
    fact lives on the ports only, and a test pins `IR.links` containing no
    same-device link.
-   Chassis-MAC matching only — do NOT match on `neighbor_system_name` alone
-   (hostnames collide; MAC is the robust key). VC nuance: match against the
-   chassis/member MACs the LLDP ingest already resolves for AP-uplink ties
-   (reuse that resolution; a VC member MAC seeing another member of the SAME
-   VC is a VC-internal path, not a self-loop — out of scope, do not flag).
+   **Match rule, v1 (review P2 round 2 — no phantom helpers):** a self-loop
+   claim is `row["neighbor_mac"] == row["mac"]` — the row's OWN reporting
+   device MAC, the same key the ingest already uses for `device_id`. Nothing
+   else: no `neighbor_system_name` fallback (hostnames collide), no VC
+   member-MAC map (none exists in `lldp.py` today, and none is built here).
+   VC consequence, explicit: a VC member observing ANOTHER member of the same
+   chassis has `neighbor_mac != row["mac"]` and is naturally NOT matched — no
+   suppression machinery needed; cross-member VC observations remain whatever
+   they are today. If a platform ever reports self-loops under a different
+   member MAC, that is a future extension with its own live evidence.
 
 ### `wired.stp.policy.root_protect_risk` — observed-role route
 
@@ -84,9 +90,15 @@ whose **baseline observed `stp_role == "root"`** →
 - **ERROR / HIGH** — the observation IS the election result; this route fires
   even where the graph election is unprovable (external root), which is
   precisely where the graph route must degrade to WARNING + note.
-- **Proposed-port liveness guard (review P1-1):** the ERROR requires the
-  PROPOSED port to still participate in STP forwarding — not `disabled`, not
-  `stp_disable`d, not BPDU-filtered/edge-excluded after the same delta. A
+- **Proposed-port liveness guard (review P1-1, tightened P1 round 2):** the
+  ERROR requires the PROPOSED port to still participate in STP — the guard
+  excludes EXACTLY `disabled` and `stp_disable` (which also drives
+  `bpdu_filter` — BPDUs stop entirely). **`stp_edge` is NOT in the guard**:
+  an edge port self-heals on BPDU receipt (the existing `Port.stp_edge`
+  semantics), so root-protect on an observed root port remains a real
+  blocking risk even if the same delta flips stp_edge — the ERROR stands.
+  Do not widen the guard without live proof that a knob makes root-protect
+  unreachable. A
   multi-attribute change that enables `stp_no_root_port` AND removes the port
   from STP participation cannot "block the root port" (there is no root port
   left to protect); the observed-role route stays silent there and the harm
@@ -144,7 +156,7 @@ instead. Delta-conditioned tiers (the #42 P3 relevance lesson baked in):
 
 - Escalate-only throughout: both routes ADD severity on top of contracts that
   already floor REVIEW (`stp.policy`'s floor covers the `stp_no_root_port`
-  change; `stp_disable`/`bpdu_filter` are modeled STP usage attrs already in
+  change; `stp_disable` is a modeled STP usage attr already in
   scope — verify in the plan which check carries their floor today and that
   the new ERROR only strengthens it). Absent/empty telemetry changes nothing.
 - False-UNSAFE guardrails: the observed-root route requires the literal role
