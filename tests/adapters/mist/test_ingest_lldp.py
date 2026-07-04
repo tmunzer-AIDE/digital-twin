@@ -381,6 +381,21 @@ def test_reciprocal_self_loop_sets_peer_and_reciprocal_on_both_ports():
     assert b.self_loop_peer == "aa0000000001:ge-0/0/8" and b.self_loop_reciprocal
 
 
+def test_self_loop_matches_across_mac_formats():
+    # same chassis, mixed formats: colon-separated uppercase vs bare lowercase —
+    # the self-loop rule must compare canonical device ids, not raw strings
+    stats = [
+        {"mac": "AA:00:00:00:00:01", "port_id": "ge-0/0/8", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
+         "neighbor_mac": "AA-00-00-00-00-01", "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats).builder.build()
+    a, b = ir.port("aa0000000001:ge-0/0/8"), ir.port("aa0000000001:ge-0/0/9")
+    assert a.self_loop_peer == "aa0000000001:ge-0/0/9" and a.self_loop_reciprocal
+    assert b.self_loop_peer == "aa0000000001:ge-0/0/8" and b.self_loop_reciprocal
+
+
 def test_one_sided_self_claim_never_synthesizes_the_peer():
     stats = [
         {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,

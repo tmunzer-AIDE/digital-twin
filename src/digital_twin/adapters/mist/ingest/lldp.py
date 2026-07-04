@@ -144,8 +144,8 @@ class LldpIngester:
         for row in ctx.raw.port_stats:
             if not row.get("port_id") or not row.get("neighbor_mac"):
                 continue
-            if str(row["neighbor_mac"]) != str(row["mac"]):
-                continue
+            if device_id(str(row["neighbor_mac"])) != device_id(str(row["mac"])):
+                continue  # canonical ids: the two fields may carry different formats
             src = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             dst = port_id(device_id(str(row["mac"])), str(row.get("neighbor_port_desc") or "?"))
             claimed[src] = dst
