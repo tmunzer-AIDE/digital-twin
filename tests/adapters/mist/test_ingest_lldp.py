@@ -192,6 +192,23 @@ def test_stp_state_attached_to_port_when_present():
     assert p.stp_meta is not None  # observed live fact
 
 
+def test_empty_string_stp_state_is_treated_as_absent():
+    # Real Mist payloads (found live 2026-07-04, EX4000) carry stp_state=""
+    # on every NON-participating port (internal ifs, down ports) — present-
+    # but-empty, not absent. Applying it would mark the port stp_enabled=True
+    # on unconfirmed data, making l2_loop rank a cycle as STP-protected
+    # (false-SAFE-adjacent) and earning STP_STATE off garbage rows.
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/10", "up": True,
+         "stp_state": "", "stp_role": ""},
+    ]
+    ctx = _ctx(stats)
+    assert IRCapability.STP_STATE not in LldpIngester().ingest(ctx)
+    p = ctx.builder.build().port("aa0000000001:ge-0/0/10")
+    assert p.stp_state is None
+    assert p.stp_enabled is None  # unknown, NOT True
+
+
 def test_ap_uplink_link_from_ap_lldp_stat():
     device_stats = [
         {

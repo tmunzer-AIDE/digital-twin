@@ -96,7 +96,11 @@ class LldpIngester:
     def _apply_stp(self, ctx: IngestContext) -> bool:
         seen = False
         for row in ctx.raw.port_stats:
-            if row.get("stp_state") is None or not row.get("port_id"):
+            # falsy, not `is None`: real payloads carry stp_state="" on every
+            # NON-participating port (internal ifs, down ports — found live
+            # 2026-07-04). "" applied as OBSERVED would mark stp_enabled=True
+            # on unconfirmed data and let l2_loop rank a cycle as protected.
+            if not row.get("stp_state") or not row.get("port_id"):
                 continue
             pid = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             self._ensure_port(ctx, pid)
