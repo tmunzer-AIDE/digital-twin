@@ -1,6 +1,6 @@
 # STP telemetry escalation + self-loop detection — Design
 
-**Status:** PROPOSED
+**Status:** Implemented (2026-07-04; plan docs/superpowers/plans/2026-07-04-stp-telemetry-escalation.md)
 **Date:** 2026-07-04
 **Author:** brainstormed with the repo owner
 

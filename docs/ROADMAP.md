@@ -503,10 +503,38 @@ modeling" below.
   `docs/superpowers/specs/2026-07-03-stp-policy-attribution-design.md`; plan:
   `docs/superpowers/plans/2026-07-03-stp-policy-attribution.md`. **Deferred:**
   the **STP tree/convergence engine** (per-VLAN root election + port roles +
-  blocked-set, validated against live `stp_state`) remains the prerequisite
-  for ever granting SAFE here; per-VLAN priority divergence (Mist config
-  cannot express it); mixed-protocol (VSTP↔RSTP) interop simulation; LAG/
-  ESI-LAG path costs (aggregates unmodeled).
+  blocked-set, validated against live `stp_state`) — viable — per-port
+  `stp_state`/`stp_role` ground truth confirmed live (root/designated/backup
+  observed) — remains the prerequisite for ever granting SAFE here; per-VLAN
+  priority divergence (Mist config cannot express it); mixed-protocol
+  (VSTP↔RSTP) interop simulation; LAG/ESI-LAG path costs (aggregates
+  unmodeled).
+- ✅ **STP telemetry escalation + self-loop detection** (Spec-3, PR #43's
+  live-investigation follow-on) — done 2026-07-04. Two new observed `Port`
+  facts (`stp_role: str | None`, `self_loop_peer: str | None` +
+  `self_loop_reciprocal: bool`, all diff-ignored) feed two escalate-only
+  routes on existing checks — no new check ids, no count change.
+  `wired.stp.policy.root_protect_risk` gains an observed-role route: enabling
+  `stp_no_root_port` on a port whose baseline `stp_role == "root"` is
+  ERROR/HIGH from the live election result itself, firing even where the
+  graph election must abstain (external root) — gated by a route-independent
+  liveness guard (excludes `disabled`/`stp_disable`, NOT `stp_edge`) so a
+  combined disable+root-protect delta doesn't double-report. `wired.l2.loop`
+  gains `.self_loop`: a physical self-loop (LLDP `neighbor_mac` == own
+  chassis MAC) is the one loop class the L2 graph structurally can't see
+  (`build_l2_graph` drops `na == nb`); a delta that flips `Port.bpdu_filter`
+  False→True on a self-looped port is ERROR/HIGH → UNSAFE when the pair is
+  reciprocally observed, WARNING/MEDIUM when one-sided, INFO context
+  otherwise, silent when unrelated. Both routes are pure tightening
+  (escalate-only atop the existing `stp.policy` floor; a brand-new detection
+  path for `.self_loop` where none existed), pinned by a never-SAFE guard
+  extension and negative tests for both liveness guards. Spec:
+  `docs/superpowers/specs/2026-07-04-stp-telemetry-escalation-design.md`;
+  plan: `docs/superpowers/plans/2026-07-04-stp-telemetry-escalation.md`.
+  **Deferred:** reachability awareness of observed-blocking links
+  (blackhole/isolation confidence); the full STP tree/convergence engine
+  (see above — now viable, still a program); VC-internal loop semantics;
+  `stp_role`-based root-direction triangulation for the tree engine.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
