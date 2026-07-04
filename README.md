@@ -173,7 +173,7 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
 
 ### Check inventory
 
-The twin ships **28 checks** over the IR. The **26 wired/wireless checks** run on
+The twin ships **29 checks** over the IR. The **27 wired/wireless checks** run on
 site plans (and the org-template fan-out); the **2 NAC checks** run on org-NAC
 plans. Each is **delta-aware**: a finding *introduced* by the change gates the
 verdict; a pre-existing condition the change merely touches is reported as
@@ -191,24 +191,25 @@ context and never floors an unrelated edit.
 | 8 | L1 / physical | `wired.l1.link_param_mismatch` | incompatible speed/duplex/autoneg across a link (invisible to reachability, wrecks throughput) |
 | 9 | Spanning tree | `wired.stp.edge_on_uplink` | BPDU-drop / edge landing on a switch-to-switch link |
 | 10 | Spanning tree | `wired.stp.root_change` | the change re-elects a component's root bridge |
-| 11 | L3 / routing | `wired.l3.gateway_gap` | a routed network with no L3 interface / an unowned gateway |
-| 12 | **L3 / routing — OSPF** | `wired.l3.ospf_withdrawal` | OSPF participation withdrawn or mutated (live-telemetry escalated) |
-| 13 | **L3 / routing — BGP** | `wired.l3.bgp_adjacency` | BGP peering removed / disabled / mutated (live-telemetry escalated) |
-| 14 | L3 / routing | `wired.l3.subnet_overlap` | overlapping IP subnets |
-| 15 | DHCP | `wired.dhcp.path` | a VLAN losing its only modeled DHCP server / relay |
-| 16 | DHCP | `wired.dhcp.scope_lint` | scope range overlap, out-of-subnet, gateway mismatch |
-| 17 | DHCP | `wired.dhcp.snooping` | a VLAN left with no trusted DHCP path |
-| 18 | Power / clients | `wired.poe.disconnect` | cutting PoE to a port that powers an AP / device |
-| 19 | Port / config | `wired.port.admin_disable` | administratively disabling a port that carries an AP, clients, or a modeled link |
-| 20 | Port / config | `wired.port.mac_limit_exceeded` | a lowered MAC limit dropping currently-connected wired clients |
-| 21 | Port / config | `wired.port.unmodeled_change` | a recognized-but-unmodeled port knob changed (`inter_switch_link`, storm control, QoS) |
-| 22 | Wired auth | `wired.auth.access_change` | a port's 802.1X / MAC-auth admission policy changed (RADIUS outcome unverifiable) |
-| 23 | Power / clients | `wired.client.impact` | currently-connected clients in the blast radius (enriched) |
-| 24 | Wireless / WLAN | `wireless.wlan.client_impact` | active wireless clients losing SSID coverage from a WLAN change |
-| 25 | Wireless / WLAN | `wireless.wlan.open_guest` | an open guest SSID with no client isolation |
-| 26 | Wireless / WLAN | `wireless.wlan.duplicate_ssid` | the same SSID on provably overlapping APs |
-| 27 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
-| 28 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+| 11 | Spanning tree | `wired.stp.policy` | an STP policy knob changed (`stp_required`/`stp_no_root_port`/`stp_p2p`/`use_vstp`); floors REVIEW — the bridge domain is not provable |
+| 12 | L3 / routing | `wired.l3.gateway_gap` | a routed network with no L3 interface / an unowned gateway |
+| 13 | **L3 / routing — OSPF** | `wired.l3.ospf_withdrawal` | OSPF participation withdrawn or mutated (live-telemetry escalated) |
+| 14 | **L3 / routing — BGP** | `wired.l3.bgp_adjacency` | BGP peering removed / disabled / mutated (live-telemetry escalated) |
+| 15 | L3 / routing | `wired.l3.subnet_overlap` | overlapping IP subnets |
+| 16 | DHCP | `wired.dhcp.path` | a VLAN losing its only modeled DHCP server / relay |
+| 17 | DHCP | `wired.dhcp.scope_lint` | scope range overlap, out-of-subnet, gateway mismatch |
+| 18 | DHCP | `wired.dhcp.snooping` | a VLAN left with no trusted DHCP path |
+| 19 | Power / clients | `wired.poe.disconnect` | cutting PoE to a port that powers an AP / device |
+| 20 | Port / config | `wired.port.admin_disable` | administratively disabling a port that carries an AP, clients, or a modeled link |
+| 21 | Port / config | `wired.port.mac_limit_exceeded` | a lowered MAC limit dropping currently-connected wired clients |
+| 22 | Port / config | `wired.port.unmodeled_change` | a recognized-but-unmodeled port knob changed (`inter_switch_link`, storm control, QoS) |
+| 23 | Wired auth | `wired.auth.access_change` | a port's 802.1X / MAC-auth admission policy changed (RADIUS outcome unverifiable) |
+| 24 | Power / clients | `wired.client.impact` | currently-connected clients in the blast radius (enriched) |
+| 25 | Wireless / WLAN | `wireless.wlan.client_impact` | active wireless clients losing SSID coverage from a WLAN change |
+| 26 | Wireless / WLAN | `wireless.wlan.open_guest` | an open guest SSID with no client isolation |
+| 27 | Wireless / WLAN | `wireless.wlan.duplicate_ssid` | the same SSID on provably overlapping APs |
+| 28 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
+| 29 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
 
 ## Project layout
 
@@ -218,7 +219,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
-├── checks/           the 26 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
+├── checks/           the 27 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

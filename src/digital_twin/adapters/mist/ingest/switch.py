@@ -39,7 +39,7 @@ from digital_twin.ir import (
     same_ip,
     same_subnet,
 )
-from digital_twin.ir.entities import PortAuth, PortMisc
+from digital_twin.ir.entities import PortAuth, PortMisc, StpPolicy
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
 from .base import IngestContext
@@ -471,12 +471,18 @@ def _port_misc(usage: dict[str, Any]) -> PortMisc | None:
         poe_priority=usage.get("poe_priority") or None,
         community_vlan_id=_int_token(usage.get("community_vlan_id")),
         inter_isolation_network_link=_bool_token(usage.get("inter_isolation_network_link")),
+    )
+    return m if m != PortMisc() else None
+
+
+def _stp_policy(usage: dict[str, Any]) -> StpPolicy | None:
+    p = StpPolicy(
         stp_required=_bool_token(usage.get("stp_required")),
         stp_no_root_port=_bool_token(usage.get("stp_no_root_port")),
         stp_p2p=_bool_token(usage.get("stp_p2p")),
         use_vstp=_bool_token(usage.get("use_vstp")),
     )
-    return m if m != PortMisc() else None
+    return p if p != StpPolicy() else None
 
 
 def _reauth(v: Any) -> str | None:
@@ -971,6 +977,7 @@ class SwitchIngester:
                     observed_duplex=obs_duplex,
                     mac_limit=_mac_limit(usage.get("mac_limit")),
                     misc=_port_misc(usage),
+                    stp_policy=_stp_policy(usage),
                     disabled=bool(usage.get("disabled")),
                     stp_edge=bool(usage.get("stp_edge")),
                     bpdu_filter=bool(usage.get("stp_disable")),

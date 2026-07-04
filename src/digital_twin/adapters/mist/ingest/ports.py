@@ -57,6 +57,9 @@ _AUTH_ATTRS = (
 # Spec 1: + the local-capable reviewed STP knobs; enable_qos REMOVED (benign,
 # never read by ingest); usage-only knobs (poe_priority, community_vlan_id,
 # inter_isolation_network_link, stp_required, bypass_..._for_voip) are NOT here.
+# Spec 2: use_vstp/stp_p2p/stp_no_root_port still flow from local usage data
+# exactly as before — only their IR destination changed, from PortMisc to
+# StpPolicy (_stp_policy in adapters/mist/ingest/switch.py).
 _MISC_ATTRS = (
     "voip_network", "mac_limit", "storm_control", "inter_switch_link",
     "use_vstp", "stp_p2p", "stp_no_root_port",

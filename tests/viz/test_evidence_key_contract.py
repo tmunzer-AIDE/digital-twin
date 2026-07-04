@@ -100,6 +100,21 @@ _NOT_VISUALIZED = {
     # --- misc config-knob scalars ---
     "disabled",             # admin_disable boolean; "port" already paints
     "knobs",                # unmodeled_change knob names (strings)
+    # --- stp_policy.blocking_risk: entities already paint via "port"/
+    #     affected_entities; these are classification/explanatory scalars ---
+    "knob",                 # the single changed knob name (stp_required), a string
+    "peer_kind",            # "ap"/"client"/"bpdu_filter" classification tag
+    "tie_provenance",       # LLDP provenance label for the peer tie (string)
+    "occupants_behind",     # occupant counts behind the port (dict of scalars)
+    # --- stp_policy.root_protect_risk: "port" and "elected_root" (added to
+    #     _NODE_EV_KEYS) already paint the entities; these are scalars ---
+    "only_path",            # boolean — always True when this code fires
+    "election_confidence",  # "high"/"unprovable" classification tag (string)
+    # --- stp_policy.link_mismatch: "link" (already painted) carries the pair;
+    #     these are per-knob detail, not additional entity references ---
+    "values",                # {port_id: effective knob value} — port ids already
+                              # painted via affected_entities/"link", values are bools/tokens
+    "observed_modes",        # {port_id: StpMode} corroborating context, not a new entity
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
 }

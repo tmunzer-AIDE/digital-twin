@@ -1,9 +1,11 @@
 """wired.port.unmodeled_change — a recognized port-profile knob changed whose
 impact the twin does not model yet (inter_switch_link, storm_control,
-poe_priority, community_vlan_id, inter_isolation_network_link, stp_required,
-stp_no_root_port, stp_p2p, use_vstp). The twin recognizes the change and floors
-REVIEW — never SAFE, never ERROR/UNSAFE. (enable_qos left this surface in
-Spec 1: benign SAFE.)
+poe_priority, community_vlan_id, inter_isolation_network_link). The twin
+recognizes the change and floors REVIEW — never SAFE, never ERROR/UNSAFE.
+(enable_qos left this surface in Spec 1: benign SAFE.) Spec-2: the four STP
+knobs (stp_required, stp_no_root_port, stp_p2p, use_vstp) graduated out of
+PortMisc into Port.stp_policy — they are now covered by wired.stp.policy
+instead of this check.
 """
 
 from __future__ import annotations

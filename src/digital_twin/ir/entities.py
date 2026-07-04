@@ -139,15 +139,27 @@ class PortMisc:
     wired.port.unmodeled_change. Frozen + comparable; Port.misc is None ONLY
     when all are default, so a lone flip is detectable. enable_qos left this
     surface in Spec 1 (benign SAFE — ignored by ingest entirely). Spec-1 scalar
-    honesty: the new boolean knobs are `bool | str` — a templated/unparseable
+    honesty: the boolean knob is `bool | str` — a templated/unparseable
     value stays a diff-bearing `unresolved:` token, never collapsed to a bool
-    (blanket bool() would turn "{{vstp}}" into True and hide the change)."""
+    (blanket bool() would turn a template string into True and hide the change).
+    Spec-2: the four STP policy knobs (stp_required, stp_no_root_port, stp_p2p,
+    use_vstp) graduated to StpPolicy — they no longer live here."""
 
     inter_switch_link: bool = False
     storm_control: str | None = None  # canonical digest of the storm_control object
     poe_priority: str | None = None  # "low" | "high" | None
     community_vlan_id: int | str | None = None  # int, or "unresolved:<raw>" token
     inter_isolation_network_link: bool | str = False
+
+
+@dataclass(frozen=True)
+class StpPolicy:
+    """Spec-2 STP policy knobs (graduated from PortMisc; wired.stp.policy is
+    the consumer). Frozen + comparable; Port.stp_policy is None ONLY when all
+    are default. bool | str: a templated/unparseable value stays a
+    diff-bearing `unresolved:` token (_bool_token), never collapsed to a bool
+    — tokens can never produce (or suppress) a precise prediction."""
+
     stp_required: bool | str = False
     stp_no_root_port: bool | str = False
     stp_p2p: bool | str = False
@@ -248,6 +260,7 @@ class Port:
     dhcp_trusted: bool | None = None
     mac_limit: int | str | None = None  # SP4: concrete cap / None=unlimited / str=unresolved token
     misc: PortMisc | None = None  # SP4: recognized->REVIEW knobs
+    stp_policy: StpPolicy | None = None  # Spec-2: STP policy knobs (graduated from misc)
     stp_enabled: bool | None = None
     stp_mode: StpMode = StpMode.NONE
     stp_state: str | None = None

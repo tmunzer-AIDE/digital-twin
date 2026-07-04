@@ -14,23 +14,41 @@ def test_mac_limit_normalizer():
 
 
 def test_port_misc_reads_the_spec1_reviewed_knobs():
+    # Spec-2: the four STP knobs graduated to StpPolicy (see
+    # test_stp_policy_reads_the_four_knobs_with_token_honesty below); this test
+    # now covers only the knobs that remain in PortMisc.
     from digital_twin.adapters.mist.ingest.switch import _port_misc
 
     assert _port_misc({}) is None
     assert _port_misc({"enable_qos": True}) is None  # benign: ignored by ingest
-    m = _port_misc({"poe_priority": "high", "community_vlan_id": 811,
-                    "stp_p2p": True})
+    m = _port_misc({"poe_priority": "high", "community_vlan_id": 811})
     assert m is not None
     assert m.poe_priority == "high"
     assert m.community_vlan_id == 811
-    assert m.stp_p2p is True
     # scalar honesty: templated/unparseable values stay diff-bearing tokens,
     # never collapsed to None/default/bool (the GS27 metric false-SAFE scar)
     t = _port_misc({"community_vlan_id": "{{pvlan}}"})
     assert t is not None and t.community_vlan_id == "unresolved:{{pvlan}}"
-    b = _port_misc({"use_vstp": "{{vstp}}"})
-    assert b is not None and b.use_vstp == "unresolved:{{vstp}}"  # NOT True
-    assert _port_misc({"stp_p2p": False}) is None  # explicit default == absent
+
+
+def test_stp_policy_reads_the_four_knobs_with_token_honesty():
+    from digital_twin.adapters.mist.ingest.switch import _stp_policy
+
+    assert _stp_policy({}) is None
+    assert _stp_policy({"stp_p2p": False}) is None  # explicit default == absent
+    p = _stp_policy({"stp_required": True, "use_vstp": True})
+    assert p is not None and p.stp_required is True and p.use_vstp is True
+    assert p.stp_no_root_port is False and p.stp_p2p is False
+    t = _stp_policy({"use_vstp": "{{vstp}}"})
+    assert t is not None and t.use_vstp == "unresolved:{{vstp}}"  # NOT True
+
+
+def test_port_misc_no_longer_carries_the_stp_policy_knobs():
+    from digital_twin.adapters.mist.ingest.switch import _port_misc
+
+    # the four knobs now land in StpPolicy; a knobs-only usage yields no PortMisc
+    assert _port_misc({"stp_required": True, "use_vstp": True,
+                       "stp_p2p": True, "stp_no_root_port": True}) is None
 
 
 def _ingest() -> IngestContext:

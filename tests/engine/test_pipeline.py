@@ -915,11 +915,6 @@ def test_poe_priority_change_is_review_via_unmodeled_change():
             {"community_vlan_id": 42},  # OAS: integer
             id="port_usages.community_vlan_id",
         ),
-        pytest.param(
-            "use_vstp",
-            {"use_vstp": True},
-            id="port_usages.use_vstp",
-        ),
     ],
 )
 def test_pvlan_and_stp_leaf_change_is_review_via_unmodeled_change(leaf, extra):
@@ -936,6 +931,32 @@ def test_pvlan_and_stp_leaf_change_is_review_via_unmodeled_change(leaf, extra):
     assert findings, {f.code for f in v.findings}
     assert all(f.severity is Severity.WARNING for f in findings)
     assert any(f.evidence.get("knobs") == [leaf] for f in findings), findings
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_use_vstp_change_is_review_via_stp_policy_not_unmodeled_change():
+    # Un-skipped + rewritten for Spec-2 Task 3+: use_vstp graduated out of
+    # PortMisc into Port.stp_policy, so it now routes through
+    # wired.stp.policy (.policy_change floor — the bridge domain is not
+    # provable) rather than wired.port.unmodeled_change.recognized. Both
+    # office ports (ge-0/0/0-1) pick up the change; no AP/bpdu_filter/wired-
+    # client peer is modeled here so this is a quiet topology -> floor only,
+    # never a risk code, never unmodeled_change.
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], "use_vstp": True},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert not any(c.startswith("wired.port.unmodeled_change") for c in codes), codes
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.policy_change"]
+    assert findings, codes
+    assert all(f.severity is Severity.WARNING for f in findings)
+    assert any(f.evidence.get("knobs") == ["use_vstp"] for f in findings), findings
     assert v.decision is Decision.REVIEW, v.decision_reasons
 
 
@@ -1010,3 +1031,128 @@ def test_safe_leaf_plus_unsafe_devlan_in_one_plan_is_unsafe_with_benign_diff_sur
         "ui_evpntopo_id" in c.path for d in v.config_diffs for c in d.changes
     ), v.config_diffs
     assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
+
+
+# --- Spec-2 Task 7: wired.stp.policy e2e — UNSAFE/REVIEW routes + never-SAFE --
+#
+# The pipeline's default SWITCH/AP fixtures (SWITCH, AP above) carry no LLDP
+# tie between them, so .blocking_risk's AP-peer path needs its own dedicated
+# world: reciprocal port_stats claims (switch names the AP's port, AP names
+# the switch's port back) so adapters/mist/ingest/lldp.py:_emit_links resolves
+# a genuinely two-sided (HIGH) link between them — plus the AP's own
+# device_stats lldp_stat row, mirroring what a real AP reports. ge-0/0/0 is
+# part of the SETTING's `office` usage range (ge-0/0/0-1), so a
+# port_usages.office.stp_required flip reaches it directly.
+
+_AP_TIE_PORT = "ge-0/0/0"
+
+
+def _raw_ap_tied_to_switch() -> RawSiteState:
+    ap_lldp_stat = {
+        "chassis_id": SWITCH["mac"], "system_name": SWITCH["name"],
+        "port_id": _AP_TIE_PORT, "port_desc": _AP_TIE_PORT,
+    }
+    ap_stat = {"mac": AP["mac"], "type": "ap", "lldp_stat": ap_lldp_stat}
+    reciprocal_claims = (
+        {"mac": SWITCH["mac"], "port_id": _AP_TIE_PORT, "up": True,
+         "neighbor_mac": AP["mac"], "neighbor_port_desc": "eth0"},
+        {"mac": AP["mac"], "port_id": "eth0", "up": True,
+         "neighbor_mac": SWITCH["mac"], "neighbor_port_desc": _AP_TIE_PORT},
+    )
+    return dc_replace(
+        _raw(),
+        devices=(SWITCH, AP),
+        device_stats=(ap_stat,),
+        port_stats=reciprocal_claims,
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC), host="t",
+            fetched=("devices", "device_stats", "port_stats"), failures=(),
+        ),
+    )
+
+
+def test_stp_required_on_ap_facing_port_is_unsafe_via_blocking_risk():
+    # item 1: port_usages.*.stp_required enabled on a port with a two-sided
+    # LLDP-tied AP peer -> the AP will not source BPDUs -> UNSAFE, with
+    # wired.stp.policy.blocking_risk at ERROR (HIGH-confidence tie).
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], "stp_required": True},
+        },
+    }
+    v = simulate(
+        _plan([_op(payload=new_setting)]), provider=FakeProvider(raw=_raw_ap_tied_to_switch())
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.blocking_risk"]
+    assert findings, {f.code for f in v.findings}
+    assert any(f.severity is Severity.ERROR for f in findings), findings
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+
+
+def test_stp_p2p_flip_on_quiet_topology_is_review_via_policy_change():
+    # item 2: port_usages.*.stp_p2p flip with no peer evidence at all (the
+    # plain FakeProvider() world, no AP/bpdu_filter/wired-client tie) ->
+    # REVIEW via the .policy_change floor; must NOT wake unmodeled_change
+    # (stp_p2p graduated out of PortMisc in Spec-2).
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], "stp_p2p": True},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert not any(c.startswith("wired.port.unmodeled_change") for c in codes), codes
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.policy_change"]
+    assert findings, codes
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def test_benign_leaf_plus_stp_p2p_in_one_op_is_review():
+    # item 3: a benign-SAFE leaf (ui_evpntopo_id) combined with stp_p2p in the
+    # SAME op -> the floor's REVIEW must not be swallowed by the benign leaf.
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {
+                **SETTING["port_usages"]["office"],
+                "ui_evpntopo_id": "11111111-1111-1111-1111-111111111111",
+                "stp_p2p": True,
+            },
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.policy_change"]
+    assert findings, {f.code for f in v.findings}
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert v.config_diffs
+    assert any(
+        "ui_evpntopo_id" in c.path for d in v.config_diffs for c in d.changes
+    ), v.config_diffs
+
+
+@pytest.mark.parametrize(
+    "knob", ["stp_required", "stp_no_root_port", "stp_p2p", "use_vstp"]
+)
+def test_each_stp_policy_knob_alone_is_never_safe(knob):
+    # item 4: never-SAFE guard. Each of the four StpPolicy knobs, changed
+    # alone on a quiet topology (plain FakeProvider(), no peer/root evidence),
+    # must NEVER resolve SAFE — the floor makes SAFE unreachable for this
+    # slice regardless of which knob moved.
+    new_setting = {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], knob: True},
+        },
+    }
+    v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
+    assert v.decision is not Decision.SAFE, v.decision_reasons
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
