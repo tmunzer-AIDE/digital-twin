@@ -153,7 +153,10 @@ def _base_target_port(**kw) -> Port:
                 native_vlan=10, **kw)
 
 
-def _build(*, target_port: Port, peer: str | None, tie: str = "two_sided") -> IRBuilder:
+def _build(
+    *, target_port: Port, peer: str | None, tie: str = "two_sided",
+    with_client: bool = False,
+) -> IRBuilder:
     """2 switches linked (A, B) with the target access port on A. `peer`
     selects the candidate non-BPDU peer variant:
       - "ap": an AP device + link tied to A's target port (LLDP tie per `tie`)
@@ -161,8 +164,13 @@ def _build(*, target_port: Port, peer: str | None, tie: str = "two_sided") -> IR
         modeled bridge peer on it
       - "bpdu_filter": a peer switch port (on B) linked to the target port,
         with bpdu_filter=True (tie per `tie`)
+      - "switch_no_filter": a modeled peer SWITCH port (on B) linked to the
+        target port, bpdu_filter=False -- a real bridge peer that WILL send
+        BPDUs (Finding 1 regression: this must NOT read as "no modeled peer")
       - None: no peer evidence at all (unknown)
-    """
+    `with_client=True` additionally attaches an observed wired client to the
+    target port regardless of `peer` (Finding 1: client evidence co-existing
+    with a modeled non-filtering bridge peer)."""
     prov = Provenance.LLDP_TWO_SIDED if tie == "two_sided" else Provenance.LLDP_ONE_SIDED
     b = IRBuilder().add_device(sw("A")).add_device(sw("B"))
     b.add_port(target_port)
@@ -182,17 +190,26 @@ def _build(*, target_port: Port, peer: str | None, tie: str = "two_sided") -> IR
         b.add_port(Port(id="B:peer", device_id="B", name="peer", mode=PortMode.ACCESS,
                         native_vlan=10, bpdu_filter=True))
         b.add_link(link(_TARGET, "B:peer", prov=prov))
+    elif peer == "switch_no_filter":
+        b.add_port(Port(id="B:peer", device_id="B", name="peer", mode=PortMode.ACCESS,
+                        native_vlan=10, bpdu_filter=False))
+        b.add_link(link(_TARGET, "B:peer", prov=prov))
+    if with_client:
+        b.add_client(wired_client("aa:bb:cc:00:00:02", _TARGET, vlan=10))
     b.with_capability(IRCapability.WIRED_L2)
     return b
 
 
-def _run_enable_stp_required(*, peer: str | None, tie: str = "two_sided", disable: bool = False):
+def _run_enable_stp_required(
+    *, peer: str | None, tie: str = "two_sided", disable: bool = False,
+    with_client: bool = False,
+):
     base_policy = StpPolicy(stp_required=disable)
     prop_policy = StpPolicy(stp_required=not disable)
     base_port = _base_target_port(stp_policy=base_policy if disable else None)
     prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
-    base_ir = _build(target_port=base_port, peer=peer, tie=tie).build()
-    prop_ir = _build(target_port=prop_port, peer=peer, tie=tie).build()
+    base_ir = _build(target_port=base_port, peer=peer, tie=tie, with_client=with_client).build()
+    prop_ir = _build(target_port=prop_port, peer=peer, tie=tie, with_client=with_client).build()
     return _run(base_ir, prop_ir)
 
 
@@ -221,6 +238,18 @@ def test_blocking_risk_wired_client_no_bridge_peer_is_error_high():
     assert f.evidence["peer_kind"] == "client"
     assert result.status is Status.FAIL
     assert not _findall(result, "wired.stp.policy.policy_change")
+
+
+def test_client_with_modeled_nonfilter_bridge_peer_is_no_blocking_risk():
+    # Finding 1 (false-UNSAFE): the port has a modeled bridge (switch) peer
+    # WITHOUT bpdu_filter, AND an observed wired client is also present. A
+    # modeled non-filtering switch peer WILL send BPDUs -- stp_required
+    # causes no blocking. The client tier must only fire when there is NO
+    # modeled bridge peer at all, not merely no bpdu_filter peer.
+    result = _run_enable_stp_required(peer="switch_no_filter", tie="two_sided", with_client=True)
+    assert not _findall(result, "wired.stp.policy.blocking_risk")
+    f = _find(result, "wired.stp.policy.policy_change")
+    assert f.severity is Severity.WARNING
 
 
 def test_blocking_risk_bpdu_filter_peer_two_sided_is_error_high():
@@ -471,6 +500,44 @@ def test_root_protect_with_unprovable_election_is_warning_plus_note():
     assert any("root election" in n for n in result.coverage.notes)
 
 
+def test_root_protect_with_abstained_election_is_warning_plus_note():
+    # Finding 2: _root_of returns _ABSTAIN (stp_priority_invalid present in
+    # the component) -- this must NOT be silently treated as "no election to
+    # disturb". Spec: unprovable election -> WARNING root_protect_risk +
+    # coverage note ("root election not provable..."), never silence. This is
+    # the "chain" topology twin of the existing any_default_assumed
+    # unprovable-election test, but via the OTHER abstention shape (_ABSTAIN).
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    def ir(target_port: Port):
+        b = IRBuilder()
+        b.add_device(sw("A", stp_priority=32768))
+        b.add_device(Device(id="B", role=DeviceRole.SWITCH, site="s1", stp_priority=4096,
+                             stp_priority_invalid=True))
+        b.add_port(target_port)
+        b.add_port(Port(id="B:down", device_id="B", name="down", mode=PortMode.TRUNK,
+                         tagged_vlans=(10,)))
+        b.add_link(link(_TARGET, "B:down"))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    base_policy = StpPolicy(stp_no_root_port=False)
+    prop_policy = StpPolicy(stp_no_root_port=True)
+    base_port = _root_protect_target_port(stp_policy=base_policy)
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+    result = _run(ir(base_port), ir(prop_port))
+
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.WARNING
+    assert f.evidence["election_confidence"] == "unprovable"
+    assert f.evidence["elected_root"] is None
+    assert f.evidence["only_path"] is None
+    assert any("root election not provable" in n for n in result.coverage.notes)
+    assert result.coverage.state is CoverageState.PARTIAL
+    # a delta-caused WARNING suppresses the port's floor
+    assert not _findall(result, "wired.stp.policy.policy_change")
+
+
 def test_root_protect_device_is_elected_root_is_no_risk():
     # A itself has the lowest priority -> A is the elected root; disabling its
     # own root-port acceptance on a link to a non-root peer is not a
@@ -601,6 +668,37 @@ def test_preexisting_mismatch_touched_is_info():
     assert not any(f.evidence["knob"] == "use_vstp" for f in warn)
     # stp_p2p is a fresh mismatch introduced by the delta -> WARNING
     assert any(f.evidence["knob"] == "stp_p2p" for f in warn)
+
+
+def test_preexisting_mismatch_on_unrelated_link_is_not_emitted():
+    # Finding 3: a pre-existing use_vstp mismatch on link A:up<->B:down is
+    # untouched by a delta that only changes a THIRD device/port's (C:p)
+    # stp_policy. The INFO pre-existing-mismatch finding must be scoped to
+    # links the delta actually touched -- an unrelated port's policy change
+    # must not emit link_mismatch (INFO or otherwise) for A<->B. C:p still
+    # gets its own .policy_change floor.
+    base_up = StpPolicy(use_vstp=True)  # pre-existing mismatch vs B:down's default False
+
+    def _ir(c_policy: StpPolicy | None):
+        b = IRBuilder().add_device(sw("A")).add_device(sw("B")).add_device(sw("C"))
+        up_port = Port(id=_UP, device_id="A", name="up", mode=PortMode.TRUNK,
+                       tagged_vlans=(10,), stp_policy=base_up)
+        down_port = Port(id=_DOWN, device_id="B", name="down", mode=PortMode.TRUNK,
+                          tagged_vlans=(10,))
+        c_port = Port(id="C:p", device_id="C", name="p", mode=PortMode.ACCESS,
+                      native_vlan=10, stp_policy=c_policy)
+        b.add_port(up_port).add_port(down_port).add_port(c_port)
+        b.add_link(link(_UP, _DOWN))
+        b.with_capability(IRCapability.WIRED_L2)
+        return b.build()
+
+    base_ir = _ir(None)
+    prop_ir = _ir(StpPolicy(stp_p2p=True))
+    result = _run(base_ir, prop_ir)
+    mm = _findall(result, "wired.stp.policy.link_mismatch")
+    assert not mm, mm
+    change = _find(result, "wired.stp.policy.policy_change")
+    assert change.evidence["port"] == "C:p"
 
 
 def _run_value_change_with_preexisting_mismatch():

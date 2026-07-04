@@ -12,7 +12,8 @@ spec).
 -> True; an unresolved: token never reaches this code) AND the port has a
 CANDIDATE non-BPDU peer: (1) an LLDP-tied AP (two-sided tie -> ERROR/HIGH,
 one-sided -> WARNING/MEDIUM); (2) an observed wired client on the port with
-no modeled bridge peer -> ERROR/HIGH; (3) a modeled peer port with
+NO modeled bridge peer at all (any modeled non-AP bridge peer, filtering or
+not, WILL send BPDUs and rules this tier out) -> ERROR/HIGH; (3) a modeled peer port with
 bpdu_filter=True (two-sided tie -> ERROR/HIGH, else WARNING/MEDIUM). Unknown/
 no peer evidence does NOT qualify (spec P2) -- the model cannot claim "this
 peer won't send BPDUs" about a peer it cannot see, so that case falls through
@@ -33,10 +34,13 @@ ERROR/HIGH requires the root known at HIGH confidence (_root_of returned a
 tuple AND any_default_assumed is False -- _root_of already folds
 stp_priority_invalid into its _ABSTAIN sentinel, so a tuple result is never
 riding on an uninterpretable priority). An only-path port whose election is
-NOT HIGH (default-assumed priority, or _root_of abstained) degrades to
-WARNING with a coverage note -- never guess at ERROR. A redundant path, or
-the device itself being the elected root, is no risk code at all (the
-.policy_change floor covers it). A fire suppresses that port's
+NOT HIGH (default-assumed priority) degrades to WARNING with a coverage
+note -- never guess at ERROR. When _root_of ABSTAINS outright (no candidate
+root at all, so only-path-ness cannot even be tested), the delta still
+enabling stp_no_root_port fires WARNING + the same coverage note (never
+silence -- an unprovable election is not "no election to disturb"). A
+redundant path, or the device itself being the elected root, is no risk code
+at all (the .policy_change floor covers it). A fire suppresses that port's
 .policy_change (same most-specific precedence as .blocking_risk).
 
 .link_mismatch fires when both ends of a MODELED link disagree on the
@@ -176,6 +180,29 @@ def _bpdu_filter_peer_links(ir: IR) -> dict[str, tuple[Port, Link]]:
     return out
 
 
+def _nonap_bridge_peer_links(ir: IR) -> dict[str, tuple[Port, Link]]:
+    """switch-port id -> (peer_port, the link) for EVERY modeled non-AP
+    bridge peer, regardless of bpdu_filter. Finding 1: the observed-wired-
+    client tier must only escalate when the port has NO modeled bridge peer
+    AT ALL -- a modeled peer WITHOUT bpdu_filter still sends BPDUs, so its
+    mere presence (not just a bpdu_filter=True peer) rules out the client-tier
+    no-BPDU-peer claim. Cloned idiom from admin_disable.py:_nonap_peer_links,
+    but keyed one-sided->one-sided (like _bpdu_filter_peer_links) so the LINK
+    used is always the correct end's tie, not shared across both ports."""
+    out: dict[str, tuple[Port, Link]] = {}
+    for lk in ir.links:
+        pa, pb = ir.ports.get(lk.a_port), ir.ports.get(lk.b_port)
+        if pa is None or pb is None:
+            continue
+        a_ap = ir.devices[pa.device_id].role is DeviceRole.AP
+        b_ap = ir.devices[pb.device_id].role is DeviceRole.AP
+        if a_ap or b_ap:
+            continue
+        out[pa.id] = (pb, lk)
+        out[pb.id] = (pa, lk)
+    return out
+
+
 def _tie_confidence(lk: Link) -> Confidence:
     """HIGH only for a genuinely two-sided (HIGH-level) provenance link;
     anything weaker (one-sided LLDP, inferred) caps the tie at MEDIUM."""
@@ -263,6 +290,9 @@ class StpPolicyCheck:
         bpdu_filter_peers = _union_ties(
             _bpdu_filter_peer_links(base_ir), _bpdu_filter_peer_links(prop_ir)
         )
+        nonap_bridge_peers = _union_ties(
+            _nonap_bridge_peer_links(base_ir), _nonap_bridge_peer_links(prop_ir)
+        )
         wired = _union_wired_clients(clients_by_port(base_ir), clients_by_port(prop_ir))
         findings: list[Finding] = []
         notes: list[str] = []
@@ -291,7 +321,7 @@ class StpPolicyCheck:
                 # here (it is filtered into unresolved_knobs above, and a token
                 # is never `is True`).
                 blocking_finding, note = self._blocking_risk(
-                    ctx, pid, ap_peers, bpdu_filter_peers, wired
+                    ctx, pid, ap_peers, bpdu_filter_peers, nonap_bridge_peers, wired
                 )
                 if blocking_finding is not None:
                     risk_findings.append(blocking_finding)
@@ -365,12 +395,15 @@ class StpPolicyCheck:
         pid: str,
         ap_peers: dict[str, tuple[str, Link]],
         bpdu_filter_peers: dict[str, tuple[Port, Link]],
+        nonap_bridge_peers: dict[str, tuple[Port, Link]],
         wired: dict[str, list[Client]],
     ) -> tuple[Finding | None, str | None]:
         """Classify the no-BPDU-peer candidate for a port whose stp_required
         just went True. Order: (1) LLDP-tied AP, (2) observed wired client with
-        no modeled bridge peer, (3) modeled bpdu_filter peer, (4) unknown ->
-        None (falls through to the .policy_change floor) + a coverage note."""
+        NO modeled bridge peer at all (any modeled non-AP bridge peer, whether
+        or not it filters, WILL send BPDUs and rules this tier out -- Finding
+        1), (3) modeled bpdu_filter peer, (4) unknown -> None (falls through
+        to the .policy_change floor) + a coverage note."""
         prop_ir, base_ir = ctx.proposed.ir, ctx.baseline.ir
         port_ref = ObjectRef("port", pid)
 
@@ -411,7 +444,7 @@ class StpPolicyCheck:
 
         n_wired = len(wired.get(pid, []))
         peer_link = bpdu_filter_peers.get(pid)
-        if n_wired and peer_link is None:
+        if n_wired and peer_link is None and pid not in nonap_bridge_peers:
             reason = "observed wired client on the port, no modeled bridge peer"
             return (
                 Finding(
@@ -480,9 +513,13 @@ class StpPolicyCheck:
         reuses stp_root.py:_root_of over the PROPOSED component (the state
         this port's new policy applies to). ERROR/HIGH requires the root
         known at HIGH confidence; only-path with a lower-confidence election
-        degrades to WARNING + note; a redundant path or the device itself
-        being the root is no risk code (falls through to the .policy_change
-        floor, no note needed -- there is nothing unprovable to flag)."""
+        (default-assumed priority, or the election ABSTAINED entirely on an
+        uninterpretable priority in the component) degrades to WARNING +
+        note -- an unprovable election is never silently treated as "no
+        election to disturb" (Finding 2). Only a genuine None (fewer than two
+        switches in the component -- there is no root to elect at all) or a
+        redundant path / the device itself being the root falls through to
+        the .policy_change floor with no note (nothing unprovable to flag)."""
         prop_ir = ctx.proposed.ir
         port = prop_ir.ports[pid]
         vc_root = vc_root_map(prop_ir)
@@ -494,12 +531,17 @@ class StpPolicyCheck:
 
         component = frozenset(nx.node_connected_component(graph, device_node))
         elected = _root_of(prop_ir, component)
-        if elected is None or not isinstance(elected, tuple):
-            # no election to disturb (fewer than two switches), or the
-            # election itself abstained (uninterpretable priority in the
-            # component) -- root-protect risk cannot even be framed without
-            # a candidate root, so this falls through to the floor.
+        if elected is None:
+            # fewer than two switches -- genuinely no election to disturb.
             return None, None
+        if not isinstance(elected, tuple):
+            # the election itself ABSTAINED (uninterpretable stp_priority in
+            # the component): root-protect risk cannot be framed against a
+            # concrete root, but the delta still enabled stp_no_root_port on
+            # a port whose only-path status we cannot rule out either -- an
+            # unprovable election must surface as WARNING + note, never
+            # silence (Finding 2).
+            return self._root_protect_unprovable(ctx, pid)
         root_id, any_default_assumed = elected
         root_node = node_for(vc_root, root_id)
         if root_node == device_node:
@@ -565,6 +607,48 @@ class StpPolicyCheck:
             note,
         )
 
+    def _root_protect_unprovable(
+        self, ctx: CheckContext, pid: str,
+    ) -> tuple[Finding | None, str | None]:
+        """Finding 2: _root_of ABSTAINED (_ABSTAIN -- an uninterpretable
+        stp_priority is present in the component), so there is no candidate
+        root to test only-path-ness against at all. Whether this port would
+        have been the only path is therefore itself unprovable -- the
+        election abstention must never read as "no election to disturb".
+        Emit WARNING .root_protect_risk at reduced confidence (elected_root
+        and only_path unknown -> None) plus the coverage note, mirroring the
+        any_default_assumed unprovable-election shape so both abstention
+        forms behave consistently."""
+        port_ref = ObjectRef("port", pid)
+        note = (
+            f"port {pid}: root election not provable — root-protect risk "
+            f"assessed at reduced confidence"
+        )
+        reason = (
+            "stp_no_root_port enabled while the component's root election "
+            "itself abstained (uninterpretable stp_priority present) — "
+            "only-path status cannot be assessed; never assert ERROR or "
+            "silence on an unprovable election"
+        )
+        return (
+            Finding(
+                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk", severity=Severity.WARNING,
+                confidence=_UNPROVABLE_ELECTION,
+                message=f"port {pid}: stp_no_root_port enabled — the component's root "
+                        f"election is not provable (uninterpretable priority present); "
+                        f"root-protect risk assessed at reduced confidence",
+                affected_entities=(pid,), subject=port_ref,
+                evidence={
+                    "port": pid, "elected_root": None, "only_path": None,
+                    "election_confidence": "unprovable",
+                    "severity_reason": reason,
+                },
+                caused_by=ctx.delta_index.causes("port", [pid]),
+            ),
+            note,
+        )
+
     def _link_mismatch(self, ctx: CheckContext) -> list[Finding]:
         """For every MODELED link present in the proposed IR, compare each
         end's EFFECTIVE use_vstp/stp_p2p value (tokens excluded — a token
@@ -573,9 +657,13 @@ class StpPolicyCheck:
         end -> one WARNING finding per (link, knob), confidence = the link's
         own tie confidence (HIGH two-sided, MEDIUM below, same _tie_confidence
         as .blocking_risk). A disagreement that already existed identically in
-        the baseline, merely touched by some other knob changing on one of the
-        ports -> INFO context. These findings COEXIST with port-level findings
-        and never suppress the .policy_change floor for the same port."""
+        the baseline, merely TOUCHED by some other knob changing on one of the
+        ports -> INFO context. Relevance-scoped (Finding 3): a link neither
+        endpoint's stp_policy was touched by THIS delta at all gets no
+        finding whatsoever, even an already-mismatched one -- a policy change
+        on an unrelated port elsewhere must not emit INFO noise for it. These
+        findings COEXIST with port-level findings and never suppress the
+        .policy_change floor for the same port."""
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
         out: list[Finding] = []
         for lnk in prop_ir.links:
@@ -585,6 +673,17 @@ class StpPolicyCheck:
                 continue  # not a fully modeled link
             base_pa = base_ir.ports.get(lnk.a_port)
             base_pb = base_ir.ports.get(lnk.b_port)
+            # relevance scope: did THIS delta touch either endpoint's
+            # stp_policy at all (any knob), or add/remove an endpoint port?
+            # If not, the link is entirely irrelevant to this run -- no
+            # finding, not even a pre-existing-mismatch INFO one.
+            link_touched = (
+                base_pa is None or base_pb is None
+                or _changed_knobs(base_pa.stp_policy, pa.stp_policy)
+                or _changed_knobs(base_pb.stp_policy, pb.stp_policy)
+            )
+            if not link_touched:
+                continue
             for knob in _LINK_MISMATCH_KNOBS:
                 a_new, b_new = _effective_knob(pa.stp_policy, knob), _effective_knob(
                     pb.stp_policy, knob
