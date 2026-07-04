@@ -156,6 +156,35 @@ def test_is_uplink_only_change_is_not_a_modification():
     assert diff_ir(base, proposed).is_empty()
 
 
+def test_self_loop_fields_are_diff_ignored():
+    # self_loop_peer/self_loop_reciprocal are observational evidence (Task 1),
+    # NOT a config change -> empty diff, same treatment as is_uplink above.
+    base = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK)
+    ).build()
+    proposed = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
+             self_loop_peer="S:ge-0/0/2", self_loop_reciprocal=True)
+    ).build()
+    assert diff_ir(base, proposed).is_empty()
+
+
+def test_stp_role_change_is_still_a_diff():
+    # regression guard: stp_role mirrors stp_state — it is NOT in the ignore
+    # set, so a real role change (e.g. designated -> root after a topology
+    # shift) must surface as a modification.
+    base = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
+             stp_role="designated")
+    ).build()
+    proposed = IRBuilder().add_device(sw("S")).add_port(
+        Port(id="S:ge-0/0/1", device_id="S", name="ge-0/0/1", mode=PortMode.TRUNK,
+             stp_role="root")
+    ).build()
+    mods = {(m.ref.kind, m.ref.id): m.changed_fields for m in diff_ir(base, proposed).modified}
+    assert "stp_role" in mods[("port", "S:ge-0/0/1")]
+
+
 def test_client_ssid_only_change_is_not_a_modification():
     base = IRBuilder().add_device(ap("AP")).add_client(
         Client(

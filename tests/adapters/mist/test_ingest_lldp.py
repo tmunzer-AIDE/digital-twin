@@ -332,3 +332,96 @@ def test_uplink_only_row_earns_no_stp_capability():
     caps = LldpIngester().ingest(ctx)
     assert IRCapability.STP_STATE not in caps
     assert _port(ctx.builder.build(), "aa0000000001", "ge-0/0/47").is_uplink is True
+
+
+def test_stp_role_read_beside_state_with_empty_string_absent():
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,
+         "stp_state": "forwarding", "stp_role": "designated"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
+         "stp_state": "blocking", "stp_role": "backup"},
+        {"mac": "aa0000000001", "port_id": "bme0", "up": True,
+         "stp_state": "", "stp_role": ""},  # non-participant: both absent
+    ]
+    ir = _ctx(stats).builder.build()
+    assert ir.port("aa0000000001:ge-0/0/8").stp_role == "designated"
+    assert ir.port("aa0000000001:ge-0/0/9").stp_role == "backup"
+    assert ir.port("aa0000000001:bme0").stp_role is None
+    assert ir.port("aa0000000001:bme0").stp_state is None
+
+
+def test_role_only_row_applies_and_earns_the_capability():
+    # review P2: a row with non-empty stp_role but empty stp_state is still a
+    # real STP observation — an implementation keeping the old
+    # `if not stp_state: continue` gate would pass every other test here and
+    # silently drop role-only rows
+    stats = [
+        {"mac": "aa0000000001", "port_id": "xe-0/1/3", "up": True,
+         "stp_state": "", "stp_role": "root"},
+    ]
+    ctx = _ctx(stats)
+    assert IRCapability.STP_STATE in LldpIngester().ingest(ctx)
+    p = ctx.builder.build().port("aa0000000001:xe-0/1/3")
+    assert p.stp_role == "root"
+    assert p.stp_state is None
+    assert p.stp_enabled is True
+
+
+def test_reciprocal_self_loop_sets_peer_and_reciprocal_on_both_ports():
+    # shaped like the live SWB-3 rows: neighbor_mac == the row's OWN mac
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats).builder.build()
+    a, b = ir.port("aa0000000001:ge-0/0/8"), ir.port("aa0000000001:ge-0/0/9")
+    assert a.self_loop_peer == "aa0000000001:ge-0/0/9" and a.self_loop_reciprocal
+    assert b.self_loop_peer == "aa0000000001:ge-0/0/8" and b.self_loop_reciprocal
+
+
+def test_self_loop_matches_across_mac_formats():
+    # same chassis, mixed formats: colon-separated uppercase vs bare lowercase —
+    # the self-loop rule must compare canonical device ids, not raw strings
+    stats = [
+        {"mac": "AA:00:00:00:00:01", "port_id": "ge-0/0/8", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
+         "neighbor_mac": "AA-00-00-00-00-01", "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats).builder.build()
+    a, b = ir.port("aa0000000001:ge-0/0/8"), ir.port("aa0000000001:ge-0/0/9")
+    assert a.self_loop_peer == "aa0000000001:ge-0/0/9" and a.self_loop_reciprocal
+    assert b.self_loop_peer == "aa0000000001:ge-0/0/8" and b.self_loop_reciprocal
+
+
+def test_one_sided_self_claim_never_synthesizes_the_peer():
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True},  # silent
+    ]
+    ir = _ctx(stats).builder.build()
+    a = ir.port("aa0000000001:ge-0/0/8")
+    assert a.self_loop_peer == "aa0000000001:ge-0/0/9"
+    assert a.self_loop_reciprocal is False
+    assert ir.port("aa0000000001:ge-0/0/9").self_loop_peer is None
+
+
+def test_no_same_device_link_is_minted():
+    # P2-3: current _emit_links mints these; this pins the NEW skip — and it
+    # must also cover a name-fallback row resolving to the reporting device
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,
+         "neighbor_mac": "aa0000000001", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True,
+         # name-fallback path: MUST be the fixture device's EXACT name —
+         # _claims matches case-sensitively; use the constant, don't hardcode
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats).builder.build()
+    assert not [
+        link for link in ir.links
+        if link.a_port.split(":")[0] == link.b_port.split(":")[0]
+    ]

@@ -51,13 +51,25 @@ class LldpIngester:
         return frozenset({IRCapability.STP_STATE})
 
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
+        self._ensure_stat_ports(ctx)
         claims = self._claims(ctx)
         stp_seen = self._apply_stp(ctx)
         self._apply_port_uplink(ctx)
+        self._apply_self_loops(ctx)
         emitted: set[str] = set()
         self._emit_links(ctx, claims, emitted)
         self._emit_ap_uplinks(ctx, claims, emitted)
         return frozenset({IRCapability.STP_STATE}) if stp_seen else frozenset()
+
+    def _ensure_stat_ports(self, ctx: IngestContext) -> None:
+        """Any port named by a stat row exists in the IR — even a row that
+        carries none of stp_state/stp_role/uplink/neighbor_* (e.g. a silent
+        "up" row) — per the module's documented contract (see docstring)."""
+        for row in ctx.raw.port_stats:
+            if not row.get("port_id") or not row.get("mac"):
+                continue
+            pid = port_id(device_id(str(row["mac"])), str(row["port_id"]))
+            self._ensure_port(ctx, pid)
 
     # -- claims ---------------------------------------------------------------
     def _claims(self, ctx: IngestContext) -> dict[tuple[str, str], _Json]:
@@ -100,20 +112,53 @@ class LldpIngester:
             # NON-participating port (internal ifs, down ports — found live
             # 2026-07-04). "" applied as OBSERVED would mark stp_enabled=True
             # on unconfirmed data and let l2_loop rank a cycle as protected.
-            if not row.get("stp_state") or not row.get("port_id"):
+            # stp_role is read the same way and applied independently: a row
+            # with a role but no state (or vice versa) is still a real STP
+            # observation and must earn the capability (review P2).
+            state = row.get("stp_state") or None
+            role = row.get("stp_role") or None
+            if (state is None and role is None) or not row.get("port_id"):
                 continue
             pid = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             self._ensure_port(ctx, pid)
+            port = ctx.builder.get_port(pid)
             ctx.builder.replace_port(
                 replace(
-                    ctx.builder.get_port(pid),
-                    stp_state=str(row["stp_state"]),
+                    port,
+                    stp_state=state if state is not None else port.stp_state,
+                    stp_role=role if role is not None else port.stp_role,
                     stp_enabled=True,
                     stp_meta=fact_meta(Provenance.OBSERVED),
                 )
             )
             seen = True
         return seen
+
+    # -- self-loops -------------------------------------------------------------
+    def _apply_self_loops(self, ctx: IngestContext) -> None:
+        """A row claims a physical self-loop iff its neighbor_mac equals its OWN
+        mac (the chassis sees itself via LLDP) — row-level MAC rule ONLY, no
+        name fallback for this fact. `reciprocal` requires BOTH ends to name
+        each other; a one-sided claim never synthesizes the peer's fields."""
+        claimed: dict[str, str] = {}  # claiming port -> claimed peer port
+        for row in ctx.raw.port_stats:
+            if not row.get("port_id") or not row.get("neighbor_mac"):
+                continue
+            if device_id(str(row["neighbor_mac"])) != device_id(str(row["mac"])):
+                continue  # canonical ids: the two fields may carry different formats
+            src = port_id(device_id(str(row["mac"])), str(row["port_id"]))
+            dst = port_id(device_id(str(row["mac"])), str(row.get("neighbor_port_desc") or "?"))
+            claimed[src] = dst
+        for src, dst in claimed.items():
+            reciprocal = claimed.get(dst) == src
+            self._ensure_port(ctx, src)
+            ctx.builder.replace_port(
+                replace(
+                    ctx.builder.get_port(src),
+                    self_loop_peer=dst,
+                    self_loop_reciprocal=reciprocal,
+                )
+            )
 
     def _apply_port_uplink(self, ctx: IngestContext) -> None:
         for row in ctx.raw.port_stats:
@@ -130,6 +175,8 @@ class LldpIngester:
     ) -> None:
         for (src, dst), row in claims.items():
             neighbor_dev = dst.partition(":")[0]
+            if neighbor_dev == src.partition(":")[0]:
+                continue  # self-loop: fact lives on the ports (P2-3); never a Link
             if not ctx.builder.has_device(neighbor_dev):
                 self._edge_device_client(ctx, src, neighbor_dev)
                 continue

@@ -81,6 +81,9 @@ _NOT_VISUALIZED = {
     "baseline_components", "proposed_components",
     # --- l2_loop STP-protection detail (cycle_nodes/link_ids already paint) ---
     "stp_disabled_ports", "stp_unknown_ports",
+    # --- l2_loop.self_loop: "ports" (added to _PORT_EV_KEYS) already paints
+    #     the pair; observed_states is a per-port {state,role} scalar dict ---
+    "observed_states",
     # --- gateway_gap: "vlan" paints the view; these are IP/interface scalars ---
     "gateway", "subnet", "l3_interfaces", "baseline_l3_interfaces",
     # --- dhcp_path / snooping provenance scalars ---
@@ -109,7 +112,9 @@ _NOT_VISUALIZED = {
     # --- stp_policy.root_protect_risk: "port" and "elected_root" (added to
     #     _NODE_EV_KEYS) already paint the entities; these are scalars ---
     "only_path",            # boolean — always True when this code fires
-    "election_confidence",  # "high"/"unprovable" classification tag (string)
+    "election_confidence",  # "high"/"unprovable"/"observed" classification tag (string)
+    "observed_role",        # observed-root route: literal "root" classification tag
+                            # (string); "port" already paints the entity
     # --- stp_policy.link_mismatch: "link" (already painted) carries the pair;
     #     these are per-knob detail, not additional entity references ---
     "values",                # {port_id: effective knob value} — port ids already
