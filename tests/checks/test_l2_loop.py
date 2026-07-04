@@ -305,6 +305,52 @@ def test_self_loop_finding_caused_by_the_bpdu_filter_flip():
     assert all("bpdu_filter" in c.fields for c in f.caused_by if c.ref.id == _SL_A)
 
 
+def test_cross_pair_one_sided_claim_never_borrows_reciprocity():
+    # final-review finding: A one-sidedly claims B (stale desc), while B is
+    # genuinely reciprocal with UNRELATED port C. B's reciprocal flag
+    # describes the (B,C) pair — it must not upgrade the (A,B) claim: a
+    # bpdu_filter flip on A stays WARNING/MEDIUM (one-sided tier), never
+    # ERROR/UNSAFE (spec P1-2).
+    p8 = replace(
+        access_port("A", "p8", 10),
+        self_loop_peer="A:p9", self_loop_reciprocal=False, bpdu_filter=False,
+    )
+    p9 = replace(
+        access_port("A", "p9", 10),
+        self_loop_peer="A:p10", self_loop_reciprocal=True, bpdu_filter=False,
+    )
+    p10 = replace(
+        access_port("A", "p10", 10),
+        self_loop_peer="A:p9", self_loop_reciprocal=True, bpdu_filter=False,
+    )
+
+    base = IRBuilder()
+    base.add_device(sw("A"))
+    base.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    base.add_port(p8).add_port(p9).add_port(p10)
+    base.with_capability(IRCapability.WIRED_L2)
+
+    p8_prop = replace(p8, bpdu_filter=True)
+    prop = IRBuilder()
+    prop.add_device(sw("A"))
+    prop.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    prop.add_port(p8_prop).add_port(p9).add_port(p10)
+    prop.with_capability(IRCapability.WIRED_L2)
+
+    result = L2LoopCheck().run(_ctx(base.build(), prop.build()))
+
+    f8_9 = _find(result, "wired.l2.loop.self_loop")
+    assert set(f8_9.evidence["ports"]) == {"A:p8", "A:p9"}
+    assert f8_9.severity is Severity.WARNING
+    assert f8_9.confidence.level is ConfidenceLevel.MEDIUM
+
+    findings_9_10 = [
+        f for f in result.findings
+        if f.code == "wired.l2.loop.self_loop" and set(f.evidence["ports"]) == {"A:p9", "A:p10"}
+    ]
+    assert not findings_9_10, f"genuine (p9,p10) pair must not trigger, got {findings_9_10}"
+
+
 # ---------- carried-over pins (Task 4 review) ------------------------------------
 
 

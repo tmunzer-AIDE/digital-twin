@@ -130,8 +130,13 @@ class L2LoopCheck:
             seen.add(pair_key)
 
             peer_base = base_ports.get(peer_id)
+            # Peer corroboration means the peer names THIS port back — not
+            # merely that the peer has *some* reciprocal claim (which may
+            # describe an unrelated pair, e.g. peer_base.self_loop_peer
+            # pointing at a third port). Reading peer_base.self_loop_reciprocal
+            # here would leak that unrelated pair's reciprocity into this one.
             reciprocal = port.self_loop_reciprocal or (
-                peer_base is not None and peer_base.self_loop_reciprocal
+                peer_base is not None and peer_base.self_loop_peer == pid
             )
 
             bpdu_a = self._bpdu_filter_flip(ctx, pid)
