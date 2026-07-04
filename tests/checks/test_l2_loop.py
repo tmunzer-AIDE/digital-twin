@@ -303,3 +303,70 @@ def test_self_loop_finding_caused_by_the_bpdu_filter_flip():
     cause_ids = {c.ref.id for c in f.caused_by}
     assert _SL_A in cause_ids
     assert all("bpdu_filter" in c.fields for c in f.caused_by if c.ref.id == _SL_A)
+
+
+# ---------- carried-over pins (Task 4 review) ------------------------------------
+
+
+def test_port_added_with_self_loop_claim_is_silent():
+    """`_self_loop_findings` iterates `ctx.baseline.ir.ports` ONLY (see
+    l2_loop.py:_self_loop_findings — `base_ports = ctx.baseline.ir.ports`).
+    A PROPOSED-only port (absent from baseline entirely) carrying
+    self_loop_peer + bpdu_filter=True at birth is therefore invisible to the
+    pass: an added port is never "observed" in the baseline sense the check
+    reads. This pins the contract deliberately — self-loop observations are
+    BASELINE facts (what LLDP already saw), not something a brand-new
+    PROPOSED port can retroactively claim within the same delta."""
+    base = IRBuilder()
+    base.add_device(sw("A"))
+    base.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    base.with_capability(IRCapability.WIRED_L2)
+
+    p8 = replace(
+        access_port("A", "p8", 10),
+        self_loop_peer=_SL_B, self_loop_reciprocal=False, bpdu_filter=True,
+    )
+    prop = IRBuilder()
+    prop.add_device(sw("A"))
+    prop.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    prop.add_port(p8)
+    prop.with_capability(IRCapability.WIRED_L2)
+
+    result = L2LoopCheck().run(_ctx(base.build(), prop.build()))
+    assert not _findall(result, "wired.l2.loop.self_loop"), result.findings
+
+
+def test_dangling_self_loop_peer_claim_is_still_reported():
+    """A baseline port's self_loop_peer names an id that does NOT exist in
+    ir.ports at all (one-sided claim, dangling — e.g. the claimed peer port
+    was never modeled/ingested, or was later removed). The check does not
+    validate that the claimed peer actually exists: `peer_base =
+    base_ports.get(peer_id)` tolerates None (l2_loop.py), and the WARNING/
+    MEDIUM one-sided finding still fires on a bpdu_filter flip of the
+    claiming port. Evidence names the claimed id AS THE CLAIM ITSELF — this
+    pins current behavior; the claimed id is the observation's content
+    (what LLDP told us), never an assertion that a Port with that id
+    exists."""
+    _DANGLING_PEER = "A:ghost-port"
+    p8_base = replace(
+        access_port("A", "p8", 10),
+        self_loop_peer=_DANGLING_PEER, self_loop_reciprocal=False, bpdu_filter=False,
+    )
+    base = IRBuilder()
+    base.add_device(sw("A"))
+    base.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    base.add_port(p8_base)
+    base.with_capability(IRCapability.WIRED_L2)
+
+    p8_prop = replace(p8_base, bpdu_filter=True)
+    prop = IRBuilder()
+    prop.add_device(sw("A"))
+    prop.add_vlan(Vlan(vlan_id=10, name="corp", scope="s1"))
+    prop.add_port(p8_prop)
+    prop.with_capability(IRCapability.WIRED_L2)
+
+    result = L2LoopCheck().run(_ctx(base.build(), prop.build()))
+    f = _find(result, "wired.l2.loop.self_loop")
+    assert f.severity is Severity.WARNING
+    assert f.confidence.level is ConfidenceLevel.MEDIUM
+    assert _DANGLING_PEER in f.evidence["ports"]

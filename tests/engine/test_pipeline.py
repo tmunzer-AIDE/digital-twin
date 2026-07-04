@@ -1156,3 +1156,273 @@ def test_each_stp_policy_knob_alone_is_never_safe(knob):
     v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
     assert v.decision is not Decision.SAFE, v.decision_reasons
     assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+
+
+# --- Task 5: STP telemetry escalation e2e — UNSAFE routes + no-telemetry parity --
+#
+# Both worlds below extend SWITCH's port_config with dedicated members so the
+# site_setting delta (which only ever touches port_usages, never port_config)
+# reaches them precisely: ge-0/0/8/ge-0/0/9 ("office" usage, access — mirrors
+# the self_loop check-level fixture pair in tests/checks/test_l2_loop.py) and
+# ge-0/0/2 ("uplink" usage, trunk — the observed-root candidate). port_stats
+# rows carry the OBSERVED telemetry (self-loop LLDP claims / stp_role) that
+# adapters/mist/ingest/lldp.py overlays onto the config-built ports.
+
+_SELF_LOOP_PORT_A = "ge-0/0/8"
+_SELF_LOOP_PORT_B = "ge-0/0/9"
+_ROOT_UPLINK_PORT = "ge-0/0/2"
+
+
+def _switch_with_self_loop_ports():
+    # ge-0/0/47 (uplink usage) gives vlan 10 a locatable exit — without it,
+    # this single-switch/no-uplink topology is itself a pre-existing
+    # wired.l2.blackhole.preexisting_unlocatable/coverage-partial condition
+    # (an orthogonal artifact of an incomplete fixture, not anything Task 5
+    # is pinning) that would float REVIEW independent of the self-loop delta.
+    return {
+        **SWITCH,
+        "port_config": {
+            **SWITCH["port_config"],
+            _SELF_LOOP_PORT_A: {"usage": "office"},
+            _SELF_LOOP_PORT_B: {"usage": "office"},
+            "ge-0/0/47": {"usage": "uplink"},
+        },
+    }
+
+
+def _self_loop_port_stats():
+    # shaped like the live SWB-3 pair (test_ingest_lldp.py:
+    # test_reciprocal_self_loop_sets_peer_and_reciprocal_on_both_ports):
+    # neighbor_mac == the row's OWN mac, each row naming the other's port.
+    return (
+        {"mac": SWITCH["mac"], "port_id": _SELF_LOOP_PORT_A, "up": True,
+         "neighbor_mac": SWITCH["mac"], "neighbor_port_desc": _SELF_LOOP_PORT_B},
+        {"mac": SWITCH["mac"], "port_id": _SELF_LOOP_PORT_B, "up": True,
+         "neighbor_mac": SWITCH["mac"], "neighbor_port_desc": _SELF_LOOP_PORT_A},
+    )
+
+
+def _raw_self_loop(*, with_telemetry: bool) -> RawSiteState:
+    # the uplink's OWN port_stats row (observed `uplink: True`) is unconditional
+    # — it is what actually gives vlan 10 a locatable exit (analysis/exits.py
+    # INFERRED_UPLINK requires is_uplink is True; the "uplink" usage config
+    # alone does not set it), independent of the self-loop telemetry toggle.
+    # Both client keys are in meta.fetched (CLIENTS_ACTIVE requires BOTH,
+    # per test_mac_limit_lowered_below_clients_is_review's idiom) so
+    # wired.client.impact's coverage is COMPLETE, not INSUFFICIENT, on this
+    # port-touching delta — an orthogonal capability gap, not anything Task
+    # 5 pins.
+    uplink_stat = {"mac": SWITCH["mac"], "port_id": "ge-0/0/47", "up": True, "uplink": True}
+    stats = (*_self_loop_port_stats(), uplink_stat) if with_telemetry else (uplink_stat,)
+    return dc_replace(
+        _raw(),
+        devices=(_switch_with_self_loop_ports(),),
+        port_stats=stats,
+        wired_clients=(),
+        wireless_clients=(),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC), host="t",
+            fetched=("devices", "port_stats", "wired_clients", "wireless_clients"), failures=(),
+        ),
+    )
+
+
+def _stp_disable_delta():
+    # site_setting delta: port_usages.office.stp_disable False->True, the
+    # ONLY config mapping of the stp_disable leaf (Port.bpdu_filter).
+    return {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "office": {**SETTING["port_usages"]["office"], "stp_disable": True},
+        },
+    }
+
+
+def _switch_with_root_uplink_port():
+    return {
+        **SWITCH,
+        "port_config": {**SWITCH["port_config"], _ROOT_UPLINK_PORT: {"usage": "uplink"}},
+    }
+
+
+def _raw_observed_root(*, with_telemetry: bool) -> RawSiteState:
+    stats = (
+        {"mac": SWITCH["mac"], "port_id": _ROOT_UPLINK_PORT, "up": True,
+         "stp_state": "forwarding", "stp_role": "root"},
+    )
+    return dc_replace(
+        _raw(),
+        devices=(_switch_with_root_uplink_port(),),
+        port_stats=stats if with_telemetry else (),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC), host="t",
+            fetched=("devices", "port_stats"), failures=(),
+        ),
+    )
+
+
+def _stp_no_root_port_delta():
+    # site_setting delta: port_usages.uplink.stp_no_root_port False->True.
+    return {
+        **SETTING,
+        "port_usages": {
+            **SETTING["port_usages"],
+            "uplink": {**SETTING["port_usages"]["uplink"], "stp_no_root_port": True},
+        },
+    }
+
+
+def test_reciprocal_self_loop_plus_stp_disable_is_unsafe_via_self_loop():
+    # item 1: a RECIPROCAL observed self-loop (both port_stats rows name each
+    # other) + a stp_disable delta on the pair's usage -> a contained physical
+    # mis-wire becomes an active broadcast-storm risk -> UNSAFE, with
+    # wired.l2.loop.self_loop at ERROR/HIGH and both ports named in evidence.
+    v = simulate(
+        _plan([_op(payload=_stp_disable_delta())]),
+        provider=FakeProvider(raw=_raw_self_loop(with_telemetry=True)),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.l2.loop.self_loop"]
+    assert findings, {f.code for f in v.findings}
+    f = findings[0]
+    assert f.severity is Severity.ERROR, f
+    swa = f"{SWITCH['mac']}:{_SELF_LOOP_PORT_A}"
+    swb = f"{SWITCH['mac']}:{_SELF_LOOP_PORT_B}"
+    assert set(f.evidence["ports"]) == {swa, swb}, f.evidence
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+
+
+def test_observed_root_plus_stp_no_root_port_is_unsafe_via_root_protect_risk():
+    # item 2: port_stats gives the uplink port stp_role="root" (the live
+    # election result the graph route cannot see); a stp_no_root_port delta
+    # on its usage -> the device can never accept its own root port and will
+    # black-hole toward the root -> UNSAFE, with
+    # wired.stp.policy.root_protect_risk at ERROR and observed_role in evidence.
+    v = simulate(
+        _plan([_op(payload=_stp_no_root_port_delta())]),
+        provider=FakeProvider(raw=_raw_observed_root(with_telemetry=True)),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.root_protect_risk"]
+    assert findings, {f.code for f in v.findings}
+    f = findings[0]
+    assert f.severity is Severity.ERROR, f
+    assert f.evidence["observed_role"] == "root", f.evidence
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+
+
+def test_stp_disable_delta_without_self_loop_telemetry_is_safe_documents_the_tightening():
+    # item 3 (never-SAFE sanity, stp_disable side): the SAME fixture with the
+    # self-loop port_stats rows REMOVED — bpdu_filter still flips on ge-0/0/8/
+    # ge-0/0/9, but with no observed self-loop the self_loop pass is silent
+    # about this pair entirely. Neither wired.stp.policy (only the four
+    # StpPolicy knobs: stp_required/stp_no_root_port/stp_p2p/use_vstp — never
+    # stp_disable/bpdu_filter) nor wired.stp.edge_on_uplink (requires a
+    # modeled switch-to-switch Link; these are standalone access ports, no
+    # Link at all) has anything to say about a bare bpdu_filter flip here —
+    # so THIS IS WHAT MAIN GIVES: SAFE. This documents the TIGHTENING Task 5
+    # adds: the self_loop route is what turns this exact bpdu_filter flip
+    # into UNSAFE the moment the physical self-loop is OBSERVED (see
+    # test_reciprocal_self_loop_plus_stp_disable_is_unsafe_via_self_loop
+    # above) — without that observation, the model has no forwarding-plane
+    # visibility into the physical mis-wire at all.
+    v = simulate(
+        _plan([_op(payload=_stp_disable_delta())]),
+        provider=FakeProvider(raw=_raw_self_loop(with_telemetry=False)),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.l2.loop.self_loop" not in codes, codes
+    assert v.decision is Decision.SAFE, v.decision_reasons
+
+
+def test_stp_no_root_port_delta_without_root_telemetry_is_review_via_policy_floor():
+    # item 3 (never-SAFE sanity, root side): the SAME fixture with the
+    # stp_role/stp_state port_stats rows REMOVED. Without the observed-root
+    # fact, the graph route cannot even test only-path-ness (fewer than two
+    # switches in this single-switch world -> _root_of returns None, "nothing
+    # to elect a root over") -- the change is never a risk code, only the
+    # generic wired.stp.policy.policy_change floor -> REVIEW. This is the
+    # "REVIEW via the stp.policy floor" case named in the brief.
+    v = simulate(
+        _plan([_op(payload=_stp_no_root_port_delta())]),
+        provider=FakeProvider(raw=_raw_observed_root(with_telemetry=False)),
+    )
+    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    codes = {f.code for f in v.findings}
+    assert "wired.stp.policy.root_protect_risk" not in codes, codes
+    findings = [f for f in v.findings if f.code == "wired.stp.policy.policy_change"]
+    assert findings, codes
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+
+
+def _benign_leaf_plus_stp_edge_payload(port_config: dict) -> dict:
+    # a device-object update op replaces port_config/local_port_config
+    # WHOLESALE (root-level merge, apply/objects.py:effective_update) — so
+    # the payload carries the FULL baseline port_config (preserving ge-0/0/47
+    # uplink's locatable exit), plus: `description` (port_config), a REAL,
+    # scope-allowlisted config leaf with NO modeled forwarding/security
+    # effect (scope/allowlist.py) — it rides along to prove the benign leaf
+    # never itself causes the pair to be "touched"; `stp_edge`
+    # (local_port_config) is the actual IR-modeled port diff (Port.stp_edge)
+    # that makes the self_loop pass see this pair as touched-but-harmless
+    # (same trigger as the check-level test
+    # test_other_change_on_self_looped_port_is_info_context).
+    return {
+        "port_config": {
+            **port_config,
+            _SELF_LOOP_PORT_A: {
+                "usage": "office", "no_local_overwrite": False, "description": "wiring-closet-3",
+            },
+        },
+        "local_port_config": {_SELF_LOOP_PORT_A: {"usage": "office", "stp_edge": True}},
+    }
+
+
+def test_info_self_loop_context_does_not_change_the_verdict():
+    # Task 4 deferred item: a benign Spec-1 leaf change (`description` on the
+    # pair's port_config — a REAL config leaf with no modeled forwarding/
+    # security effect) rides alongside the actual IR-modeled trigger
+    # (stp_edge) that makes the self_loop pass see this self-looped port's
+    # device as touched. The self_loop pass reports INFO context (the pair
+    # was touched, but bpdu_filter/STP protection is unaffected) — that
+    # context must be present in findings, but the decision must be EXACTLY
+    # what the SAME stp_edge change gives WITHOUT the self-loop observation:
+    # SAFE. Context alone must never taint the verdict into REVIEW.
+    with_loop_raw = _raw_self_loop(with_telemetry=True)
+    v_with_loop = simulate(
+        _plan([_op(
+            object_type="device", object_id="dev-a",
+            payload=_benign_leaf_plus_stp_edge_payload(with_loop_raw.devices[0]["port_config"]),
+        )]),
+        provider=FakeProvider(raw=with_loop_raw),
+    )
+    assert v_with_loop.decision is not Decision.UNKNOWN, v_with_loop.decision_reasons
+    info_findings = [
+        f for f in v_with_loop.findings
+        if f.code == "wired.l2.loop.self_loop" and f.severity is Severity.INFO
+    ]
+    assert info_findings, {f.code: f.severity for f in v_with_loop.findings}
+
+    # the SAME delta, without the self-loop observation at all — this is the
+    # decision the context-bearing world above must match.
+    no_loop_raw = _raw_self_loop(with_telemetry=False)
+    v_without_loop = simulate(
+        _plan([_op(
+            object_type="device", object_id="dev-a",
+            payload=_benign_leaf_plus_stp_edge_payload(no_loop_raw.devices[0]["port_config"]),
+        )]),
+        provider=FakeProvider(raw=no_loop_raw),
+    )
+    assert not any(
+        f.code == "wired.l2.loop.self_loop" for f in v_without_loop.findings
+    ), [f.code for f in v_without_loop.findings]
+    assert v_with_loop.decision == v_without_loop.decision, (
+        v_with_loop.decision, v_without_loop.decision, v_with_loop.decision_reasons,
+    )
+    assert v_with_loop.decision is Decision.SAFE, v_with_loop.decision_reasons
+    # the benign leaf genuinely rode along in the delta (config realism)
+    assert any(
+        "description" in c.path for d in v_with_loop.config_diffs for c in d.changes
+    ), v_with_loop.config_diffs
