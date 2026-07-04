@@ -578,6 +578,7 @@ def test_root_protect_plus_admin_disable_in_one_delta_is_not_error():
                                       also={"disabled": True})
     assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
                 if f.severity is Severity.ERROR]
+    assert _find(result, "wired.stp.policy.policy_change")
 
 
 def test_root_protect_plus_stp_disable_in_one_delta_is_not_error():
@@ -589,6 +590,7 @@ def test_root_protect_plus_stp_disable_in_one_delta_is_not_error():
                                       also={"bpdu_filter": True})
     assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
                 if f.severity is Severity.ERROR]
+    assert _find(result, "wired.stp.policy.policy_change")
 
 
 def test_root_protect_on_preexisting_bpdu_filtered_port_is_not_error():
@@ -600,6 +602,7 @@ def test_root_protect_on_preexisting_bpdu_filtered_port_is_not_error():
                                       baseline_also={"bpdu_filter": True})
     assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
                 if f.severity is Severity.ERROR]
+    assert _find(result, "wired.stp.policy.policy_change")
 
 
 def test_root_protect_plus_stp_edge_in_one_delta_still_errors():
@@ -610,6 +613,99 @@ def test_root_protect_plus_stp_edge_in_one_delta_still_errors():
                                       also={"stp_edge": True})
     f = _find(result, "wired.stp.policy.root_protect_risk")
     assert f.severity is Severity.ERROR
+
+
+# --- observed-root route: Port.stp_role == "root" escalates ERROR/HIGH ------
+#
+# After the liveness guard: if the BASELINE port's OBSERVED stp_role is the
+# literal string "root" -> ERROR/HIGH, evidence carries observed_role="root"
+# and election_confidence="observed". This fires even where the graph
+# election is unprovable (e.g. an external/off-fabric root) -- the observed
+# live election result is definitive regardless of what the graph can prove.
+# Escalate-only: any other role (or None) leaves the graph route's own
+# behavior byte-identical to today. When BOTH routes independently conclude
+# ERROR, exactly ONE finding is emitted with unioned evidence.
+
+def _run_enable_no_root_port_with_role(
+    *, role: str | None, election: str, disable: bool = False,
+    also: dict | None = None, baseline_also: dict | None = None,
+):
+    """T2's `_run_enable_no_root_port` helper, plus an OBSERVED `stp_role` set
+    identically on both baseline and proposed ports (the live fact predates
+    and survives the delta -- it is not itself part of `also`/`baseline_also`,
+    which only ever apply to the PROPOSED or BOTH sides for policy-adjacent
+    knobs). `election="external"` reuses the existing unprovable-election
+    fixture shape (a default-assumed priority in the component, per
+    `test_root_protect_with_unprovable_election_is_warning_plus_note`) -- the
+    motivating case where the graph cannot prove a root at HIGH confidence at
+    all (e.g. it is off-fabric / external), yet the port's OBSERVED role is
+    definitive."""
+    priorities = {"A": None, "B": 4096} if election == "external" else {
+        "A": 32768, "B": 4096
+    }
+    role_kwarg = {"stp_role": role} if role is not None else {}
+    combined_baseline_also = {**role_kwarg, **(baseline_also or {})}
+    return _run_enable_no_root_port(
+        topology="chain", priorities=priorities, disable=disable,
+        also=also, baseline_also=combined_baseline_also,
+    )
+
+
+def test_observed_root_role_escalates_even_with_external_root():
+    # THE motivating case: graph election unprovable (external root) -> graph
+    # route alone yields WARNING+note; observed stp_role="root" is the live
+    # election result -> ERROR/HIGH
+    result = _run_enable_no_root_port_with_role(role="root", election="external")
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["observed_role"] == "root"
+    assert f.evidence["election_confidence"] == "observed"
+
+    decision, _ = decide(
+        DecisionInputs(rejections=(), l0_fatal=False, baseline_unavailable=False,
+                       check_results=(result,))
+    )
+    assert decision is Decision.UNSAFE
+
+    # contrast: WITHOUT the observed role, the same fixture yields only the
+    # graph route's unprovable WARNING tier -- proving the role is what
+    # escalates it, not the topology/priorities.
+    without_role = _run_enable_no_root_port_with_role(role=None, election="external")
+    fw = _find(without_role, "wired.stp.policy.root_protect_risk")
+    assert fw.severity is Severity.WARNING
+
+
+def test_observed_designated_role_changes_nothing():
+    # negative: only the literal "root" escalates
+    result = _run_enable_no_root_port_with_role(role="designated", election="external")
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.WARNING  # graph route's unprovable tier, unchanged
+
+
+def test_both_routes_union_evidence():
+    # HIGH graph election + only-path AND observed role="root": one ERROR
+    # finding carrying only_path AND observed_role
+    result = _run_enable_no_root_port_with_role(role="root", election="provable")
+    matches = _findall(result, "wired.stp.policy.root_protect_risk")
+    assert len(matches) == 1
+    f = matches[0]
+    assert f.severity is Severity.ERROR
+    assert f.confidence.level is ConfidenceLevel.HIGH
+    assert f.evidence["only_path"] is True
+    assert f.evidence["elected_root"] == "B"
+    assert f.evidence["observed_role"] == "root"
+    assert f.evidence["election_confidence"] == "observed"
+
+
+def test_observed_root_respects_the_liveness_guard():
+    # role="root" + stp_disable in the same delta -> no ERROR (guard from T2)
+    result = _run_enable_no_root_port_with_role(
+        role="root", election="provable", also={"bpdu_filter": True}
+    )
+    assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
+                if f.severity is Severity.ERROR]
+    assert _find(result, "wired.stp.policy.policy_change")
 
 
 def _build_root_protect_bpdu_filter_peer(

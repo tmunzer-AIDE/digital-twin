@@ -519,7 +519,16 @@ class StpPolicyCheck:
         election to disturb" (Finding 2). Only a genuine None (fewer than two
         switches in the component -- there is no root to elect at all) or a
         redundant path / the device itself being the root falls through to
-        the .policy_change floor with no note (nothing unprovable to flag)."""
+        the .policy_change floor with no note (nothing unprovable to flag).
+
+        OBSERVED-ROOT ROUTE (2026-07-03 spec): after the liveness guard, if
+        the BASELINE port's OBSERVED `stp_role` is the literal string "root",
+        that is the live election result -- ERROR/HIGH regardless of what the
+        graph route can prove (THE motivating case: an external/off-fabric
+        root the graph cannot see at all). Escalate-only: any other role (or
+        None) leaves the graph route's behavior byte-identical to today. When
+        the graph route ALSO concludes with a Finding (ERROR or WARNING), the
+        two are unioned into ONE finding rather than emitted separately."""
         prop_ir = ctx.proposed.ir
         port = prop_ir.ports[pid]
 
@@ -534,6 +543,67 @@ class StpPolicyCheck:
         if port.disabled or port.bpdu_filter:
             return None, None  # floor / admin_disable / edge_on_uplink own the harm
 
+        graph_finding, graph_note = self._root_protect_graph_route(ctx, pid)
+
+        # observed-root route: the BASELINE port's observed live election
+        # result. Literal match only -- "" is normalized to None at ingest,
+        # so no separate empty-string check is needed.
+        old_port = ctx.baseline.ir.ports.get(pid)
+        if old_port is None or old_port.stp_role != "root":
+            return graph_finding, graph_note
+
+        port_ref = ObjectRef("port", pid)
+        reason = "port is the observed root port"
+        evidence = {
+            "port": pid, "observed_role": "root", "election_confidence": "observed",
+            "severity_reason": reason,
+        }
+        if graph_finding is not None:
+            # union: one finding, unioned evidence (graph's only_path/
+            # elected_root AND the observed role), ERROR severity/HIGH
+            # confidence (the observed route is definitive).
+            evidence = {**graph_finding.evidence, **evidence}
+            affected = tuple(dict.fromkeys((*graph_finding.affected_entities, pid)))
+            return (
+                Finding(
+                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                    code=f"{self.id}.root_protect_risk", severity=Severity.ERROR,
+                    confidence=_HIGH,
+                    message=f"port {pid}: stp_no_root_port enabled — this port is the "
+                            f"OBSERVED root port; it can never accept its root port and "
+                            f"the device will black-hole toward the root",
+                    affected_entities=affected, subject=port_ref,
+                    evidence=evidence,
+                    caused_by=ctx.delta_index.causes("port", [pid]),
+                ),
+                None,
+            )
+
+        return (
+            Finding(
+                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk", severity=Severity.ERROR,
+                confidence=_HIGH,
+                message=f"port {pid}: stp_no_root_port enabled — this port is the "
+                        f"OBSERVED root port; it can never accept its root port and "
+                        f"the device will black-hole toward the root",
+                affected_entities=(pid,), subject=port_ref,
+                evidence={"port": pid, **evidence},
+                caused_by=ctx.delta_index.causes("port", [pid]),
+            ),
+            None,
+        )
+
+    def _root_protect_graph_route(
+        self, ctx: CheckContext, pid: str,
+    ) -> tuple[Finding | None, str | None]:
+        """The pre-Task-3 graph-election-based route, unchanged: is this port
+        the device's ONLY graph path to the component's elected root? Split
+        out of `_root_protect_risk` so the observed-root route (above) can
+        union its evidence with this route's Finding rather than duplicate
+        the election/only-path mechanics."""
+        prop_ir = ctx.proposed.ir
+        port = prop_ir.ports[pid]
         vc_root = vc_root_map(prop_ir)
         device_node = node_for(vc_root, port.device_id)
 

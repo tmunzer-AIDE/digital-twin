@@ -109,7 +109,9 @@ _NOT_VISUALIZED = {
     # --- stp_policy.root_protect_risk: "port" and "elected_root" (added to
     #     _NODE_EV_KEYS) already paint the entities; these are scalars ---
     "only_path",            # boolean — always True when this code fires
-    "election_confidence",  # "high"/"unprovable" classification tag (string)
+    "election_confidence",  # "high"/"unprovable"/"observed" classification tag (string)
+    "observed_role",        # observed-root route: literal "root" classification tag
+                            # (string); "port" already paints the entity
     # --- stp_policy.link_mismatch: "link" (already painted) carries the pair;
     #     these are per-knob detail, not additional entity references ---
     "values",                # {port_id: effective knob value} — port ids already
