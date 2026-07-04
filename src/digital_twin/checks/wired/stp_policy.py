@@ -522,6 +522,18 @@ class StpPolicyCheck:
         the .policy_change floor with no note (nothing unprovable to flag)."""
         prop_ir = ctx.proposed.ir
         port = prop_ir.ports[pid]
+
+        # Liveness guard (route-independent, spec P1-1/P1r3-2): a port that
+        # does not participate in STP in the PROPOSED state cannot block the
+        # root path -- no ERROR from ANY route. Proposed-state on purpose:
+        # covers BOTH a same-delta stp_disable flip AND a PRE-EXISTING
+        # bpdu_filter=True port later getting root-protect (inert either
+        # way; the graph keeps bpdu_filter'd edges, so without this the
+        # graph route would ERROR on both). stp_edge is deliberately NOT
+        # here (edge self-heals on BPDU receipt).
+        if port.disabled or port.bpdu_filter:
+            return None, None  # floor / admin_disable / edge_on_uplink own the harm
+
         vc_root = vc_root_map(prop_ir)
         device_node = node_for(vc_root, port.device_id)
 

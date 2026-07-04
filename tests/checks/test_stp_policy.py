@@ -412,12 +412,17 @@ def _build_root_protect(
 
 
 def _run_enable_no_root_port(
-    *, topology: str, priorities: dict[str, int | None], disable: bool = False
+    *, topology: str, priorities: dict[str, int | None], disable: bool = False,
+    also: dict | None = None, baseline_also: dict | None = None,
 ):
     base_policy = StpPolicy(stp_no_root_port=disable)
     prop_policy = StpPolicy(stp_no_root_port=not disable)
-    base_port = _root_protect_target_port(stp_policy=base_policy if disable else None)
-    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy)
+    base_extra = dict(baseline_also) if baseline_also else {}
+    base_port = _root_protect_target_port(
+        stp_policy=base_policy if disable else None, **base_extra
+    )
+    prop_extra = {**base_extra, **(also or {})}
+    prop_port = dataclasses.replace(base_port, stp_policy=prop_policy, **prop_extra)
     base_ir = _build_root_protect(
         topology=topology, priorities=priorities, target_port=base_port
     ).build()
@@ -555,6 +560,56 @@ def test_root_protect_disable_direction_is_floor_only():
     assert not _findall(result, "wired.stp.policy.root_protect_risk")
     f = _find(result, "wired.stp.policy.policy_change")
     assert f.severity is Severity.WARNING
+
+
+# --- liveness guard: route-independent (Spec-2 hole, spec P1-1/P1r3-2) ------
+#
+# a port that does not participate in STP in the PROPOSED state cannot block
+# the root path via root-protect, no matter which route (graph-only-path or
+# unprovable-election) would otherwise fire. Covers a same-delta admin-disable
+# or stp_disable flip AND a pre-existing bpdu_filter=True port. stp_edge is
+# deliberately excluded (self-heals on BPDU receipt).
+
+def test_root_protect_plus_admin_disable_in_one_delta_is_not_error():
+    # liveness guard: a port disabled by the SAME delta cannot block the root
+    # path via root-protect; harm owner is admin_disable; floor still fires
+    result = _run_enable_no_root_port(topology="chain",
+                                      priorities={"A": 32768, "B": 4096},
+                                      also={"disabled": True})
+    assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
+                if f.severity is Severity.ERROR]
+
+
+def test_root_protect_plus_stp_disable_in_one_delta_is_not_error():
+    # the GRAPH-route variant (spec P1r3-2): the L2 graph KEEPS bpdu_filter'd
+    # edges, so without a shared guard the graph route would still ERROR on a
+    # port that no longer processes BPDUs -- the Spec-2 hole this closes
+    result = _run_enable_no_root_port(topology="chain",
+                                      priorities={"A": 32768, "B": 4096},
+                                      also={"bpdu_filter": True})
+    assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
+                if f.severity is Severity.ERROR]
+
+
+def test_root_protect_on_preexisting_bpdu_filtered_port_is_not_error():
+    # P1 final round: baseline ALREADY has bpdu_filter=True (port never
+    # processes BPDUs); enabling root-protect on it later is inert -- the
+    # proposed-state guard must catch this, not just the same-delta flip
+    result = _run_enable_no_root_port(topology="chain",
+                                      priorities={"A": 32768, "B": 4096},
+                                      baseline_also={"bpdu_filter": True})
+    assert not [f for f in _findall(result, "wired.stp.policy.root_protect_risk")
+                if f.severity is Severity.ERROR]
+
+
+def test_root_protect_plus_stp_edge_in_one_delta_still_errors():
+    # stp_edge is EXPLICITLY not in the guard (spec P1r2): edge self-heals on
+    # BPDU receipt, so root-protect on the root path remains a real risk
+    result = _run_enable_no_root_port(topology="chain",
+                                      priorities={"A": 32768, "B": 4096},
+                                      also={"stp_edge": True})
+    f = _find(result, "wired.stp.policy.root_protect_risk")
+    assert f.severity is Severity.ERROR
 
 
 def _build_root_protect_bpdu_filter_peer(
