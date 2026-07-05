@@ -1,7 +1,7 @@
 # STP Tree Engine v1 — Prediction Core + Validation Rail (Spec-4)
 
 **Date:** 2026-07-05
-**Status:** Approved for planning
+**Status:** Implemented (branch feat/stp-tree-engine; live-verified 2026-07-05 — production org 10 matched/0 mismatched; TM-LAB self-loop pair via redacted replay fixture, golden committed)
 **Predecessors:** Spec-2 (`wired.stp.policy`, policy floor — SAFE deferred to a
 validated tree engine), Spec-3 (STP telemetry escalation — live-confirmed
 per-port `stp_role`/`stp_state` ground truth)
