@@ -246,7 +246,11 @@ inherits it as a requirement, not a suggestion.
   it; telemetry can't validate it).
 - Port-priority/port-ID inputs ungrounded → those tie-breaks are permanently
   ≤ LOW in v1.
-- LAG/ESI-LAG aggregates unmodeled — members costed per-link.
+- LAG/ESI-LAG bundles are ONE logical STP port pair (the l2_graph already
+  collapses members, matching `ae` semantics — per-member STP edges would
+  wrongly predict blocking on members LACP keeps forwarding). Aggregate cost
+  approximated from the best (min-cost) member end → capped MEDIUM + note;
+  each member port carries the bundle's role.
 - Stable state only — no convergence dynamics, timers, or transient states.
 - Mixed-protocol (VSTP↔RSTP) interop out of scope.
 - **Zero verdict-facing change:** `stp_root`, `stp_policy`, `l2_loop`,
