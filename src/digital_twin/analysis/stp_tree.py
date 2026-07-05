@@ -6,6 +6,7 @@ confidence on component-level disagreement.
 """
 from __future__ import annotations
 
+import dataclasses
 import heapq
 import itertools
 from collections.abc import Mapping
@@ -327,15 +328,31 @@ def component_rpc(
 
     while heap:
         cost, node, _defaulted_flag, _conf_flag, _key, _seq, edge = heapq.heappop(heap)
-        if node in rpc:
-            continue
         entering_end, _neighbor_end = _end_for_node(edge, node)
         pred_node = edge.b.node if edge.a.node == node else edge.a.node
         pred_rpc = rpc[pred_node]
+        candidate_defaulted = pred_rpc.defaulted or entering_end.cost_defaulted
+        candidate_link_conf = min(pred_rpc.link_conf, edge.link_confidence)
+        settled = rpc.get(node)
+        if settled is not None:
+            # Already settled: a strictly worse cost is discarded (not the
+            # shortest path). An EQUAL cost is another shortest path a real
+            # switch could equally have taken — pessimistically MERGE its
+            # taint into the settled record rather than silently dropping it.
+            # (Costs can never be BETTER than the settled one: heapq pops in
+            # non-decreasing cost order, so the first pop for any node is
+            # already its true shortest cost.)
+            if cost == settled.cost:
+                rpc[node] = dataclasses.replace(
+                    settled,
+                    defaulted=settled.defaulted or candidate_defaulted,
+                    link_conf=min(settled.link_conf, candidate_link_conf),
+                )
+            continue
         rpc[node] = _Rpc(
             cost=cost,
-            defaulted=pred_rpc.defaulted or entering_end.cost_defaulted,
-            link_conf=min(pred_rpc.link_conf, edge.link_confidence),
+            defaulted=candidate_defaulted,
+            link_conf=candidate_link_conf,
         )
         for next_edge in adjacency.get(node, []):
             neighbor = next_edge.b.node if next_edge.a.node == node else next_edge.a.node

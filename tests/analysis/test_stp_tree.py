@@ -365,3 +365,48 @@ def test_equal_cost_parallel_paths_never_compare_payload():
     election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
     assert election.root == "aa01"
     assert election.rpc["bb02"].cost == 20_000  # single 1g hop either parallel link
+
+
+def test_equal_cost_tie_merges_taint_pessimistically():
+    # Two parallel aa01<->bb02 links, both costed at 20_000 (a tie): link #1 is
+    # clean (both ends observed 1g); link #2's bb02-side speed is UNSET, so it
+    # defaults to 1g (same 20_000 cost) but IS tainted. Whichever path the heap
+    # settles bb02 on first, the merge must still surface defaulted=True — a
+    # real switch could equally have taken the tainted parallel path.
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))  # clean leg
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))  # no speed -> defaults to 1g, tainted
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
+    assert election.root == "aa01"
+    assert election.rpc["bb02"].cost == 20_000
+    assert election.rpc["bb02"].defaulted is True  # pessimistic: OR over equal-cost paths
+
+
+def test_equal_cost_tie_merges_link_confidence_pessimistically():
+    # Mirror case for link_conf: two parallel equal-cost links, one HIGH
+    # confidence (default two-sided LLDP), one MEDIUM (INFERRED provenance).
+    # The settled RPC must take the MIN across both equal-cost paths, not
+    # whichever happened to settle first.
+    from digital_twin.ir.provenance import Provenance
+
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))  # HIGH (default prov)
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2", prov=Provenance.INFERRED))  # MEDIUM
+    ir = b.build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
+    assert election.root == "aa01"
+    assert election.rpc["bb02"].cost == 20_000
+    assert election.rpc["bb02"].link_conf is ConfidenceLevel.MEDIUM  # pessimistic: min
