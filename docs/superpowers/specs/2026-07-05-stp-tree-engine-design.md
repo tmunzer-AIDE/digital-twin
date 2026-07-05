@@ -162,11 +162,17 @@ outcome the port-ID components determine is capped LOW.
 
 ## Cost model + confidence
 
-- **Link cost:** IEEE 802.1t value from the speed enum; per end,
-  `observed_speed` → `speed` (config) → None. Link cost = min of the two end
-  speeds' costs when both known; disagreement between known ends → note + cap
-  MEDIUM. Both unknown → 1G default cost + every decision whose margin that
-  cost could flip is capped LOW.
+- **Cost is PER PORT END and DIRECTIONAL, never a symmetric link value**
+  (review P1): IEEE 802.1t value from that end's own speed ladder
+  (`observed_speed` → `speed` (config) → None → 1G default + LOW cap on
+  every decision whose margin the default could flip). RPC accumulates the
+  RECEIVING port's cost — `RPC(B via p) = RPC(neighbor) + path_cost(p)`
+  where `p` is B's own port on the link — so Dijkstra runs over a directed
+  view in which edge `u→v` weighs `path_cost(v's port)`. Asymmetric
+  negotiated/configured end speeds therefore produce asymmetric candidate
+  costs, exactly as the protocol does; a speed disagreement between two
+  known ends is still noted + capped MEDIUM (it usually signals telemetry
+  inconsistency), but the algorithm NEVER collapses it to `min`.
 - **Per-decision confidence:**
   - HIGH: decided by cost margin or bridge ID, all contributing link costs
     known, link confidence HIGH.
@@ -193,9 +199,13 @@ per-port predictions against observed `Port.stp_role`/`Port.stp_state`:
   state, not a role).
 - Role compared exactly; state cross-checked independently (a role match with
   a state mismatch is still a mismatch).
-- Report: `matched / mismatched_high / mismatched_low / unvalidatable`
-  totals + per-port detail rows, and per-component rollups (consumers cap
-  confidence at component granularity).
+- Report: `matched / mismatched_high / mismatched_medium / mismatched_low /
+  unvalidatable` totals + per-port detail rows, and per-component rollups
+  (consumers cap confidence at component granularity). Mismatch buckets key
+  on the PREDICTION's confidence tier exactly (review P2) — MEDIUM
+  predictions (assumed-default root, link-confidence caps, speed
+  disagreement) land in `mismatched_medium`, never silently up- or
+  down-classified into the HIGH/LOW buckets.
 
 ### Live gate script (read-only; Tier-2-equivalence precedent)
 
@@ -204,7 +214,11 @@ real ground truth for `backup`/`blocking`) and the production org:
 
 - **FAIL on ANY `mismatched_high`** (a HIGH-confidence prediction the network
   contradicts is an engine bug, full stop).
-- `mismatched_low` → report-only (tie-break guesses are declared guesses).
+- `mismatched_medium` and `mismatched_low` → report-only for now (MEDIUM
+  predictions rest on a declared assumption — assumed-default priority,
+  degraded link, speed disagreement; LOW are declared tie-break guesses).
+  Tightening MEDIUM into the gate is a later decision, taken on real
+  agreement data, not now.
 - **Zero participating ports org-wide → FAIL** (no vacuous green).
 - Prints the full per-port table for mismatches + the agreement summary.
 
