@@ -1,0 +1,113 @@
+{
+ "bgp_neighbors": [],
+ "derived_setting": null,
+ "device_stats": [],
+ "devices": [
+  {
+   "id": "7f338a85-6f49-e688-0a5a-27706f7bf8ed",
+   "mac": "27d4e2959b98",
+   "name": "name-6a80a3f1",
+   "port_config": {
+    "ge-0/0/8": {
+     "usage": "test_pvstp"
+    },
+    "ge-0/0/9": {
+     "usage": "test_pvstp"
+    },
+    "xe-0/1/3": {
+     "usage": "backbone"
+    }
+   },
+   "type": "switch"
+  }
+ ],
+ "gatewaytemplate": null,
+ "meta": {
+  "acquired_at": "2026-07-04T21:08:19.372292+00:00",
+  "failures": [],
+  "fetched": [
+   "site",
+   "setting",
+   "devices",
+   "device_stats",
+   "port_stats",
+   "wireless_clients",
+   "wired_clients"
+  ],
+  "host": "replay:user-pasted-2026-07-04"
+ },
+ "nac_clients": [],
+ "networktemplate": null,
+ "org_networks": [],
+ "ospf_neighbors": [],
+ "port_stats": [
+  {
+   "full_duplex": true,
+   "mac": "27d4e2959b98",
+   "neighbor_mac": "66104920c69e",
+   "neighbor_port_desc": "xe-0/1/2",
+   "neighbor_system_name": "name-bda7bea7",
+   "port_id": "xe-0/1/3",
+   "port_mode": "trunk",
+   "speed": 10000,
+   "stp_role": "root",
+   "stp_state": "forwarding",
+   "up": true,
+   "uplink": true
+  },
+  {
+   "full_duplex": true,
+   "mac": "27d4e2959b98",
+   "neighbor_mac": "27d4e2959b98",
+   "neighbor_port_desc": "ge-0/0/9",
+   "neighbor_system_name": "name-6a80a3f1",
+   "port_id": "ge-0/0/8",
+   "speed": 1000,
+   "stp_role": "designated",
+   "stp_state": "forwarding",
+   "up": true
+  },
+  {
+   "full_duplex": true,
+   "mac": "27d4e2959b98",
+   "neighbor_mac": "27d4e2959b98",
+   "neighbor_port_desc": "ge-0/0/8",
+   "neighbor_system_name": "name-6a80a3f1",
+   "port_id": "ge-0/0/9",
+   "speed": 1000,
+   "stp_role": "backup",
+   "stp_state": "blocking",
+   "up": true
+  }
+ ],
+ "redaction_version": "7",
+ "scope": {
+  "org_id": "449e7573-a8ef-7a48-eb79-6c02874fccfc",
+  "site_id": "1de97e79-816d-157f-f09c-7b81322c0c16"
+ },
+ "setting": {
+  "networks": {
+   "corp": {
+    "vlan_id": 172
+   }
+  },
+  "port_usages": {
+   "backbone": {
+    "all_networks": true,
+    "mode": "trunk"
+   },
+   "test_pvstp": {
+    "all_networks": true,
+    "mode": "trunk"
+   }
+  }
+ },
+ "site": {
+  "id": "1de97e79-816d-157f-f09c-7b81322c0c16",
+  "name": "name-c7ef5254"
+ },
+ "sitetemplate": null,
+ "wired_clients": [],
+ "wireless_clients": [],
+ "wlans": []
+}
