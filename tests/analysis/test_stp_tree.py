@@ -687,3 +687,19 @@ def test_determinism_same_ir_identical_prediction():
     first = predict_stp_tree(ir)
     second = predict_stp_tree(ir)
     assert first == second
+
+
+# ---------- AnalysisContext memoization (Task 5) ---------------------------
+
+
+def test_context_memoizes_stp_tree():
+    from digital_twin.analysis.context import AnalysisContext
+
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    ctx = AnalysisContext(ir)
+    assert ctx.stp_tree() is ctx.stp_tree()

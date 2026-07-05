@@ -17,6 +17,7 @@ from digital_twin.representations.vlan_graph import build_vlan_graph
 
 from .cycles import Cycle, find_cycles
 from .exits import ExitResolution, resolve_exit
+from .stp_tree import StpTreePrediction, predict_stp_tree
 from .vlan_reachability import VlanComponent
 from .vlan_reachability import vlan_components as compute_vlan_components
 
@@ -43,6 +44,13 @@ class AnalysisContext:
 
     def l2_graph(self) -> nx.MultiGraph:
         return self._l2
+
+    @cached_property
+    def _stp_tree(self) -> StpTreePrediction:
+        return predict_stp_tree(self._ir)
+
+    def stp_tree(self) -> StpTreePrediction:
+        return self._stp_tree
 
     def vlan_graph(self, vlan_id: int) -> nx.MultiGraph:
         if vlan_id not in self._vlan_graphs:
