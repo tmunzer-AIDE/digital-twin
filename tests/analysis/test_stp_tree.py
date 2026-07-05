@@ -6,9 +6,11 @@ from digital_twin.analysis.stp_tree import (
     DEFAULT_PRIORITY,
     active_topology,
     component_rpc,
+    predict_stp_tree,
     root_of,
 )
 from digital_twin.ir import ConfidenceLevel, IRBuilder
+from digital_twin.ir.entities import LinkKind
 from tests.factories import ap, link, make_port, sw
 
 
@@ -410,3 +412,278 @@ def test_equal_cost_tie_merges_link_confidence_pessimistically():
     assert election.root == "aa01"
     assert election.rpc["bb02"].cost == 20_000
     assert election.rpc["bb02"].link_conf is ConfidenceLevel.MEDIUM  # pessimistic: min
+
+
+# ---------- predict_stp_tree: role assignment + confidence (Task 4) ---------
+
+
+def test_root_bridge_ports_designated_except_self_loop_pair():
+    # P2 pin: root's self-loop -> designated/backup, its other ports designated
+    dev = "aa0000000001"
+    pa = make_port(dev, "ge-0/0/8", self_loop_peer=f"{dev}:ge-0/0/9")
+    pb = make_port(dev, "ge-0/0/9", self_loop_peer=f"{dev}:ge-0/0/8")
+    p_uplink = make_port(dev, "ge-0/0/1", observed_speed="1g")
+    b = IRBuilder().add_device(sw(dev, stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(pa).add_port(pb).add_port(p_uplink)
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_link(link(f"{dev}:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    assert len(prediction.components) == 1
+    comp = prediction.components[0]
+    assert comp.root == dev
+    loop_a = comp.ports[f"{dev}:ge-0/0/8"]
+    loop_b = comp.ports[f"{dev}:ge-0/0/9"]
+    assert (loop_a.role, loop_a.state) == ("designated", "forwarding")
+    assert (loop_b.role, loop_b.state) == ("backup", "blocking")
+    assert loop_a.deciding_factor == "port_id_tie" and loop_a.confidence is ConfidenceLevel.LOW
+    assert loop_b.deciding_factor == "port_id_tie" and loop_b.confidence is ConfidenceLevel.LOW
+    uplink = comp.ports[f"{dev}:ge-0/0/1"]
+    assert (uplink.role, uplink.state) == ("designated", "forwarding")
+    assert uplink.deciding_factor == "root_bridge"
+    assert uplink.confidence is ConfidenceLevel.HIGH
+
+
+def test_root_port_by_cost_is_high_confidence():
+    # aa01 = root; bb02 has two candidate paths to root of DIFFERENT cost:
+    # a direct 10g link to aa01 (cost 2_000) and a 1g link via cc03 (cost
+    # 20_000 + 20_000). The direct link wins by cost.
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0))
+    b.add_device(sw("bb02", stp_priority=4096)).add_device(sw("cc03", stp_priority=8192))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "cc03:ge-0/0/1"))
+    b.add_link(link("bb02:ge-0/0/2", "cc03:ge-0/0/2"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    assert comp.root == "aa01"
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert (root_port.role, root_port.state) == ("root", "forwarding")
+    assert root_port.deciding_factor == "cost"
+    assert root_port.confidence is ConfidenceLevel.HIGH
+
+
+def test_root_port_by_bridge_id_tiebreak_is_high():
+    # bb02 reaches root aa01 via two EQUAL-cost one-hop paths through two
+    # different neighbor bridges (cc03, dd04) that both directly connect to
+    # root at the same cost -> tie broken by neighbor bridge id (cc03 < dd04).
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0))
+    b.add_device(sw("bb02", stp_priority=4096))
+    b.add_device(sw("cc03", stp_priority=8192)).add_device(sw("dd04", stp_priority=12288))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("dd04", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("dd04", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "cc03:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "dd04:ge-0/0/1"))
+    b.add_link(link("cc03:ge-0/0/2", "bb02:ge-0/0/1"))
+    b.add_link(link("dd04:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    assert comp.root == "aa01"
+    root_port = comp.ports["bb02:ge-0/0/1"]  # faces cc03, the lower bridge id
+    assert (root_port.role, root_port.state) == ("root", "forwarding")
+    assert root_port.deciding_factor == "bridge_id"
+    assert root_port.confidence is ConfidenceLevel.HIGH
+    loser = comp.ports["bb02:ge-0/0/2"]
+    assert (loser.role, loser.state) == ("alternate", "blocking")
+    assert loser.deciding_factor == "bridge_id"
+
+
+def test_parallel_links_same_pair_port_id_tie_low():
+    # two standalone links A<->B: far side gets ONE root port (port_id_tie,
+    # LOW), the other end alternate/blocking — node-level SPT cannot express
+    # this distinction.
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))
+    b.add_port(make_port("aa01", "ge-0/0/2"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    assert comp.root == "aa01"
+    winner = comp.ports["bb02:ge-0/0/1"]
+    loser = comp.ports["bb02:ge-0/0/2"]
+    assert (winner.role, winner.state) == ("root", "forwarding")
+    assert winner.deciding_factor == "port_id_tie"
+    assert winner.confidence is ConfidenceLevel.LOW
+    assert (loser.role, loser.state) == ("alternate", "blocking")
+    assert loser.deciding_factor == "port_id_tie"
+
+
+def test_sole_path_deciding_factor():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert (root_port.role, root_port.state) == ("root", "forwarding")
+    assert root_port.deciding_factor == "sole_path"
+    assert root_port.confidence is ConfidenceLevel.HIGH
+
+
+def test_alternate_ends_block():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))
+    b.add_port(make_port("aa01", "ge-0/0/2"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    # aa01's second port is the designated end of the losing parallel link
+    designated_loser_side = comp.ports["aa01:ge-0/0/2"]
+    assert (designated_loser_side.role, designated_loser_side.state) == (
+        "designated",
+        "forwarding",
+    )
+    loser = comp.ports["bb02:ge-0/0/2"]
+    assert (loser.role, loser.state) == ("alternate", "blocking")
+
+
+def test_self_loop_designated_backup_low():
+    dev = "aa0000000001"
+    pa = make_port(dev, "ge-0/0/8", self_loop_peer=f"{dev}:ge-0/0/9")
+    pb = make_port(dev, "ge-0/0/9", self_loop_peer=f"{dev}:ge-0/0/8")
+    ir = IRBuilder().add_device(sw(dev)).add_port(pa).add_port(pb).build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    assert comp.root == dev
+    winner = comp.ports[f"{dev}:ge-0/0/8"]
+    loser = comp.ports[f"{dev}:ge-0/0/9"]
+    assert (winner.role, winner.state) == ("designated", "forwarding")
+    assert (loser.role, loser.state) == ("backup", "blocking")
+    assert winner.deciding_factor == "port_id_tie" and winner.confidence is ConfidenceLevel.LOW
+    assert loser.deciding_factor == "port_id_tie" and loser.confidence is ConfidenceLevel.LOW
+
+
+def test_assumed_default_caps_component_medium():
+    # aa01's stp_priority unset -> defaults to 32768, LOSES the election to
+    # bb02's explicit 4096 -> root = bb02, but root_assumed_default is still
+    # True (any elector's priority being assumed taints the whole election) ->
+    # component-wide confidence cap MEDIUM even for an otherwise-HIGH decision.
+    b = IRBuilder()
+    b.add_device(sw("aa01")).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    assert comp.root == "bb02"
+    assert comp.root_assumed_default is True
+    root_port = comp.ports["aa01:ge-0/0/1"]
+    assert root_port.deciding_factor == "sole_path"  # would be HIGH but for the cap
+    assert root_port.confidence is ConfidenceLevel.MEDIUM
+    designated = comp.ports["bb02:ge-0/0/1"]
+    assert designated.confidence is ConfidenceLevel.MEDIUM
+
+
+def test_link_confidence_caps_prediction():
+    # MEDIUM link on the deciding comparison -> prediction MEDIUM
+    from digital_twin.ir.provenance import Provenance
+
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1", prov=Provenance.INFERRED))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert root_port.deciding_factor == "sole_path"
+    assert root_port.confidence is ConfidenceLevel.MEDIUM
+    designated = comp.ports["aa01:ge-0/0/1"]
+    assert designated.confidence is ConfidenceLevel.MEDIUM
+
+
+def test_defaulted_speed_caps_low():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))  # no speed -> defaulted
+    b.add_port(make_port("bb02", "ge-0/0/1"))  # no speed -> defaulted
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert root_port.deciding_factor == "sole_path"
+    assert root_port.confidence is ConfidenceLevel.LOW
+
+
+def test_lag_members_share_bundle_role_capped_medium():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1", kind=LinkKind.LAG, bundle="ae0"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2", kind=LinkKind.LAG, bundle="ae0"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    member1 = comp.ports["bb02:ge-0/0/1"]
+    member2 = comp.ports["bb02:ge-0/0/2"]
+    assert (member1.role, member1.state) == ("root", "forwarding")
+    assert (member2.role, member2.state) == ("root", "forwarding")
+    assert member1.deciding_factor == "sole_path" and member2.deciding_factor == "sole_path"
+    assert member1.confidence is ConfidenceLevel.MEDIUM
+    assert member2.confidence is ConfidenceLevel.MEDIUM
+    assert any("lag" in n.lower() for n in member1.notes)
+
+
+def test_stp_edge_on_switch_link_elected_normally_with_note():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1", stp_edge=True))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    edge_port = comp.ports["aa01:ge-0/0/1"]
+    # elected normally: root is aa01, so this end is designated, NOT forced
+    assert (edge_port.role, edge_port.state) == ("designated", "forwarding")
+    assert edge_port.deciding_factor == "root_bridge"
+    assert any("edge" in n.lower() for n in edge_port.notes)
+
+
+def test_determinism_same_ir_identical_prediction():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02")).add_device(sw("cc03"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))
+    b.add_port(make_port("cc03", "ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("bb02:ge-0/0/2", "cc03:ge-0/0/1"))
+    ir = b.build()
+    first = predict_stp_tree(ir)
+    second = predict_stp_tree(ir)
+    assert first == second

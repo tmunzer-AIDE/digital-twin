@@ -375,3 +375,306 @@ def component_rpc(
     return _ComponentElection(
         root=root, root_assumed_default=root_assumed_default, abstained=False, rpc=rpc
     )
+
+
+# --- component construction (Task 4, deferred from Task 3) ------------------
+
+
+def _components(topology: _ActiveTopology) -> tuple[frozenset[str], ...]:
+    """Connected components over the union of active-edge node pairs, plus
+    pseudo-edge-only nodes as their own single-node components. Deterministic:
+    sorted node adjacency walk, sorted component ordering."""
+    adjacency: dict[str, set[str]] = {}
+    all_nodes: set[str] = set()
+    for edge in topology.edges:
+        adjacency.setdefault(edge.a.node, set()).add(edge.b.node)
+        adjacency.setdefault(edge.b.node, set()).add(edge.a.node)
+        all_nodes.add(edge.a.node)
+        all_nodes.add(edge.b.node)
+    for pe in topology.pseudo_edges:
+        adjacency.setdefault(pe.node, set())
+        all_nodes.add(pe.node)
+
+    visited: set[str] = set()
+    components: list[frozenset[str]] = []
+    for start in sorted(all_nodes):
+        if start in visited:
+            continue
+        stack = [start]
+        visited.add(start)
+        comp_nodes: set[str] = set()
+        while stack:
+            node = stack.pop()
+            comp_nodes.add(node)
+            for neighbor in sorted(adjacency.get(node, ())):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    stack.append(neighbor)
+        components.append(frozenset(comp_nodes))
+    components.sort(key=lambda c: sorted(c))
+    return tuple(components)
+
+
+# --- role assignment + confidence (Task 4) -----------------------------------
+
+_NOTE_LAG = "LAG bundle: member ports share the bundle's elected role"
+_NOTE_STP_EDGE = "edge-configured; elected normally"
+
+
+def _cap(level: ConfidenceLevel, cap: ConfidenceLevel) -> ConfidenceLevel:
+    return min(level, cap)
+
+
+def _min_port(ports: tuple[str, ...]) -> str:
+    return min(ports)
+
+
+@dataclass(frozen=True)
+class _Decision:
+    role: str
+    deciding_factor: str
+    confidence: ConfidenceLevel
+    lag: bool
+
+
+def _make_port_predictions(
+    end: _End,
+    decision: _Decision,
+    *,
+    extra_notes: tuple[str, ...] = (),
+) -> dict[str, PortPrediction]:
+    state = "forwarding" if decision.role in ("root", "designated") else "blocking"
+    notes = list(extra_notes)
+    if end.lag:
+        notes.append(_NOTE_LAG)
+    out: dict[str, PortPrediction] = {}
+    for pid in end.ports:
+        out[pid] = PortPrediction(
+            port_id=pid,
+            role=decision.role,
+            state=state,
+            confidence=decision.confidence,
+            deciding_factor=decision.deciding_factor,
+            notes=tuple(notes),
+        )
+    return out
+
+
+def _edge_end_notes(ir: IR, end: _End) -> tuple[str, ...]:
+    notes = []
+    if any(ir.port(pid).stp_edge for pid in end.ports):
+        notes.append(_NOTE_STP_EDGE)
+    return tuple(notes)
+
+
+def _assign_component_roles(
+    ir: IR,
+    topology: _ActiveTopology,
+    component: frozenset[str],
+    election: _ComponentElection,
+) -> ComponentTree:
+    root = election.root
+    ports: dict[str, PortPrediction] = {}
+    decided_ends: set[tuple[str, tuple[str, ...]]] = set()  # (node, ports) already assigned
+
+    def mark(node: str, end: _End, decision: _Decision) -> None:
+        key = (node, end.ports)
+        if key in decided_ends:
+            return
+        decided_ends.add(key)
+        extra = _edge_end_notes(ir, end)
+        ports.update(_make_port_predictions(end, decision, extra_notes=extra))
+
+    # component-wide confidence cap
+    comp_cap = ConfidenceLevel.MEDIUM if election.root_assumed_default else ConfidenceLevel.HIGH
+
+    def final_conf(raw: ConfidenceLevel, lag: bool) -> ConfidenceLevel:
+        level = _cap(raw, comp_cap)
+        if lag:
+            level = _cap(level, ConfidenceLevel.MEDIUM)
+        return level
+
+    # --- component edges/pseudo-edges restricted to this component ----------
+    comp_edges = [e for e in topology.edges if e.a.node in component and e.b.node in component]
+    comp_pseudo = [pe for pe in topology.pseudo_edges if pe.node in component]
+
+    # 1. Pseudo-edges FIRST — the exception, wins over everything.
+    for pe in comp_pseudo:
+        port_a, port_b = pe.port_a, pe.port_b
+        end_a = _End(node=pe.node, ports=(port_a,), cost=0, cost_defaulted=False, lag=False)
+        end_b = _End(node=pe.node, ports=(port_b,), cost=0, cost_defaulted=False, lag=False)
+        conf = final_conf(ConfidenceLevel.LOW, lag=False)
+        mark(
+            pe.node,
+            end_a,
+            _Decision("designated", "port_id_tie", conf, lag=False),
+        )
+        mark(
+            pe.node,
+            end_b,
+            _Decision("backup", "port_id_tie", conf, lag=False),
+        )
+
+    if root is None:
+        return ComponentTree(
+            nodes=component,
+            root=None,
+            root_assumed_default=election.root_assumed_default,
+            ports=dict(sorted(ports.items())),
+        )
+
+    # 2. Root bridge: every remaining active end on the root -> designated.
+    for edge in comp_edges:
+        for end in (edge.a, edge.b):
+            if end.node != root:
+                continue
+            key = (end.node, end.ports)
+            if key in decided_ends:
+                continue
+            other_end = edge.b if end is edge.a else edge.a
+            raw_conf = min(ConfidenceLevel.HIGH, edge.link_confidence)
+            if end.cost_defaulted or other_end.cost_defaulted:
+                raw_conf = ConfidenceLevel.LOW
+            conf = final_conf(raw_conf, lag=end.lag)
+            mark(end.node, end, _Decision("designated", "root_bridge", conf, lag=end.lag))
+
+    # 3. Root port per non-root bridge B: candidates = every edge-end entering
+    #    B, keyed (rpc(neighbor).cost + B's end cost, neighbor_id,
+    #    min neighbor port name, min own port name).
+    incoming: dict[str, list[tuple[_ActiveEdge, _End, _End]]] = {}
+    for edge in comp_edges:
+        for end, neighbor_end in ((edge.a, edge.b), (edge.b, edge.a)):
+            if end.node == root:
+                continue
+            incoming.setdefault(end.node, []).append((edge, end, neighbor_end))
+
+    _RootPortKey = tuple[int, str, str, str]
+
+    def _factor_vs_runner_up(best_key: _RootPortKey, other_key: _RootPortKey) -> str:
+        if best_key[0] != other_key[0]:
+            return "cost"
+        if best_key[1] != other_key[1]:
+            return "bridge_id"
+        return "port_id_tie"
+
+    # node -> sorted [(key, edge, end, neighbor_end, neighbor_rpc), ...],
+    # kept around so step 5 can classify losing root-port candidates against
+    # the SAME ranking (not a node-level SPT re-derivation).
+    root_port_candidates: dict[
+        str, list[tuple[_RootPortKey, _ActiveEdge, _End, _End, _Rpc]]
+    ] = {}
+
+    for node, candidates in incoming.items():
+        keyed: list[tuple[_RootPortKey, _ActiveEdge, _End, _End, _Rpc]] = []
+        for edge, end, neighbor_end in candidates:
+            neighbor_rpc = election.rpc.get(neighbor_end.node)
+            if neighbor_rpc is None:
+                continue  # unreachable neighbor (shouldn't happen within a component)
+            total_cost = neighbor_rpc.cost + end.cost
+            rp_key: _RootPortKey = (
+                total_cost,
+                neighbor_end.node,
+                _min_port(neighbor_end.ports),
+                _min_port(end.ports),
+            )
+            keyed.append((rp_key, edge, end, neighbor_end, neighbor_rpc))
+        if not keyed:
+            continue
+        keyed.sort(key=lambda t: t[0])
+        root_port_candidates[node] = keyed
+        best_key, best_edge, best_end, best_neighbor_end, best_neighbor_rpc = keyed[0]
+
+        # Determine the deciding factor: what distinguishes the winner from
+        # the runner-up (if any).
+        deciding = "sole_path" if len(keyed) == 1 else _factor_vs_runner_up(best_key, keyed[1][0])
+
+        raw_conf = ConfidenceLevel.LOW if deciding == "port_id_tie" else ConfidenceLevel.HIGH
+        raw_conf = min(raw_conf, best_neighbor_rpc.link_conf, best_edge.link_confidence)
+        if best_neighbor_rpc.defaulted or best_end.cost_defaulted:
+            raw_conf = ConfidenceLevel.LOW
+        conf = final_conf(raw_conf, lag=best_end.lag)
+        mark(node, best_end, _Decision("root", deciding, conf, lag=best_end.lag))
+
+    # 4. Designated end per edge: lower (rpc.cost, node_id) side -> designated.
+    for edge in comp_edges:
+        a_rpc = election.rpc.get(edge.a.node)
+        b_rpc = election.rpc.get(edge.b.node)
+        if a_rpc is None or b_rpc is None:
+            continue
+        a_key = (a_rpc.cost, edge.a.node)
+        b_key = (b_rpc.cost, edge.b.node)
+        if a_key < b_key:
+            desig_end, desig_rpc, other_end = edge.a, a_rpc, edge.b
+        else:
+            desig_end, desig_rpc, other_end = edge.b, b_rpc, edge.a
+        key = (desig_end.node, desig_end.ports)
+        if key in decided_ends:
+            continue
+        raw_conf = ConfidenceLevel.HIGH
+        raw_conf = min(raw_conf, desig_rpc.link_conf, edge.link_confidence)
+        if desig_rpc.defaulted or desig_end.cost_defaulted or other_end.cost_defaulted:
+            raw_conf = ConfidenceLevel.LOW
+        conf = final_conf(raw_conf, lag=desig_end.lag)
+        decision = _Decision("designated", "bridge_id", conf, lag=desig_end.lag)
+        mark(desig_end.node, desig_end, decision)
+
+    # 5. Every remaining participating end -> alternate/blocking. Each such
+    #    end lost EITHER the root-port race at its own node (find its rank in
+    #    that node's candidate list and classify against the winner) or the
+    #    designated-end race on its edge (the other side had lower
+    #    (rpc.cost, node_id) — always "bridge_id", inter-bridge ids never tie).
+    for edge in comp_edges:
+        for end in (edge.a, edge.b):
+            key = (end.node, end.ports)
+            if key in decided_ends:
+                continue
+            neighbor_end = edge.b if end is edge.a else edge.a
+            neighbor_rpc = election.rpc.get(neighbor_end.node)
+
+            node_candidates = root_port_candidates.get(end.node, [])
+            own_end_key = None
+            for cand_key, cand_edge, cand_end, _cand_neighbor, _cand_rpc in node_candidates:
+                if cand_edge is edge and cand_end is end:
+                    own_end_key = cand_key
+                    break
+
+            if own_end_key is not None:
+                winner_key = node_candidates[0][0]
+                deciding = _factor_vs_runner_up(winner_key, own_end_key)
+            else:
+                # Not a root-port candidate at its own node at all (its node
+                # IS the root, handled in step 2) — unreachable in practice,
+                # but fall back to the edge-level comparison defensively.
+                deciding = "bridge_id"
+
+            raw_conf = ConfidenceLevel.LOW
+            if neighbor_rpc is not None and deciding != "port_id_tie":
+                candidate_conf = min(neighbor_rpc.link_conf, edge.link_confidence)
+                candidate_defaulted = neighbor_rpc.defaulted or end.cost_defaulted
+                if not candidate_defaulted:
+                    raw_conf = min(ConfidenceLevel.HIGH, candidate_conf)
+            conf = final_conf(raw_conf, lag=end.lag)
+            mark(end.node, end, _Decision("alternate", deciding, conf, lag=end.lag))
+
+    return ComponentTree(
+        nodes=component,
+        root=root,
+        root_assumed_default=election.root_assumed_default,
+        ports=dict(sorted(ports.items())),
+    )
+
+
+def predict_stp_tree(ir: IR) -> StpTreePrediction:
+    """Assign a role to every participating port end across every STP
+    component. Pure — see module docstring for the SAFE-gating invariant."""
+    topology = active_topology(ir)
+    components = _components(topology)
+    trees: list[ComponentTree] = []
+    notes: list[str] = list(topology.notes)
+    for component in components:
+        election = component_rpc(ir, topology, component)
+        if election.note is not None:
+            notes.append(election.note)
+        trees.append(_assign_component_roles(ir, topology, component, election))
+    notes.sort()
+    return StpTreePrediction(components=tuple(trees), notes=tuple(notes))
