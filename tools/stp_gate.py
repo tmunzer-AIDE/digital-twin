@@ -81,12 +81,16 @@ def _run_site(site_id: str, raw: RawSiteState | FetchError | None) -> StpAgreeme
         errs = [f.error for f in raw.failures] if isinstance(raw, FetchError) else ["not returned"]
         print(f"[FAIL] {site_id}: fetch failed: {errs}")
         return None
-    outcome = MistAdapter().ingest(raw)
-    if outcome.ir is None:
-        print(f"[FAIL] {site_id}: ingest failed: {outcome.report.failures}")
+    try:
+        outcome = MistAdapter().ingest(raw)
+        if outcome.ir is None:
+            print(f"[FAIL] {site_id}: ingest failed: {outcome.report.failures}")
+            return None
+        prediction = predict_stp_tree(outcome.ir)
+        return compare_to_observed(prediction, outcome.ir)
+    except Exception as exc:
+        print(f"[FAIL] {site_id}: ingest/predict raised: {exc!r}")
         return None
-    prediction = predict_stp_tree(outcome.ir)
-    return compare_to_observed(prediction, outcome.ir)
 
 
 def _fixture_scope(path: str) -> tuple[str, list[str]]:
