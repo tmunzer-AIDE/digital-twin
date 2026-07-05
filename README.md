@@ -218,7 +218,7 @@ src/digital_twin/
 ├── contracts/        ChangePlan, Finding, Rejection (pure DTOs)
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
-├── analysis/         cycles, VLAN reachability, exit resolution (memoized)
+├── analysis/         cycles, VLAN reachability, exit resolution, STP tree prediction + agreement (memoized)
 ├── checks/           the 27 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
