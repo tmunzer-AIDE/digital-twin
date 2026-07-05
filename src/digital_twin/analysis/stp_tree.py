@@ -103,6 +103,7 @@ class _ActiveEdge:
     a: _End
     b: _End
     link_confidence: ConfidenceLevel
+    note: str | None = None  # set iff both ends known but disagree (cost-model rule)
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,22 @@ def _end_for(ir: IR, vc_root: dict[str, str], node: str, member_ports: list[str]
     )
 
 
+def _speed_disagreement_note(key: str, a_end: _End, b_end: _End) -> str | None:
+    """Spec Cost-model rule: a speed disagreement between two KNOWN
+    (non-defaulted) ends is noted and capped MEDIUM — it usually signals
+    telemetry inconsistency — but directional costs are NEVER collapsed to
+    `min`. One (or both) ends defaulted -> the existing defaulted/LOW path
+    owns that case instead; this only fires when both ends are grounded."""
+    if a_end.cost_defaulted or b_end.cost_defaulted:
+        return None
+    if a_end.cost == b_end.cost:
+        return None
+    return (
+        f"speed disagreement: {a_end.cost} vs {b_end.cost} on {key} — "
+        "telemetry inconsistency, confidence capped"
+    )
+
+
 def _active_edge(
     ir: IR, vc_root: dict[str, str], na: str, nb: str, edge: L2Edge
 ) -> _ActiveEdge | None:
@@ -168,7 +185,17 @@ def _active_edge(
     if a_role_dev.role is not DeviceRole.SWITCH or b_role_dev.role is not DeviceRole.SWITCH:
         return None
     key = "+".join(sorted(edge.link_ids))
-    return _ActiveEdge(key=key, a=a_end, b=b_end, link_confidence=edge.confidence.level)
+    link_confidence = edge.confidence.level
+    note = _speed_disagreement_note(key, a_end, b_end)
+    if note is not None:
+        link_confidence = min(link_confidence, ConfidenceLevel.MEDIUM)
+    return _ActiveEdge(
+        key=key,
+        a=a_end,
+        b=b_end,
+        link_confidence=link_confidence,
+        note=note,
+    )
 
 
 def _pseudo_edges(
@@ -221,7 +248,9 @@ def active_topology(ir: IR) -> _ActiveTopology:
         if active is not None:
             edges.append(active)
     edges.sort(key=lambda e: e.key)
-    pseudo_edges, notes = _pseudo_edges(ir, vc_root)
+    pseudo_edges, pseudo_notes = _pseudo_edges(ir, vc_root)
+    edge_notes = tuple(e.note for e in edges if e.note is not None)
+    notes = tuple(sorted(pseudo_notes + edge_notes))
     return _ActiveTopology(edges=tuple(edges), pseudo_edges=pseudo_edges, notes=notes)
 
 

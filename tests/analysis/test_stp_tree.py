@@ -278,6 +278,79 @@ def test_link_confidence_captured_on_active_edge():
     assert top.edges[0].link_confidence is ConfidenceLevel.HIGH
 
 
+# ---------- speed-disagreement honesty cap (spec Cost-model rule) -----------
+
+
+def test_known_ends_speed_disagreement_notes_and_caps_medium():
+    # aa01 end observed 1g, bb02 end observed 10g — BOTH known (not defaulted)
+    # but disagreeing: the spec mandates a note + a MEDIUM confidence cap,
+    # while directional costs stay exactly as computed (never collapsed to min).
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="10g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+
+    top = active_topology(ir)
+    edge = top.edges[0]
+    a_end = edge.a if edge.a.node == "aa01" else edge.b
+    b_end = edge.b if edge.a.node == "aa01" else edge.a
+    # directional costs untouched — never collapsed to min
+    assert a_end.cost == 20_000  # 1g
+    assert b_end.cost == 2_000  # 10g
+    assert edge.link_confidence is ConfidenceLevel.MEDIUM
+    all_notes = top.notes + tuple(
+        n for n in predict_stp_tree(ir).notes if n not in top.notes
+    )
+    assert any("speed disagreement" in n for n in all_notes)
+
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    # every port prediction on this edge caps at MEDIUM, never HIGH
+    for port in comp.ports.values():
+        assert port.confidence is not ConfidenceLevel.HIGH
+    assert any("speed disagreement" in n for n in prediction.notes)
+
+
+def test_matching_known_speeds_no_disagreement_note_stays_high():
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="10g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    top = active_topology(ir)
+    assert top.edges[0].link_confidence is ConfidenceLevel.HIGH
+    assert not any("speed disagreement" in n for n in top.notes)
+
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert root_port.confidence is ConfidenceLevel.HIGH
+    assert not any("speed disagreement" in n for n in prediction.notes)
+
+
+def test_one_end_unknown_speed_stays_defaulted_low_not_disagreement():
+    # one end unknown -> existing defaulted->LOW path, NOT the disagreement note
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))  # unknown -> defaulted 1g
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    top = active_topology(ir)
+    assert top.edges[0].link_confidence is ConfidenceLevel.HIGH  # cap is NOT link-level here
+    assert not any("speed disagreement" in n for n in top.notes)
+
+    prediction = predict_stp_tree(ir)
+    comp = prediction.components[0]
+    root_port = comp.ports["bb02:ge-0/0/1"]
+    assert root_port.deciding_factor == "sole_path"
+    assert root_port.confidence is ConfidenceLevel.LOW
+    assert not any("speed disagreement" in n for n in prediction.notes)
+
+
 # ---------- component_rpc: election + directed tainted RPC (Task 3) ---------
 
 
