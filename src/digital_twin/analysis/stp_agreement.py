@@ -58,7 +58,9 @@ def _bucket(pred: PortPrediction, role: str | None, state: str | None) -> str:
         return "bpdu_inconsistent"
     if role is None or role not in _KNOWN_ROLES:
         return "unvalidatable"  # absent, "", or unknown token — NEVER a mismatch
-    if role == pred.role and (state is None or state == pred.state):
+    # Empty string state ("") is a present-but-empty non-observation (PR #43
+    # convention). Skip state comparison when state is None or "" (not observed).
+    if role == pred.role and (not state or state == pred.state):
         return "matched"  # state compared independently when present
     return _MISMATCH_BUCKET[pred.confidence]  # keyed EXACTLY on prediction tier (P2)
 

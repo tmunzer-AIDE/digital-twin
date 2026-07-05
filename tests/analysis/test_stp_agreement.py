@@ -172,6 +172,41 @@ def test_per_component_rollup_flags_disagreement():
     assert report.components[0].nodes == frozenset({"aa01", "bb02"})
 
 
+def test_empty_string_state_with_matching_role_is_matched():
+    """Empty string state ("") is a present-but-empty non-observation (PR #43
+    convention). When role matches prediction, empty state should NOT prevent
+    a matched bucket — state comparison must skip when state is None OR "".
+    """
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    # Set observed role to match prediction, but state to "" (not observed).
+    # This must land in matched bucket, not mismatched_*.
+    ir = _set_observed(ir, "bb02:ge-0/0/1", role="root", state="")
+    ir = _set_observed(ir, "aa01:ge-0/0/1", role="designated", state="")
+    report = compare_to_observed(prediction, ir)
+    assert report.matched == 2
+    assert report.mismatched_high == 0
+    assert report.mismatched_medium == 0
+    assert report.mismatched_low == 0
+    assert report.unvalidatable == 0
+
+
+def test_empty_string_state_does_not_rescue_role_mismatch():
+    """Empty string state must not rescue a role mismatch into anything other
+    than mismatched_{tier}. The state guard only skips comparison when BOTH
+    role and state are observed; role mismatch is always a mismatch.
+    """
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    # Set observed role to DIFFER from prediction, with state "".
+    # This must still land in mismatched_high (role mismatch), not matched.
+    ir = _set_observed(ir, "bb02:ge-0/0/1", role="alternate", state="")
+    ir = _set_observed(ir, "aa01:ge-0/0/1", role="designated", state="forwarding")
+    report = compare_to_observed(prediction, ir)
+    assert report.mismatched_high == 1
+    assert report.matched == 1
+
+
 def test_ports_are_deterministically_sorted_within_and_across_components():
     ir = _two_switch_ir()
     prediction = predict_stp_tree(ir)
