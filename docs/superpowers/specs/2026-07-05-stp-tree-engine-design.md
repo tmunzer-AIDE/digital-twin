@@ -1,0 +1,256 @@
+# STP Tree Engine v1 — Prediction Core + Validation Rail (Spec-4)
+
+**Date:** 2026-07-05
+**Status:** Approved for planning
+**Predecessors:** Spec-2 (`wired.stp.policy`, policy floor — SAFE deferred to a
+validated tree engine), Spec-3 (STP telemetry escalation — live-confirmed
+per-port `stp_role`/`stp_state` ground truth)
+
+## Problem
+
+Every STP policy change today floors at REVIEW (`wired.stp.policy.policy_change`)
+because the twin cannot predict what the spanning tree actually does. The
+prerequisite for ever granting SAFE — and for making blackhole/isolation
+reachability aware of blocked links — is an engine that predicts the stable-state
+tree (root, per-port roles, blocked set) and has **earned trust against live
+telemetry**. This slice builds that engine and its validation rail. It changes
+no verdict, no check, no finding.
+
+## Scope decisions (locked with the user)
+
+1. **V1 = engine + validation rail only.** No check/verdict changes. Consumers
+   (SAFE grants, reachability taint) come in later slices, gated on proven
+   agreement.
+2. **Single tree per physical L2 component.** No per-VLAN/VSTP correctness
+   claim — Mist config cannot express per-VLAN priorities, and Mist telemetry
+   carries ONE `stp_role`/`stp_state` per port, so a per-VLAN prediction could
+   not be validated anyway. Declared limitation, not a silent assumption.
+3. **IEEE speed-derived costs + per-decision confidence.** Decisions carried by
+   cost margin or bridge ID are HIGH; decisions that would fall to port-number
+   tie-breaking (ungrounded — Mist exposes no ifindex/port-priority) are
+   predicted deterministically but capped LOW.
+4. **Validation = live gate + replay goldens.** A Tier-2-equivalence-style
+   read-only gate script (strict on HIGH-confidence predictions) plus committed
+   redacted replay-fixture goldens pinning agreement in CI.
+
+## Architecture
+
+New pure module **`analysis/stp_tree.py`** (the `ospf_reachability.py`
+precedent). Memoized on `AnalysisContext` as `stp_tree()` alongside
+`l2_graph()`/`cycles()`. Pure function of the IR; no I/O, no findings.
+
+### Election reuse — one election rule
+
+`_root_of` MOVES from `checks/wired/stp_root.py` to `analysis/stp_tree.py`
+(public name `root_of`), semantics byte-identical: `None` when < 2 switches,
+`_ABSTAIN` sentinel when any elector's `stp_priority_invalid`, else
+`(root_device_id, any_default_assumed)` by min `(stp_priority ?? 32768, device_id)`.
+**Both existing importers switch to the new home**: `stp_root.py` (its own
+election) and `stp_policy.py:76` (`_root_protect_risk` graph route). Behavior
+pinned by the existing suites — the move must be a pure relocation
+(re-export or direct import; no logic edit).
+
+### Result contract (structured data, never findings)
+
+```python
+@dataclass(frozen=True)
+class PortPrediction:
+    port_id: str
+    role: str            # "root" | "designated" | "alternate" | "backup"
+    state: str           # "forwarding" | "blocking" (derived from role)
+    confidence: ConfidenceLevel
+    deciding_factor: str # "cost" | "bridge_id" | "port_id_tie" | "sole_path"
+                         # | "root_bridge"
+    notes: tuple[str, ...] = ()
+
+@dataclass(frozen=True)
+class ComponentTree:
+    nodes: frozenset[str]           # VC-folded switch device ids
+    root: str | None                # None = no election (see below)
+    root_assumed_default: bool
+    ports: Mapping[str, PortPrediction]  # keyed by port_id; participating ends only
+
+@dataclass(frozen=True)
+class StpTreePrediction:
+    components: tuple[ComponentTree, ...]
+    notes: tuple[str, ...]          # IR-wide abstention notes
+```
+
+`root=None` has two distinct causes, both VALID analysis results (not errors):
+fewer than two active switches (nothing to elect — no port predictions, no
+note), or `_ABSTAIN` on an uninterpretable priority (no port predictions +
+an explicit note; never guess past bad input). The *live gate* treats
+"zero participating ports across the whole org" as FAIL (vacuous green), but
+the pure module returning an empty/rootless component is correct behavior —
+these are different layers' contracts.
+
+## Topology preparation (before any election)
+
+Build the STP-active subgraph per component:
+
+- **Ports excluded:** `disabled`, `bpdu_filter`. NOTHING else — `Port` has no
+  up/down field, and `observed_speed is None` must NOT be read as down (it
+  also means "no telemetry"). Participation is defined by config intent +
+  modeled links only.
+- **Links excluded:** any link with an excluded end; any link whose either end
+  is not a SWITCH-role device (APs, unmanaged neighbors — the tree spans
+  switches only).
+- **`stp_edge` ports stay in and are elected NORMALLY**: edge is a role hint,
+  not non-participation — an edge port receiving a BPDU self-heals into a
+  participant, so on a modeled switch↔switch link the election (not edge
+  fiat) decides its role; the prediction carries a note that the port is
+  edge-configured (that misconfiguration itself is `link_mismatch`'s job,
+  Spec-2). An edge port with no modeled switch link has no link end in the
+  active subgraph and gets no prediction at all — "participating ends" ≡
+  ends of links in the active subgraph.
+- **Self-loop pairs participate** (`Port.self_loop_peer`, Spec-3): both ends on
+  one bridge is the designated/backup case.
+
+## Election + role assignment
+
+Per component of the active subgraph:
+
+1. **Root:** `root_of(ir, component)` (moved helper). ABSTAIN → rootless
+   component + note, skip roles.
+2. **Bridge RPC:** Dijkstra from the root over LINK costs gives each bridge's
+   root-path-cost. **Same-bridge links (self-loops) are excluded from the
+   Dijkstra graph — they never contribute to RPC**; they are classified in
+   step 4 only.
+3. **Role assignment walks EVERY graph edge / member port, not the node-level
+   SPT.** Node-level shortest paths cannot distinguish parallel links between
+   the same bridge pair, LAG members, or self-loop ends — each physical port
+   end gets its own decision:
+   - Root bridge: every active port → `designated` (`deciding_factor="root_bridge"`).
+   - Per non-root bridge, **root port** = min over its link ends of the IEEE
+     total-order key (below). Sole candidate → `deciding_factor="sole_path"`.
+   - Per link, **designated end** = the side whose bridge has lower
+     `(RPC, bridge_id)`; ties within one bridge (parallel links) fall to the
+     port-id component of the key.
+   - **Same-bridge link:** deterministic port tie-break picks one end
+     `designated`, the other `backup` — always `deciding_factor="port_id_tie"`,
+     always LOW.
+   - Every remaining participating end → `alternate` (blocking).
+4. **State derivation:** `alternate`/`backup` → `blocking`; `root`/`designated`
+   → `forwarding`.
+
+**The IEEE total-order key is ONE explicit comparison tuple** implementing
+root bridge ID → root path cost → sender bridge ID → sender port ID →
+receiver port ID. The port-ID components are supplied by a deterministic
+port-name sort (stable output) but are marked UNGROUNDED: any decision whose
+outcome the port-ID components determine is capped LOW.
+
+## Cost model + confidence
+
+- **Link cost:** IEEE 802.1t value from the speed enum; per end,
+  `observed_speed` → `speed` (config) → None. Link cost = min of the two end
+  speeds' costs when both known; disagreement between known ends → note + cap
+  MEDIUM. Both unknown → 1G default cost + every decision whose margin that
+  cost could flip is capped LOW.
+- **Per-decision confidence:**
+  - HIGH: decided by cost margin or bridge ID, all contributing link costs
+    known, link confidence HIGH.
+  - Capped at the minimum LINK confidence along the deciding comparison (a
+    MEDIUM one-sided-LLDP link cannot carry a HIGH prediction).
+  - LOW: decided by port-ID tie-break, or resting on an unknown/defaulted
+    speed.
+  - Component-wide cap MEDIUM when `root_assumed_default` (matches
+    `stp_root`'s existing stance on assumed 32768).
+
+## Validation rail
+
+### Pure comparator (`analysis/stp_tree.py` or sibling; pure)
+
+`compare_to_observed(prediction, ir) -> StpAgreementReport` joins
+per-port predictions against observed `Port.stp_role`/`Port.stp_state`:
+
+- Observed `None` (absent or `""`-normalized) → **unvalidatable** (excluded
+  from agreement math).
+- **Unknown/variant observed role strings → unvalidatable, NOT mismatch** —
+  the live vocabulary is `root/designated/backup/alternate`, but an
+  unrecognized token must never count against the engine (nor for it).
+- `disabled-bpdu-inconsistent` → reported in a separate bucket (protection
+  state, not a role).
+- Role compared exactly; state cross-checked independently (a role match with
+  a state mismatch is still a mismatch).
+- Report: `matched / mismatched_high / mismatched_low / unvalidatable`
+  totals + per-port detail rows, and per-component rollups (consumers cap
+  confidence at component granularity).
+
+### Live gate script (read-only; Tier-2-equivalence precedent)
+
+Fetch via SDK → ingest → predict → compare, over TM-LAB (self-loops cabled —
+real ground truth for `backup`/`blocking`) and the production org:
+
+- **FAIL on ANY `mismatched_high`** (a HIGH-confidence prediction the network
+  contradicts is an engine bug, full stop).
+- `mismatched_low` → report-only (tie-break guesses are declared guesses).
+- **Zero participating ports org-wide → FAIL** (no vacuous green).
+- Prints the full per-port table for mismatches + the agreement summary.
+
+### Replay goldens
+
+A committed fixture captured from TM-LAB via `ReplayStore.save_raw` pins the
+agreement offline in CI. **Fixtures are redacted on write** (org/site UUIDs +
+MACs pseudonymized) — goldens target the fixture's REDACTED ids (Spec-3
+lesson, recorded in the ledger).
+
+## THE INVARIANT (binding on all future consumer slices)
+
+> **Every future verdict-facing consumer of `stp_tree()` MUST call
+> `compare_to_observed` and cap/degrade its confidence on component-level
+> disagreement. Prediction alone NEVER earns SAFE; agreement with observed
+> telemetry is what allows confidence.**
+
+This spec's slice stays pure; this invariant prevents the next slice from
+treating the engine as an oracle. It is stated here so the consumer spec
+inherits it as a requirement, not a suggestion.
+
+## Explicit limitations (v1, declared)
+
+- Single tree per component — no per-VLAN/VSTP claim (config can't express
+  it; telemetry can't validate it).
+- Port-priority/port-ID inputs ungrounded → those tie-breaks are permanently
+  ≤ LOW in v1.
+- LAG/ESI-LAG aggregates unmodeled — members costed per-link.
+- Stable state only — no convergence dynamics, timers, or transient states.
+- Mixed-protocol (VSTP↔RSTP) interop out of scope.
+- **Zero verdict-facing change:** `stp_root`, `stp_policy`, `l2_loop`,
+  blackhole/isolation byte-identical (the `_root_of` relocation is proven
+  behavior-preserving by their existing suites).
+
+## Testing
+
+TDD throughout:
+
+- Unit tests per classification rule: each role, each `deciding_factor`, each
+  confidence cap (unknown speed, link-confidence cap, assumed-default cap,
+  port-id tie).
+- Parallel-links and self-loop member-port granularity pinned explicitly
+  (node-level SPT shortcuts must fail these).
+- Determinism: same IR → identical prediction (ordering-independent).
+- `_root_of` relocation pinned by the untouched `stp_root` + `stp_policy`
+  suites.
+- Comparator: agreement/disagreement/unvalidatable/unknown-token/
+  bpdu-inconsistent buckets over synthetic IRs.
+- Goldens from the redacted TM-LAB fixture.
+- Full gate: `uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
+
+## Live verification (mandated, run while the lab loops are still cabled)
+
+1. Run the live gate against TM-LAB: expect the backbone root port
+   (`xe-0/1/3`-side) and the self-loop designated/backup pairs
+   (`ge-0/0/8↔9` test_pvstp, `ge-0/0/10↔11` test_stp) in the per-port table;
+   self-loop pair predictions are LOW (port-id ties) so mismatches there are
+   report-only — but role agreement is the expected outcome.
+2. Run the live gate against the production org: expect zero
+   `mismatched_high`; record the agreement summary in the ledger.
+3. Capture the TM-LAB fixture for the committed goldens in the same session.
+
+## Deferred (explicitly not this slice)
+
+- Any consumer: SAFE grants in `wired.stp.policy`, blocked-link reachability
+  taint in blackhole/isolation, `stp_root` upgrade to tree-diff.
+- Per-VLAN trees; port-priority grounding if Mist ever exposes it;
+  LAG-aware costs; convergence dynamics; VSTP↔RSTP interop.
+- `stp_role`-based root-direction triangulation (Spec-3 deferral) as an
+  additional election cross-check.
