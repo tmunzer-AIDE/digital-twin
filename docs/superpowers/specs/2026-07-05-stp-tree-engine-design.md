@@ -77,9 +77,16 @@ class StpTreePrediction:
 ```
 
 `root=None` has two distinct causes, both VALID analysis results (not errors):
-fewer than two active switches (nothing to elect — no port predictions, no
-note), or `_ABSTAIN` on an uninterpretable priority (no port predictions +
-an explicit note; never guess past bad input). The *live gate* treats
+fewer than two active switches AND no pseudo-edges (nothing to elect, nothing
+to classify — no port predictions, no note), or `_ABSTAIN` on an
+uninterpretable priority (no port predictions + an explicit note; never guess
+past bad input). **Single-switch component WITH a reciprocal self-loop (P2
+decision): still predicted** — the switch is the TRIVIAL root (no competing
+bridge exists; no priority comparison is made, so `root_assumed_default` is
+False and `root_of` is not consulted — engine-local rule, the moved helper's
+`< 2 switches → None` semantics stay untouched for its check consumers), and
+the pseudo-edge classifies designated/backup as usual. This keeps a
+standalone lab-loop switch validatable instead of silently unpredicted. The *live gate* treats
 "zero participating ports across the whole org" as FAIL (vacuous green), but
 the pure module returning an empty/rootless component is correct behavior —
 these are different layers' contracts.
@@ -103,8 +110,19 @@ Build the STP-active subgraph per component:
   Spec-2). An edge port with no modeled switch link has no link end in the
   active subgraph and gets no prediction at all — "participating ends" ≡
   ends of links in the active subgraph.
-- **Self-loop pairs participate** (`Port.self_loop_peer`, Spec-3): both ends on
-  one bridge is the designated/backup case.
+- **Self-loop pseudo-edges are SYNTHESIZED, not read from links** (P1):
+  ingest deliberately mints NO `Link` for same-device LLDP (Spec-3
+  `_emit_links` same-device skip) and `build_l2_graph()` drops self edges —
+  so building from `ir.links`/`l2_graph` alone would silently lose every
+  self-loop. Construction rule: for each RECIPROCAL claim pair
+  (`a.self_loop_peer == b.port_id and b.self_loop_peer == a.port_id`, both
+  ends passing the port-exclusion rules above), synthesize one same-bridge
+  pseudo-edge, deduped per pair (frozenset key — the Spec-3 `l2_loop`
+  precedent). One-sided claims synthesize NOTHING (unconfirmed physical
+  loop) and add a component note. Pseudo-edges are classified in role
+  assignment but are NEVER part of the RPC/Dijkstra graph.
+  "Participating ends" ≡ ends of active-subgraph links ∪ ends of
+  synthesized pseudo-edges.
 
 ## Election + role assignment
 
@@ -113,22 +131,25 @@ Per component of the active subgraph:
 1. **Root:** `root_of(ir, component)` (moved helper). ABSTAIN → rootless
    component + note, skip roles.
 2. **Bridge RPC:** Dijkstra from the root over LINK costs gives each bridge's
-   root-path-cost. **Same-bridge links (self-loops) are excluded from the
-   Dijkstra graph — they never contribute to RPC**; they are classified in
-   step 4 only.
+   root-path-cost. **Same-bridge pseudo-edges never enter the Dijkstra
+   graph — they never contribute to RPC** (they exist only for role
+   classification in step 3).
 3. **Role assignment walks EVERY graph edge / member port, not the node-level
    SPT.** Node-level shortest paths cannot distinguish parallel links between
    the same bridge pair, LAG members, or self-loop ends — each physical port
    end gets its own decision:
-   - Root bridge: every active port → `designated` (`deciding_factor="root_bridge"`).
+   - **Same-bridge pseudo-edge (the EXCEPTION — wins over every rule below,
+     including on the root bridge itself):** deterministic port tie-break
+     picks one end `designated`, the other `backup` — always
+     `deciding_factor="port_id_tie"`, always LOW. A self-loop on the elected
+     root is still designated/backup, NOT designated/designated (P2).
+   - Root bridge: every OTHER active port → `designated`
+     (`deciding_factor="root_bridge"`).
    - Per non-root bridge, **root port** = min over its link ends of the IEEE
      total-order key (below). Sole candidate → `deciding_factor="sole_path"`.
    - Per link, **designated end** = the side whose bridge has lower
      `(RPC, bridge_id)`; ties within one bridge (parallel links) fall to the
      port-id component of the key.
-   - **Same-bridge link:** deterministic port tie-break picks one end
-     `designated`, the other `backup` — always `deciding_factor="port_id_tie"`,
-     always LOW.
    - Every remaining participating end → `alternate` (blocking).
 4. **State derivation:** `alternate`/`backup` → `blocking`; `root`/`designated`
    → `forwarding`.
@@ -227,6 +248,13 @@ TDD throughout:
   port-id tie).
 - Parallel-links and self-loop member-port granularity pinned explicitly
   (node-level SPT shortcuts must fail these).
+- Self-loop construction pinned (P1): a reciprocal pair with NO `Link` in
+  `ir.links` still yields predictions (the synthesis rule, not the link
+  table, is load-bearing); one-sided claim → no pseudo-edge + note.
+- Self-loop exception ordering pinned (P2): a reciprocal pair ON the elected
+  root bridge → designated/backup (never designated/designated); a
+  single-switch component with a reciprocal pair → trivial root +
+  designated/backup; a single-switch component without one → no predictions.
 - Determinism: same IR → identical prediction (ordering-independent).
 - `_root_of` relocation pinned by the untouched `stp_root` + `stp_policy`
   suites.
