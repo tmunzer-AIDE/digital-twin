@@ -62,22 +62,22 @@ sections before any task; they are the requirements.
 ```python
 """Engine-side pins for the relocated election helper."""
 from digital_twin.analysis.stp_tree import ABSTAIN, DEFAULT_PRIORITY, root_of
-from tests.factories import make_device, make_ir  # existing factory signatures
+from digital_twin.ir.builder import IRBuilder
+from tests.factories import sw  # the real helpers: sw(did, stp_priority=...)
 
 
 def test_root_of_semantics_pinned_at_new_home():
     # <2 switches -> None; else min (priority ?? 32768, device_id); assumed flag
-    a = make_device("aa0000000001", role="switch", stp_priority=4096)
-    b = make_device("bb0000000002", role="switch")  # None -> default 32768
-    ir = make_ir(devices=[a, b])
-    assert root_of(ir, frozenset({a.id})) is None
-    assert root_of(ir, frozenset({a.id, b.id})) == (a.id, True)
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=4096)).add_device(sw("bb02"))  # None -> 32768
+    ir = b.build()
+    assert root_of(ir, frozenset({"aa01"})) is None
+    assert root_of(ir, frozenset({"aa01", "bb02"})) == ("aa01", True)
     assert DEFAULT_PRIORITY == 32768 and ABSTAIN == "abstain"
 ```
 
-(Adapt the two factory calls to the exact `tests/factories.py` signatures —
-they already build switch devices with `stp_priority`; see
-`tests/checks/test_stp_root.py` for the established pattern.)
+(`tests/checks/test_stp_root.py:17` is the established builder pattern —
+verify `IRBuilder`'s import path there and reuse it.)
 
 - [ ] **Step 2: Run it — expect FAIL** (`ModuleNotFoundError`)
 
@@ -262,6 +262,10 @@ def test_rpc_taint_propagates_default_cost():
 def test_abstain_component_has_no_roles_and_a_note():
 def test_trivial_root_single_switch_with_pseudo_edge():
     # engine-local: root = the switch, root_assumed_default False
+def test_equal_cost_parallel_paths_never_compare_payload():
+    # P2 pin AT THE DIJKSTRA LAYER (not only role assignment): two identical-
+    # cost/same-node-pair standalone links -> RPC computes without TypeError
+    # and deterministically (edge_key + counter break the tie)
 ```
 
 - [ ] **Step 2: Run — FAIL**
@@ -287,8 +291,18 @@ class _Rpc:
     link_conf: ConfidenceLevel      # min link confidence along the path
 ```
 
-heapq entries `(cost, node_id, defaulted, link_conf, via_edge)`; pop-min wins;
-fold taint from the predecessor's `_Rpc` + the entering end.
+heapq entries are ordered by PRIMITIVES ONLY, with a monotonic counter
+guaranteeing comparison NEVER reaches the payload (review P2 — two
+equal-cost parallel paths would otherwise make Python compare `_ActiveEdge`,
+which is not orderable → TypeError):
+
+```python
+counter = itertools.count()
+heapq.heappush(q, (cost, node_id, int(defaulted), int(link_conf),
+                   edge.key, next(counter), edge))
+```
+
+pop-min wins; fold taint from the predecessor's `_Rpc` + the entering end.
 
 - [ ] **Step 4: PASS + full gate**
 
