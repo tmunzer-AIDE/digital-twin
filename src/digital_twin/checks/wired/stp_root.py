@@ -18,6 +18,7 @@ from __future__ import annotations
 import networkx as nx
 
 from digital_twin.analysis.delta_cause import causes_for_root_move
+from digital_twin.analysis.stp_tree import root_of as _root_of
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
@@ -28,38 +29,12 @@ from digital_twin.ir import (
     IRDiff,
     min_confidence,
 )
-from digital_twin.ir.entities import DeviceRole
-from digital_twin.ir.model import IR
 
-_DEFAULT_PRIORITY = 32768
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _ASSUMED_DEFAULT = Confidence(
     level=ConfidenceLevel.MEDIUM,
     reasons=("bridge priority not explicit — platform default 32768 assumed",),
 )
-
-
-_ABSTAIN = "abstain"
-
-
-def _root_of(ir: IR, component: frozenset[str]) -> tuple[str, bool] | str | None:
-    """(root device id, any-default-assumed) for the component's switches —
-    None when fewer than two switches (no election to disturb), _ABSTAIN when
-    an uninterpretable priority makes the election unpredictable (the caller
-    must surface that as PARTIAL coverage, never a clean pass)."""
-    switches = [d for d in component if ir.devices[d].role is DeviceRole.SWITCH]
-    if len(switches) < 2:
-        return None
-    if any(ir.devices[d].stp_priority_invalid for d in switches):
-        return _ABSTAIN
-    assumed = any(ir.devices[d].stp_priority is None for d in switches)
-
-    def election_key(d: str) -> tuple[int, str]:
-        prio = ir.devices[d].stp_priority
-        # explicit `is None`: 0 is a VALID priority — the strongest one
-        return (_DEFAULT_PRIORITY if prio is None else prio, d)
-
-    return min(switches, key=election_key), assumed
 
 
 class StpRootChangeCheck:

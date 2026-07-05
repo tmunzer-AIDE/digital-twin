@@ -66,6 +66,7 @@ import dataclasses
 
 import networkx as nx
 
+from digital_twin.analysis.stp_tree import root_of as _root_of
 from digital_twin.checks.base import (
     CheckContext,
     CheckResult,
@@ -73,7 +74,6 @@ from digital_twin.checks.base import (
     CoverageState,
     status_from_findings,
 )
-from digital_twin.checks.wired.stp_root import _root_of
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import (
     Capability,
