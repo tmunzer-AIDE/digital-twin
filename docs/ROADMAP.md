@@ -535,6 +535,35 @@ modeling" below.
   (blackhole/isolation confidence); the full STP tree/convergence engine
   (see above — now viable, still a program); VC-internal loop semantics;
   `stp_role`-based root-direction triangulation for the tree engine.
+- ✅ **STP tree/convergence engine** (Spec-4, the program's tree-engine
+  installment flagged viable by Spec-2/Spec-3 above) — engine + validation
+  rail shipped 2026-07-05: a pure analysis module, no verdict change. Two new
+  modules: `analysis/stp_tree.py` (`predict_stp_tree`) runs per-VLAN-agnostic
+  root election + directed root-path-cost Dijkstra over the active L2
+  topology (VC-folded, LAG-aware, disabled/`bpdu_filter`-excluded) and
+  assigns every participating port a role (root/designated/alternate/backup),
+  state, confidence tier, and `deciding_factor`; same-bridge self-loops
+  (`Port.self_loop_peer`, reciprocal only) synthesize a pseudo-edge pair
+  predicted designated/backup at LOW confidence with `deciding_factor
+  "port_id_tie"`. `analysis/stp_agreement.py` (`compare_to_observed`) joins
+  every prediction against observed `Port.stp_role`/`stp_state` telemetry and
+  buckets each port matched/`mismatched_{high,medium,low}`/unvalidatable/
+  bpdu_inconsistent, keyed exactly on the prediction's own confidence tier.
+  **THE INVARIANT: prediction alone never earns SAFE; every future
+  verdict-facing consumer must call `compare_to_observed` and cap confidence
+  on component-level disagreement.** `tools/stp_gate.py` is the live
+  tier-2 gate proving the rail against real Mist telemetry (fails on any
+  `mismatched_high` or a vacuous zero-participating run); it is deliberately
+  outside the verdict engine — no check calls it yet. **Deferred consumers**
+  (each its own follow-on spec): granting SAFE in `wired.stp.policy`
+  (`.root_protect_risk`/`.blocking_risk`) once the tree prediction backs the
+  graph-abstained cases the live-role escalation covers today; blocked-link
+  reachability taint (feeding predicted `blocking` ports into
+  `l2_blackhole`/`l2_isolation` confidence); the `stp_root` tree-diff upgrade
+  (per-component root-continuity check once TM-LAB live-verify + fixture
+  capture land). Spec:
+  `docs/superpowers/specs/2026-07-05-stp-tree-engine-design.md`; plan:
+  `docs/superpowers/plans/2026-07-05-stp-tree-engine.md`.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true

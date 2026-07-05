@@ -56,6 +56,35 @@ def access_port(did: str, name: str, vlan: int) -> Port:
     )
 
 
+def make_port(
+    did: str,
+    name: str,
+    *,
+    mode: PortMode = PortMode.TRUNK,
+    disabled: bool = False,
+    bpdu_filter: bool = False,
+    stp_edge: bool = False,
+    speed: str | None = None,
+    observed_speed: str | None = None,
+    self_loop_peer: str | None = None,
+    self_loop_reciprocal: bool = False,
+) -> Port:
+    """Generic port builder exposing the STP-relevant knobs (Spec-4 stp_tree tests)."""
+    return Port(
+        id=f"{did}:{name}",
+        device_id=did,
+        name=name,
+        mode=mode,
+        disabled=disabled,
+        bpdu_filter=bpdu_filter,
+        stp_edge=stp_edge,
+        speed=speed,
+        observed_speed=observed_speed,
+        self_loop_peer=self_loop_peer,
+        self_loop_reciprocal=self_loop_reciprocal,
+    )
+
+
 def link(
     pa: str,
     pb: str,
