@@ -6,6 +6,8 @@ confidence on component-level disagreement.
 """
 from __future__ import annotations
 
+import heapq
+import itertools
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -220,3 +222,139 @@ def active_topology(ir: IR) -> _ActiveTopology:
     edges.sort(key=lambda e: e.key)
     pseudo_edges, notes = _pseudo_edges(ir, vc_root)
     return _ActiveTopology(edges=tuple(edges), pseudo_edges=pseudo_edges, notes=notes)
+
+
+# --- election + directed root-path-cost (RPC), with taint tracking ----------
+
+
+@dataclass(frozen=True)
+class _Rpc:
+    """One settled node's root-path-cost, folded from the root down."""
+
+    cost: int
+    defaulted: bool  # OR of every defaulted port cost along the path
+    link_conf: ConfidenceLevel  # MIN link confidence along the path
+
+
+@dataclass(frozen=True)
+class _ComponentElection:
+    """Per-component election + RPC result — the input Task 4's role
+    assignment walks (candidates = every edge-end entering B with
+    rpc(neighbor).cost + end.cost, etc.)."""
+
+    root: str | None
+    root_assumed_default: bool
+    abstained: bool
+    rpc: Mapping[str, _Rpc]
+    note: str | None = None
+
+
+def _end_for_node(edge: _ActiveEdge, node: str) -> tuple[_End, _End]:
+    """(entering end, neighbor's end) for traversal INTO `node` across `edge`."""
+    if edge.a.node == node:
+        return edge.a, edge.b
+    return edge.b, edge.a
+
+
+def component_rpc(
+    ir: IR, topology: _ActiveTopology, component: frozenset[str]
+) -> _ComponentElection:
+    """Elect the component's root and compute every other node's directed,
+    tainted root-path-cost via a hand-rolled Dijkstra. Same-bridge pseudo-edges
+    NEVER enter this graph — they exist only for role classification later."""
+    switches = [d for d in component if ir.devices[d].role is DeviceRole.SWITCH]
+    pseudo_nodes = {pe.node for pe in topology.pseudo_edges if pe.node in component}
+
+    # Trivial-root rule FIRST: exactly one switch node AND >=1 pseudo-edge on
+    # it -> root = that switch; root_of's <2-switches->None semantics stay
+    # untouched (its consumers rely on that exact contract).
+    if len(switches) == 1 and switches[0] in pseudo_nodes:
+        root = switches[0]
+        return _ComponentElection(
+            root=root,
+            root_assumed_default=False,
+            abstained=False,
+            rpc={root: _Rpc(cost=0, defaulted=False, link_conf=ConfidenceLevel.HIGH)},
+        )
+
+    elected = root_of(ir, component)
+    if elected is None:
+        # <2 switches, no pseudo-edge: no predictions, no note.
+        return _ComponentElection(root=None, root_assumed_default=False, abstained=False, rpc={})
+    if not isinstance(elected, tuple):
+        return _ComponentElection(
+            root=None,
+            root_assumed_default=False,
+            abstained=True,
+            rpc={},
+            note=(
+                f"component of {len(component)} devices: uninterpretable bridge "
+                "priority — root election abstained"
+            ),
+        )
+    root, root_assumed_default = elected
+
+    # Build adjacency restricted to this component's edges only (pseudo-edges
+    # never enter the Dijkstra graph).
+    adjacency: dict[str, list[_ActiveEdge]] = {}
+    for edge in topology.edges:
+        if edge.a.node not in component or edge.b.node not in component:
+            continue
+        adjacency.setdefault(edge.a.node, []).append(edge)
+        adjacency.setdefault(edge.b.node, []).append(edge)
+
+    rpc: dict[str, _Rpc] = {root: _Rpc(cost=0, defaulted=False, link_conf=ConfidenceLevel.HIGH)}
+    counter = itertools.count()
+    # Heap entries ordered by PRIMITIVES ONLY, with a monotonic counter before
+    # the payload — two equal-cost parallel paths must never fall through to
+    # comparing _ActiveEdge (not orderable -> TypeError).
+    heap: list[tuple[int, str, int, int, str, int, _ActiveEdge]] = []
+    for edge in adjacency.get(root, []):
+        target = edge.b.node if edge.a.node == root else edge.a.node
+        entering_end, _ = _end_for_node(edge, target)
+        heapq.heappush(
+            heap,
+            (
+                entering_end.cost,
+                target,
+                int(entering_end.cost_defaulted),
+                int(edge.link_confidence),
+                edge.key,
+                next(counter),
+                edge,
+            ),
+        )
+
+    while heap:
+        cost, node, _defaulted_flag, _conf_flag, _key, _seq, edge = heapq.heappop(heap)
+        if node in rpc:
+            continue
+        entering_end, _neighbor_end = _end_for_node(edge, node)
+        pred_node = edge.b.node if edge.a.node == node else edge.a.node
+        pred_rpc = rpc[pred_node]
+        rpc[node] = _Rpc(
+            cost=cost,
+            defaulted=pred_rpc.defaulted or entering_end.cost_defaulted,
+            link_conf=min(pred_rpc.link_conf, edge.link_confidence),
+        )
+        for next_edge in adjacency.get(node, []):
+            neighbor = next_edge.b.node if next_edge.a.node == node else next_edge.a.node
+            if neighbor in rpc:
+                continue
+            neighbor_entering_end, _ = _end_for_node(next_edge, neighbor)
+            heapq.heappush(
+                heap,
+                (
+                    cost + neighbor_entering_end.cost,
+                    neighbor,
+                    int(neighbor_entering_end.cost_defaulted),
+                    int(next_edge.link_confidence),
+                    next_edge.key,
+                    next(counter),
+                    next_edge,
+                ),
+            )
+
+    return _ComponentElection(
+        root=root, root_assumed_default=root_assumed_default, abstained=False, rpc=rpc
+    )

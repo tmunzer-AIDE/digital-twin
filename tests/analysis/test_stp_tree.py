@@ -5,6 +5,7 @@ from digital_twin.analysis.stp_tree import (
     ABSTAIN,
     DEFAULT_PRIORITY,
     active_topology,
+    component_rpc,
     root_of,
 )
 from digital_twin.ir import ConfidenceLevel, IRBuilder
@@ -273,3 +274,94 @@ def test_link_confidence_captured_on_active_edge():
     b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
     top = active_topology(b.build())
     assert top.edges[0].link_confidence is ConfidenceLevel.HIGH
+
+
+# ---------- component_rpc: election + directed tainted RPC (Task 3) ---------
+
+
+def test_rpc_uses_receiving_port_cost_directionally():
+    # A(root, 1g port) -- B(10g port): RPC(B) = cost(B's port) = 2_000, NOT 20_000
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="10g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
+    assert election.root == "aa01"
+    assert election.root_assumed_default is False
+    assert election.rpc["aa01"].cost == 0
+    assert election.rpc["bb02"].cost == 2_000  # bb02's OWN port cost (10g), not aa01's (1g)
+
+
+def test_rpc_taint_propagates_default_cost():
+    # unknown speed on the path -> rpc.defaulted True downstream
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02")).add_device(sw("cc03"))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="10g"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))  # no speed -> defaulted
+    b.add_port(make_port("cc03", "ge-0/0/1"))  # no speed -> defaulted too, but irrelevant
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("bb02:ge-0/0/2", "cc03:ge-0/0/1"))
+    ir = b.build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02", "cc03"}))
+    assert election.root == "aa01"
+    assert election.rpc["aa01"].defaulted is False
+    assert election.rpc["bb02"].defaulted is False  # aa01->bb02 leg has known speeds both ends
+    assert election.rpc["cc03"].defaulted is True  # bb02->cc03 leg carries an unknown-speed end
+
+
+def test_abstain_component_has_no_roles_and_a_note():
+    from digital_twin.ir.entities import Device, DeviceRole
+
+    b = IRBuilder()
+    b.add_device(
+        Device(id="aa01", role=DeviceRole.SWITCH, site="s1", stp_priority_invalid=True)
+    ).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    ir = b.build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
+    assert election.root is None
+    assert election.abstained is True
+    assert election.rpc == {}
+    assert election.note is not None
+
+
+def test_trivial_root_single_switch_with_pseudo_edge():
+    # engine-local: root = the switch, root_assumed_default False
+    dev = "aa0000000001"
+    pa = make_port(dev, "ge-0/0/8", self_loop_peer=f"{dev}:ge-0/0/9")
+    pb = make_port(dev, "ge-0/0/9", self_loop_peer=f"{dev}:ge-0/0/8")
+    ir = IRBuilder().add_device(sw(dev)).add_port(pa).add_port(pb).build()
+    top = active_topology(ir)
+    election = component_rpc(ir, top, frozenset({dev}))
+    assert election.root == dev
+    assert election.root_assumed_default is False
+    assert election.abstained is False
+    assert election.rpc[dev].cost == 0
+
+
+def test_equal_cost_parallel_paths_never_compare_payload():
+    # P2 pin AT THE DIJKSTRA LAYER (not only role assignment): two identical-
+    # cost/same-node-pair standalone links -> RPC computes without TypeError
+    # and deterministically (edge_key + counter break the tie)
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0)).add_device(sw("bb02"))
+    b.add_port(make_port("aa01", "ge-0/0/1"))
+    b.add_port(make_port("aa01", "ge-0/0/2"))
+    b.add_port(make_port("bb02", "ge-0/0/1"))
+    b.add_port(make_port("bb02", "ge-0/0/2"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    top = active_topology(ir)
+    # must not raise TypeError from comparing _ActiveEdge payloads on a cost tie
+    election = component_rpc(ir, top, frozenset({"aa01", "bb02"}))
+    assert election.root == "aa01"
+    assert election.rpc["bb02"].cost == 20_000  # single 1g hop either parallel link
