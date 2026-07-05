@@ -62,7 +62,7 @@ sections before any task; they are the requirements.
 ```python
 """Engine-side pins for the relocated election helper."""
 from digital_twin.analysis.stp_tree import ABSTAIN, DEFAULT_PRIORITY, root_of
-from digital_twin.ir.builder import IRBuilder
+from digital_twin.ir import IRBuilder
 from tests.factories import sw  # the real helpers: sw(did, stp_priority=...)
 
 
