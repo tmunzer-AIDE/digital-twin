@@ -62,6 +62,44 @@ def test_pseudo_edge_excluded_when_one_claimed_port_is_disabled():
     assert not top.pseudo_edges
 
 
+def test_pseudo_edge_excluded_when_one_claimed_port_is_bpdu_filtered():
+    dev = "aa0000000001"
+    pa = make_port(dev, "ge-0/0/8", self_loop_peer=f"{dev}:ge-0/0/9", bpdu_filter=True)
+    pb = make_port(dev, "ge-0/0/9", self_loop_peer=f"{dev}:ge-0/0/8")
+    ir = IRBuilder().add_device(sw(dev)).add_port(pa).add_port(pb).build()
+    top = active_topology(ir)
+    assert not top.pseudo_edges
+
+
+def test_pseudo_edges_deterministically_sorted_by_insertion_order():
+    """Pseudo-edges must be ordered by (node, port_a, port_b) regardless of
+    port insertion order. Build TWO reciprocal pairs added in REVERSE name order:
+    ge-0/0/8+9 added AFTER ge-0/0/1+2. Verify pseudo_edges come out sorted."""
+    dev = "aa0000000001"
+    builder = IRBuilder().add_device(sw(dev))
+
+    # Add ge-0/0/8 and ge-0/0/9 FIRST (reverse lexicographic to ge-0/0/1+2)
+    p8 = make_port(dev, "ge-0/0/8", self_loop_peer=f"{dev}:ge-0/0/9")
+    p9 = make_port(dev, "ge-0/0/9", self_loop_peer=f"{dev}:ge-0/0/8")
+    builder.add_port(p8).add_port(p9)
+
+    # Add ge-0/0/1 and ge-0/0/2 SECOND (should sort first)
+    p1 = make_port(dev, "ge-0/0/1", self_loop_peer=f"{dev}:ge-0/0/2")
+    p2 = make_port(dev, "ge-0/0/2", self_loop_peer=f"{dev}:ge-0/0/1")
+    builder.add_port(p1).add_port(p2)
+
+    ir = builder.build()
+    top = active_topology(ir)
+
+    # Should have TWO pseudo-edges
+    assert len(top.pseudo_edges) == 2
+
+    # port_a values should be sorted: ge-0/0/1 should come before ge-0/0/8
+    # despite ge-0/0/8 being inserted first
+    assert top.pseudo_edges[0].port_a == f"{dev}:ge-0/0/1"
+    assert top.pseudo_edges[1].port_a == f"{dev}:ge-0/0/8"
+
+
 # ---------- active_topology: link/port exclusion -----------------------------
 
 

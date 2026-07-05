@@ -178,7 +178,8 @@ def _pseudo_edges(
     edges: list[_PseudoEdge] = []
     notes: list[str] = []
     seen: set[frozenset[str]] = set()
-    for port in ir.ports.values():
+    # Iterate ports in sorted order for deterministic output
+    for port in sorted(ir.ports.values(), key=lambda p: p.id):
         peer_id = port.self_loop_peer
         if peer_id is None:
             continue
@@ -198,6 +199,9 @@ def _pseudo_edges(
         node = node_for(vc_root, port.device_id)
         port_a, port_b = sorted((port.id, peer.id))
         edges.append(_PseudoEdge(node=node, port_a=port_a, port_b=port_b))
+    # Sort edges by (node, port_a, port_b) and notes by content for determinism
+    edges.sort(key=lambda e: (e.node, e.port_a, e.port_b))
+    notes.sort()
     return tuple(edges), tuple(notes)
 
 
