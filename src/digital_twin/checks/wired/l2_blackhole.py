@@ -82,6 +82,7 @@ class L2BlackholeCheck:
         wireless_in_play = False
         for vid in sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans)):
             statuses.append(self._check_vlan(ctx, vid, findings, confidences))
+            notes.extend(self._soft_taint(ctx, vid, confidences))
             # observation-based coverage matters only for conclusions that RELIED
             # on it: the delta touched this vlan AND wireless members are in play
             wireless_in_play = wireless_in_play or (
@@ -362,6 +363,37 @@ class L2BlackholeCheck:
             )
             worst = _aggregate([worst, Status.FAIL if high else Status.WARN])
         return worst
+
+    def _soft_taint(
+        self, ctx: CheckContext, vid: int, confidences: list[Confidence]
+    ) -> list[str]:
+        """Spec-5 soft floor: a delta-relevant reach that survives only because of
+        a soft-only (unconfirmed / low-confidence / unlicensed) predicted block is
+        not SAFE-certifiable — append a sub-HIGH confidence (REVIEW floor) + note.
+        Never a hard finding. Relevance = the vlan/exit/blocked-edge-set changed."""
+        sr = ctx.stp_reachability
+        relevant = (
+            _vlan_changed(ctx, vid) or _exit_changed(ctx, vid) or sr.blocked_edge_keys_changed(vid)
+        )
+        if not relevant:
+            return []
+        soft_dep = sr.proposed_soft_dependent_components(vid)
+        if not soft_dep:
+            return []
+        confidences.append(
+            Confidence(
+                level=ConfidenceLevel.MEDIUM,
+                reasons=(
+                    f"vlan {vid} reachability depends on a link predicted "
+                    "blocking, unconfirmed by telemetry",
+                ),
+            )
+        )
+        nodes = sorted(n for c in soft_dep for n in c.nodes)
+        return [
+            f"vlan {vid}: exit reachability depends on a link predicted blocking "
+            f"(unconfirmed) — nodes {nodes}"
+        ]
 
     def _finding(
         self,

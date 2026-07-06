@@ -591,3 +591,26 @@ def test_blackhole_preexisting_symmetric_block_is_info_not_fail():
 def test_blackhole_context_exposes_memoized_stp_reachability():
     ctx = _simple_check_ctx()
     assert ctx.stp_reachability is ctx.stp_reachability
+
+
+# --- STP soft-dependence REVIEW floor (Spec-5 Task 5) ------------------------------
+
+
+def test_blackhole_soft_dependence_floors_review_without_hard_finding():
+    # VLAN 10 reaches exit only via a SOFT-only block (unconfirmed) and the delta
+    # is relevant -> sub-HIGH confidence (REVIEW floor) + note, NO hard finding
+    ctx = _pruned_onto_block_check_ctx(block_confirmed=False)
+    result = L2BlackholeCheck().run(ctx)
+    assert result.confidence is not None and result.confidence.level is not ConfidenceLevel.HIGH
+    assert any("predicted blocking" in n for n in result.coverage.notes)
+    assert not any(f.severity is Severity.CRITICAL for f in result.findings)  # no hard strand
+
+
+def test_blackhole_soft_dependence_suppressed_when_irrelevant():
+    # a pre-existing soft dependence, delta does NOT touch the blocked-edge set /
+    # vlan / exit -> no REVIEW floor from this path
+    ctx = _pruned_onto_block_check_ctx(block_confirmed=False, preexisting=True)
+    result = L2BlackholeCheck().run(ctx)
+    # confidence not dragged below HIGH by the soft path (may still be HIGH pass)
+    assert result.confidence is None or result.confidence.level is ConfidenceLevel.HIGH
+    assert not any("predicted blocking" in n for n in result.coverage.notes)
