@@ -41,15 +41,37 @@ escapes as SAFE.
 ## Architecture
 
 New pure analysis module **`analysis/stp_reachability.py`** (the
-`ospf_reachability.py` precedent), memoized on `AnalysisContext`. It joins
-`stp_tree()` predictions to `vlan_graph` edges via `L2Edge.member_ports` and
-produces STP-aware per-VLAN reachability views.
+`ospf_reachability.py` precedent). It joins `stp_tree()` predictions to
+`vlan_graph` edges via `L2Edge.member_ports` and produces STP-aware per-VLAN
+reachability views.
 
-- **`vlan_components()` is UNCHANGED.** A new sibling method
-  `AnalysisContext.stp_reachable_components(vid)` returns the same
-  `VlanComponent` type computed on the vlan_graph with **hard-eligible blocked
-  edges removed**. Only `wired.l2.blackhole` opts into it this slice; every
-  other check keeps full-graph semantics until explicitly migrated.
+- **This is a PAIR-AWARE helper, NOT a per-`AnalysisContext` method.** Hard
+  eligibility is *baseline-licensed* (baseline `compare_to_observed` agreement)
+  but is applied when classifying *both* sides' blocked edges, so the computation
+  needs both IRs at once — a standalone `ctx.proposed.stp_reachable_components()`
+  structurally cannot see baseline agreement and an implementer would be forced
+  to either compare the proposed prediction to current telemetry (wrong tense) or
+  skip the license (invariant violation). The module exposes a pure
+  `StpReachability(baseline: AnalysisContext, proposed: AnalysisContext)` that
+  computes the baseline license ONCE and applies it to each side. It is reached
+  through a memoized `CheckContext.stp_reachability` property (the `delta_index`
+  precedent — CheckContext already holds both `baseline` and `proposed`).
+- **`vlan_components()` is UNCHANGED.** `StpReachability.baseline_components(vid)`
+  and `.proposed_components(vid)` return the same `VlanComponent` type computed on
+  each side's vlan_graph with **hard-eligible blocked edges removed**. Only
+  `wired.l2.blackhole` opts into these this slice; every other check keeps
+  full-graph `vlan_components()` semantics until explicitly migrated.
+- **One baseline license, applied to each side's own blocks.** The license is
+  computed once from the BASELINE: baseline `stp_tree()` +
+  `compare_to_observed(baseline prediction, baseline ir)` → per-baseline-component
+  `agreement_clean` + the set of baseline edge keys. `baseline_components` removes
+  baseline-*blocking* edges that are hard-eligible under this license;
+  `proposed_components` removes proposed-*blocking* edges hard-eligible under the
+  SAME license. A pre-existing block (blocking in both, clean baseline component)
+  is removed from both → symmetric → self-demotes to INFO. A delta-caused block
+  (forwarding in baseline, blocking in proposed) is removed from proposed only →
+  `exit_lost` can fire. This shared-license design is what makes the symmetry and
+  the pre-existing doctrine hold together.
 - **Blocked-edge classification.** For a vlan_graph edge, join each
   `L2Edge.member_ports` entry to the proposed `stp_tree()` `PortPrediction`. The
   edge is **blocking** iff any member port's `PortPrediction.state == "blocking"`
@@ -77,9 +99,9 @@ produces STP-aware per-VLAN reachability views.
 ## The three-way removal test (monotone; per populated component reaching exit)
 
 Reachability is monotone in edges removed: `R_hard+soft ⟹ R_hard ⟹ R_full`.
-`stp_reachability` exposes the hard-removed components (the blackhole source) and
-a hard+soft-removed reachability query. Per populated component that reaches its
-exit in the full graph:
+`StpReachability` exposes each side's hard-removed components (the blackhole
+source) and a proposed-side hard+soft-removed reachability query. Per populated
+component that reaches its exit in the full graph:
 
 | Condition | Outcome |
 |---|---|
@@ -100,13 +122,16 @@ component that still reaches its exit in the hard-removed view.
 
 ## Symmetric baseline/proposed (the pre-existing doctrine)
 
-`blackhole` swaps **every** `vlan_components(vid)` call — both `ctx.baseline.*`
-and `ctx.proposed.*` — to `stp_reachable_components(vid)`. Enumerated sites in
-`src/digital_twin/checks/wired/l2_blackhole.py` (all migrate; no other check
-changes): the wireless-coverage guard (~L86), the baseline exit set (~L133), the
-config-member-node set (~L146), the proposed strand scan (~L150), the per-side
-coverage loop (~L184), the proposed components (~L205), the baseline components
-(~L264), and the `_vlan_changed` delta helper (~L393).
+`blackhole` swaps **every** `vlan_components(vid)` call to the pair-aware helper:
+`ctx.baseline.vlan_components(vid)` → `ctx.stp_reachability.baseline_components(vid)`
+and `ctx.proposed.vlan_components(vid)` → `ctx.stp_reachability.proposed_components(vid)`.
+Enumerated sites in `src/digital_twin/checks/wired/l2_blackhole.py` (all migrate;
+no other check changes): the wireless-coverage guard (~L86, proposed), the
+baseline exit set (~L133), the config-member-node set (~L146, baseline), the
+proposed strand scan (~L150), the per-side coverage loop (~L184, both sides — its
+`side.vlan_components(vid)` must resolve to the correct side's STP-aware
+components), the proposed components (~L205), the baseline components (~L264), and
+the `_vlan_changed` delta helper (~L393, both sides).
 
 Because both sides use the identical STP-aware (hard-removed) view, a pre-existing
 hard block strands the VLAN in BOTH → `exit_lost` (which needs
