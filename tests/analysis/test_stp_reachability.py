@@ -312,38 +312,97 @@ def test_blocked_edge_keys_changed_false_when_identical():
     assert sr.blocked_edge_keys_changed(10) is False
 
 
-def test_blocked_edge_keys_changed_on_soft_set_change_with_identical_hard_components():
-    """Pin the union property: blocked_edge_keys_changed catches SOFT-only changes
-    when hard-removed components remain identical across baseline/proposed.
+def _bridge_id_swap_pair():
+    """IDENTICAL topology on both sides (same 4 switches, same 4 links, same
+    VLAN-10 membership on ALL FOUR inter-switch links — fully redundant, so
+    the predicted block is cosmetic and never strands anything). NO observed
+    STP telemetry anywhere, so every predicted block is SOFT on both sides;
+    the hard-eligible set is empty on both sides too.
 
-    Scenario: identical bridge-id topology, VLAN 10 pruned onto the dd04 path only.
-    Both baseline and proposed have NO telemetry (all predicted blocks are SOFT). By
-    omitting the dd04<->bb02 edge from baseline but including it in proposed, the soft
-    block SET changes while the hard-removed components remain identical (both have empty
-    hard sets since no telemetry → no hard-eligible blocks).
+    The root-port tiebreak among bb02's two equal-cost candidate edges
+    (per test_root_port_by_bridge_id_tiebreak_is_high, deciding_factor
+    "bridge_id") is keyed on the NEIGHBOR DEVICE ID STRING at each transit
+    switch — the two transit switches' `stp_priority` values only affect
+    which switch is elected ROOT of the whole component, and with aa01 fixed
+    at priority 0 as root, cc03/dd04's own priorities never enter the root
+    port comparison at bb02. So to move the tiebreak while leaving the
+    topology, links, ports and VLAN membership byte-for-byte identical, the
+    two transit switches SWAP DEVICE IDS (cc03 <-> dd04) between baseline and
+    proposed — same physical positions, same everything else, just which
+    label sits at which position:
+      baseline: cc03 at aa01:ge-0/0/1 side, dd04 at aa01:ge-0/0/2 side
+                -> blocks bb02:ge-0/0/2 (faces dd04, the higher bridge id)
+      proposed: dd04 at aa01:ge-0/0/1 side, cc03 at aa01:ge-0/0/2 side
+                -> blocks bb02:ge-0/0/1 (faces cc03, now the higher bridge id)
 
-    The key insight: STP-aware _vlan_changed would see hard-components as identical and
-    return False. But blocked_edge_keys_changed's UNION property (hard | soft) catches
-    the soft-set delta and returns True, proving it adds coverage.
+    Hard-removed components are IDENTICAL across sides (no telemetry -> empty
+    hard set on both sides -> hard-removed view == plain vlan_components on
+    both sides, and the graphs are isomorphic under the relabeling), but the
+    soft-blocked edge key set MOVES from the dd04-bb02 edge to the cc03-bb02
+    edge.
     """
 
-    # baseline: dd04-bb02 edge/link omitted (block on it is impossible)
-    # proposed: dd04-bb02 edge present, soft-block predicted on it
-    base, prop = _pruned_onto_block_pair(
-        block_confirmed=False,  # no telemetry → all blocks are soft
-        block_new_in_proposed=True,  # dd04-bb02 edge only in proposed
-    )
+    def _builder(*, at_port1: str, at_port2: str) -> IRBuilder:
+        b = IRBuilder()
+        b.add_device(sw("aa01", stp_priority=0))
+        b.add_device(sw("bb02", stp_priority=4096))
+        b.add_device(sw(at_port1, stp_priority=8192))
+        b.add_device(sw(at_port2, stp_priority=12288))
+        b.add_port(_v10_port("aa01", "ge-0/0/1", carry=True))
+        b.add_port(_v10_port(at_port1, "ge-0/0/1", carry=True))
+        b.add_port(_v10_port("aa01", "ge-0/0/2", carry=True))
+        b.add_port(_v10_port(at_port2, "ge-0/0/1", carry=True))
+        b.add_port(_v10_port(at_port1, "ge-0/0/2", carry=True))
+        b.add_port(_v10_port("bb02", "ge-0/0/1", carry=True))
+        b.add_port(_v10_port(at_port2, "ge-0/0/2", carry=True))
+        b.add_port(_v10_port("bb02", "ge-0/0/2", carry=True))
+        b.add_link(link("aa01:ge-0/0/1", f"{at_port1}:ge-0/0/1"))
+        b.add_link(link("aa01:ge-0/0/2", f"{at_port2}:ge-0/0/1"))
+        b.add_link(link(f"{at_port1}:ge-0/0/2", "bb02:ge-0/0/1"))
+        b.add_link(link(f"{at_port2}:ge-0/0/2", "bb02:ge-0/0/2"))
+        b.add_vlan(Vlan(vlan_id=10, name="v10", scope="s1"))
+        b.add_l3intf(irb("aa01", 10))
+        b.add_port(access_port("bb02", "acc", 10))
+        return b
+
+    baseline_ir = _builder(at_port1="cc03", at_port2="dd04").build()
+    proposed_ir = _builder(at_port1="dd04", at_port2="cc03").build()
+    return baseline_ir, proposed_ir
+
+
+def test_blocked_edge_keys_changed_on_soft_set_change_with_identical_hard_components():
+    """Pin the union property: blocked_edge_keys_changed catches a SOFT-only
+    change that STP-aware _vlan_changed would MISS entirely.
+
+    Scenario: IDENTICAL topology and IDENTICAL VLAN-10 membership (all four
+    inter-switch links carry VLAN 10 -> fully redundant, nothing strands) on
+    both sides, with NO observed STP telemetry anywhere -> every predicted
+    block is soft, and the hard-eligible set is empty on both sides. The only
+    difference is which transit switch (cc03 vs dd04) sits at which physical
+    position, which moves the predicted (soft) blocking port from
+    bb02:ge-0/0/2 (faces dd04) in baseline to bb02:ge-0/0/1 (faces cc03) in
+    proposed.
+
+    Because the hard-removed components are identical across sides,
+    STP-aware _vlan_changed (which only compares hard-removed components)
+    would see NO difference and return False. blocked_edge_keys_changed's
+    UNION (hard | soft) still fires True because the soft-blocked edge key
+    itself moved -- proving the union adds real coverage beyond _vlan_changed.
+    """
+    base, prop = _bridge_id_swap_pair()
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
 
-    # Classify blocked edges on both sides
+    # Assertion 1 (the one the prior attempt dropped): hard-removed components
+    # are IDENTICAL across sides -- this is exactly what _vlan_changed compares,
+    # so _vlan_changed would report no change here.
+    assert sr.baseline_components(10) == sr.proposed_components(10)
+
+    # Make the mechanism explicit: the soft-blocked edge key sets differ.
     _, baseline_soft = sr._classify(AnalysisContext(base), 10)
     _, proposed_soft = sr._classify(AnalysisContext(prop), 10)
+    assert baseline_soft != proposed_soft
 
-    print("\n=== Soft blocks (the union property) ===")
-    print(f"Baseline: {baseline_soft}")
-    print(f"Proposed: {proposed_soft}")
-
-    # ASSERTION: blocked_edge_keys_changed fires despite hard-removed components
-    # being empty/identical on both sides. The soft block set differs, proving the
-    # union (hard | soft) catches what hard-only would miss.
+    # Assertion 2: blocked_edge_keys_changed fires despite identical
+    # hard-removed components, because the union (hard | soft) catches the
+    # soft-set delta that _vlan_changed alone would miss.
     assert sr.blocked_edge_keys_changed(10) is True
