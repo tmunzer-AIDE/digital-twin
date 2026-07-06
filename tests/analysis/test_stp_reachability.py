@@ -47,7 +47,11 @@ def _v10_port(did: str, name: str, *, carry: bool = False):
 
 
 def _bridge_id_topology(
-    builder: IRBuilder, *, prune_vlan10: bool = False, include_dd04_bb02_link: bool = True
+    builder: IRBuilder,
+    *,
+    prune_vlan10: bool = False,
+    include_dd04_bb02_link: bool = True,
+    carry_both_paths: bool = False,
 ) -> None:
     """The exact 4-switch topology from test_root_port_by_bridge_id_tiebreak_is_high.
     When `prune_vlan10`, VLAN 10 is tagged onto the aa01-dd04 and dd04-bb02
@@ -55,17 +59,21 @@ def _bridge_id_topology(
     the VLAN-10 edge and the predicted-blocked edge are the SAME L2 edge.
     When `include_dd04_bb02_link` is False, the dd04<->bb02 link (and VLAN-10
     carriage on it) is omitted entirely — used to build the BASELINE side of
-    the `edge_new_in_proposed` variant, where that edge is new in the delta."""
+    the `edge_new_in_proposed` variant, where that edge is new in the delta.
+    When `carry_both_paths`, VLAN 10 additionally rides the WINNING (cc03) path
+    too, so a forwarding path to the exit survives even with the dd04 path's
+    blocked edge removed — used for the redundant-carriage soft-dependence
+    negative case."""
     builder.add_device(sw("aa01", stp_priority=0))
     builder.add_device(sw("bb02", stp_priority=4096))
     builder.add_device(sw("cc03", stp_priority=8192))
     builder.add_device(sw("dd04", stp_priority=12288))
-    builder.add_port(_v10_port("aa01", "ge-0/0/1"))
-    builder.add_port(_v10_port("cc03", "ge-0/0/1"))
+    builder.add_port(_v10_port("aa01", "ge-0/0/1", carry=carry_both_paths))
+    builder.add_port(_v10_port("cc03", "ge-0/0/1", carry=carry_both_paths))
     builder.add_port(_v10_port("aa01", "ge-0/0/2", carry=prune_vlan10))
     builder.add_port(_v10_port("dd04", "ge-0/0/1", carry=prune_vlan10))
-    builder.add_port(_v10_port("cc03", "ge-0/0/2"))
-    builder.add_port(_v10_port("bb02", "ge-0/0/1"))
+    builder.add_port(_v10_port("cc03", "ge-0/0/2", carry=carry_both_paths))
+    builder.add_port(_v10_port("bb02", "ge-0/0/1", carry=carry_both_paths))
     builder.add_link(link("aa01:ge-0/0/1", "cc03:ge-0/0/1"))
     builder.add_link(link("aa01:ge-0/0/2", "dd04:ge-0/0/1"))
     builder.add_link(link("cc03:ge-0/0/2", "bb02:ge-0/0/1"))
@@ -111,19 +119,29 @@ def _pruned_onto_block_pair(
     edge_new_in_proposed: bool = False,
     baseline_bpdu: bool = False,
     preexisting: bool = False,
+    block_new_in_proposed: bool = False,
 ):
     """Build (baseline_ir, proposed_ir) per the brief's flags. Baseline and
     proposed share the same core bridge-id topology + VLAN-10 layer; the
     flags vary telemetry confirmation, confidence, edge novelty, or BPDU
-    inconsistency as documented in task-2-brief.md."""
+    inconsistency as documented in task-2-brief.md.
+
+    `block_new_in_proposed`: the dd04<->bb02 link (and its predicted-blocking
+    classification) is absent from baseline entirely and present in proposed
+    only — i.e. the blocked-edge KEY SET differs between sides even though
+    `block_confirmed` stays False (soft-only) on the proposed side. Used by
+    `blocked_edge_keys_changed` (the relevance gate), distinct from
+    `edge_new_in_proposed` which is reserved for the existing-in-baseline
+    hard-licence clause test."""
     is_low = block_confidence == "low"
+    omit_from_baseline = edge_new_in_proposed or block_new_in_proposed
 
     baseline_builder = IRBuilder()
     if is_low:
         _parallel_link_topology(baseline_builder, prune_vlan10=True)
     else:
         _bridge_id_topology(
-            baseline_builder, prune_vlan10=True, include_dd04_bb02_link=not edge_new_in_proposed
+            baseline_builder, prune_vlan10=True, include_dd04_bb02_link=not omit_from_baseline
         )
     baseline_ir = baseline_builder.build()
 
@@ -144,14 +162,33 @@ def _pruned_onto_block_pair(
         baseline_ir = _set_observed(
             baseline_ir, _ROOT_PORT, role="disabled-bpdu-inconsistent", state=None
         )
-    elif block_confirmed and not edge_new_in_proposed:
-        # the blocked edge doesn't exist in baseline for edge_new_in_proposed —
-        # nothing to confirm telemetry on there.
+    elif block_confirmed and not omit_from_baseline:
+        # the blocked edge doesn't exist in baseline for edge_new_in_proposed /
+        # block_new_in_proposed — nothing to confirm telemetry on there.
         baseline_ir = _set_observed(baseline_ir, _BLOCK_PORT, role=block_role, state=block_state)
 
     if preexisting and block_confirmed:
         proposed_ir = _set_observed(proposed_ir, _BLOCK_PORT, role=block_role, state=block_state)
 
+    return baseline_ir, proposed_ir
+
+
+def _redundant_both_carry_pair():
+    """Same bridge-id topology, but VLAN 10 rides BOTH inter-switch paths
+    (aa01-cc03-bb02 AND aa01-dd04-bb02), not just the losing dd04 path. The
+    dd04<->bb02 edge is still predicted-blocking (soft-only: no telemetry
+    confirmation), but a fully-forwarding VLAN-10 path to the exit survives via
+    cc03 — so bb02 must NOT be reported soft-dependent. Baseline and proposed
+    are identical (no delta under test here; this fixture isolates the
+    negative soft-dependence case)."""
+
+    def _builder() -> IRBuilder:
+        b = IRBuilder()
+        _bridge_id_topology(b, prune_vlan10=True, carry_both_paths=True)
+        return b
+
+    baseline_ir = _builder().build()
+    proposed_ir = _builder().build()
     return baseline_ir, proposed_ir
 
 
@@ -238,3 +275,38 @@ def test_no_predicted_blocks_matches_plain_vlan_components():
     ctx = AnalysisContext(prop)
     sr = StpReachability(AnalysisContext(base), ctx)
     assert sr.proposed_components(10) == ctx.vlan_components(10)
+
+
+def test_soft_dependence_detected_when_only_soft_block_carries_reach():
+    # VLAN 10 reaches exit only via a SOFT-only blocked edge -> soft-dependent
+    base, prop = _pruned_onto_block_pair(block_confirmed=False)  # soft-only
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+    soft = sr.proposed_soft_dependent_components(10)
+    assert any(any(n.startswith("bb") for n in c.nodes) for c in soft)
+
+
+def test_hard_dependence_is_not_soft_dependent():
+    # a hard-eligible block already strands the component (it does NOT reach exit
+    # in the hard view) -> NOT reported as soft-dependent (the hard path owns it)
+    base, prop = _pruned_onto_block_pair(block_confirmed=True)
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+    assert sr.proposed_soft_dependent_components(10) == ()
+
+
+def test_forwarding_path_is_not_soft_dependent():
+    # VLAN 10 carried on BOTH links; blocking one leaves a forwarding path
+    base, prop = _redundant_both_carry_pair()
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+    assert sr.proposed_soft_dependent_components(10) == ()
+
+
+def test_blocked_edge_keys_changed_true_when_soft_set_differs():
+    base, prop = _pruned_onto_block_pair(block_confirmed=False, block_new_in_proposed=True)
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+    assert sr.blocked_edge_keys_changed(10) is True
+
+
+def test_blocked_edge_keys_changed_false_when_identical():
+    base, prop = _pruned_onto_block_pair(block_confirmed=False, preexisting=True)
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+    assert sr.blocked_edge_keys_changed(10) is False

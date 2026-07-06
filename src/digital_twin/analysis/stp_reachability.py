@@ -113,3 +113,28 @@ class StpReachability:
             hard, _ = self._classify(self._proposed, vid)
             self._hard_cache[ck] = self._components(self._proposed, vid, hard)
         return self._hard_cache[ck]
+
+    # -- soft dependence + relevance gate -------------------------------------
+    def proposed_soft_dependent_components(self, vid: int) -> tuple[VlanComponent, ...]:
+        """Populated proposed components that reach their exit in the hard-removed
+        view but NOT once soft blocks are also removed — i.e. the reach depends on
+        a soft-only (unconfirmed) block. The hard-stranded case is excluded: such
+        a component already fails to reach exit in the hard view."""
+        hard, soft = self._classify(self._proposed, vid)
+        hard_view = self.proposed_components(vid)
+        reaching = [c for c in hard_view if c.has_members and c.reaches_exit]
+        if not reaching or not soft:
+            return ()
+        hardsoft_view = self._components(self._proposed, vid, hard | soft)
+        # A component is soft-dependent iff ANY of its nodes stops reaching the
+        # exit once soft edges also go (removing soft edges can SPLIT it — a
+        # partial split still strands some members). Strict `c.nodes - reaching`
+        # (not `& reaching`) so a partial soft-dependence still floors REVIEW —
+        # missing it would be a false-SAFE.
+        reaching_nodes = {n for c in hardsoft_view if c.reaches_exit for n in c.nodes}
+        return tuple(c for c in reaching if c.nodes - reaching_nodes)
+
+    def blocked_edge_keys_changed(self, vid: int) -> bool:
+        bh, bs = self._classify(self._baseline, vid)
+        ph, ps = self._classify(self._proposed, vid)
+        return (bh | bs) != (ph | ps)
