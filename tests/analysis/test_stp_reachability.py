@@ -310,3 +310,40 @@ def test_blocked_edge_keys_changed_false_when_identical():
     base, prop = _pruned_onto_block_pair(block_confirmed=False, preexisting=True)
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
     assert sr.blocked_edge_keys_changed(10) is False
+
+
+def test_blocked_edge_keys_changed_on_soft_set_change_with_identical_hard_components():
+    """Pin the union property: blocked_edge_keys_changed catches SOFT-only changes
+    when hard-removed components remain identical across baseline/proposed.
+
+    Scenario: identical bridge-id topology, VLAN 10 pruned onto the dd04 path only.
+    Both baseline and proposed have NO telemetry (all predicted blocks are SOFT). By
+    omitting the dd04<->bb02 edge from baseline but including it in proposed, the soft
+    block SET changes while the hard-removed components remain identical (both have empty
+    hard sets since no telemetry → no hard-eligible blocks).
+
+    The key insight: STP-aware _vlan_changed would see hard-components as identical and
+    return False. But blocked_edge_keys_changed's UNION property (hard | soft) catches
+    the soft-set delta and returns True, proving it adds coverage.
+    """
+
+    # baseline: dd04-bb02 edge/link omitted (block on it is impossible)
+    # proposed: dd04-bb02 edge present, soft-block predicted on it
+    base, prop = _pruned_onto_block_pair(
+        block_confirmed=False,  # no telemetry → all blocks are soft
+        block_new_in_proposed=True,  # dd04-bb02 edge only in proposed
+    )
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+
+    # Classify blocked edges on both sides
+    _, baseline_soft = sr._classify(AnalysisContext(base), 10)
+    _, proposed_soft = sr._classify(AnalysisContext(prop), 10)
+
+    print("\n=== Soft blocks (the union property) ===")
+    print(f"Baseline: {baseline_soft}")
+    print(f"Proposed: {proposed_soft}")
+
+    # ASSERTION: blocked_edge_keys_changed fires despite hard-removed components
+    # being empty/identical on both sides. The soft block set differs, proving the
+    # union (hard | soft) catches what hard-only would miss.
+    assert sr.blocked_edge_keys_changed(10) is True
