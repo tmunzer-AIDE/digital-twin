@@ -161,7 +161,9 @@ git commit -m "feat(analysis): ComponentAgreement matched/bpdu counts + agreemen
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/analysis/test_stp_reachability.py`. Use the shared factories (`from tests.factories import sw, trunk_port, link, make_port`, `from digital_twin.ir import IRBuilder`) and `AnalysisContext`. The motivating topology: two switches A,B joined by two trunk links L1 (VLAN 10 NOT carried) and L2 (VLAN 10 carried), where the proposed STP tree blocks L2's B-end; baseline telemetry confirms the block (observed `stp_role`/`stp_state` on those ports matched). Exit (an IRB on VLAN 10) sits on A.
+Create `tests/analysis/test_stp_reachability.py`. Use the shared factories (`from tests.factories import sw, trunk_port, link, make_port`, `from digital_twin.ir import IRBuilder`) and `AnalysisContext`.
+
+**Motivating topology — MUST be a HIGH-confidence bridge-id block, NOT a same-pair parallel-link block.** A same-pair parallel block is a `port_id_tie` at LOW confidence by Spec-4's design (see `test_parallel_links_same_pair_port_id_tie_low`) — it is soft-only and cannot produce a hard strand. Use the bridge-id-tiebreak topology from `tests/analysis/test_stp_tree.py::test_root_port_by_bridge_id_tiebreak_is_high` (root `aa01` prio 0; leaf `bb02` prio 4096; transit `cc03` prio 8192, `dd04` prio 12288; links `aa01-cc03`, `aa01-dd04`, `cc03-bb02`, `dd04-bb02`, all `observed_speed="1g"`). There `bb02:ge-0/0/2` (facing the higher-bridge-id `dd04`) is predicted `alternate/blocking` at **HIGH** via `bridge_id`. Make VLAN 10 **pruned onto the losing path**: carried on the `aa01-dd04-bb02` links but NOT on the `aa01-cc03-bb02` links, with the VLAN-10 IRB exit on `aa01`. Then bb02's only VLAN-10 path to the exit runs through the blocked `dd04↔bb02` edge (`member_ports` `{dd04:ge-0/0/2, bb02:ge-0/0/2}`) → removing that hard-eligible edge strands bb02. Baseline telemetry confirms the block: set baseline observed `stp_role`/`stp_state` on the component's ports to MATCH the baseline prediction (so `compare_to_observed` yields matched, `agreement_clean` True).
 
 ```python
 from digital_twin.analysis.context import AnalysisContext
@@ -230,7 +232,12 @@ def test_no_predicted_blocks_matches_plain_vlan_components():
     assert sr.proposed_components(10) == ctx.vlan_components(10)
 ```
 
-Write the two builder helpers `_pruned_onto_block_pair(...)` and `_simple_tree_pair()` in the test file. `_pruned_onto_block_pair` must: build switches `aa01`/`bb02`, two trunk links between them (L1 without VLAN 10 in tagged set, L2 with VLAN 10), an IRB exit on VLAN 10 on `aa01`, access members on `bb02`; then set the ports' `stp_role`/`stp_state` so the proposed `stp_tree()` predicts L2's block, and (when `block_confirmed`) set baseline observed `stp_role`/`stp_state` to MATCH that block on the relevant baseline ports. Inspect `tests/analysis/test_stp_tree.py` for how to drive a self-loop/parallel-link block deterministically and reuse that shape. The flags: `block_confidence` (make the block fall to a port-id tie / defaulted speed for LOW), `edge_new_in_proposed` (L2 absent from baseline), `baseline_bpdu` (baseline observed role `disabled-bpdu-inconsistent`), `preexisting` (block present + confirmed in both sides).
+Write the two builder helpers `_pruned_onto_block_pair(...)` and `_simple_tree_pair()` in the test file. `_pruned_onto_block_pair` builds the 4-switch bridge-id topology above (root `aa01`, leaf `bb02`, transit `cc03`/`dd04`), an IRB exit on VLAN 10 on `aa01`, access members on `bb02`, VLAN 10 pruned onto the `dd04` path (tagged on the `aa01-dd04` and `dd04-bb02` trunks, absent from the `aa01-cc03`/`cc03-bb02` trunks); then, when `block_confirmed`, sets baseline observed `stp_role`/`stp_state` on the component's ports to MATCH the baseline prediction (so `compare_to_observed` → `agreement_clean` True on that component). The flags:
+- `block_confidence="low"`: swap the bridge-id topology for the same-pair parallel-link topology (`test_parallel_links_same_pair_port_id_tie_low`) so the block is `port_id_tie`/LOW → soft-only.
+- `edge_new_in_proposed=True`: the blocked `dd04↔bb02` link is ABSENT from the baseline IR (added by the delta) — so its `frozenset(member_ports)` key is not in the baseline edge set → clause (a) fails → soft-only.
+- `baseline_bpdu=True`: baseline observed role on a component port is `disabled-bpdu-inconsistent` → `bpdu_inconsistent_count > 0` → `agreement_clean` False.
+- `preexisting=True`: the block is present AND confirmed in BOTH baseline and proposed (identical topology + telemetry both sides).
+Drive the block exactly as the referenced `test_stp_tree.py` tests do — do NOT invent a different mechanism.
 
 - [ ] **Step 2: Run to verify they fail**
 
