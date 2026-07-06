@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 
 from digital_twin.analysis.context import AnalysisContext
+from digital_twin.analysis.stp_agreement import compare_to_observed
 from digital_twin.analysis.stp_reachability import StpReachability
 from digital_twin.ir import IRBuilder, Vlan
 from tests.factories import access_port, irb, link, make_port, sw, trunk_port
@@ -136,6 +137,10 @@ def _pruned_onto_block_pair(
     block_role, block_state = "alternate", "blocking"
 
     if baseline_bpdu:
+        # isolate the bpdu-inconsistent clause: set the block port to observed
+        # role/state matching prediction (non-vacuous), then poison one OTHER
+        # port in the component with bpdu-inconsistent.
+        baseline_ir = _set_observed(baseline_ir, _BLOCK_PORT, role=block_role, state=block_state)
         baseline_ir = _set_observed(
             baseline_ir, _ROOT_PORT, role="disabled-bpdu-inconsistent", state=None
         )
@@ -208,6 +213,15 @@ def test_bpdu_inconsistent_component_does_not_license_hard():
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
     comps = sr.proposed_components(10)
     b_comp = next(c for c in comps if any(n.startswith("bb") for n in c.nodes))
+
+    # Verify the component is NON-VACUOUS (matched_count > 0) with BPDU poison
+    # (bpdu_inconsistent_count > 0): this isolates the bpdu clause from vacuity.
+    report = compare_to_observed(sr._baseline.stp_tree(), sr._baseline.ir)
+    b_agreement = next(a for a in report.components if any(n.startswith("bb") for n in a.nodes))
+    assert b_agreement.matched_count > 0, "baseline component must have matched evidence"
+    assert b_agreement.bpdu_inconsistent_count > 0, "baseline component must have bpdu poison"
+    assert not b_agreement.agreement_clean, "agreement must be unclean (bpdu)"
+
     assert b_comp.reaches_exit  # agreement_clean False (bpdu) -> soft
 
 
