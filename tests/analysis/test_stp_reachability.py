@@ -21,6 +21,7 @@ from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.stp_agreement import compare_to_observed
 from digital_twin.analysis.stp_reachability import StpReachability
 from digital_twin.ir import IRBuilder, Vlan
+from digital_twin.ir.confidence import ConfidenceLevel
 from tests.factories import access_port, irb, link, make_port, sw, trunk_port
 
 _BLOCK_PORT = "bb02:ge-0/0/2"  # faces dd04 (the higher bridge id) -> alternate/blocking, HIGH
@@ -173,6 +174,59 @@ def _pruned_onto_block_pair(
     return baseline_ir, proposed_ir
 
 
+def _clause_a_isolated_pair():
+    """Isolates hard-eligibility clause (a) ("edge existed in baseline") from
+    clauses (b)/(c)/(d). Unlike `edge_new_in_proposed` (which OMITS the
+    dd04<->bb02 link from baseline entirely, so there's no baseline telemetry
+    to confirm and clause (c) `agreement_clean` co-fails vacuously), this
+    fixture keeps the dd04<->bb02 PHYSICAL link present and STP-confirmed on
+    BOTH sides -- the baseline STP component is genuinely non-vacuous and
+    clean. Only the VLAN-10 CARRIAGE on that link differs: absent in baseline
+    (so the VLAN-10 edge key aa01-dd04-bb02's dd04<->bb02 segment does not
+    exist in the baseline VLAN-10 graph), present in proposed (VLAN 10 is
+    "added" onto an already-existing, already-STP-confirmed link). So clause
+    (a) fails in isolation while (b)+(c) (clean baseline component) and (d)
+    (side-local HIGH confidence) both hold."""
+
+    def _topology(builder: IRBuilder, *, dd04_bb02_carries_v10: bool) -> None:
+        builder.add_device(sw("aa01", stp_priority=0))
+        builder.add_device(sw("bb02", stp_priority=4096))
+        builder.add_device(sw("cc03", stp_priority=8192))
+        builder.add_device(sw("dd04", stp_priority=12288))
+        # aa01-cc03-bb02 path: never carries VLAN 10 (irrelevant to this test).
+        builder.add_port(_v10_port("aa01", "ge-0/0/1", carry=False))
+        builder.add_port(_v10_port("cc03", "ge-0/0/1", carry=False))
+        builder.add_port(_v10_port("cc03", "ge-0/0/2", carry=False))
+        builder.add_port(_v10_port("bb02", "ge-0/0/1", carry=False))
+        # aa01-dd04 leg: carries VLAN 10 on both sides (irrelevant to clause a;
+        # keeps the VLAN-10 graph connected up to dd04 on both sides).
+        builder.add_port(_v10_port("aa01", "ge-0/0/2", carry=True))
+        builder.add_port(_v10_port("dd04", "ge-0/0/1", carry=True))
+        # dd04-bb02 leg: the link under test. Physical link + STP topology
+        # identical on both sides; VLAN-10 carriage differs per the flag.
+        builder.add_port(_v10_port("dd04", "ge-0/0/2", carry=dd04_bb02_carries_v10))
+        builder.add_port(_v10_port("bb02", "ge-0/0/2", carry=dd04_bb02_carries_v10))
+        builder.add_link(link("aa01:ge-0/0/1", "cc03:ge-0/0/1"))
+        builder.add_link(link("aa01:ge-0/0/2", "dd04:ge-0/0/1"))
+        builder.add_link(link("cc03:ge-0/0/2", "bb02:ge-0/0/1"))
+        builder.add_link(link("dd04:ge-0/0/2", "bb02:ge-0/0/2"))
+        builder.add_vlan(Vlan(vlan_id=10, name="v10", scope="s1"))
+        builder.add_l3intf(irb("aa01", 10))
+        builder.add_port(access_port("bb02", "acc", 10))
+
+    baseline_builder = IRBuilder()
+    _topology(baseline_builder, dd04_bb02_carries_v10=False)
+    baseline_ir = baseline_builder.build()
+    # Confirm the block via telemetry on baseline -> non-vacuous, clean agreement.
+    baseline_ir = _set_observed(baseline_ir, _BLOCK_PORT, role="alternate", state="blocking")
+
+    proposed_builder = IRBuilder()
+    _topology(proposed_builder, dd04_bb02_carries_v10=True)
+    proposed_ir = proposed_builder.build()
+
+    return baseline_ir, proposed_ir
+
+
 def _redundant_both_carry_pair():
     """Same bridge-id topology, but VLAN 10 rides BOTH inter-switch paths
     (aa01-cc03-bb02 AND aa01-dd04-bb02), not just the losing dd04 path. The
@@ -185,6 +239,59 @@ def _redundant_both_carry_pair():
     def _builder() -> IRBuilder:
         b = IRBuilder()
         _bridge_id_topology(b, prune_vlan10=True, carry_both_paths=True)
+        return b
+
+    baseline_ir = _builder().build()
+    proposed_ir = _builder().build()
+    return baseline_ir, proposed_ir
+
+
+def _partial_split_pair():
+    """The bridge-id topology (VLAN 10 pruned onto the losing dd04 path, as in
+    `_pruned_onto_block_pair`) PLUS an extra leaf `ee05` hanging off `bb02`,
+    with VLAN 10 carried onward from bb02 to ee05. No observed STP telemetry
+    anywhere, so the dd04<->bb02 block is SOFT-only (vacuous agreement).
+
+    In the hard-removed view (nothing removed, since the block isn't
+    hard-eligible) the whole component {aa01, bb02, dd04, ee05} reaches the
+    exit (aa01's IRB). Once the SOFT dd04<->bb02 edge is ALSO removed, the
+    component SPLITS: {aa01, dd04} still reaches the exit, but {bb02, ee05}
+    does not -- a PARTIAL split, unlike the single-node-stranded fixtures
+    elsewhere in this file where `&` and `-` coincide. This is the
+    reviewer's construction for pinning the strict `c.nodes - reaching_nodes`
+    subtraction in `proposed_soft_dependent_components`: an `&`-based
+    implementation (`c.nodes & reaching_nodes`) would find {aa01, dd04}
+    non-empty and WRONGLY conclude the component still reaches -> false-SAFE,
+    silently dropping the still-stranded {bb02, ee05}."""
+
+    def _builder() -> IRBuilder:
+        b = IRBuilder()
+        b.add_device(sw("aa01", stp_priority=0))
+        b.add_device(sw("bb02", stp_priority=4096))
+        b.add_device(sw("cc03", stp_priority=8192))
+        b.add_device(sw("dd04", stp_priority=12288))
+        b.add_device(sw("ee05"))
+        # aa01-cc03-bb02 path: never carries VLAN 10 (irrelevant here).
+        b.add_port(_v10_port("aa01", "ge-0/0/1", carry=False))
+        b.add_port(_v10_port("cc03", "ge-0/0/1", carry=False))
+        b.add_port(_v10_port("cc03", "ge-0/0/2", carry=False))
+        b.add_port(_v10_port("bb02", "ge-0/0/1", carry=False))
+        # aa01-dd04-bb02 path: carries VLAN 10 (the losing/blocked path).
+        b.add_port(_v10_port("aa01", "ge-0/0/2", carry=True))
+        b.add_port(_v10_port("dd04", "ge-0/0/1", carry=True))
+        b.add_port(_v10_port("dd04", "ge-0/0/2", carry=True))
+        b.add_port(_v10_port("bb02", "ge-0/0/2", carry=True))
+        # extra leaf ee05 hanging off bb02, carrying VLAN 10 onward.
+        b.add_port(_v10_port("bb02", "ge-0/0/3", carry=True))
+        b.add_port(_v10_port("ee05", "ge-0/0/1", carry=True))
+        b.add_link(link("aa01:ge-0/0/1", "cc03:ge-0/0/1"))
+        b.add_link(link("aa01:ge-0/0/2", "dd04:ge-0/0/1"))
+        b.add_link(link("cc03:ge-0/0/2", "bb02:ge-0/0/1"))
+        b.add_link(link("dd04:ge-0/0/2", "bb02:ge-0/0/2"))
+        b.add_link(link("bb02:ge-0/0/3", "ee05:ge-0/0/1"))
+        b.add_vlan(Vlan(vlan_id=10, name="v10", scope="s1"))
+        b.add_l3intf(irb("aa01", 10))
+        b.add_port(access_port("ee05", "acc", 10))
         return b
 
     baseline_ir = _builder().build()
@@ -245,6 +352,39 @@ def test_new_intra_component_edge_is_soft_only():
     assert b_comp.reaches_exit  # existed-in-baseline clause fails -> soft
 
 
+def test_clause_a_isolated_new_vlan_edge_on_clean_component_is_soft():
+    # Isolate hard-eligibility clause (a) ("edge existed in baseline") from
+    # (b)/(c)/(d): the dd04<->bb02 PHYSICAL link and its STP-confirming
+    # telemetry are present and clean in baseline (unlike
+    # test_new_intra_component_edge_is_soft_only's edge_new_in_proposed=True,
+    # which omits the link from baseline entirely and so co-fails clause (c)
+    # vacuously). Only VLAN 10's CARRIAGE on that link is new in proposed.
+    base, prop = _clause_a_isolated_pair()
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+
+    # The baseline component is genuinely CLEAN and NON-VACUOUS: real matched
+    # telemetry on the block port satisfies agreement_clean for real, not
+    # because there's nothing to disagree with.
+    report = compare_to_observed(sr._baseline.stp_tree(), sr._baseline.ir)
+    b_agreement = next(a for a in report.components if any(n.startswith("bb") for n in a.nodes))
+    assert b_agreement.matched_count > 0, "baseline component must have matched evidence"
+    assert b_agreement.agreement_clean is True, "baseline agreement must be clean"
+
+    # The VLAN-10 edge key for the dd04<->bb02 segment is genuinely ABSENT
+    # from the baseline VLAN-10 graph -- clause (a) fails on its own.
+    base_v10_keys = sr._baseline_edge_keys(10)
+    dd04_bb02_key = frozenset({"dd04:ge-0/0/2", "bb02:ge-0/0/2"})
+    assert dd04_bb02_key not in base_v10_keys, "edge must be new to the baseline VLAN-10 graph"
+
+    # Clause (d): the proposed-side block is HIGH confidence (bridge_id tiebreak).
+    prop_pred = sr._prop_pred[_BLOCK_PORT]
+    assert prop_pred.confidence is ConfidenceLevel.HIGH
+
+    comps = sr.proposed_components(10)
+    b_comp = next(c for c in comps if any(n.startswith("bb") for n in c.nodes))
+    assert b_comp.reaches_exit  # clause (a) alone fails -> soft, edge kept
+
+
 def test_bpdu_inconsistent_component_does_not_license_hard():
     base, prop = _pruned_onto_block_pair(block_confirmed=True, baseline_bpdu=True)
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
@@ -298,6 +438,44 @@ def test_forwarding_path_is_not_soft_dependent():
     base, prop = _redundant_both_carry_pair()
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
     assert sr.proposed_soft_dependent_components(10) == ()
+
+
+def test_partial_split_component_is_soft_dependent():
+    """Pin the strict `c.nodes - reaching_nodes` subtraction in
+    `proposed_soft_dependent_components` against a regression to `&`. The
+    fixture's soft-removal SPLITS the hard-view component into a reaching
+    part {aa01, dd04} and a stranded part {bb02, ee05} -- both the
+    intersection AND the difference against `reaching_nodes` are non-empty,
+    so an `&`-based implementation would find the intersection non-empty and
+    wrongly treat the whole component as still reaching (false-SAFE), silently
+    dropping the still-stranded {bb02, ee05}. Single-node-stranded fixtures
+    elsewhere in this file can't catch that regression because `&` and `-`
+    coincide when only one node is left out.
+    """
+    base, prop = _partial_split_pair()
+    sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
+
+    hard, soft = sr._classify(sr._proposed, 10)
+    assert hard == set(), "block must be soft-only (no baseline telemetry)"
+    assert soft, "block must be predicted (soft-eligible)"
+
+    hard_view = sr.proposed_components(10)
+    b_comp = next(c for c in hard_view if any(n.startswith("bb") for n in c.nodes))
+    assert b_comp.reaches_exit, "hard view: whole component reaches exit"
+    assert b_comp.nodes == frozenset({"aa01", "bb02", "dd04", "ee05"})
+
+    hardsoft_view = sr._components(sr._proposed, 10, hard | soft)
+    reaching_nodes = frozenset(n for c in hardsoft_view if c.reaches_exit for n in c.nodes)
+    difference = b_comp.nodes - reaching_nodes
+    intersection = b_comp.nodes & reaching_nodes
+    assert difference == frozenset({"bb02", "ee05"}), "partial split: some members stranded"
+    assert intersection == frozenset({"aa01", "dd04"}), "partial split: some members still reach"
+    # Document why `-` (not `&`) is required: both are non-empty here, so an
+    # `&`-based implementation would (wrongly) see this as "still reaching".
+    assert difference and intersection
+
+    soft_dep = sr.proposed_soft_dependent_components(10)
+    assert b_comp in soft_dep, "partial split must be reported soft-dependent"
 
 
 def test_blocked_edge_keys_changed_true_when_soft_set_differs():
