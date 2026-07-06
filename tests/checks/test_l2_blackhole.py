@@ -517,3 +517,77 @@ def test_unchanged_low_exit_on_untouched_vlan_still_does_not_taint():
     assert result.status is Status.PASS
     assert result.confidence is not None
     assert result.confidence.level is ConfidenceLevel.HIGH  # LOW exit not consulted
+
+
+# --- STP-aware component source (Spec-5 Task 4: hard blocked-link taint) -----------
+
+from tests.analysis.test_stp_reachability import (  # noqa: E402
+    _bridge_id_topology,
+    _pruned_onto_block_pair,
+    _set_observed,
+)
+
+_BLOCK_PORT = "bb02:ge-0/0/2"  # faces dd04 (higher bridge id) -> alternate/blocking, HIGH
+
+
+def _bridge_id_ir(*, carry_both_paths: bool):
+    b = IRBuilder()
+    _bridge_id_topology(b, prune_vlan10=True, carry_both_paths=carry_both_paths)
+    return b.build()
+
+
+def _pruned_onto_block_check_ctx(*, block_confirmed: bool, preexisting: bool = False):
+    """Wrap the Task-2 bridge-id-topology fixture (VLAN 10 pruned onto the
+    tree-blocked dd04<->bb02 path) in a CheckContext.
+
+    Not `preexisting`: baseline carries VLAN 10 on BOTH inter-switch paths
+    (redundant -> bb02 reaches exit even with the hard-blocked dd04 edge
+    masked by the surviving cc03 path) while proposed prunes VLAN 10 back
+    onto ONLY the dd04 path (a normal, VLAN-10-irrelevant delta severs the
+    cc03 carriage) -- bb02's only path now runs through the hard-blocked
+    edge -> newly stranded -> exit_lost. Both sides observe the block
+    (alternate/blocking on `_BLOCK_PORT`) so the licence (clean baseline
+    agreement) holds identically on both sides; only the VLAN-10 carriage
+    changes.
+
+    `preexisting=True` reuses the Task-2 symmetric fixture instead: the same
+    confirmed block, unchanged pruned-onto-block topology on both sides ->
+    bb02's strand is identical baseline vs proposed (pre-existing, not
+    delta-caused)."""
+    if preexisting:
+        base, prop = _pruned_onto_block_pair(block_confirmed=block_confirmed, preexisting=True)
+        return _ctx(base, prop)
+    base = _bridge_id_ir(carry_both_paths=True)
+    prop = _bridge_id_ir(carry_both_paths=False)
+    if block_confirmed:
+        base = _set_observed(base, _BLOCK_PORT, role="alternate", state="blocking")
+        prop = _set_observed(prop, _BLOCK_PORT, role="alternate", state="blocking")
+    return _ctx(base, prop)
+
+
+def _simple_check_ctx():
+    return _ctx(_ir(connected=True), _ir(connected=True))
+
+
+def test_blackhole_hard_strands_pruned_onto_block_vlan():
+    # motivating: VLAN 10 pruned off the forwarding link, carried only on a
+    # tree-blocked link, baseline telemetry confirms the block; the delta severs
+    # the (VLAN-10-irrelevant) forwarding path -> exit_lost -> FAIL/UNSAFE-eligible
+    ctx = _pruned_onto_block_check_ctx(block_confirmed=True)
+    result = L2BlackholeCheck().run(ctx)
+    codes = {f.code for f in result.findings}
+    assert "wired.l2.blackhole.exit_lost" in codes
+    assert result.status is Status.FAIL
+
+
+def test_blackhole_preexisting_symmetric_block_is_info_not_fail():
+    # the same confirmed block in BOTH sides, delta unrelated -> INFO, not FAIL
+    ctx = _pruned_onto_block_check_ctx(block_confirmed=True, preexisting=True)
+    result = L2BlackholeCheck().run(ctx)
+    assert result.status is not Status.FAIL
+    assert all(f.severity is not Severity.CRITICAL for f in result.findings)
+
+
+def test_blackhole_context_exposes_memoized_stp_reachability():
+    ctx = _simple_check_ctx()
+    assert ctx.stp_reachability is ctx.stp_reachability
