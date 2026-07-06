@@ -72,24 +72,30 @@ reachability views.
   (forwarding in baseline, blocking in proposed) is removed from proposed only →
   `exit_lost` can fire. This shared-license design is what makes the symmetry and
   the pre-existing doctrine hold together.
-- **Blocked-edge classification.** For a vlan_graph edge, join each
-  `L2Edge.member_ports` entry to the proposed `stp_tree()` `PortPrediction`. The
-  edge is **blocking** iff any member port's `PortPrediction.state == "blocking"`
-  (use `state`, NOT `role == "alternate"` — `state` already folds
-  alternate/backup/self-loop blocking and avoids role-taxonomy drift).
+- **Blocked-edge classification is SIDE-LOCAL.** For each side (baseline,
+  proposed), join each `L2Edge.member_ports` entry to **that side's own**
+  `stp_tree()` `PortPrediction`. The edge is **blocking on that side** iff any of
+  its member ports has `PortPrediction.state == "blocking"` in that side's
+  prediction (use `state`, NOT `role == "alternate"` — `state` already folds
+  alternate/backup/self-loop blocking and avoids role-taxonomy drift). Only the
+  *license* (below) is baseline-derived and shared; whether an edge is blocking,
+  and at what confidence, is read from the side being classified.
 - **Hard vs soft** per blocking edge:
   - **hard-eligible** iff ALL of: (a) the blocked edge **already existed in the
     baseline STP topology** — its member-port set is present as an edge in the
-    baseline vlan_graph, so its ports carried observed telemetry (a
-    newly-added link, even between two already-validated nodes, has NO baseline
-    telemetry for its own member ports → soft-only; licensing it would let
-    prediction move the verdict alone); (b) both endpoint nodes lie in the SAME
-    baseline `stp_tree()` component; (c) that component's `ComponentAgreement` is
-    **clean and non-vacuous** — `matched_count > 0 and not disagreement and
-    bpdu_inconsistent_count == 0`; (d) the proposed block's own
-    `PortPrediction.confidence == HIGH`. Any edge failing any clause is
-    **soft-only** — the "baseline telemetry licenses prediction" doctrine stays
-    honest.
+    baseline vlan_graph, so it is not a newly-created link whose block would rest
+    on prediction alone (a newly-added link, even between two already-validated
+    nodes, is soft-only — no baseline component/agreement covers it); (b) both
+    endpoint nodes lie in the SAME baseline `stp_tree()` component; (c) that
+    component's `ComponentAgreement` is **clean and non-vacuous** —
+    `matched_count > 0 and not disagreement and bpdu_inconsistent_count == 0`
+    (the license is COMPONENT-level: clause c does not require that this
+    particular edge's ports were the matched ones, only that its licensing
+    component has real, mismatch-free observed evidence); (d) the block's own
+    `PortPrediction.confidence == HIGH` **on the side being classified**
+    (baseline confidence for a baseline-removed edge, proposed confidence for a
+    proposed-removed edge). Any edge failing any clause is **soft-only** — the
+    "baseline agreement licenses prediction" doctrine stays honest.
   - **soft-only** otherwise (LOW/MEDIUM proposed confidence, no baseline matched
     evidence, baseline disagreement, or new topology).
 - **Blocked-edge key**: `(vlan_id, frozenset(member_ports))` — stable and
