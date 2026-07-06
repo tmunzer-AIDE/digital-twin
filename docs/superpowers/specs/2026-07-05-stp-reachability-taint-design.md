@@ -1,7 +1,7 @@
 # STP Blocked-Link Reachability Taint (Spec-5)
 
 **Date:** 2026-07-05
-**Status:** Approved for planning
+**Status:** Implemented (branch feat/stp-reach-taint; live-verified 2026-07-07 — production main site 0 hard/soft removals, STP-aware reachability behavior-identical to plain on real data; no new UNSAFE)
 **Predecessor:** Spec-4 (STP tree engine v1 — prediction core + validation rail).
 This is the **first verdict-facing consumer** of `stp_tree()` and is bound by
 **THE INVARIANT**: prediction alone never earns SAFE; a consumer must call
