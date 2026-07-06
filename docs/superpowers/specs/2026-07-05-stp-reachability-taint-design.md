@@ -56,13 +56,18 @@ produces STP-aware per-VLAN reachability views.
   (use `state`, NOT `role == "alternate"` — `state` already folds
   alternate/backup/self-loop blocking and avoids role-taxonomy drift).
 - **Hard vs soft** per blocking edge:
-  - **hard-eligible** iff BOTH the edge's endpoint nodes lie in the SAME
-    baseline `stp_tree()` component, that component's `ComponentAgreement` has
-    `matched_count > 0 and not disagreement`, AND the proposed block's own
-    `PortPrediction.confidence == HIGH`. A proposed edge whose endpoints fall in
-    different baseline components or in none (newly-created topology), or whose
-    licensing baseline component lacks matched evidence, is **soft-only** — the
-    "baseline telemetry licenses prediction" doctrine stays honest.
+  - **hard-eligible** iff ALL of: (a) the blocked edge **already existed in the
+    baseline STP topology** — its member-port set is present as an edge in the
+    baseline vlan_graph, so its ports carried observed telemetry (a
+    newly-added link, even between two already-validated nodes, has NO baseline
+    telemetry for its own member ports → soft-only; licensing it would let
+    prediction move the verdict alone); (b) both endpoint nodes lie in the SAME
+    baseline `stp_tree()` component; (c) that component's `ComponentAgreement` is
+    **clean and non-vacuous** — `matched_count > 0 and not disagreement and
+    bpdu_inconsistent_count == 0`; (d) the proposed block's own
+    `PortPrediction.confidence == HIGH`. Any edge failing any clause is
+    **soft-only** — the "baseline telemetry licenses prediction" doctrine stays
+    honest.
   - **soft-only** otherwise (LOW/MEDIUM proposed confidence, no baseline matched
     evidence, baseline disagreement, or new topology).
 - **Blocked-edge key**: `(vlan_id, frozenset(member_ports))` — stable and
@@ -110,21 +115,39 @@ the existing delta machinery, exactly as the pre-existing doctrine requires.
 `l2_blackhole`'s finding vocabulary and severity logic are untouched; only the
 component *source* becomes STP-aware.
 
-Making `_vlan_changed` STP-aware IS the "blocked-edge set changed" relevance
-extension: if a change alters the hard-removed component structure (including the
-blocked set), `_vlan_changed` registers it and the existing delta gate lets the
-finding through; an unrelated change leaves the STP-aware components identical →
-suppressed. The soft REVIEW floor rides this same gate, so a pre-existing
-soft-block dependence untouched by the change stays INFO, never REVIEW.
+Making `_vlan_changed` STP-aware registers HARD-block structure changes (the
+hard-removed components differ). But it does NOT catch a change that alters only
+the SOFT-blocked-edge set while the hard-removed components stay identical — that
+delta could introduce a new soft dependence and be wrongly suppressed (a soft
+false-SAFE). The soft REVIEW floor therefore rides an EXPLICIT relevance helper:
+
+    _vlan_changed(vid)  or  _exit_changed(vid)  or  blocked_edge_keys_changed(vid)
+
+where `blocked_edge_keys_changed` compares the full blocked-edge key set (hard
+AND soft, keyed `(vlan_id, frozenset(member_ports))`) between baseline and
+proposed for the VLAN. A pre-existing soft dependence untouched by the change
+(identical key sets, identical hard components, unchanged exit) stays INFO, never
+REVIEW. The hard path is inherently delta-conditioned by the symmetric
+baseline/proposed hard-removed comparison and needs no separate gate.
 
 ## Required Spec-4 comparator extension
 
 `analysis/stp_agreement.py` `ComponentAgreement` gains **`matched_count: int`**
-(count of ports in the component in the `matched` bucket) alongside the existing
-`disagreement: bool`. The hard predicate is `matched_count > 0 and not
-disagreement` — never "no mismatch because every port was `unvalidatable`." The
-count is reported in evidence so non-vacuity is auditable. This is a pure
-additive field; the comparator's buckets and existing tests are unchanged.
+and **`bpdu_inconsistent_count: int`** (counts of the component's ports in the
+`matched` and `bpdu_inconsistent` buckets) alongside the existing
+`disagreement: bool`. Note `disagreement` today means only "any mismatched_*
+bucket" — it is False for an all-`bpdu_inconsistent` component, which is NOT
+clean agreement (BPDU inconsistency is a protection-state signal, not confirmed
+role/state match). The hard predicate is therefore
+
+    matched_count > 0  and  not disagreement  and  bpdu_inconsistent_count == 0
+
+— never vacuous (`matched_count == 0` because every port was `unvalidatable`) and
+never licensed by a protection-tripped component. Expose it as a derived
+`agreement_clean` property on `ComponentAgreement` so the blackhole/reachability
+side reads one predicate, not three. Counts are reported in evidence so the
+licensing decision is auditable. Pure additive fields; the comparator's buckets
+and existing tests are unchanged.
 
 ## Verdict wiring + THE INVARIANT
 
@@ -138,13 +161,14 @@ additive field; the comparator's buckets and existing tests are unchanged.
   manufactures a hard finding, only a REVIEW floor + note.
 - No new check id, no new finding code, no verdict-precedence change. Hard
   strands flow through blackhole's existing `exit_lost` / `new_member_stranded`
-  / `stranded` severities. The soft floor is realized by **capping the affected
-  VLAN's blackhole `CheckResult` confidence below HIGH** (a coverage/confidence
-  degrade) plus an explanatory note — `decide()` already floors REVIEW on any
-  evaluated result below HIGH confidence. It is NOT an INFO finding (INFO is
-  excluded from the confidence roll-up and would not floor). The implementer
-  must confirm the confidence actually reaches the CheckResult and is not
-  swallowed by a vacuous-HIGH default.
+  / `stranded` severities. The soft floor is realized by **appending a sub-HIGH
+  confidence to blackhole's (single, per-check) `CheckResult`** whenever any VLAN
+  has a delta-relevant soft dependence — a coverage/confidence degrade, plus an
+  explanatory note naming the VLAN and blocked edge. `decide()` already floors
+  REVIEW on any evaluated result below HIGH confidence. It is NOT an INFO finding
+  (INFO is excluded from the confidence roll-up and would not floor). The
+  implementer must confirm the appended confidence actually reaches the
+  `CheckResult` roll-up and is not swallowed by a vacuous-HIGH default.
 
 ## Explicit limitations (declared)
 
@@ -174,7 +198,17 @@ additive field; the comparator's buckets and existing tests are unchanged.
 - **Vacuous agreement**: component all-`unvalidatable` (matched_count == 0) →
   soft only, never hard.
 - **Relevance**: an unrelated change on a site with a pre-existing soft-block
-  dependence → no REVIEW floor (STP-aware `_vlan_changed` suppresses).
+  dependence → no REVIEW floor (identical key sets suppress).
+- **Soft-only-set-changed** (P1a): a change that introduces a NEW soft
+  dependence while the hard-removed components stay identical → REVIEW floor
+  fires (proves `blocked_edge_keys_changed` catches what STP-aware
+  `_vlan_changed` alone misses).
+- **New intra-component edge** (P1b): a newly-added blocked link between two
+  nodes already in one clean-agreement baseline component → soft-only, never a
+  hard strand (proves the "edge existed in baseline" clause).
+- **bpdu-inconsistent licensing** (P2): a component whose only STP evidence is
+  `bpdu_inconsistent` (matched_count 0 or a tripped guard) → soft-only, never
+  hard (proves `agreement_clean` excludes the protection bucket).
 - **Coverage-note parity**: the wireless/AP coverage paths use the same
   STP-aware components as the strand logic (no split-brain).
 - Full gate: `uv run pytest tests -q && uv run ruff check . && uv run mypy src`.
