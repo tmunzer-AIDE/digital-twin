@@ -39,6 +39,20 @@ class PortAgreement:
 class ComponentAgreement:
     nodes: frozenset[str]
     disagreement: bool  # any mismatched_* among this component's OWN ports
+    matched_count: int  # ports in the `matched` bucket
+    bpdu_inconsistent_count: int  # ports in the `bpdu_inconsistent` bucket
+
+    @property
+    def agreement_clean(self) -> bool:
+        """Non-vacuous, mismatch-free, protection-free observed agreement — the
+        licence a hard reachability taint requires (Spec-5). `disagreement`
+        alone is False for an all-`bpdu_inconsistent` component, which is NOT
+        clean agreement, so both counts are consulted explicitly."""
+        return (
+            self.matched_count > 0
+            and not self.disagreement
+            and self.bpdu_inconsistent_count == 0
+        )
 
 
 @dataclass(frozen=True)
@@ -92,6 +106,12 @@ def compare_to_observed(prediction: StpTreePrediction, ir: IR) -> StpAgreementRe
             nodes=comp.nodes,
             disagreement=any(
                 r.bucket.startswith("mismatched") for r in rows if r.port_id in comp.ports
+            ),
+            matched_count=sum(
+                1 for r in rows if r.port_id in comp.ports and r.bucket == "matched"
+            ),
+            bpdu_inconsistent_count=sum(
+                1 for r in rows if r.port_id in comp.ports and r.bucket == "bpdu_inconsistent"
             ),
         )
         for comp in prediction.components

@@ -213,3 +213,52 @@ def test_ports_are_deterministically_sorted_within_and_across_components():
     report = compare_to_observed(prediction, ir)
     port_ids = [row.port_id for row in report.ports]
     assert port_ids == sorted(port_ids)
+
+
+def test_component_agreement_reports_matched_and_bpdu_counts():
+    # a component with 2 matched ports, 0 mismatch, 0 bpdu -> clean
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    ir = _set_observed(ir, "bb02:ge-0/0/1", role="root", state="forwarding")
+    ir = _set_observed(ir, "aa01:ge-0/0/1", role="designated", state="forwarding")
+    report = compare_to_observed(prediction, ir)
+    comp = report.components[0]
+    assert comp.matched_count == 2
+    assert comp.bpdu_inconsistent_count == 0
+    assert comp.agreement_clean is True
+
+
+def test_agreement_clean_false_when_all_unvalidatable():
+    # ports predicted but observed role None -> unvalidatable
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    # Leave both ports at their entity default (stp_role=None)
+    report = compare_to_observed(prediction, ir)
+    comp = report.components[0]
+    assert comp.matched_count == 0
+    assert comp.agreement_clean is False  # vacuous, not clean
+
+
+def test_agreement_clean_false_when_bpdu_inconsistent_present():
+    # one matched, one observed "disabled-bpdu-inconsistent"
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    ir = _set_observed(ir, "bb02:ge-0/0/1", role="disabled-bpdu-inconsistent", state=None)
+    ir = _set_observed(ir, "aa01:ge-0/0/1", role="designated", state="forwarding")
+    report = compare_to_observed(prediction, ir)
+    comp = report.components[0]
+    assert comp.matched_count == 1
+    assert comp.bpdu_inconsistent_count == 1
+    assert comp.agreement_clean is False  # protection bucket blocks clean license
+
+
+def test_agreement_clean_false_on_mismatch():
+    # one matched, one mismatched
+    ir = _two_switch_ir()
+    prediction = predict_stp_tree(ir)
+    ir = _set_observed(ir, "bb02:ge-0/0/1", role="alternate", state="blocking")
+    ir = _set_observed(ir, "aa01:ge-0/0/1", role="designated", state="forwarding")
+    report = compare_to_observed(prediction, ir)
+    comp = report.components[0]
+    assert comp.disagreement is True
+    assert comp.agreement_clean is False
