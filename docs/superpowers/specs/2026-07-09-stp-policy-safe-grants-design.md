@@ -1,7 +1,13 @@
 # STP policy SAFE grants (Spec-6) — design
 
 **Date:** 2026-07-09
-**Status:** Implemented (branch feat/stp-safe-grants; live verify pending)
+**Status:** Implemented (branch feat/stp-safe-grants; live-verified 2026-07-09
+— production site 978c48e6: gate parity 10/10 matched; real StpPolicyCheck run
+on the live IR floors the matched-designated port with license (d) named
+[tree position only LOW: one-sided LLDP links + unreported speeds] and the
+non-tree AP port with license (b) named; no production port can license HIGH
+today, so the SAFE path is proven by the goldens — the license refusing real
+under-evidenced positions is the CARDINAL rule working)
 **Predecessors:** Spec-2 (`wired.stp.policy` — the REVIEW floor, SAFE explicitly
 deferred), Spec-3 (live `stp_role`/`stp_state` telemetry), Spec-4 (tree engine +
 `compare_to_observed` + THE INVARIANT), Spec-5 (`agreement_clean`, the
