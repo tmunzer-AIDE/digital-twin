@@ -177,14 +177,37 @@ class StpInertness:
         self, pid: str, enabling: bool, evidence: dict[str, object]
     ) -> InertnessDecision:
         if enabling:
+            # DIRECTION (PR #47 review P1): stp_required is a RECEIVE-dependent
+            # knob — the port blocks when no BPDU ARRIVES. In the stable tree,
+            # periodic BPDUs are sourced by the segment's DESIGNATED end and
+            # received by the root end; a designated target facing a root peer
+            # receives none (the root port does not emit steady-state BPDUs),
+            # so participation alone never proves inbound BPDUs. Inert ONLY
+            # when the target is the validated RECEIVING side (role root) and
+            # the peer the validated SENDING side (role designated).
+            if evidence.get("predicted_role") != "root":
+                return _no(
+                    "target's validated role is not root — stp_required is "
+                    "receive-dependent, and only the root end of a segment "
+                    "demonstrably RECEIVES the designated peer's BPDUs",
+                    evidence,
+                )
             failure = self._validated_switch_peer(pid, evidence)
             if failure is not None:
                 return _no(failure, evidence)
+            if evidence.get("peer_predicted_role") != "designated":
+                return _no(
+                    "peer's validated role is not designated — steady-state "
+                    "BPDUs are sourced by the designated end; a non-designated "
+                    "peer does not prove inbound BPDUs",
+                    evidence,
+                )
             return InertnessDecision(
                 inert=True,
                 reasons=(
-                    "peer positively validated as an STP participant — BPDUs "
-                    "demonstrably flow, the requirement is already satisfied",
+                    "validated root port facing its validated designated peer — "
+                    "inbound BPDUs demonstrably arrive, the requirement is "
+                    "already satisfied",
                 ),
                 evidence=evidence,
             )

@@ -7,7 +7,11 @@ on the live IR floors the matched-designated port with license (d) named
 [tree position only LOW: one-sided LLDP links + unreported speeds] and the
 non-tree AP port with license (b) named; no production port can license HIGH
 today, so the SAFE path is proven by the goldens — the license refusing real
-under-evidenced positions is the CARDINAL rule working)
+under-evidenced positions is the CARDINAL rule working. PR #47 review P1
+fixes baked in: the stp_required-enable rule gained the DIRECTION clause
+[target=root receiving, peer=designated sending] closing a real false-SAFE,
+and the branch is stacked on fix/stp-tiebreak-priority so clause (d)'s
+proposed predictions use the corrected bridge-id tiebreaks)
 **Predecessors:** Spec-2 (`wired.stp.policy` — the REVIEW floor, SAFE explicitly
 deferred), Spec-3 (live `stp_role`/`stp_state` telemetry), Spec-4 (tree engine +
 `compare_to_observed` + THE INVARIANT), Spec-5 (`agreement_clean`, the
@@ -166,10 +170,19 @@ never triggering — removing it is inert under the same rule.
 
 ### `stp_required` enable (False/absent → True)
 
-**Inert iff the port has an effectively STP-participating peer** (user
-adjustment 2 + review R1-P1 — every clause required, so "non-AP" can never be
-read broadly, and the peer's STP participation is POSITIVELY evidenced, not
-merely not-ruled-out):
+**Inert iff the target is the validated RECEIVING end of the segment AND its
+peer is an effectively STP-participating SENDING end** (user adjustment 2 +
+review R1-P1 + **PR #47 review P1 — DIRECTION**: `stp_required` is a
+receive-dependent knob — the port blocks when no BPDU ARRIVES. In the stable
+tree, periodic BPDUs are sourced by the segment's DESIGNATED end and received
+by the root end; a designated target facing a root peer receives none (a root
+port emits no steady-state BPDUs), so peer participation alone never proves
+inbound BPDUs. Every clause required):
+
+- **the TARGET's validated role is `root`** — the receiving side (a
+  designated target floors with the direction reason; this was the exact
+  shape that wrongly granted before the PR #47 review),
+- **the PEER's validated role is `designated`** — the sending side,
 
 - a modeled link with two-sided HIGH confidence (`lk.meta.confidence.level is
   HIGH` — the same bar as `_tie_confidence`),
@@ -191,13 +204,22 @@ merely not-ruled-out):
 
 Because the link is modeled switch-to-switch and neither end is excluded, the
 peer sits in the same baseline STP component as the changed port — license
-clause (c) already vouches for that component's cleanliness; the two clauses
-above add the peer-row and peer-position evidence on top. This is now
-strictly stronger than the complement of `.blocking_risk`'s tiers: BPDUs are
-demonstrably exchanged (the peer's validated role exists only because BPDUs
-flow), the requirement is already satisfied, the knob is inert. The module
+clause (c) already vouches for that component's cleanliness; the clauses
+above add the direction, peer-row, and peer-position evidence on top. This is
+strictly stronger than the complement of `.blocking_risk`'s tiers: inbound
+BPDUs demonstrably ARRIVE at the target (root end, validated designated
+sender), the requirement is already satisfied, the knob is inert. The module
 implements its own small peer scan (the family's established cloned-idiom
 convention; `analysis/` must not import from `checks/`).
+
+Note on the peer-position clause after the direction fix: on a shared
+segment the two ends' ROLES are complementary (exactly one designated end),
+so any peer ROLE move implies a target move and lands on license (d) first.
+The clause's independently-load-bearing content is peer-side CONFIDENCE
+degradation (e.g. the peer end's speed goes unreported in the proposed state:
+the designated decision folds its own end's `cost_defaulted` and drops to
+LOW, while the target's root-port key and confidence fold only the neighbor's
+RPC and the target's own end cost) — pinned by the isolating test.
 
 ### `stp_required` disable (True → False)
 

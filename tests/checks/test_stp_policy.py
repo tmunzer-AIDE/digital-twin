@@ -1011,9 +1011,10 @@ def test_multi_knob_one_uneligible_floors_whole_port():
 
 
 def test_required_enable_grant_discards_blocking_note_coverage_complete():
-    # R2-P1 reconciliation: validated switch peer -> proof succeeds -> the
-    # "peer unobserved" note is DISCARDED -> COMPLETE/PASS
-    base, prop = _validated_pair("cc03:ge-0/0/2", stp_required=True)
+    # R2-P1 reconciliation: direction-correct proof (root target bb02:ge-0/0/1
+    # facing its validated designated peer) succeeds -> the "peer unobserved"
+    # note is DISCARDED -> COMPLETE/PASS
+    base, prop = _validated_pair("bb02:ge-0/0/1", stp_required=True)
     result = _run_pair(base, prop)
     assert not any("peer unobserved" in n for n in result.coverage.notes)
     assert result.coverage.state is CoverageState.COMPLETE
@@ -1022,12 +1023,27 @@ def test_required_enable_grant_discards_blocking_note_coverage_complete():
 
 def test_required_enable_dark_peer_keeps_note_and_floors():
     from tests.analysis.test_stp_inertness import _bridge_ir as _b
-    base = _fully_observed(_b(), skip=frozenset({"bb02:ge-0/0/1"}))
-    prop = _with_policy(base, "cc03:ge-0/0/2", stp_required=True)
+    base = _fully_observed(_b(), skip=frozenset({"cc03:ge-0/0/2"}))
+    prop = _with_policy(base, "bb02:ge-0/0/1", stp_required=True)
     result = _run_pair(base, prop)
     assert any("peer unobserved" in n for n in result.coverage.notes)
     assert result.coverage.state is CoverageState.PARTIAL
     assert any(f.code.endswith("policy_change") for f in result.findings)
+
+
+def test_required_enable_wrong_direction_keeps_note_and_floors():
+    # PR #47 review P1 at check level: the previously-granting shape — a
+    # designated target facing a root peer — must now floor (WARNING
+    # .policy_change with the direction reason in evidence) and KEEP the
+    # provisional note (the proof failed, so nothing licenses its discard).
+    base, prop = _validated_pair("cc03:ge-0/0/2", stp_required=True)
+    result = _run_pair(base, prop)
+    codes = [f.code for f in result.findings]
+    assert "wired.stp.policy.inert_change" not in codes
+    floor = next(f for f in result.findings if f.code.endswith("policy_change"))
+    assert any("root" in r for r in floor.evidence["inertness"]["stp_required"])
+    assert any("peer unobserved" in n for n in result.coverage.notes)
+    assert result.coverage.state is CoverageState.PARTIAL
 
 
 def test_cross_end_link_mismatch_warning_suppresses_grant():

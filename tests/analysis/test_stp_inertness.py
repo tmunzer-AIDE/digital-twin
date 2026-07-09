@@ -52,7 +52,7 @@ def _with_policy(ir, pid: str, **knobs):
     return dataclasses.replace(ir, ports=new_ports)
 
 
-def _with_speed(ir, pid: str, speed: str):
+def _with_speed(ir, pid: str, speed: str | None):
     port = ir.ports[pid]
     new_ports = dict(ir.ports)
     new_ports[pid] = dataclasses.replace(port, observed_speed=speed)
@@ -228,30 +228,43 @@ def test_root_protect_on_root_port_floors_at_the_rule():
     assert not d.inert
 
 
-def test_required_enable_with_validated_switch_peer_is_inert():
-    # cc03:ge-0/0/2 <-> bb02:ge-0/0/1: two-sided link, both switches, no
-    # bpdu_filter, peer row matched (root/forwarding), peer position HIGH-stable
+def test_required_enable_receiving_root_target_with_designated_peer_is_inert():
+    # DIRECTION-CORRECT positive (PR #47 review P1): the target bb02:ge-0/0/1
+    # is the validated ROOT (receiving) end; its peer cc03:ge-0/0/2 the
+    # validated DESIGNATED (sending) end — inbound BPDUs demonstrably arrive.
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("bb02:ge-0/0/1", "stp_required", False, True)
+    assert d.inert
+    assert d.evidence["peer"] == "cc03:ge-0/0/2"
+    assert d.evidence["peer_predicted_role"] == "designated"
+
+
+def test_required_enable_on_designated_target_floors_direction():
+    # PR #47 review P1 regression (the exact shape that WRONGLY granted):
+    # a designated target facing a root peer proves the target SENDS BPDUs,
+    # not that it receives them — the root peer emits no steady-state BPDUs,
+    # so enabling the receive-dependent requirement here is NOT provably inert.
     base = _fully_observed(_bridge_ir())
     d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
-    assert d.inert
-    assert d.evidence["peer"] == "bb02:ge-0/0/1"
+    assert not d.inert
+    assert any("root" in r and "RECEIVES" in r for r in d.reasons)
 
 
 def test_required_enable_with_telemetry_dark_peer_floors():
     # R1-P1: peer row unvalidatable — switch + no-filter is NOT positive
-    # evidence that BPDUs flow
-    base = _fully_observed(_bridge_ir(), skip=frozenset({"bb02:ge-0/0/1"}))
-    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    # evidence that BPDUs flow (target is the direction-correct root end)
+    base = _fully_observed(_bridge_ir(), skip=frozenset({"cc03:ge-0/0/2"}))
+    d = _inertness(base, base).decide("bb02:ge-0/0/1", "stp_required", False, True)
     assert not d.inert and any("peer" in r for r in d.reasons)
 
 
 def test_required_enable_with_bpdu_filter_peer_floors():
     base = _fully_observed(_bridge_ir())
-    port = base.ports["bb02:ge-0/0/1"]
+    port = base.ports["cc03:ge-0/0/2"]
     new_ports = dict(base.ports)
-    new_ports["bb02:ge-0/0/1"] = dataclasses.replace(port, bpdu_filter=True)
+    new_ports["cc03:ge-0/0/2"] = dataclasses.replace(port, bpdu_filter=True)
     base = dataclasses.replace(base, ports=new_ports)
-    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    d = _inertness(base, base).decide("bb02:ge-0/0/1", "stp_required", False, True)
     assert not d.inert
 
 
@@ -263,26 +276,28 @@ def test_required_enable_with_no_modeled_link_floors():
     assert not d.inert
 
 
-def test_required_enable_peer_moved_by_delta_floors_peer_clause():
-    # plan-review P1, isolating: the TARGET cc03:ge-0/0/2 keeps an identical
-    # HIGH designated position in BOTH states; ONLY the peer moves — by pure
-    # COST (the engine's priority-blind tiebreak is a separate, ledgered
-    # Spec-4 defect; this test must not depend on it). Proposed upgrades the
-    # aa01<->dd04 link to 10g on both ends: dd04's RPC drops to 2000, so
-    # bb02's root path flips to the dd04 side (22000 < 40000) and peer
-    # bb02:ge-0/0/1 goes root->alternate at HIGH "cost" factor, while cc03's
-    # own root path (direct to aa01) and its designated claim on the
-    # cc03-bb02 segment are untouched. The failure MUST name the
-    # peer-position clause — proving the peer validation is load-bearing,
-    # not shadowed by license (d) on the target.
+def test_required_enable_peer_position_degraded_by_delta_floors_peer_clause():
+    # plan-review P1, isolating (direction-corrected after PR #47 review P1):
+    # the TARGET bb02:ge-0/0/1 (root) keeps an identical HIGH position in
+    # BOTH states; ONLY the peer's evidence degrades. Proposed blanks the
+    # peer end cc03:ge-0/0/2's observed_speed: the designated decision folds
+    # its OWN end's cost_defaulted (stp_tree step 4) and drops to LOW, while
+    # the target's root-port key and confidence fold only the neighbor's RPC
+    # and the target's own end cost — both untouched, and bb02's alternative
+    # path via dd04 is unchanged so no role moves anywhere. The failure MUST
+    # name the peer-position clause — proving the peer validation is
+    # load-bearing, not shadowed by license (d) on the target. (Roles on a
+    # shared segment are complementary, so a peer ROLE move always moves the
+    # target too — confidence degradation is the peer clause's independently
+    # testable content.)
     base = _fully_observed(_bridge_ir())
-    prop = _with_speed(_with_speed(base, "aa01:ge-0/0/2", "10g"), "dd04:ge-0/0/1", "10g")
+    prop = _with_speed(base, "cc03:ge-0/0/2", None)
     si = _inertness(base, prop)
-    # sanity: the target's OWN license fully holds across this delta (a
-    # designated-rule grant succeeds), so any stp_required failure below is
-    # attributable to the peer clauses alone
-    assert si.decide("cc03:ge-0/0/2", "stp_no_root_port", False, True).inert
-    d = si.decide("cc03:ge-0/0/2", "stp_required", False, True)
+    # sanity: the target's OWN license fully holds across this delta (the
+    # disable-rule grant succeeds — license + observed forwarding), so any
+    # enable failure below is attributable to the peer clauses alone
+    assert si.decide("bb02:ge-0/0/1", "stp_required", True, False).inert
+    d = si.decide("bb02:ge-0/0/1", "stp_required", False, True)
     assert not d.inert
     assert any("peer tree position" in r for r in d.reasons)
 

@@ -75,13 +75,25 @@ def test_bulk_root_protect_on_designated_downlinks_is_safe():
 
 
 def test_required_enable_on_validated_pair_is_safe_with_complete_coverage():
+    # direction-correct (PR #47 review P1): the RECEIVING root end
+    # bb02:ge-0/0/1, facing its validated designated peer cc03:ge-0/0/2
     base = _validated_ir()
-    prop = _with_policy(base, "cc03:ge-0/0/2", stp_required=True)
+    prop = _with_policy(base, "bb02:ge-0/0/1", stp_required=True)
     verdict, results = _verdict(base, prop)
     assert verdict.decision is Decision.SAFE
     policy = next(r for r in results if r.check_id == "wired.stp.policy")
     assert policy.coverage.state is CoverageState.COMPLETE
     assert not any("peer unobserved" in n for n in policy.coverage.notes)
+
+
+def test_required_enable_on_designated_target_is_review():
+    # PR #47 review P1 boundary, end-to-end: the shape that previously earned
+    # SAFE — enabling the receive-dependent knob on a DESIGNATED target whose
+    # peer is a root port (which emits no steady-state BPDUs) — must be REVIEW.
+    base = _validated_ir()
+    prop = _with_policy(base, "cc03:ge-0/0/2", stp_required=True)
+    verdict, _ = _verdict(base, prop)
+    assert verdict.decision is Decision.REVIEW
 
 
 def test_bulk_plan_with_one_dark_port_is_review():
