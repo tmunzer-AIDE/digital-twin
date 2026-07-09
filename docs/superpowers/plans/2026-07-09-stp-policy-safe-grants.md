@@ -259,11 +259,11 @@ def _with_policy(ir, pid: str, **knobs):
     return dataclasses.replace(ir, ports=new_ports)
 
 
-def _with_priority(ir, did: str, prio: int):
-    dev = ir.devices[did]
-    new_devices = dict(ir.devices)
-    new_devices[did] = dataclasses.replace(dev, stp_priority=prio)
-    return dataclasses.replace(ir, devices=new_devices)
+def _with_speed(ir, pid: str, speed: str):
+    port = ir.ports[pid]
+    new_ports = dict(ir.ports)
+    new_ports[pid] = dataclasses.replace(port, observed_speed=speed)
+    return dataclasses.replace(ir, ports=new_ports)
 
 
 def _lag_pair_ir():
@@ -671,15 +671,18 @@ def test_required_enable_with_no_modeled_link_floors():
 
 def test_required_enable_peer_moved_by_delta_floors_peer_clause():
     # plan-review P1, isolating: the TARGET cc03:ge-0/0/2 keeps an identical
-    # HIGH designated position in BOTH states; ONLY the peer moves. Proposed
-    # drops dd04's priority to 4096 (< cc03's 8192): bb02's equal-cost root
-    # tiebreak flips from cc03 to dd04, so peer bb02:ge-0/0/1 goes
-    # root->alternate while cc03's own root path (direct to aa01) and its
-    # designated claim on the cc03-bb02 segment are untouched. The failure
-    # MUST name the peer-position clause — proving the peer validation is
-    # load-bearing, not shadowed by license (d) on the target.
+    # HIGH designated position in BOTH states; ONLY the peer moves — by pure
+    # COST (the engine's priority-blind tiebreak is a separate, ledgered
+    # Spec-4 defect; this test must not depend on it). Proposed upgrades the
+    # aa01<->dd04 link to 10g on both ends: dd04's RPC drops to 2000, so
+    # bb02's root path flips to the dd04 side (22000 < 40000) and peer
+    # bb02:ge-0/0/1 goes root->alternate at HIGH "cost" factor, while cc03's
+    # own root path (direct to aa01) and its designated claim on the
+    # cc03-bb02 segment are untouched. The failure MUST name the
+    # peer-position clause — proving the peer validation is load-bearing,
+    # not shadowed by license (d) on the target.
     base = _fully_observed(_bridge_ir())
-    prop = _with_priority(base, "dd04", 4096)
+    prop = _with_speed(_with_speed(base, "aa01:ge-0/0/2", "10g"), "dd04:ge-0/0/1", "10g")
     si = _inertness(base, prop)
     # sanity: the target's OWN license fully holds across this delta (a
     # designated-rule grant succeeds), so any stp_required failure below is
