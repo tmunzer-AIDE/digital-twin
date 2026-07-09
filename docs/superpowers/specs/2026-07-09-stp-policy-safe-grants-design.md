@@ -2,8 +2,9 @@
 
 **Date:** 2026-07-09
 **Status:** Approved (brainstorm converged; user design adjustments + spec
-review R1 [peer positive evidence P1, tree-representation scope P1,
-telemetry-dark definition P2] baked in)
+reviews R1 [peer positive evidence, tree-representation scope,
+telemetry-dark definition] and R2 [provisional coverage-note
+reconciliation] baked in)
 **Predecessors:** Spec-2 (`wired.stp.policy` — the REVIEW floor, SAFE explicitly
 deferred), Spec-3 (live `stp_role`/`stp_state` telemetry), Spec-4 (tree engine +
 `compare_to_observed` + THE INVARIANT), Spec-5 (`agreement_clean`, the
@@ -91,8 +92,9 @@ checks/wired/stp_policy.py (consumer)
 
 `CheckContext.stp_agreement` is an explicit memoized property (same lazy
 `object.__setattr__` idiom as `stp_reachability`) returning the baseline
-`AgreementReport`. Both `StpReachability.__init__` and `StpInertness.__init__`
-gain an optional `agreement: AgreementReport | None = None` parameter —
+`StpAgreementReport`. Both `StpReachability.__init__` and
+`StpInertness.__init__` gain an optional
+`agreement: StpAgreementReport | None = None` parameter —
 `None` → compute it themselves (purity and every existing test preserved);
 `CheckContext` always passes the shared report so cache behavior lives in
 exactly one place and the report is computed once per run, not per consumer.
@@ -232,6 +234,25 @@ Per changed port, in order:
    context, and Spec-2's rule that INFO never substitutes for the floor has a
    mirror here: INFO never blocks a grant either.
 5. `.preexisting` INFO context: unchanged.
+6. **Coverage-note reconciliation (review R2-P1).** Today `_blocking_risk`
+   returns the coverage note `"peer unobserved — blocking outcome not
+   assessable"` whenever no risk tier matches — INCLUDING the modeled
+   non-filtering switch-peer case — and `run()` turns any note into
+   `CoverageState.PARTIAL`, which the decision layer floors to REVIEW. Left
+   alone, that note would defeat every successful `stp_required` grant. The
+   note becomes PROVISIONAL: it is discarded for a port iff that port's
+   `stp_required`-enable inertness proof succeeded (`decide()` returned
+   inert for the knob — the peer is positively identified and telemetry-
+   matched, so "peer unobserved" would be factually false). In EVERY other
+   case — proof failed for any reason, including a telemetry-dark peer —
+   the note stays, coverage goes PARTIAL, and the port floors exactly as
+   today. The discard keys on the inertness proof, not on `.inert_change`
+   emission: if the grant is subsequently suppressed by a WARNING+ (rule 4),
+   the port still floors via `.policy_change`/the suppressing WARNING, but
+   the coverage claim stays truthful (nothing was unobserved). Pinned by a
+   check/e2e assertion: the successful `stp_required` grant yields
+   `CoverageState.COMPLETE`, status PASS, and final decision **SAFE**; the
+   telemetry-dark-peer case stays REVIEW with the note present.
 
 **The Spec-2 floor invariant is amended to:** every port with a changed
 `stp_policy` yields at least one delta-caused finding — WARNING-or-above, OR
@@ -318,12 +339,19 @@ Check-level:
   suppression: peer-end `use_vstp` change raises WARNING `.link_mismatch` →
   no grant on this port; INFO `.link_mismatch` does NOT suppress; floor
   evidence carries the failure reasons.
+- Coverage-note reconciliation (R2-P1): successful `stp_required` grant →
+  NO "peer unobserved" note, `CoverageState.COMPLETE`, status PASS;
+  telemetry-dark peer → note present, PARTIAL, REVIEW; grant-suppressed
+  (rule 4) with a validated peer → no note, but floors via the WARNING.
 
 e2e goldens (real `CheckRegistry.run_all` → `assemble`/`decide`):
 
 - Bulk root-protect hardening on the telemetry-validated fixture's
   **inter-switch designated downlinks** → **SAFE** (the headline, scoped per
   decision 6).
+- Successful `stp_required` enable on a validated inter-switch pair →
+  **SAFE** with `CoverageState.COMPLETE` (pins R2-P1 end-to-end — the
+  provisional note is discarded, not merely outvoted).
 - Same fixture, plan additionally touching one telemetry-dark port → REVIEW.
 - Plan touching an observed-designated but non-tree access port → REVIEW
   (the R1-P1-2 boundary, end-to-end).
