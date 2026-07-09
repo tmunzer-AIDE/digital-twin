@@ -259,6 +259,27 @@ def _with_policy(ir, pid: str, **knobs):
     return dataclasses.replace(ir, ports=new_ports)
 
 
+def _with_priority(ir, did: str, prio: int):
+    dev = ir.devices[did]
+    new_devices = dict(ir.devices)
+    new_devices[did] = dataclasses.replace(dev, stp_priority=prio)
+    return dataclasses.replace(ir, devices=new_devices)
+
+
+def _lag_pair_ir():
+    """Two switches joined by a 2-member LAG: the Spec-4 engine caps LAG
+    member predictions at MEDIUM — the license-(d) confidence fixture."""
+    b = IRBuilder().add_device(sw("aa01", stp_priority=0)).add_device(
+        sw("bb02", stp_priority=4096)
+    )
+    for name in ("ge-0/0/1", "ge-0/0/2"):
+        b.add_port(make_port("aa01", name, observed_speed="1g"))
+        b.add_port(make_port("bb02", name, observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1", bundle="ae0"))
+    b.add_link(link("aa01:ge-0/0/2", "bb02:ge-0/0/2", bundle="ae0"))
+    return b.with_capability(IRCapability.WIRED_L2).build()
+
+
 def _inertness(base_ir, prop_ir) -> StpInertness:
     return StpInertness(AnalysisContext(base_ir), AnalysisContext(prop_ir))
 
@@ -318,6 +339,25 @@ def test_license_c_component_dirty_bpdu_inconsistent_floors_matched_target():
     )
     d = _decide_root_protect(base, base)
     assert not d.inert and any("clean" in r for r in d.reasons)
+
+
+def test_license_d_medium_confidence_lag_position_floors():
+    # plan-review P1: clause (d)'s HIGH requirement, isolated — the row IS
+    # matched (b holds), the component IS clean (c holds), the position IS
+    # identical (same IR both sides), but the LAG cap makes it MEDIUM
+    from digital_twin.analysis.stp_agreement import compare_to_observed
+    from digital_twin.ir.confidence import ConfidenceLevel
+
+    ir = _lag_pair_ir()
+    for pid in ("aa01:ge-0/0/1", "aa01:ge-0/0/2"):
+        ir = _set_observed(ir, pid, role="designated", state="forwarding")
+    actx = AnalysisContext(ir)
+    report = compare_to_observed(actx.stp_tree(), actx.ir)
+    rows = {r.port_id: r for r in report.ports}
+    assert rows["aa01:ge-0/0/1"].bucket == "matched"  # sanity: (b) holds
+    assert rows["aa01:ge-0/0/1"].predicted.confidence is ConfidenceLevel.MEDIUM
+    d = _inertness(ir, ir).decide("aa01:ge-0/0/1", "stp_no_root_port", False, True)
+    assert not d.inert and any("license (d)" in r for r in d.reasons)
 
 
 def test_license_d_delta_moving_tree_position_floors():
@@ -629,20 +669,25 @@ def test_required_enable_with_no_modeled_link_floors():
     assert not d.inert
 
 
-def test_required_enable_peer_moved_by_delta_floors():
-    # the delta disables dd04's links, re-rooting nothing for cc03:ge-0/0/2
-    # itself, but bb02:ge-0/0/1 stays put — so build the MOVING case instead:
-    # disable aa01:ge-0/0/1 + cc03:ge-0/0/1 (cc03's uplink) so cc03 re-roots
-    # through bb02: peer bb02:ge-0/0/1 flips root->designated in proposed
+def test_required_enable_peer_moved_by_delta_floors_peer_clause():
+    # plan-review P1, isolating: the TARGET cc03:ge-0/0/2 keeps an identical
+    # HIGH designated position in BOTH states; ONLY the peer moves. Proposed
+    # drops dd04's priority to 4096 (< cc03's 8192): bb02's equal-cost root
+    # tiebreak flips from cc03 to dd04, so peer bb02:ge-0/0/1 goes
+    # root->alternate while cc03's own root path (direct to aa01) and its
+    # designated claim on the cc03-bb02 segment are untouched. The failure
+    # MUST name the peer-position clause — proving the peer validation is
+    # load-bearing, not shadowed by license (d) on the target.
     base = _fully_observed(_bridge_ir())
-    prop = base
-    for pid in ("aa01:ge-0/0/1", "cc03:ge-0/0/1"):
-        port = prop.ports[pid]
-        new_ports = dict(prop.ports)
-        new_ports[pid] = dataclasses.replace(port, disabled=True)
-        prop = dataclasses.replace(prop, ports=new_ports)
-    d = _inertness(base, prop).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    prop = _with_priority(base, "dd04", 4096)
+    si = _inertness(base, prop)
+    # sanity: the target's OWN license fully holds across this delta (a
+    # designated-rule grant succeeds), so any stp_required failure below is
+    # attributable to the peer clauses alone
+    assert si.decide("cc03:ge-0/0/2", "stp_no_root_port", False, True).inert
+    d = si.decide("cc03:ge-0/0/2", "stp_required", False, True)
     assert not d.inert
+    assert any("peer tree position" in r for r in d.reasons)
 
 
 def test_required_disable_on_observed_forwarding_is_inert():
@@ -660,7 +705,7 @@ def test_required_disable_on_observed_blocking_floors():
     assert not d.inert and any("forwarding" in r for r in d.reasons)
 ```
 
-Note for the implementer: `test_required_enable_peer_moved_by_delta_floors` disables cc03's own uplink, which ALSO moves `cc03:ge-0/0/2`'s prediction (license (d) on the target may fail first). That is acceptable — the assertion is `not d.inert` regardless of which clause names it; do NOT weaken the test to demand a specific reason.
+Note for the implementer: `test_required_enable_peer_moved_by_delta_floors_peer_clause` asserts the exact reason string `"peer tree position"` — if you word the peer-clause reason differently, the TEST is the contract: keep the phrase `peer tree position` in the reason.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -669,11 +714,18 @@ Expected: FAIL with `NotImplementedError`.
 
 - [ ] **Step 3: Implement the rules**
 
-In `src/digital_twin/analysis/stp_inertness.py`, add the import:
+In `src/digital_twin/analysis/stp_inertness.py`, add the imports (plan-review
+P2: `peer_of` is fully typed — `IR`/`Link` are real imports, no `object` +
+attribute access, which strict mypy rejects):
 
 ```python
-from digital_twin.ir.entities import DeviceRole
+from digital_twin.ir.entities import DeviceRole, Link
+from digital_twin.ir.model import IR
 ```
+
+(If `Link` does not re-export from `digital_twin.ir.entities`, import it from
+where `stp_agreement.py`/`stp_policy.py` do — `from digital_twin.ir import Link` —
+and keep `IR` from `digital_twin.ir.model`, mirroring `stp_agreement.py`.)
 
 Replace the two placeholder methods with:
 
@@ -747,9 +799,9 @@ Replace the two placeholder methods with:
         not import from checks/)."""
         base_ir, prop_ir = self._baseline.ir, self._proposed.ir
 
-        def peer_of(ir: object) -> tuple[str, object] | None:
-            hits = []
-            for lk in ir.links:  # type: ignore[attr-defined]
+        def peer_of(ir: IR) -> tuple[str, Link] | None:
+            hits: list[tuple[str, Link]] = []
+            for lk in ir.links:
                 if lk.a_port == pid:
                     hits.append((lk.b_port, lk))
                 elif lk.b_port == pid:
@@ -1226,21 +1278,38 @@ _DESIGNATED_DOWNLINKS = ("aa01:ge-0/0/1", "aa01:ge-0/0/2", "cc03:ge-0/0/2", "dd0
 
 
 def _validated_ir():
+    # CLIENTS_ACTIVE models a SUCCESSFUL zero-client fetch (plan-review P1:
+    # without it, wired.client.impact returns INSUFFICIENT_DATA on any port
+    # diff and blackhole adds a missing-client note — both force REVIEW and
+    # would make the SAFE assertions unreachable)
     b = IRBuilder()
     _bridge_id_topology(b, prune_vlan10=True, carry_both_paths=True)
-    ir = b.with_capability(IRCapability.WIRED_L2).with_capability(
-        IRCapability.L3_EXITS
-    ).build()
+    ir = (
+        b.with_capability(IRCapability.WIRED_L2)
+        .with_capability(IRCapability.L3_EXITS)
+        .with_capability(IRCapability.CLIENTS_ACTIVE)
+        .build()
+    )
     return _fully_observed(ir)
 
 
 def _verdict(base, prop):
+    # exact harness shape from tests/golden/test_stp_reachability_scenarios.py:_run
+    diff = diff_ir(base, prop)
     ctx = CheckContext(
-        baseline=AnalysisContext(base), proposed=AnalysisContext(prop),
-        diff=diff_ir(base, prop),
+        baseline=AnalysisContext(base), proposed=AnalysisContext(prop), diff=diff,
     )
     results = CheckRegistry(ALL_WIRED_CHECKS).run_all(ctx)
-    return assemble(inputs=DecisionInputs(check_results=results)), results
+    verdict = assemble(
+        inputs=DecisionInputs(
+            rejections=(),
+            l0_fatal=False,
+            baseline_unavailable=False,
+            check_results=results,
+        ),
+        ir_diff=diff,
+    )
+    return verdict, results
 
 
 def test_bulk_root_protect_on_designated_downlinks_is_safe():
@@ -1336,4 +1405,5 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - **Spec coverage:** decisions 1–6 → T2/T3 (knobs, license, scope), T4 (grant shape, emission rules 1–6), T1 (shared memo); R1-P1 peer evidence → T3; R1-P1-2 non-tree boundary → T2 unit + T5 golden; R1-P2 telemetry-dark-by-role → T2/T4 dark fixtures; R2-P1 note reconciliation → T4 rules + tests + T5 COMPLETE golden; adjustment 5 component-dirty → T2 (both variants); amended Spec-2 guard → T4; docs → T6.
 - **Type consistency:** `decide(pid, knob, old_value, new_value)` and `InertnessDecision(inert, reasons, evidence)` used identically in T2/T3/T4; `agreement: StpAgreementReport | None = None` identical in T1 (`StpReachability`) and T2 (`StpInertness`); helper names `_bridge_ir`/`_fully_observed`/`_with_policy` exported by T2's test module and imported by T4/T5.
-- **Known judgment points for implementers:** T3's peer-moved test may fail via license (d) on the target rather than the peer clause — the test deliberately asserts only `not d.inert`. T5 SAFE goldens may surface an unrelated check flooring the fixture — that is an integration finding to resolve, not an assertion to weaken.
+- **Known judgment points for implementers:** T3's peer-moved test is ISOLATING (plan-review R1): it first proves the target's own license holds across the delta, then demands the `peer tree position` reason verbatim. T5 SAFE goldens may surface an unrelated check flooring the fixture — that is an integration finding to resolve, not an assertion to weaken (CLIENTS_ACTIVE is already supplied for `wired.client.impact`).
+- **Plan-review R1 fixes baked in:** T5 harness copies `_run` from the Spec-5 golden verbatim (`DecisionInputs(rejections=(), l0_fatal=False, baseline_unavailable=False, check_results=...)` + `assemble(..., ir_diff=diff)`) and the fixture carries `CLIENTS_ACTIVE`; clause (d)'s HIGH bar has its own MEDIUM-LAG regression (`test_license_d_medium_confidence_lag_position_floors`); the peer helper is strictly typed.
