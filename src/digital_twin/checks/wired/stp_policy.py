@@ -2,11 +2,13 @@
 
 The four StpPolicy knobs are modeled but the bridge domain is not provable
 (unmanaged switches, invisible BPDU sources, off-fabric roots, convergence),
-so a policy change NEVER resolves SAFE in this slice: concrete predicted harm
-escalates (.blocking_risk / .root_protect_risk, ERROR only at HIGH evidence);
-everything else floors REVIEW via .policy_change. SAFE is deferred to a
-future STP tree engine validated against live stp_state (see the 2026-07-03
-spec).
+so a policy change floors REVIEW via .policy_change UNLESS a Spec-6
+telemetry-licensed inertness proof (analysis/stp_inertness.py) grants
+.inert_change INFO: eligible knobs stp_no_root_port/stp_required only, full
+license (port row matched, component agreement_clean, identical HIGH tree
+position both states) plus a knob rule, risk codes always win, and any
+WARNING-or-higher finding naming the port suppresses the grant back to the
+floor. The SAFE claim is stable-state-only. (2026-07-09 spec.)
 
 .blocking_risk fires ONLY when the delta enables stp_required (False/absent
 -> True; an unresolved: token never reaches this code) AND the port has a
@@ -63,6 +65,7 @@ floor satisfaction (spec P2 round 2)."""
 from __future__ import annotations
 
 import dataclasses
+from typing import TYPE_CHECKING
 
 import networkx as nx
 
@@ -87,6 +90,9 @@ from digital_twin.ir import (
 from digital_twin.ir.entities import Client, DeviceRole, Port, PortMode, StpMode, StpPolicy
 from digital_twin.ir.indexes import clients_by_ap, clients_by_port, node_for, vc_root_map
 from digital_twin.ir.model import IR
+
+if TYPE_CHECKING:
+    from digital_twin.analysis.stp_inertness import InertnessDecision
 
 _MEDIUM = Confidence(
     level=ConfidenceLevel.MEDIUM,
@@ -296,6 +302,7 @@ class StpPolicyCheck:
         wired = _union_wired_clients(clients_by_port(base_ir), clients_by_port(prop_ir))
         findings: list[Finding] = []
         notes: list[str] = []
+        provisional: dict[str, Finding] = {}
         for pid in sorted(base_ir.ports.keys() | prop_ir.ports.keys()):
             old = base_ir.ports[pid].stp_policy if pid in base_ir.ports else None
             new = prop_ir.ports[pid].stp_policy if pid in prop_ir.ports else None
@@ -316,17 +323,16 @@ class StpPolicyCheck:
                 )
 
             risk_findings: list[Finding] = []
+            blocking_note: str | None = None
             if "stp_required" in knobs and new_policy.stp_required is True:
                 # False/absent -> True only; an unresolved: token never reaches
                 # here (it is filtered into unresolved_knobs above, and a token
                 # is never `is True`).
-                blocking_finding, note = self._blocking_risk(
+                blocking_finding, blocking_note = self._blocking_risk(
                     ctx, pid, ap_peers, bpdu_filter_peers, nonap_bridge_peers, wired
                 )
                 if blocking_finding is not None:
                     risk_findings.append(blocking_finding)
-                if note is not None:
-                    notes.append(note)
 
             if "stp_no_root_port" in knobs and new_policy.stp_no_root_port is True:
                 # False/absent -> True only; same unresolved-token exclusion.
@@ -337,20 +343,51 @@ class StpPolicyCheck:
                     notes.append(note)
 
             if risk_findings:
+                # rule 1: risks win, the grant is never consulted; the
+                # blocking note (if any) keeps today's behavior verbatim
                 findings.extend(risk_findings)
+                if blocking_note is not None:
+                    notes.append(blocking_note)
             else:
-                findings.append(
-                    Finding(
+                decisions = {
+                    k: ctx.stp_inertness.decide(
+                        pid, k, getattr(old_policy, k), getattr(new_policy, k)
+                    )
+                    for k in knobs
+                }
+                # rule 6 (R2-P1): the "peer unobserved" note is PROVISIONAL —
+                # discarded iff the stp_required-enable PROOF succeeded (the
+                # peer is positively identified and matched, so the note text
+                # would be factually false). Keyed on the proof, NOT on grant
+                # emission: a rule-4-suppressed grant keeps coverage truthful
+                # while the port still floors via the suppressing WARNING path.
+                required_proof = decisions.get("stp_required")
+                if blocking_note is not None and not (
+                    required_proof is not None and required_proof.inert
+                ):
+                    notes.append(blocking_note)
+                if all(d.inert for d in decisions.values()):
+                    provisional[pid] = Finding(
                         source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                        code=f"{self.id}.policy_change", severity=Severity.WARNING,
-                        confidence=_MEDIUM,
+                        code=f"{self.id}.inert_change", severity=Severity.INFO,
+                        confidence=_HIGH,
                         message=f"port {pid}: STP policy changed ({', '.join(knobs)}) — "
-                                f"impact not provable in this slice (review)",
+                                f"provably inert against the telemetry-validated tree "
+                                f"(stable-state claim only)",
                         affected_entities=(pid,), subject=ObjectRef("port", pid),
-                        evidence={"port": pid, "knobs": knobs},
+                        evidence={
+                            "port": pid, "knobs": knobs,
+                            "inertness": {k: d.evidence for k, d in decisions.items()},
+                            "severity_reason": (
+                                "stable-state dataplane provably unchanged under the "
+                                "telemetry-validated tree; future protection posture "
+                                "out of scope"
+                            ),
+                        },
                         caused_by=ctx.delta_index.causes("port", [pid]),
                     )
-                )
+                else:
+                    findings.append(self._floor_finding(ctx, pid, knobs, decisions))
 
             # pre-existing stp_required=True, untouched by THIS delta (some
             # OTHER knob on the port changed) -> INFO context, never re-flagged.
@@ -371,7 +408,31 @@ class StpPolicyCheck:
                         caused_by=(),
                     )
                 )
-        findings.extend(self._link_mismatch(ctx))
+        link_findings = self._link_mismatch(ctx)
+        # rule 4: a provisional grant is emitted ONLY if no WARNING-or-higher
+        # finding of THIS check names the port (cross-end link_mismatch
+        # included). INFO never suppresses. A suppressed grant falls back to
+        # the .policy_change floor — link findings never satisfy the per-port
+        # floor (Spec-2), so the port must still carry its own WARNING.
+        warning_entities = {
+            e
+            for f in (*findings, *link_findings)
+            if f.severity is not Severity.INFO
+            for e in f.affected_entities
+        }
+        for pid in sorted(provisional):
+            grant = provisional[pid]
+            if pid in warning_entities:
+                knobs = list(grant.evidence["knobs"])
+                findings.append(
+                    self._floor_finding(
+                        ctx, pid, knobs, None,
+                        suppressed_by="a WARNING-or-higher finding names this port",
+                    )
+                )
+            else:
+                findings.append(grant)
+        findings.extend(link_findings)
         coverage = (
             Coverage(state=CoverageState.PARTIAL, notes=tuple(notes))
             if notes
@@ -385,8 +446,37 @@ class StpPolicyCheck:
             coverage=coverage,
             confidence=min_confidence(*confidences) if confidences else _HIGH,
             reasoning="compared per-port StpPolicy baseline vs proposed; every "
-                      "change floors REVIEW (bridge domain not provable) unless "
-                      "concrete no-BPDU-peer harm escalates it",
+                      "change floors REVIEW unless concrete harm escalates it "
+                      "or a telemetry-licensed inertness proof grants INFO",
+        )
+
+    def _floor_finding(
+        self,
+        ctx: CheckContext,
+        pid: str,
+        knobs: list[str],
+        decisions: dict[str, InertnessDecision] | None,
+        suppressed_by: str | None = None,
+    ) -> Finding:
+        """The unchanged Spec-2 `.policy_change` WARNING/MEDIUM floor, with the
+        inertness near-miss reasons (or the suppression cause) folded into
+        evidence for diagnosability — never a new severity or code."""
+        evidence: dict[str, object] = {"port": pid, "knobs": knobs}
+        if decisions is not None:
+            evidence["inertness"] = {
+                k: d.reasons for k, d in decisions.items() if not d.inert
+            }
+        if suppressed_by is not None:
+            evidence["inertness"] = {"suppressed": suppressed_by}
+        return Finding(
+            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
+            code=f"{self.id}.policy_change", severity=Severity.WARNING,
+            confidence=_MEDIUM,
+            message=f"port {pid}: STP policy changed ({', '.join(knobs)}) — "
+                    f"impact not provable in this slice (review)",
+            affected_entities=(pid,), subject=ObjectRef("port", pid),
+            evidence=evidence,
+            caused_by=ctx.delta_index.causes("port", [pid]),
         )
 
     def _blocking_risk(

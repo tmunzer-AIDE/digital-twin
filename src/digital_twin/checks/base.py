@@ -19,6 +19,8 @@ from digital_twin.contracts import Finding, Severity
 from digital_twin.ir import Capability, Confidence, IRDiff
 
 if TYPE_CHECKING:
+    from digital_twin.analysis.stp_agreement import StpAgreementReport
+    from digital_twin.analysis.stp_inertness import StpInertness
     from digital_twin.analysis.stp_reachability import StpReachability
 
 
@@ -83,12 +85,37 @@ class CheckContext:
             object.__setattr__(self, "delta_index", delta_index(self.diff))
 
     @property
+    def stp_agreement(self) -> StpAgreementReport:
+        """Baseline-side StpAgreementReport, computed once per CheckContext and
+        shared by every STP consumer (StpReachability, StpInertness) so cache
+        behavior lives in exactly one place (Spec-6)."""
+        cached = getattr(self, "_stp_agreement", None)
+        if cached is None:
+            from digital_twin.analysis.stp_agreement import compare_to_observed
+
+            cached = compare_to_observed(self.baseline.stp_tree(), self.baseline.ir)
+            object.__setattr__(self, "_stp_agreement", cached)
+        return cached
+
+    @property
+    def stp_inertness(self) -> StpInertness:
+        cached = getattr(self, "_stp_inertness", None)
+        if cached is None:
+            from digital_twin.analysis.stp_inertness import StpInertness
+
+            cached = StpInertness(
+                self.baseline, self.proposed, agreement=self.stp_agreement
+            )
+            object.__setattr__(self, "_stp_inertness", cached)
+        return cached
+
+    @property
     def stp_reachability(self) -> StpReachability:
         cached = getattr(self, "_stp_reachability", None)
         if cached is None:
             from digital_twin.analysis.stp_reachability import StpReachability
 
-            cached = StpReachability(self.baseline, self.proposed)
+            cached = StpReachability(self.baseline, self.proposed, agreement=self.stp_agreement)
             object.__setattr__(self, "_stp_reachability", cached)
         return cached
 

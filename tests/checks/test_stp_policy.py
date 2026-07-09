@@ -1,7 +1,8 @@
 """wired.stp.policy: the four StpPolicy knobs (stp_required, stp_no_root_port,
-stp_p2p, use_vstp) NEVER resolve SAFE in this slice — a changed policy always
-floors REVIEW via `.policy_change` (WARNING/MEDIUM). Precise codes are a later
-task; v1 emits only the floor + `unresolved:` token coverage notes.
+stp_p2p, use_vstp) floor REVIEW unless a telemetry-licensed inertness proof
+grants `.inert_change` INFO (Spec-6); `stp_p2p`/`use_vstp` and every unproven
+change still always floor. Precise codes are a later task; v1 emits only the
+floor + `unresolved:` token coverage notes.
 applies_to is changed_fields-precise: an unrelated port edit must not wake it."""
 
 import dataclasses
@@ -89,11 +90,20 @@ def test_port_add_and_remove_wake_the_check():
     assert check.applies_to(remove_diff) is True
 
 
-def test_no_stp_policy_fixture_can_resolve_safe():
-    # structural guard: every fixture in this module that changes stp_policy
-    # must yield >=1 finding from this check (the floor makes SAFE impossible)
+def test_floor_invariant_every_changed_port_yields_a_finding():
+    # Spec-6 amended invariant: every changed port yields >=1 delta-caused
+    # finding — WARNING-or-above OR a fully-licensed .inert_change INFO.
+    # These telemetry-dark flips must all stay on the WARNING floor:
     for knob in ("stp_required", "stp_no_root_port", "stp_p2p", "use_vstp"):
-        assert _run_flip(knob, True).findings, knob
+        findings = _run_flip(knob, True).findings
+        assert findings, knob
+        assert any(f.severity is not Severity.INFO for f in findings), knob
+    # and the SAFE path is exercised (non-vacuous guard): a fully-licensed
+    # change yields the INFO grant and NOTHING at WARNING+
+    base, prop = _validated_pair("cc03:ge-0/0/2", stp_no_root_port=True)
+    findings = _run_pair(base, prop).findings
+    assert any(f.code.endswith("inert_change") for f in findings)
+    assert all(f.severity is Severity.INFO for f in findings)
 
 
 def test_run_names_the_changed_knobs():
@@ -933,3 +943,136 @@ def test_delta_resolving_a_preexisting_mismatch_is_floor_only():
     f = _find(result, "wired.stp.policy.policy_change")
     assert f.severity is Severity.WARNING
     assert "use_vstp" in f.evidence["knobs"]
+
+
+# --- Spec-6: licensed SAFE grants ---------------------------------------------
+
+from tests.analysis.test_stp_inertness import (  # noqa: E402
+    _bridge_ir,
+    _fully_observed,
+    _with_policy,
+)
+
+
+def _validated_pair(pid: str, **knobs):
+    base = _fully_observed(_bridge_ir())
+    return base, _with_policy(base, pid, **knobs)
+
+
+def _run_pair(base, prop) -> CheckResult:
+    return StpPolicyCheck().run(CheckContext(
+        baseline=AnalysisContext(base), proposed=AnalysisContext(prop),
+        diff=diff_ir(base, prop)))
+
+
+def test_licensed_root_protect_grant_emits_inert_change_info():
+    base, prop = _validated_pair("cc03:ge-0/0/2", stp_no_root_port=True)
+    result = _run_pair(base, prop)
+    codes = [f.code for f in result.findings]
+    assert "wired.stp.policy.inert_change" in codes
+    assert "wired.stp.policy.policy_change" not in codes
+    grant = next(f for f in result.findings if f.code.endswith("inert_change"))
+    assert grant.severity is Severity.INFO
+    assert grant.confidence.level is ConfidenceLevel.HIGH
+    assert grant.caused_by  # delta-caused, auditable
+    assert "stable-state" in str(grant.evidence["severity_reason"])
+    assert result.status is Status.PASS
+    assert result.coverage.state is CoverageState.COMPLETE
+
+
+def test_unlicensed_port_floors_with_inertness_reasons_in_evidence():
+    # telemetry-dark fixture (no observed roles at all): license (b) fails
+    base = _bridge_ir()
+    prop = _with_policy(base, "cc03:ge-0/0/2", stp_no_root_port=True)
+    result = _run_pair(base, prop)
+    floor = next(f for f in result.findings if f.code.endswith("policy_change"))
+    assert floor.severity is Severity.WARNING
+    assert "inertness" in floor.evidence
+
+
+def test_risk_wins_over_grant_observed_root_port():
+    # enabling root-protect on the OBSERVED root port cc03:ge-0/0/1 must fire
+    # .root_protect_risk ERROR and emit NO grant, even though telemetry is clean
+    base, prop = _validated_pair("cc03:ge-0/0/1", stp_no_root_port=True)
+    result = _run_pair(base, prop)
+    codes = [f.code for f in result.findings]
+    assert "wired.stp.policy.root_protect_risk" in codes
+    assert "wired.stp.policy.inert_change" not in codes
+
+
+def test_multi_knob_one_uneligible_floors_whole_port():
+    base, prop = _validated_pair(
+        "cc03:ge-0/0/2", stp_no_root_port=True, stp_p2p=True
+    )
+    result = _run_pair(base, prop)
+    codes = [f.code for f in result.findings]
+    assert "wired.stp.policy.inert_change" not in codes
+    assert "wired.stp.policy.policy_change" in codes
+
+
+def test_required_enable_grant_discards_blocking_note_coverage_complete():
+    # R2-P1 reconciliation: direction-correct proof (root target bb02:ge-0/0/1
+    # facing its validated designated peer) succeeds -> the "peer unobserved"
+    # note is DISCARDED -> COMPLETE/PASS
+    base, prop = _validated_pair("bb02:ge-0/0/1", stp_required=True)
+    result = _run_pair(base, prop)
+    assert not any("peer unobserved" in n for n in result.coverage.notes)
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.status is Status.PASS
+
+
+def test_required_enable_dark_peer_keeps_note_and_floors():
+    from tests.analysis.test_stp_inertness import _bridge_ir as _b
+    base = _fully_observed(_b(), skip=frozenset({"cc03:ge-0/0/2"}))
+    prop = _with_policy(base, "bb02:ge-0/0/1", stp_required=True)
+    result = _run_pair(base, prop)
+    assert any("peer unobserved" in n for n in result.coverage.notes)
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any(f.code.endswith("policy_change") for f in result.findings)
+
+
+def test_required_enable_wrong_direction_keeps_note_and_floors():
+    # PR #47 review P1 at check level: the previously-granting shape — a
+    # designated target facing a root peer — must now floor (WARNING
+    # .policy_change with the direction reason in evidence) and KEEP the
+    # provisional note (the proof failed, so nothing licenses its discard).
+    base, prop = _validated_pair("cc03:ge-0/0/2", stp_required=True)
+    result = _run_pair(base, prop)
+    codes = [f.code for f in result.findings]
+    assert "wired.stp.policy.inert_change" not in codes
+    floor = next(f for f in result.findings if f.code.endswith("policy_change"))
+    assert any("root" in r for r in floor.evidence["inertness"]["stp_required"])
+    assert any("peer unobserved" in n for n in result.coverage.notes)
+    assert result.coverage.state is CoverageState.PARTIAL
+
+
+def test_cross_end_link_mismatch_warning_suppresses_grant():
+    # adjustment 4: the PEER end flips use_vstp (WARNING link_mismatch on the
+    # shared link names both ports) while THIS port's own change is licensed
+    # inert -> grant suppressed, port falls back to the floor
+    base = _fully_observed(_bridge_ir())
+    prop = _with_policy(base, "cc03:ge-0/0/2", stp_no_root_port=True)
+    prop = _with_policy(prop, "bb02:ge-0/0/1", use_vstp=True)
+    result = _run_pair(base, prop)
+    by_code = {}
+    for f in result.findings:
+        by_code.setdefault(f.code.rsplit(".", 1)[-1], []).append(f)
+    assert "link_mismatch" in by_code
+    assert not by_code.get("inert_change")
+    floored_ports = {f.subject.id for f in by_code["policy_change"]}
+    assert "cc03:ge-0/0/2" in floored_ports  # suppressed back to the floor
+
+
+def test_info_link_mismatch_does_not_suppress_grant():
+    # pre-existing identical vstp disagreement on the SAME link (INFO context)
+    # must not block the licensed grant on this port
+    base = _fully_observed(_bridge_ir())
+    base = _with_policy(base, "bb02:ge-0/0/1", use_vstp=True)  # both states
+    prop = _with_policy(base, "cc03:ge-0/0/2", stp_no_root_port=True)
+    result = _run_pair(base, prop)
+    info_mismatch = [
+        f for f in result.findings
+        if f.code.endswith("link_mismatch") and f.severity is Severity.INFO
+    ]
+    assert info_mismatch  # the pre-existing context finding IS emitted
+    assert any(f.code.endswith("inert_change") for f in result.findings)

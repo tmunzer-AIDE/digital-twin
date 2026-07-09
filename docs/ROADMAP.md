@@ -474,7 +474,8 @@ modeling" below.
   - **STP/VSTP policy model** — DONE 2026-07-03, see the **STP policy
     attribution (Spec-2)** entry below: `stp_required`, `stp_no_root_port`,
     `stp_p2p`, and `use_vstp` moved from `wired.port.unmodeled_change` REVIEW
-    to precise `wired.stp.policy` findings (still never SAFE).
+    to precise `wired.stp.policy` findings (SAFE deferred to Spec-6, now
+    done — telemetry-licensed inertness grants).
   - **RADIUS outage behavior** — `server_fail_retry_interval` and
     `bypass_auth_when_server_down_for_voip` can become more precise once the
     twin models RADIUS availability/fail-open state.
@@ -607,6 +608,33 @@ modeling" below.
   onto the delicate PR #21/#24 over-severance guards); per-VLAN/VSTP trees
   (Spec-4 v1 is single-tree); migrating other reachability consumers
   (segmentation, client_impact) to STP-aware components.
+- ✅ **STP policy SAFE grants** (Spec-6, the tree engine's second
+  verdict-facing consumer, discharging the SAFE deferral flagged by Spec-2
+  and Spec-4 above) — done 2026-07-09. New pure module
+  `analysis/stp_inertness.py` (`StpInertness.decide`, `InertnessDecision`)
+  grants SAFE only under a strict 4-clause license per port: the port's own
+  baseline `stp_agreement` row is `matched`, its baseline component
+  `agreement_clean`, and its predicted tree position (role + state) is
+  identical at HIGH confidence in both baseline and proposed — the tree
+  engine reads none of the four `StpPolicy` knobs, so tree identity alone is
+  vacuous for a pure policy change and cannot be the proof. SAFE-eligible
+  knobs: `stp_no_root_port` (both directions, inert iff the validated
+  position is `designated`) and `stp_required` (enabling, inert iff the peer
+  is a fully HIGH-validated STP-participating switch; disabling, inert iff
+  the port is observed `forwarding`) — `stp_p2p`/`use_vstp` stay on the
+  `.policy_change` floor. New INFO code `wired.stp.policy.inert_change`:
+  risk codes (`.blocking_risk`/`.root_protect_risk`) always win over the
+  grant, and any WARNING-or-higher finding naming the port suppresses a
+  provisional grant back to the floor; the "peer unobserved" coverage note
+  is provisional, discarded once a `stp_required`-enable proof succeeds. SAFE
+  is scoped to ports represented in the STP tree prediction only (dark/
+  non-tree/access ports still floor REVIEW), and the claim is
+  stable-state-only — never a claim about future protection-posture
+  behavior. Five e2e goldens cover bulk root-protect SAFE, `stp_required`
+  SAFE with COMPLETE coverage, and the REVIEW boundary (dark port, non-tree
+  access port, `stp_p2p`). Spec:
+  `docs/superpowers/specs/2026-07-09-stp-policy-safe-grants-design.md`; plan:
+  `docs/superpowers/plans/2026-07-09-stp-policy-safe-grants.md`.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true
