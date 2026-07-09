@@ -8,6 +8,8 @@ soft-only edge is kept (its effect is a REVIEW floor, handled by the check).
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.stp_agreement import ComponentAgreement, compare_to_observed
 from digital_twin.analysis.stp_tree import PortPrediction
@@ -64,10 +66,17 @@ class StpReachability:
 
     # -- side-local classification ------------------------------------------
     def _classify(
-        self, actx: AnalysisContext, vid: int
+        self, side: Literal["baseline", "proposed"], vid: int
     ) -> tuple[set[frozenset[str]], set[frozenset[str]]]:
-        """(hard_keys, soft_keys) of blocked edges on THIS side of `vid`."""
-        pred = self._base_pred if actx is self._baseline else self._prop_pred
+        """(hard_keys, soft_keys) of blocked edges on the named side of `vid`.
+
+        Explicit side selector — identity-dispatch on a passed context was a
+        trap (a fresh AnalysisContext over the same IR silently classified
+        against the PROPOSED predictions; PR #46 review note)."""
+        if side == "baseline":
+            actx, pred = self._baseline, self._base_pred
+        else:
+            actx, pred = self._proposed, self._prop_pred
         hard: set[frozenset[str]] = set()
         soft: set[frozenset[str]] = set()
         g = actx.vlan_graph(vid)
@@ -103,14 +112,14 @@ class StpReachability:
     def baseline_components(self, vid: int) -> tuple[VlanComponent, ...]:
         ck = ("b", vid)
         if ck not in self._hard_cache:
-            hard, _ = self._classify(self._baseline, vid)
+            hard, _ = self._classify("baseline", vid)
             self._hard_cache[ck] = self._components(self._baseline, vid, hard)
         return self._hard_cache[ck]
 
     def proposed_components(self, vid: int) -> tuple[VlanComponent, ...]:
         ck = ("p", vid)
         if ck not in self._hard_cache:
-            hard, _ = self._classify(self._proposed, vid)
+            hard, _ = self._classify("proposed", vid)
             self._hard_cache[ck] = self._components(self._proposed, vid, hard)
         return self._hard_cache[ck]
 
@@ -120,7 +129,7 @@ class StpReachability:
         view but NOT once soft blocks are also removed — i.e. the reach depends on
         a soft-only (unconfirmed) block. The hard-stranded case is excluded: such
         a component already fails to reach exit in the hard view."""
-        hard, soft = self._classify(self._proposed, vid)
+        hard, soft = self._classify("proposed", vid)
         hard_view = self.proposed_components(vid)
         reaching = [c for c in hard_view if c.has_members and c.reaches_exit]
         if not reaching or not soft:
@@ -135,6 +144,6 @@ class StpReachability:
         return tuple(c for c in reaching if c.nodes - reaching_nodes)
 
     def blocked_edge_keys_changed(self, vid: int) -> bool:
-        bh, bs = self._classify(self._baseline, vid)
-        ph, ps = self._classify(self._proposed, vid)
+        bh, bs = self._classify("baseline", vid)
+        ph, ps = self._classify("proposed", vid)
         return (bh | bs) != (ph | ps)

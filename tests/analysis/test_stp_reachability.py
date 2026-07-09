@@ -455,7 +455,7 @@ def test_partial_split_component_is_soft_dependent():
     base, prop = _partial_split_pair()
     sr = StpReachability(AnalysisContext(base), AnalysisContext(prop))
 
-    hard, soft = sr._classify(sr._proposed, 10)
+    hard, soft = sr._classify("proposed", 10)
     assert hard == set(), "block must be soft-only (no baseline telemetry)"
     assert soft, "block must be predicted (soft-eligible)"
 
@@ -576,8 +576,8 @@ def test_blocked_edge_keys_changed_on_soft_set_change_with_identical_hard_compon
     assert sr.baseline_components(10) == sr.proposed_components(10)
 
     # Make the mechanism explicit: the soft-blocked edge key sets differ.
-    _, baseline_soft = sr._classify(AnalysisContext(base), 10)
-    _, proposed_soft = sr._classify(AnalysisContext(prop), 10)
+    _, baseline_soft = sr._classify("baseline", 10)
+    _, proposed_soft = sr._classify("proposed", 10)
     assert baseline_soft != proposed_soft
 
     # Assertion 2: blocked_edge_keys_changed fires despite identical
