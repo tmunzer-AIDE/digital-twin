@@ -1,10 +1,7 @@
 # STP policy SAFE grants (Spec-6) — design
 
 **Date:** 2026-07-09
-**Status:** Approved (brainstorm converged; user design adjustments + spec
-reviews R1 [peer positive evidence, tree-representation scope,
-telemetry-dark definition] and R2 [provisional coverage-note
-reconciliation] baked in)
+**Status:** Implemented (branch feat/stp-safe-grants; live verify pending)
 **Predecessors:** Spec-2 (`wired.stp.policy` — the REVIEW floor, SAFE explicitly
 deferred), Spec-3 (live `stp_role`/`stp_state` telemetry), Spec-4 (tree engine +
 `compare_to_observed` + THE INVARIANT), Spec-5 (`agreement_clean`, the

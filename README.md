@@ -191,7 +191,7 @@ context and never floors an unrelated edit.
 | 8 | L1 / physical | `wired.l1.link_param_mismatch` | incompatible speed/duplex/autoneg across a link (invisible to reachability, wrecks throughput) |
 | 9 | Spanning tree | `wired.stp.edge_on_uplink` | BPDU-drop / edge landing on a switch-to-switch link |
 | 10 | Spanning tree | `wired.stp.root_change` | the change re-elects a component's root bridge |
-| 11 | Spanning tree | `wired.stp.policy` | an STP policy knob changed (`stp_required`/`stp_no_root_port`/`stp_p2p`/`use_vstp`); floors REVIEW — the bridge domain is not provable |
+| 11 | Spanning tree | `wired.stp.policy` | an STP policy knob changed (`stp_required`/`stp_no_root_port`/`stp_p2p`/`use_vstp`); floors REVIEW — the bridge domain is not provable — SAFE only under the Spec-6 telemetry-validated inertness license (stable-state claim) |
 | 12 | L3 / routing | `wired.l3.gateway_gap` | a routed network with no L3 interface / an unowned gateway |
 | 13 | **L3 / routing — OSPF** | `wired.l3.ospf_withdrawal` | OSPF participation withdrawn or mutated (live-telemetry escalated) |
 | 14 | **L3 / routing — BGP** | `wired.l3.bgp_adjacency` | BGP peering removed / disabled / mutated (live-telemetry escalated) |
@@ -218,7 +218,7 @@ src/digital_twin/
 ├── contracts/        ChangePlan, Finding, Rejection (pure DTOs)
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
-├── analysis/         cycles, VLAN reachability, exit resolution, STP tree prediction + agreement + STP-aware reachability taint (memoized)
+├── analysis/         cycles, VLAN reachability, exit resolution, STP tree prediction + agreement + STP-aware reachability taint + policy inertness license (memoized)
 ├── checks/           the 27 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
