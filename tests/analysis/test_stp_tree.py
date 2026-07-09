@@ -776,3 +776,68 @@ def test_context_memoizes_stp_tree():
     ir = b.build()
     ctx = AnalysisContext(ir)
     assert ctx.stp_tree() is ctx.stp_tree()
+
+
+def test_root_port_bridge_id_tiebreak_consults_priority_before_id():
+    # ADVERSARIAL (Spec-6 finding): priority order DISAGREES with lexical
+    # device-id order — dd04 carries the LOWER priority (4096) while cc03
+    # (12288) sorts first lexically. IEEE 802.1w compares the sender's full
+    # bridge ID (priority, then id), so bb02's equal-cost root-port tie MUST
+    # flip to the dd04 path. The original fixture's priorities happened to
+    # sort the same as the ids, which let a bare-id compare masquerade as a
+    # bridge-id compare.
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0))
+    b.add_device(sw("bb02", stp_priority=8192))
+    b.add_device(sw("cc03", stp_priority=12288)).add_device(sw("dd04", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("dd04", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("dd04", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "cc03:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "dd04:ge-0/0/1"))
+    b.add_link(link("cc03:ge-0/0/2", "bb02:ge-0/0/1"))
+    b.add_link(link("dd04:ge-0/0/2", "bb02:ge-0/0/2"))
+    ir = b.build()
+    comp = predict_stp_tree(ir).components[0]
+    assert comp.root == "aa01"
+    root_port = comp.ports["bb02:ge-0/0/2"]  # faces dd04: prio 4096 beats cc03's 12288
+    assert (root_port.role, root_port.state) == ("root", "forwarding")
+    assert root_port.deciding_factor == "bridge_id"
+    assert root_port.confidence is ConfidenceLevel.HIGH
+    loser = comp.ports["bb02:ge-0/0/1"]  # faces cc03, lexically first but higher priority
+    assert (loser.role, loser.state) == ("alternate", "blocking")
+    assert loser.deciding_factor == "bridge_id"
+
+
+def test_designated_end_election_consults_priority_before_id():
+    # ADVERSARIAL (same finding, step-4 shape): bb02 and cc03 sit at EQUAL
+    # root path cost on a shared segment; cc03 carries the LOWER priority
+    # (4096) but sorts second lexically. IEEE designated-bridge selection
+    # compares (RPC, bridge ID) — cc03's end must be designated and bb02's
+    # end alternate, not the other way around.
+    b = IRBuilder()
+    b.add_device(sw("aa01", stp_priority=0))
+    b.add_device(sw("bb02", stp_priority=12288))
+    b.add_device(sw("cc03", stp_priority=4096))
+    b.add_port(make_port("aa01", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("aa01", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/1", observed_speed="1g"))
+    b.add_port(make_port("bb02", "ge-0/0/2", observed_speed="1g"))
+    b.add_port(make_port("cc03", "ge-0/0/2", observed_speed="1g"))
+    b.add_link(link("aa01:ge-0/0/1", "bb02:ge-0/0/1"))
+    b.add_link(link("aa01:ge-0/0/2", "cc03:ge-0/0/1"))
+    b.add_link(link("bb02:ge-0/0/2", "cc03:ge-0/0/2"))
+    ir = b.build()
+    comp = predict_stp_tree(ir).components[0]
+    assert comp.root == "aa01"
+    desig = comp.ports["cc03:ge-0/0/2"]  # lower bridge id (4096, cc03) on the segment
+    assert (desig.role, desig.state) == ("designated", "forwarding")
+    assert desig.deciding_factor == "bridge_id"
+    loser = comp.ports["bb02:ge-0/0/2"]
+    assert (loser.role, loser.state) == ("alternate", "blocking")

@@ -458,6 +458,18 @@ def _min_port(ports: tuple[str, ...]) -> str:
     return min(ports)
 
 
+def _bridge_id(ir: IR, node: str) -> tuple[int, str]:
+    """IEEE bridge-id order for tiebreaks: (priority ?? 32768, device id) —
+    the SAME key `root_of` elects with. Every place IEEE 802.1w compares a
+    sender's bridge ID must consult priority BEFORE the id: a bare node-id
+    compare is wrong whenever priority order and id order disagree (the
+    Spec-6 review finding). Invalid priorities never reach here — `root_of`
+    ABSTAINs the whole component first, so role assignment sees only valid
+    ints or None."""
+    prio = ir.devices[node].stp_priority
+    return (DEFAULT_PRIORITY if prio is None else prio, node)
+
+
 @dataclass(frozen=True)
 class _Decision:
     role: str
@@ -568,8 +580,8 @@ def _assign_component_roles(
             mark(end.node, end, _Decision("designated", "root_bridge", conf, lag=end.lag))
 
     # 3. Root port per non-root bridge B: candidates = every edge-end entering
-    #    B, keyed (rpc(neighbor).cost + B's end cost, neighbor_id,
-    #    min neighbor port name, min own port name).
+    #    B, keyed (rpc(neighbor).cost + B's end cost, neighbor BRIDGE ID
+    #    (priority ?? 32768, id), min neighbor port name, min own port name).
     incoming: dict[str, list[tuple[_ActiveEdge, _End, _End]]] = {}
     for edge in comp_edges:
         for end, neighbor_end in ((edge.a, edge.b), (edge.b, edge.a)):
@@ -577,7 +589,7 @@ def _assign_component_roles(
                 continue
             incoming.setdefault(end.node, []).append((edge, end, neighbor_end))
 
-    _RootPortKey = tuple[int, str, str, str]
+    _RootPortKey = tuple[int, tuple[int, str], str, str]
 
     def _factor_vs_runner_up(best_key: _RootPortKey, other_key: _RootPortKey) -> str:
         if best_key[0] != other_key[0]:
@@ -602,7 +614,7 @@ def _assign_component_roles(
             total_cost = neighbor_rpc.cost + end.cost
             rp_key: _RootPortKey = (
                 total_cost,
-                neighbor_end.node,
+                _bridge_id(ir, neighbor_end.node),
                 _min_port(neighbor_end.ports),
                 _min_port(end.ports),
             )
@@ -624,14 +636,14 @@ def _assign_component_roles(
         conf = final_conf(raw_conf, lag=best_end.lag)
         mark(node, best_end, _Decision("root", deciding, conf, lag=best_end.lag))
 
-    # 4. Designated end per edge: lower (rpc.cost, node_id) side -> designated.
+    # 4. Designated end per edge: lower (rpc.cost, BRIDGE ID) side -> designated.
     for edge in comp_edges:
         a_rpc = election.rpc.get(edge.a.node)
         b_rpc = election.rpc.get(edge.b.node)
         if a_rpc is None or b_rpc is None:
             continue
-        a_key = (a_rpc.cost, edge.a.node)
-        b_key = (b_rpc.cost, edge.b.node)
+        a_key = (a_rpc.cost, _bridge_id(ir, edge.a.node))
+        b_key = (b_rpc.cost, _bridge_id(ir, edge.b.node))
         if a_key < b_key:
             desig_end, desig_rpc, other_end = edge.a, a_rpc, edge.b
         else:
@@ -651,7 +663,7 @@ def _assign_component_roles(
     #    end lost EITHER the root-port race at its own node (find its rank in
     #    that node's candidate list and classify against the winner) or the
     #    designated-end race on its edge (the other side had lower
-    #    (rpc.cost, node_id) — always "bridge_id", inter-bridge ids never tie).
+    #    (rpc.cost, bridge id) — always "bridge_id", inter-bridge ids never tie).
     for edge in comp_edges:
         for end in (edge.a, edge.b):
             key = (end.node, end.ports)
