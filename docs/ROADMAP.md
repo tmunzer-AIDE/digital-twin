@@ -564,6 +564,49 @@ modeling" below.
   capture land). Spec:
   `docs/superpowers/specs/2026-07-05-stp-tree-engine-design.md`; plan:
   `docs/superpowers/plans/2026-07-05-stp-tree-engine.md`.
+- ✅ **STP blocked-link reachability taint** (Spec-5, the tree engine's first
+  verdict-facing consumer) — shipped 2026-07-06: `wired.l2.blackhole` closes
+  the permanent false-SAFE at the intersection of per-VLAN pruning and STP
+  blocking (a VLAN's only inter-segment path is a link the spanning tree
+  blocks, while a non-carrying link keeps the segments looking connected on
+  the cyclic `vlan_graph`). New pure module `analysis/stp_reachability.py`
+  (the `ospf_reachability.py` precedent) exposes a pair-aware
+  `StpReachability(baseline, proposed)` — reached via a memoized
+  `CheckContext.stp_reachability` — joining `stp_tree()` predictions to
+  `vlan_graph` edges via `L2Edge.member_ports`, computing STP-aware
+  `VlanComponent`s with hard-eligible blocked edges removed.
+  **Confidence-gated**: a component that reaches its exit only via a blocking
+  edge escalates to a **hard strand** (through blackhole's existing
+  `exit_lost`/`new_member_stranded`/`stranded` findings — no new check id, no
+  new finding code) only when the block is telemetry-confirmed HIGH
+  confidence; unconfirmed/low-or-medium-confidence/unlicensed blocks instead
+  floor the check to REVIEW via an appended sub-HIGH `Confidence` + note
+  (`decide()` already floors REVIEW below HIGH), never a hard finding — the
+  mirror of never-false-UNSAFE. **Baseline-agreement-licensed**, per THE
+  INVARIANT carried from Spec-4 ("prediction alone never earns SAFE; every
+  future verdict-facing consumer must call `compare_to_observed` and cap
+  confidence on component-level disagreement"): the license is computed once
+  from `compare_to_observed(baseline prediction, baseline ir)` — a blocked
+  edge is hard-eligible only if it already existed in the baseline topology,
+  both endpoints share a baseline `stp_tree()` component, that component's
+  agreement is clean and non-vacuous (`matched_count > 0 and not disagreement
+  and bpdu_inconsistent_count == 0`, exposed as `ComponentAgreement
+  .agreement_clean`), and the block's own confidence is HIGH on the side
+  being classified — then applied symmetrically to both baseline- and
+  proposed-blocking edges. A pre-existing hard block (blocking, clean
+  agreement, unrelated to the change) is removed from both sides identically,
+  so `exit_lost` cannot fire and it demotes to INFO through the existing delta
+  machinery — preserving the pre-existing-INFO doctrine. The soft floor rides
+  its own relevance gate (`blocked_edge_keys_changed`, alongside
+  `_vlan_changed`/`_exit_changed`) so a change that alters only the
+  soft-blocked-edge set — without changing the hard-removed components —
+  still floors REVIEW instead of being wrongly suppressed. Spec:
+  `docs/superpowers/specs/2026-07-05-stp-reachability-taint-design.md`; plan:
+  `docs/superpowers/plans/2026-07-05-stp-reachability-taint.md`. **Deferred:**
+  `l2_isolation` blocked-link taint (device-level; its own slice, stacking
+  onto the delicate PR #21/#24 over-severance guards); per-VLAN/VSTP trees
+  (Spec-4 v1 is single-tree); migrating other reachability consumers
+  (segmentation, client_impact) to STP-aware components.
 - 🔵 **device-profile as a modeled compile layer.** The derivation stack is
   `<type>template → sitetemplate → site_setting → device-profile → device`, and
   the twin does not model the **device-profile** layer (a pre-existing gap, true

@@ -27,12 +27,15 @@ Per VLAN (spec contract):
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from digital_twin.analysis.delta_cause import (
     causes_for_blackhole,
     causes_for_severance,
     causes_for_vlan_cut,
 )
 from digital_twin.analysis.exits import ExitKind
+from digital_twin.analysis.vlan_reachability import VlanComponent
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.contracts import (
     Cause,
@@ -79,11 +82,12 @@ class L2BlackholeCheck:
         wireless_in_play = False
         for vid in sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans)):
             statuses.append(self._check_vlan(ctx, vid, findings, confidences))
+            notes.extend(self._soft_taint(ctx, vid, confidences))
             # observation-based coverage matters only for conclusions that RELIED
             # on it: the delta touched this vlan AND wireless members are in play
             wireless_in_play = wireless_in_play or (
                 _vlan_changed(ctx, vid)
-                and any(c.wireless_members for c in ctx.proposed.vlan_components(vid))
+                and any(c.wireless_members for c in ctx.stp_reachability.proposed_components(vid))
             )
             notes.extend(self._ap_blind_spots(ctx, vid))
         notes.extend(self._wlan_unresolved_notes(ctx))
@@ -130,7 +134,7 @@ class L2BlackholeCheck:
         path instead."""
         baseline_domain: set[str] = set()
         baseline_reached: set[str] = set()
-        for comp in ctx.baseline.vlan_components(vid):
+        for comp in ctx.stp_reachability.baseline_components(vid):
             baseline_domain |= comp.nodes
             if comp.reaches_exit:
                 baseline_reached |= comp.nodes
@@ -143,11 +147,13 @@ class L2BlackholeCheck:
             return []
         # APs whose VLAN need is KNOWN from config are real members handled by
         # the member-strand path; excluding them here avoids a duplicate note.
-        config_member_nodes = {m for c in ctx.baseline.vlan_components(vid) for m in c.wlan_members}
+        config_member_nodes = {
+            m for c in ctx.stp_reachability.baseline_components(vid) for m in c.wlan_members
+        }
         proposed_domain: set[str] = set()
         proposed_reached: set[str] = set()
         observed_ap_nodes: set[str] = set()
-        for comp in ctx.proposed.vlan_components(vid):
+        for comp in ctx.stp_reachability.proposed_components(vid):
             proposed_domain |= comp.nodes
             if comp.reaches_exit:
                 proposed_reached |= comp.nodes
@@ -178,15 +184,16 @@ class L2BlackholeCheck:
         vc_root = vc_root_map(ctx.proposed.ir)
         vids = sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans))
 
-        def delivery(side: object) -> dict[str, set[int]]:
+        def delivery(get: Callable[[int], tuple[VlanComponent, ...]]) -> dict[str, set[int]]:
             out: dict[str, set[int]] = {}
             for vid in vids:
-                for comp in side.vlan_components(vid):  # type: ignore[attr-defined]
+                for comp in get(vid):
                     for node in comp.nodes:
                         out.setdefault(node, set()).add(vid)
             return out
 
-        base, prop = delivery(ctx.baseline), delivery(ctx.proposed)
+        base = delivery(ctx.stp_reachability.baseline_components)
+        prop = delivery(ctx.stp_reachability.proposed_components)
         notes: list[str] = []
         for ap_id, reasons in unresolved.items():
             node = node_for(vc_root, ap_id)
@@ -202,7 +209,7 @@ class L2BlackholeCheck:
         confidences: list[Confidence],
     ) -> Status:
         proposed_exit = ctx.proposed.exit_for(vid)
-        components = ctx.proposed.vlan_components(vid)
+        components = ctx.stp_reachability.proposed_components(vid)
         if (
             any(c.has_members for c in components)
             and proposed_exit.confidence is not None
@@ -261,7 +268,7 @@ class L2BlackholeCheck:
                 )
             )
             return Status.INSUFFICIENT_DATA
-        baseline_components = ctx.baseline.vlan_components(vid)
+        baseline_components = ctx.stp_reachability.baseline_components(vid)
         baseline_reaching = {
             frozenset(c.nodes) for c in baseline_components if c.has_members and c.reaches_exit
         }
@@ -357,6 +364,37 @@ class L2BlackholeCheck:
             worst = _aggregate([worst, Status.FAIL if high else Status.WARN])
         return worst
 
+    def _soft_taint(
+        self, ctx: CheckContext, vid: int, confidences: list[Confidence]
+    ) -> list[str]:
+        """Spec-5 soft floor: a delta-relevant reach that survives only because of
+        a soft-only (unconfirmed / low-confidence / unlicensed) predicted block is
+        not SAFE-certifiable — append a sub-HIGH confidence (REVIEW floor) + note.
+        Never a hard finding. Relevance = the vlan/exit/blocked-edge-set changed."""
+        sr = ctx.stp_reachability
+        relevant = (
+            _vlan_changed(ctx, vid) or _exit_changed(ctx, vid) or sr.blocked_edge_keys_changed(vid)
+        )
+        if not relevant:
+            return []
+        soft_dep = sr.proposed_soft_dependent_components(vid)
+        if not soft_dep:
+            return []
+        confidences.append(
+            Confidence(
+                level=ConfidenceLevel.MEDIUM,
+                reasons=(
+                    f"vlan {vid} reachability depends on a link predicted "
+                    "blocking, unconfirmed by telemetry",
+                ),
+            )
+        )
+        nodes = sorted(n for c in soft_dep for n in c.nodes)
+        return [
+            f"vlan {vid}: exit reachability depends on a link predicted blocking "
+            f"(unconfirmed) — nodes {nodes}"
+        ]
+
     def _finding(
         self,
         *,
@@ -390,7 +428,8 @@ class L2BlackholeCheck:
 def _vlan_changed(ctx: CheckContext, vid: int) -> bool:
     """Did the delta touch this vlan's structure? Components capture nodes,
     member ports, wireless members and exit reach — equality means unchanged."""
-    return ctx.baseline.vlan_components(vid) != ctx.proposed.vlan_components(vid)
+    sr = ctx.stp_reachability
+    return sr.baseline_components(vid) != sr.proposed_components(vid)
 
 
 def _exit_changed(ctx: CheckContext, vid: int) -> bool:

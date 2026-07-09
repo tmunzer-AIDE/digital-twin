@@ -11,12 +11,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.delta_cause import DeltaIndex, delta_index
 from digital_twin.contracts import Finding, Severity
 from digital_twin.ir import Capability, Confidence, IRDiff
+
+if TYPE_CHECKING:
+    from digital_twin.analysis.stp_reachability import StpReachability
 
 
 class Status(StrEnum):
@@ -78,6 +81,16 @@ class CheckContext:
     def __post_init__(self) -> None:
         if self.delta_index is None:
             object.__setattr__(self, "delta_index", delta_index(self.diff))
+
+    @property
+    def stp_reachability(self) -> StpReachability:
+        cached = getattr(self, "_stp_reachability", None)
+        if cached is None:
+            from digital_twin.analysis.stp_reachability import StpReachability
+
+            cached = StpReachability(self.baseline, self.proposed)
+            object.__setattr__(self, "_stp_reachability", cached)
+        return cached
 
 
 @dataclass(frozen=True)
