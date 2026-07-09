@@ -52,11 +52,11 @@ def _with_policy(ir, pid: str, **knobs):
     return dataclasses.replace(ir, ports=new_ports)
 
 
-def _with_priority(ir, did: str, prio: int):
-    dev = ir.devices[did]
-    new_devices = dict(ir.devices)
-    new_devices[did] = dataclasses.replace(dev, stp_priority=prio)
-    return dataclasses.replace(ir, devices=new_devices)
+def _with_speed(ir, pid: str, speed: str):
+    port = ir.ports[pid]
+    new_ports = dict(ir.ports)
+    new_ports[pid] = dataclasses.replace(port, observed_speed=speed)
+    return dataclasses.replace(ir, ports=new_ports)
 
 
 def _lag_pair_ir():
@@ -190,3 +190,113 @@ def test_shared_agreement_param_is_used_verbatim():
     report = compare_to_observed(actx.stp_tree(), actx.ir)
     si = StpInertness(actx, AnalysisContext(base), agreement=report)
     assert si._agreement is report
+
+
+# --- knob rules (Task 3) -----------------------------------------------------
+
+
+def test_root_protect_on_designated_port_is_inert_both_directions():
+    base = _fully_observed(_bridge_ir())
+    si = _inertness(base, base)
+    enable = si.decide("cc03:ge-0/0/2", "stp_no_root_port", False, True)
+    disable = si.decide("cc03:ge-0/0/2", "stp_no_root_port", True, False)
+    assert enable.inert and disable.inert
+    assert enable.evidence["predicted_role"] == "designated"
+
+
+def test_root_protect_on_root_bridge_ports_is_inert():
+    # every aa01 (root bridge) port is designated -> inert
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("aa01:ge-0/0/2", "stp_no_root_port", False, True)
+    assert d.inert
+
+
+def test_root_protect_on_alternate_port_floors():
+    # bb02:ge-0/0/2 is alternate/blocking: root-protect would go
+    # root-inconsistent on superior BPDUs — resilience change, REVIEW
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("bb02:ge-0/0/2", "stp_no_root_port", False, True)
+    assert not d.inert and any("designated" in r for r in d.reasons)
+
+
+def test_root_protect_on_root_port_floors_at_the_rule():
+    # cc03:ge-0/0/1 is the observed+predicted root port; the CHECK's
+    # observed-root ERROR route wins in practice, but the module itself must
+    # also refuse (defense in depth — never rely on caller ordering)
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("cc03:ge-0/0/1", "stp_no_root_port", False, True)
+    assert not d.inert
+
+
+def test_required_enable_with_validated_switch_peer_is_inert():
+    # cc03:ge-0/0/2 <-> bb02:ge-0/0/1: two-sided link, both switches, no
+    # bpdu_filter, peer row matched (root/forwarding), peer position HIGH-stable
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    assert d.inert
+    assert d.evidence["peer"] == "bb02:ge-0/0/1"
+
+
+def test_required_enable_with_telemetry_dark_peer_floors():
+    # R1-P1: peer row unvalidatable — switch + no-filter is NOT positive
+    # evidence that BPDUs flow
+    base = _fully_observed(_bridge_ir(), skip=frozenset({"bb02:ge-0/0/1"}))
+    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    assert not d.inert and any("peer" in r for r in d.reasons)
+
+
+def test_required_enable_with_bpdu_filter_peer_floors():
+    base = _fully_observed(_bridge_ir())
+    port = base.ports["bb02:ge-0/0/1"]
+    new_ports = dict(base.ports)
+    new_ports["bb02:ge-0/0/1"] = dataclasses.replace(port, bpdu_filter=True)
+    base = dataclasses.replace(base, ports=new_ports)
+    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", False, True)
+    assert not d.inert
+
+
+def test_required_enable_with_no_modeled_link_floors():
+    # bb02:acc (with_vlan fixture) has no link at all
+    base = _fully_observed(_bridge_ir(with_vlan=True))
+    base = _set_observed(base, "bb02:acc", role="designated", state="forwarding")
+    d = _inertness(base, base).decide("bb02:acc", "stp_required", False, True)
+    assert not d.inert
+
+
+def test_required_enable_peer_moved_by_delta_floors_peer_clause():
+    # plan-review P1, isolating: the TARGET cc03:ge-0/0/2 keeps an identical
+    # HIGH designated position in BOTH states; ONLY the peer moves — by pure
+    # COST (the engine's priority-blind tiebreak is a separate, ledgered
+    # Spec-4 defect; this test must not depend on it). Proposed upgrades the
+    # aa01<->dd04 link to 10g on both ends: dd04's RPC drops to 2000, so
+    # bb02's root path flips to the dd04 side (22000 < 40000) and peer
+    # bb02:ge-0/0/1 goes root->alternate at HIGH "cost" factor, while cc03's
+    # own root path (direct to aa01) and its designated claim on the
+    # cc03-bb02 segment are untouched. The failure MUST name the
+    # peer-position clause — proving the peer validation is load-bearing,
+    # not shadowed by license (d) on the target.
+    base = _fully_observed(_bridge_ir())
+    prop = _with_speed(_with_speed(base, "aa01:ge-0/0/2", "10g"), "dd04:ge-0/0/1", "10g")
+    si = _inertness(base, prop)
+    # sanity: the target's OWN license fully holds across this delta (a
+    # designated-rule grant succeeds), so any stp_required failure below is
+    # attributable to the peer clauses alone
+    assert si.decide("cc03:ge-0/0/2", "stp_no_root_port", False, True).inert
+    d = si.decide("cc03:ge-0/0/2", "stp_required", False, True)
+    assert not d.inert
+    assert any("peer tree position" in r for r in d.reasons)
+
+
+def test_required_disable_on_observed_forwarding_is_inert():
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("cc03:ge-0/0/2", "stp_required", True, False)
+    assert d.inert
+
+
+def test_required_disable_on_observed_blocking_floors():
+    # bb02:ge-0/0/2 observed blocking: if the requirement were the operative
+    # hold, removing it could unblock into a loop — never assumed benign.
+    # (Also floors at the license? No: the row IS matched. The RULE floors it.)
+    base = _fully_observed(_bridge_ir())
+    d = _inertness(base, base).decide("bb02:ge-0/0/2", "stp_required", True, False)
+    assert not d.inert and any("forwarding" in r for r in d.reasons)
