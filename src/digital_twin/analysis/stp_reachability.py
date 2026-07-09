@@ -11,7 +11,11 @@ from __future__ import annotations
 from typing import Literal
 
 from digital_twin.analysis.context import AnalysisContext
-from digital_twin.analysis.stp_agreement import ComponentAgreement, compare_to_observed
+from digital_twin.analysis.stp_agreement import (
+    ComponentAgreement,
+    StpAgreementReport,
+    compare_to_observed,
+)
 from digital_twin.analysis.stp_tree import PortPrediction
 from digital_twin.analysis.vlan_reachability import VlanComponent, vlan_components
 from digital_twin.ir.confidence import ConfidenceLevel
@@ -40,13 +44,22 @@ def _blocks(pred: dict[str, PortPrediction], pid: str) -> bool:
 
 
 class StpReachability:
-    def __init__(self, baseline: AnalysisContext, proposed: AnalysisContext) -> None:
+    def __init__(
+        self,
+        baseline: AnalysisContext,
+        proposed: AnalysisContext,
+        agreement: StpAgreementReport | None = None,
+    ) -> None:
         self._baseline = baseline
         self._proposed = proposed
-        # baseline licence, computed once
+        # baseline licence, computed once (or shared via CheckContext.stp_agreement)
         self._base_pred = _predictions(baseline)
         self._prop_pred = _predictions(proposed)
-        report = compare_to_observed(baseline.stp_tree(), baseline.ir)
+        report = (
+            agreement
+            if agreement is not None
+            else compare_to_observed(baseline.stp_tree(), baseline.ir)
+        )
         self._base_agreements: tuple[ComponentAgreement, ...] = report.components
         self._base_comp_keys: dict[int, set[frozenset[str]]] = {}
         self._hard_cache: dict[tuple[str, int], tuple[VlanComponent, ...]] = {}
