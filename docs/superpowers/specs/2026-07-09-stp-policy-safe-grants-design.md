@@ -1,7 +1,9 @@
 # STP policy SAFE grants (Spec-6) — design
 
 **Date:** 2026-07-09
-**Status:** Approved (brainstorm converged; adjustments R1 baked in)
+**Status:** Approved (brainstorm converged; user design adjustments + spec
+review R1 [peer positive evidence P1, tree-representation scope P1,
+telemetry-dark definition P2] baked in)
 **Predecessors:** Spec-2 (`wired.stp.policy` — the REVIEW floor, SAFE explicitly
 deferred), Spec-3 (live `stp_role`/`stp_state` telemetry), Spec-4 (tree engine +
 `compare_to_observed` + THE INVARIANT), Spec-5 (`agreement_clean`, the
@@ -10,11 +12,13 @@ pair-aware license pattern, shared-memo precedent).
 ## Problem
 
 Every STP policy change floors at REVIEW via `wired.stp.policy.policy_change`,
-including provably-benign bulk hardening (enable `stp_no_root_port` across
-access ports). Spec-2 deferred SAFE to "a future STP tree engine validated
-against live stp_state". That engine exists (Spec-4) and is production-validated
-(Spec-5). This slice grants SAFE — under a license so strict that the grant
-cannot drift wider than the validated evidence.
+including provably-benign bulk hardening — the canonical case being
+`stp_no_root_port` enabled on inter-switch **designated downlinks**
+(distribution → access), exactly where root-protect best practice puts it.
+Spec-2 deferred SAFE to "a future STP tree engine validated against live
+stp_state". That engine exists (Spec-4) and is production-validated (Spec-5).
+This slice grants SAFE — under a license so strict that the grant cannot
+drift wider than the validated evidence.
 
 ## The central design fact
 
@@ -49,6 +53,19 @@ evaluated against a tree position that live telemetry has confirmed.
    topology event — by design (the operator is hardening); the twin's SAFE
    speaks only to the stable state being provably unchanged. This boundary
    is stated in the module docstring and the finding's `severity_reason`.
+6. **SAFE is scoped to ports REPRESENTED IN THE STP TREE** (review R1-P1-2):
+   the Spec-4 engine predicts only switch-to-switch links and reciprocal
+   self-loop pseudo-edges — ordinary client/AP-facing access ports and
+   unlinked ports have NO `PortPrediction` and NO agreement row, so they
+   fail license clauses (b)/(d) by construction and stay on the REVIEW
+   floor, even when their observed `stp_role` is `designated`. This is the
+   honest boundary, not an accident: the engine has earned no trust about
+   ports it does not model, and an observed role with no prediction to
+   agree with is exactly the "prediction alone / observation alone" territory
+   THE INVARIANT forbids. Grants for non-tree ports require an engine
+   expansion (deferred, listed below). The practical scope that remains is
+   the canonical one: inter-switch tree ports — designated downlinks for
+   root-protect, validated uplink pairs for `stp_required`.
 
 ## Architecture
 
@@ -145,7 +162,9 @@ never triggering — removing it is inert under the same rule.
 ### `stp_required` enable (False/absent → True)
 
 **Inert iff the port has an effectively STP-participating peer** (user
-adjustment 2 — every clause required, so "non-AP" can never be read broadly):
+adjustment 2 + review R1-P1 — every clause required, so "non-AP" can never be
+read broadly, and the peer's STP participation is POSITIVELY evidenced, not
+merely not-ruled-out):
 
 - a modeled link with two-sided HIGH confidence (`lk.meta.confidence.level is
   HIGH` — the same bar as `_tie_confidence`),
@@ -153,11 +172,25 @@ adjustment 2 — every clause required, so "non-AP" can never be read broadly):
   gateway/AP/other roles never qualify,
 - the peer PORT is present in BOTH baseline and proposed IR with effective
   `bpdu_filter is False` in BOTH states,
+- **the peer port's own baseline agreement row is `matched`** — its observed
+  `stp_role` is present and agrees with the prediction; live telemetry proves
+  the peer is actually running STP on that port, not merely "a switch that
+  should be" (a switch role + `bpdu_filter=False` only rules out a known
+  filtering peer — it is enough to avoid `.blocking_risk`, NOT enough to
+  prove SAFE; review R1-P1),
+- **the peer port's baseline and proposed `PortPrediction`s are identical in
+  `(role, state)` and both HIGH** — license clause (d) mirrored onto the
+  peer, so a delta that moves the PEER's tree position defeats the grant too,
 - plus the license on the changed port itself (matched baseline row,
   identical HIGH baseline/proposed prediction).
 
-This is the exact complement of `.blocking_risk`'s tiers: BPDUs demonstrably
-flow, the requirement is already satisfied, the knob is inert. The module
+Because the link is modeled switch-to-switch and neither end is excluded, the
+peer sits in the same baseline STP component as the changed port — license
+clause (c) already vouches for that component's cleanliness; the two clauses
+above add the peer-row and peer-position evidence on top. This is now
+strictly stronger than the complement of `.blocking_risk`'s tiers: BPDUs are
+demonstrably exchanged (the peer's validated role exists only because BPDUs
+flow), the requirement is already satisfied, the knob is inert. The module
 implements its own small peer scan (the family's established cloned-idiom
 convention; `analysis/` must not import from `checks/`).
 
@@ -235,13 +268,24 @@ The slice strictly reduces REVIEW noise.
 
 ## Existing-test impact
 
-All current `stp_policy` fixtures lack observed `stp_state` → every row
-unvalidatable → license (b) fails → floor → byte-identical results (the
-Spec-5 safety argument). One deliberate amendment: Spec-2's never-SAFE e2e
-guard pins the retired invariant and is updated to the new one — SAFE is
-permitted iff every changed port carries `.inert_change` (and asserts at
-least one fixture actually exercises the SAFE path so the guard is not
-vacuous).
+**"Telemetry-dark" is defined by `stp_role`, not `stp_state`** (review
+R1-P2-3): per the Spec-4 comparator, a row is `unvalidatable` when the
+observed ROLE is missing/unknown; a present role with absent state can still
+land `matched` (role-only match). The existing-suite argument is therefore:
+
+- fixtures with no observed `stp_role` on the changed port (the vast
+  majority) → row unvalidatable → license (b) fails → floor, byte-identical;
+- the Spec-3 observed-root fixtures DO carry `stp_role="root"` on the changed
+  port → `.root_protect_risk` fires and risk always wins → the grant is never
+  consulted → byte-identical;
+- any fixture port that is role-matched must ALSO clear clauses (c)/(d) and
+  a knob rule to change behavior — the full existing suite runs in the gate
+  and pins byte-identical verdicts either way.
+
+One deliberate amendment: Spec-2's never-SAFE e2e guard pins the retired
+invariant and is updated to the new one — SAFE is permitted iff every changed
+port carries `.inert_change` (and asserts at least one fixture actually
+exercises the SAFE path so the guard is not vacuous).
 
 ## Testing
 
@@ -256,9 +300,15 @@ Spec-5, extended with observed telemetry):
   role/state (d).
 - Knob rules: designated → inert (both root-protect directions); alternate →
   floor for root-protect; `stp_required` enable — switch peer two-sided HIGH
-  no-filter → inert; AP peer / bpdu_filter peer / gateway-role peer /
-  one-sided tie / peer port absent in one state → floor; `stp_required`
-  disable — observed forwarding → inert, observed blocking → floor.
+  no-filter with MATCHED peer row + identical HIGH peer prediction → inert;
+  AP peer / bpdu_filter peer / gateway-role peer / one-sided tie / peer port
+  absent in one state → floor; **telemetry-dark peer (switch peer, no-filter,
+  but peer row unvalidatable) → floor** (R1-P1-1); **peer tree position moved
+  by the delta → floor**; `stp_required` disable — observed forwarding →
+  inert, observed blocking → floor.
+- **Non-tree port (R1-P1-2): an access port with observed
+  `stp_role="designated"` but NO `PortPrediction` (client-facing, not in the
+  active topology) → floor**, proving the tree-representation boundary.
 - Tokens; non-eligible knobs; multi-knob mixed (one inert + one not) → floor.
 
 Check-level:
@@ -271,18 +321,26 @@ Check-level:
 
 e2e goldens (real `CheckRegistry.run_all` → `assemble`/`decide`):
 
-- Bulk root-protect hardening on a telemetry-validated fixture → **SAFE**
-  (the headline).
-- Same fixture, one telemetry-dark port in the plan → REVIEW.
+- Bulk root-protect hardening on the telemetry-validated fixture's
+  **inter-switch designated downlinks** → **SAFE** (the headline, scoped per
+  decision 6).
+- Same fixture, plan additionally touching one telemetry-dark port → REVIEW.
+- Plan touching an observed-designated but non-tree access port → REVIEW
+  (the R1-P1-2 boundary, end-to-end).
 - `stp_p2p` change → REVIEW, byte-identical to today.
 - Amended Spec-2 guard as above.
 
 Live verify: replay a bulk `stp_no_root_port` plan against the
-production-validated site (matched designated access ports) → SAFE
-end-to-end; plus the full existing golden suite → zero verdict changes.
+production-validated site targeting matched inter-switch designated ports →
+SAFE end-to-end; plus the full existing golden suite → zero verdict changes.
 
 ## Out of scope / deferred
 
+- **Grants for non-tree ports** (ordinary client/AP-facing access ports):
+  requires extending the engine to predict edge-port roles (a non-tree
+  switch port with no bridge peer is trivially designated/forwarding in
+  RSTP) AND a validation story for those rows — an engine-expansion slice,
+  not a license tweak (R1-P1-2).
 - `stp_p2p` and `use_vstp` grants (need convergence/protocol modeling the
   engine does not claim).
 - Future-failure posture reasoning (resilience-degradation findings for
