@@ -20,6 +20,7 @@ from digital_twin.ir import Capability, Confidence, IRDiff
 
 if TYPE_CHECKING:
     from digital_twin.analysis.stp_agreement import StpAgreementReport
+    from digital_twin.analysis.stp_inertness import StpInertness
     from digital_twin.analysis.stp_reachability import StpReachability
 
 
@@ -94,6 +95,18 @@ class CheckContext:
 
             cached = compare_to_observed(self.baseline.stp_tree(), self.baseline.ir)
             object.__setattr__(self, "_stp_agreement", cached)
+        return cached
+
+    @property
+    def stp_inertness(self) -> StpInertness:
+        cached = getattr(self, "_stp_inertness", None)
+        if cached is None:
+            from digital_twin.analysis.stp_inertness import StpInertness
+
+            cached = StpInertness(
+                self.baseline, self.proposed, agreement=self.stp_agreement
+            )
+            object.__setattr__(self, "_stp_inertness", cached)
         return cached
 
     @property

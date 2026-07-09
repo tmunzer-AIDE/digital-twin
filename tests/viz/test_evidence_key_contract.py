@@ -120,6 +120,10 @@ _NOT_VISUALIZED = {
     "values",                # {port_id: effective knob value} — port ids already
                               # painted via affected_entities/"link", values are bools/tokens
     "observed_modes",        # {port_id: StpMode} corroborating context, not a new entity
+    # --- stp_policy.inert_change / .policy_change (Spec-6): "port" already
+    #     paints the entity; the license/knob-rule facts and near-miss/
+    #     suppression reasons are explanatory dicts of scalars, not entities ---
+    "inertness",             # {knob: reasons} near-miss facts, or {"suppressed": ...}
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
 }
