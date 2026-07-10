@@ -19,7 +19,7 @@ import re
 from collections import Counter
 from typing import Any
 
-REDACTION_VERSION = "7"  # v7: hostname/username key-PART match (NAC + wired client PII)
+REDACTION_VERSION = "8"  # v8: metadata/trace strings + case-insensitive exact name keys
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -61,6 +61,15 @@ _URL_CRED = re.compile(
     r"([?&][a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature|jwt)"
     r"[a-zA-Z0-9_\-]*=)[^&\"'\s]+",
     re.IGNORECASE,  # X-Amz-Credential, X-Amz-Security-Token, jwt=, ...
+)
+# Credential assignments also appear in provider errors and trace notes, where
+# there is no URL query marker (for example "password=..." or
+# "client_secret: ..."). Require an explicit assignment delimiter so ordinary
+# prose such as "enter the password" remains intact.
+_INLINE_CRED = re.compile(
+    r"(\b[a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature|jwt)"
+    r'''\b\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;)&\]}]+)''',
+    re.IGNORECASE,
 )
 # bare JWTs are self-identifying — eyJ<header>.eyJ<payload>.<signature> — and can
 # appear OUTSIDE query params (paths, prose); catch them anywhere
@@ -106,7 +115,7 @@ def _redact_scalar(key: str, value: str) -> str:
     if _IPV6.match(value) and ":" in value:
         return f"2001:db8::{_h(value, 8)}"  # documentation prefix
     lk = key.lower()
-    if key in NAME_KEYS or any(part in lk for part in NAME_KEY_PARTS):
+    if lk in NAME_KEYS or any(part in lk for part in NAME_KEY_PARTS):
         return f"name-{_h(value, 8)}"
     return _sub_embedded(value)
 
@@ -127,7 +136,8 @@ def _sub_embedded(value: str) -> str:
     structure is lost); URL query credential values are tokenized in place."""
     if _CRED_CMD.match(value):
         return f"redacted-cmd-{_h(value, 8)}"
-    value = _URL_CRED.sub(lambda m: f"{m.group(1)}redacted-{_h(m.group(), 8)}", value)
+    value = _URL_CRED.sub(_url_credential_token, value)
+    value = _INLINE_CRED.sub(_inline_credential_token, value)
     value = _JWT_ANY.sub(lambda m: f"redacted-jwt-{_h(m.group(), 8)}", value)
     value = _MAC_ANY.sub(lambda m: _h(m.group().lower().replace(":", ""), 12), value)
     value = _UUID_ANY.sub(lambda m: f"uuid-{_h(m.group().lower(), 12)}", value)
@@ -136,6 +146,20 @@ def _sub_embedded(value: str) -> str:
     value = _HEX_LONG.sub(lambda m: f"redacted-entropy-{_h(m.group(), 8)}", value)
     value = _B64_TOKEN.sub(_entropy_token, value)
     return value
+
+
+def _url_credential_token(match: re.Match[str]) -> str:
+    token = match.group()[len(match.group(1)) :]
+    if token.startswith("redacted-"):
+        return match.group()
+    return f"{match.group(1)}redacted-{_h(token, 8)}"
+
+
+def _inline_credential_token(match: re.Match[str]) -> str:
+    token = match.group(2)
+    if token.startswith("redacted-"):
+        return match.group()
+    return f"{match.group(1)}redacted-{_h(token, 8)}"
 
 
 def _shannon_entropy(s: str) -> float:

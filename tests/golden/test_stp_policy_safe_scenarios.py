@@ -36,6 +36,7 @@ def _validated_ir():
     _bridge_id_topology(b, prune_vlan10=True, carry_both_paths=True)
     ir = (
         b.with_capability(IRCapability.WIRED_L2)
+        .with_capability(IRCapability.L2_TOPOLOGY)
         .with_capability(IRCapability.L3_EXITS)
         .with_capability(IRCapability.CLIENTS_ACTIVE)
         .build()

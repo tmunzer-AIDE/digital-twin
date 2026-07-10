@@ -20,6 +20,7 @@ Capability = str
 
 class IRCapability(StrEnum):
     WIRED_L2 = "wired.l2"
+    L2_TOPOLOGY = "l2.topology"  # all topology-stat sources required by this site succeeded
     STP_STATE = "stp.state"
     CLIENTS_ACTIVE = "clients.active"
     L3_EXITS = "l3.exits"

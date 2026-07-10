@@ -43,6 +43,17 @@ def test_ips_and_uuids_and_names_tokenized():
     assert out["name"].startswith("name-")
 
 
+def test_exact_name_keys_are_case_insensitive():
+    out = redact(
+        {
+            "Name": "Secret Site",
+            "System_Name": "core-switch",
+            "Neighbor_System_Name": "distribution-switch",
+        }
+    )
+    assert all(value.startswith("name-") for value in out.values())
+
+
 def test_secrets_stripped_not_hashed():
     out = redact({"psk": "supersecret", "radius_config": {"secret": "x", "port": 1812}})
     assert out["psk"] is None
@@ -94,6 +105,7 @@ def test_url_query_credentials_are_redacted():
     out = redact({"blacklist_url": "https://x.example/occupancy?token=OTc4yZS&x=1"})
     assert "OTc4yZS" not in out["blacklist_url"]
     assert "token=" in out["blacklist_url"]  # param name survives, value tokenized
+    assert redact(out) == out
 
 
 def test_url_credential_param_name_variants_are_redacted():
@@ -128,6 +140,25 @@ def test_prose_mentioning_password_survives():
     # scrubbed — human prose must not be destroyed
     out = redact({"portal_text": "Enter the password to continue"})
     assert out["portal_text"] == "Enter the password to continue"
+
+
+def test_inline_credential_assignments_are_redacted_and_idempotent():
+    source = 'request failed: password=SUPERSECRET client_secret: "TRACE SECRET"'
+    once = redact({"error": source})["error"]
+    assert "SUPERSECRET" not in once
+    assert "TRACE SECRET" not in once
+    assert "password=redacted-" in once
+    assert "client_secret: redacted-" in once
+    assert redact({"error": once})["error"] == once
+
+
+def test_inline_credential_match_requires_a_key_suffix():
+    source = "author: John authorized=true auth_mode=enabled client_secret=hide-me"
+    out = redact({"note": source})["note"]
+    assert "author: John" in out
+    assert "authorized=true" in out
+    assert "auth_mode=enabled" in out
+    assert "hide-me" not in out
 
 
 def test_high_entropy_values_are_caught_by_the_backstop():

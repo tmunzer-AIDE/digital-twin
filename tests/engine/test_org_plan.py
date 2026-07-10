@@ -91,10 +91,18 @@ def _port_stats() -> tuple[dict[str, Any], ...]:
 
 
 def _meta() -> StateMeta:
-    # client fetches succeeded (empty == "no clients") so clients.active is EARNED
+    # The fixture carries port_stats, and both client fetches succeeded (empty
+    # == "no clients"), so topology and clients.active are both earned.
     return StateMeta(
         acquired_at=datetime.now(UTC), host="t",
-        fetched=("site", "setting", "devices", "wired_clients", "wireless_clients"),
+        fetched=(
+            "site",
+            "setting",
+            "devices",
+            "port_stats",
+            "wired_clients",
+            "wireless_clients",
+        ),
         failures=(),
     )
 
