@@ -68,7 +68,7 @@ _URL_CRED = re.compile(
 # prose such as "enter the password" remains intact.
 _INLINE_CRED = re.compile(
     r"(\b[a-zA-Z0-9_\-]*(?:token|key|secret|password|auth|credential|signature|jwt)"
-    r'''[a-zA-Z0-9_\-]*\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;)&\]}]+)''',
+    r'''\b\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;)&\]}]+)''',
     re.IGNORECASE,
 )
 # bare JWTs are self-identifying — eyJ<header>.eyJ<payload>.<signature> — and can

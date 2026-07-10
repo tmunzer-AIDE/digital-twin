@@ -17,7 +17,13 @@ from digital_twin.contracts import (
 )
 from digital_twin.engine.pipeline import simulate
 from digital_twin.ir import Confidence, ConfidenceLevel
-from digital_twin.providers.base import FetchError, RawSiteState, SiteScope, StateMeta
+from digital_twin.providers.base import (
+    FetchError,
+    FetchFailure,
+    RawSiteState,
+    SiteScope,
+    StateMeta,
+)
 from digital_twin.redaction import REDACTED
 from digital_twin.verdict.decision import Decision
 
@@ -633,8 +639,6 @@ def test_port_config_overwrite_disable_is_simulated_not_unknown():
 
 
 def test_missing_topology_fetches_prevent_safe_topology_conclusion():
-    from digital_twin.providers.base import FetchFailure
-
     raw = dc_replace(
         _raw(),
         meta=StateMeta(

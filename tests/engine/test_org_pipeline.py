@@ -16,9 +16,16 @@ from digital_twin.verdict.decision import Decision
 def _meta():
     return StateMeta(
         acquired_at=datetime.now(UTC), host="h",
-        # client fetches succeeded (empty == "no clients") so clients.active is
-        # EARNED -> wired.client.impact is HIGH, not INSUFFICIENT_DATA -> SAFE
-        fetched=("site", "setting", "devices", "wireless_clients", "wired_clients"),
+        # Empty port/client fetches succeeded, so topology and clients.active
+        # are earned rather than misread as unavailable.
+        fetched=(
+            "site",
+            "setting",
+            "devices",
+            "port_stats",
+            "wireless_clients",
+            "wired_clients",
+        ),
         failures=(),
     )
 

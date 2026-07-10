@@ -29,3 +29,13 @@ def test_topology_entity_add_or_remove_applies():
     check = TopologyCoverageCheck()
     assert check.applies_to(IRDiff((EntityRef("link", "l1"),), (), ()))
     assert check.applies_to(IRDiff((), (EntityRef("device", "S"),), ()))
+    assert check.applies_to(IRDiff((EntityRef("vlan", "20"),), (), ()))
+    assert check.applies_to(IRDiff((), (EntityRef("vlan", "10"),), ()))
+
+
+def test_only_topology_dependent_vlan_modifications_apply():
+    check = TopologyCoverageCheck()
+    dhcp = Modified(EntityRef("vlan", "10"), ("dhcp_sources",))
+    name = Modified(EntityRef("vlan", "10"), ("name",))
+    assert check.applies_to(IRDiff((), (), (dhcp,)))
+    assert not check.applies_to(IRDiff((), (), (name,)))

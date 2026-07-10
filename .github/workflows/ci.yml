@@ -12,11 +12,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - name: Install locked dependencies
@@ -28,4 +28,7 @@ jobs:
       - name: Type check
         run: uv run mypy src
       - name: Audit dependencies
-        run: uvx pip-audit --path .venv/lib/python3.14/site-packages --progress-spinner off
+        run: >-
+          uvx pip-audit
+          --path "$(uv run python -c 'import site; print(site.getsitepackages()[0])')"
+          --progress-spinner off

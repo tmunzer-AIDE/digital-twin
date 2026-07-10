@@ -152,6 +152,15 @@ def test_inline_credential_assignments_are_redacted_and_idempotent():
     assert redact({"error": once})["error"] == once
 
 
+def test_inline_credential_match_requires_a_key_suffix():
+    source = "author: John authorized=true auth_mode=enabled client_secret=hide-me"
+    out = redact({"note": source})["note"]
+    assert "author: John" in out
+    assert "authorized=true" in out
+    assert "auth_mode=enabled" in out
+    assert "hide-me" not in out
+
+
 def test_high_entropy_values_are_caught_by_the_backstop():
     # the catch-all for secret SHAPES no key-name or known-pattern rule
     # anticipated: long random base64-ish blobs and long hex digests
