@@ -334,6 +334,45 @@ def test_uplink_only_row_earns_no_stp_capability():
     assert _port(ctx.builder.build(), "aa0000000001", "ge-0/0/47").is_uplink is True
 
 
+def test_successful_empty_topology_fetches_earn_topology_capability():
+    ctx = _ctx_for_caps([])
+    caps = LldpIngester().ingest(ctx)
+    assert IRCapability.L2_TOPOLOGY in caps
+
+
+def test_failed_topology_source_does_not_earn_topology_capability():
+    for fetched in (("devices", "port_stats"), ("devices", "device_stats")):
+        ctx = IngestContext(
+            raw=raw_site(
+                devices=(SWITCH_A, SWITCH_B, AP_1),
+                port_stats=(),
+                device_stats=(),
+                fetched=fetched,
+            ),
+            site_effective=dict(SITE_EFFECTIVE),
+            device_effective={},
+            builder=IRBuilder(),
+        )
+        SwitchIngester().ingest(ctx)
+        assert IRCapability.L2_TOPOLOGY not in LldpIngester().ingest(ctx)
+
+
+def test_switch_only_site_does_not_require_device_stats_for_topology():
+    ctx = IngestContext(
+        raw=raw_site(
+            devices=(SWITCH_A, SWITCH_B),
+            port_stats=(),
+            device_stats=(),
+            fetched=("devices", "port_stats"),
+        ),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    assert IRCapability.L2_TOPOLOGY in LldpIngester().ingest(ctx)
+
+
 def test_stp_role_read_beside_state_with_empty_string_absent():
     stats = [
         {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True,

@@ -65,19 +65,19 @@ class ReplayStore:
         doc = self._raw_doc(raw)
         doc["plan"] = redact(plan)
         doc["verdict"] = redact(verdict_doc)
-        doc["trace"] = trace.to_dict()
+        doc["trace"] = redact(trace.to_dict())
         return self._write(run_id, doc)
 
     def _raw_doc(self, raw: RawSiteState) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "redaction_version": REDACTION_VERSION,
             "scope": redact({"org_id": raw.scope.org_id, "site_id": raw.scope.site_id}),
-            "meta": {
+            "meta": redact({
                 "acquired_at": raw.meta.acquired_at.isoformat(),
                 "host": raw.meta.host,
                 "fetched": list(raw.meta.fetched),
                 "failures": [[f.object, f.error] for f in raw.meta.failures],
-            },
+            }),
         }
         for field in _RAW_FIELDS:
             payload[field] = redact(getattr(raw, field))

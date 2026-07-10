@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --frozen
+      - name: Test
+        run: uv run pytest
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src
+      - name: Audit dependencies
+        run: uvx pip-audit --path .venv/lib/python3.14/site-packages --progress-spinner off

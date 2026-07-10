@@ -48,7 +48,7 @@ class LldpIngester:
     name = "lldp"
 
     def produces(self) -> frozenset[str]:  # potential supply
-        return frozenset({IRCapability.STP_STATE})
+        return frozenset({IRCapability.L2_TOPOLOGY, IRCapability.STP_STATE})
 
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
         self._ensure_stat_ports(ctx)
@@ -59,7 +59,19 @@ class LldpIngester:
         emitted: set[str] = set()
         self._emit_links(ctx, claims, emitted)
         self._emit_ap_uplinks(ctx, claims, emitted)
-        return frozenset({IRCapability.STP_STATE}) if stp_seen else frozenset()
+        earned: set[str] = set()
+        fetched = set(ctx.raw.meta.fetched)
+        needs_device_stats = any(d.get("type") == "ap" for d in ctx.raw.devices)
+        if "port_stats" in fetched and (not needs_device_stats or "device_stats" in fetched):
+            # Empty successful responses mean known-zero topology. A failed
+            # required source is absent from `fetched` and must never
+            # masquerade as an authoritative empty graph. AP stats are only
+            # required when the site actually contains APs; switch-only sites
+            # derive their complete observed topology from port stats alone.
+            earned.add(IRCapability.L2_TOPOLOGY)
+        if stp_seen:
+            earned.add(IRCapability.STP_STATE)
+        return frozenset(earned)
 
     def _ensure_stat_ports(self, ctx: IngestContext) -> None:
         """Any port named by a stat row exists in the IR — even a row that

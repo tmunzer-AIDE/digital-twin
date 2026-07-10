@@ -173,7 +173,7 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
 
 ### Check inventory
 
-The twin ships **29 checks** over the IR. The **27 wired/wireless checks** run on
+The twin ships **30 checks** over the IR. The **28 wired/wireless checks** run on
 site plans (and the org-template fan-out); the **2 NAC checks** run on org-NAC
 plans. Each is **delta-aware**: a finding *introduced* by the change gates the
 verdict; a pre-existing condition the change merely touches is reported as
@@ -208,8 +208,9 @@ context and never floors an unrelated edit.
 | 25 | Wireless / WLAN | `wireless.wlan.client_impact` | active wireless clients losing SSID coverage from a WLAN change |
 | 26 | Wireless / WLAN | `wireless.wlan.open_guest` | an open guest SSID with no client isolation |
 | 27 | Wireless / WLAN | `wireless.wlan.duplicate_ssid` | the same SSID on provably overlapping APs |
-| 28 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
-| 29 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+| 28 | L2 / switching | `wired.l2.topology_coverage` | topology-dependent changes when port/device observations are unavailable |
+| 29 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
+| 30 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
 
 ## Project layout
 
@@ -219,7 +220,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution, STP tree prediction + agreement + STP-aware reachability taint + policy inertness license (memoized)
-├── checks/           the 27 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
+├── checks/           the 28 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

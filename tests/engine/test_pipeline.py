@@ -632,6 +632,37 @@ def test_port_config_overwrite_disable_is_simulated_not_unknown():
     assert v.decision in (Decision.REVIEW, Decision.UNSAFE), v.decision
 
 
+def test_missing_topology_fetches_prevent_safe_topology_conclusion():
+    from digital_twin.providers.base import FetchFailure
+
+    raw = dc_replace(
+        _raw(),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC),
+            host="t",
+            fetched=("devices", "wired_clients", "wireless_clients"),
+            failures=(
+                FetchFailure(object="port_stats", error="503"),
+                FetchFailure(object="device_stats", error="503"),
+            ),
+        ),
+    )
+    payload = {"port_config_overwrite": {"ge-0/0/0": {"disabled": True}}}
+    verdict = simulate(
+        _plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
+        provider=FakeProvider(raw=raw),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    result = next(
+        result
+        for result in verdict.check_results
+        if result.check_id == "wired.l2.topology_coverage"
+    )
+    assert result.status is Status.INSUFFICIENT_DATA
+    assert "missing capability: l2.topology" in result.coverage.notes
+
+
 def test_local_port_auth_change_is_simulated_not_unknown():
     # enabling dot1x via local_port_config on a configured access port must
     # SIMULATE (REVIEW via wired.auth.access_change), not return UNKNOWN.

@@ -24,6 +24,7 @@ from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_policy import StpPolicyCheck
 from .stp_root import StpRootChangeCheck
 from .subnet_overlap import SubnetOverlapCheck
+from .topology_coverage import TopologyCoverageCheck
 from .unmodeled_change import PortUnmodeledChangeCheck
 from .vlan_collision import VlanCollisionCheck
 from .wlan_client_impact import WlanClientImpactCheck
@@ -31,6 +32,7 @@ from .wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from .wlan_open_guest import WlanOpenGuestCheck
 
 ALL_WIRED_CHECKS: list[Check] = [
+    TopologyCoverageCheck(),
     L2LoopCheck(),
     L2BlackholeCheck(),
     L2IsolationCheck(),
@@ -68,6 +70,7 @@ __all__ = [
     "BgpAdjacencyCheck",
     "ClientImpactCheck",
     "SubnetOverlapCheck",
+    "TopologyCoverageCheck",
     "VlanCollisionCheck",
     "DhcpPathCheck",
     "DhcpScopeLintCheck",

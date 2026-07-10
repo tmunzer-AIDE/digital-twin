@@ -609,3 +609,34 @@ def test_save_run_includes_plan_verdict_and_trace(tmp_path):
     assert data["plan"]["source"] == "mist"
     assert data["verdict"]["decision"] == "safe"
     assert data["trace"]["run_id"] == "run2"
+
+
+def test_save_run_redacts_metadata_failures_and_trace(tmp_path):
+    from digital_twin.observability.trace import Trace
+
+    raw = dataclasses.replace(
+        raw_site(),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC),
+            host="https://api.example.test?access_token=TOPSECRET",
+            fetched=("devices",),
+            failures=(FetchFailure("port_stats", "password=SUPERSECRET"),),
+        ),
+    )
+    trace = Trace(run_id="run-secret-test")
+    trace.note("provider", "request failed: client_secret=TRACESECRET")
+    path = ReplayStore(tmp_path).save_run(
+        "run-secret-test",
+        raw=raw,
+        plan={"source": "mist"},
+        verdict_doc={"decision": "unknown"},
+        trace=trace,
+    )
+
+    blob = path.read_text()
+    for secret in ("TOPSECRET", "SUPERSECRET", "TRACESECRET"):
+        assert secret not in blob
+    data = json.loads(blob)
+    assert "access_token=redacted-" in data["meta"]["host"]
+    assert "password=redacted-" in data["meta"]["failures"][0][1]
+    assert "client_secret=redacted-" in data["trace"]["stages"][0]["note"]
