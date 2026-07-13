@@ -1,4 +1,6 @@
 # tests/viz/test_mermaid.py
+import json
+
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel, IRBuilder
 from digital_twin.ir.entities import (
@@ -84,6 +86,31 @@ def test_l2_chart_present_and_well_formed():
     assert l2.mermaid.startswith("graph LR")
     assert "classDef" in l2.mermaid
     assert "core-1" in l2.mermaid  # device display name in a label
+
+
+def test_l2_and_vlan_charts_emit_endpoint_interface_metadata():
+    diagrams = build_diagrams(_ir(), _ir(), ())
+    for diagram in (
+        next(d for d in diagrams if d.view == "l2"),
+        next(d for d in diagrams if d.view == "vlan:30"),
+    ):
+        line = next(ln for ln in diagram.mermaid.splitlines() if "%% mistmcp-link " in ln)
+        metadata = json.loads(line.split("%% mistmcp-link ", 1)[1])
+        assert metadata["source_interfaces"] == ["ge-0/0/1"]
+        assert metadata["target_interfaces"] == ["ge-0/0/1"]
+        assert metadata["kind"] == "physical"
+
+
+def test_zero_vlan_physical_edge_is_labeled_as_no_vlans_not_physical():
+    b = IRBuilder()
+    b.add_device(Device(id="s1", role=DeviceRole.SWITCH, site="s1", name="sw1"))
+    b.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="s1", name="sw2"))
+    b.add_port(Port(id="s1:p1", device_id="s1", name="p1", mode=PortMode.TRUNK))
+    b.add_port(Port(id="s2:p2", device_id="s2", name="p2", mode=PortMode.TRUNK))
+    b.add_link(Link(id=link_id("s1:p1", "s2:p2"), a_port="s1:p1", b_port="s2:p2", kind=LinkKind.PHYSICAL))
+    l2 = next(d for d in build_diagrams(b.build(), b.build(), ()) if d.view == "l2")
+    assert '|"No VLANs"|' in l2.mermaid
+    assert '|"physical"|' not in l2.mermaid
 
 
 def test_l2_highlights_affected_device():

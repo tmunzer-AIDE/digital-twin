@@ -15,6 +15,8 @@ paint another VLAN's chart (bleed-free).
 
 from __future__ import annotations
 
+import json
+
 import networkx as nx
 
 from digital_twin.analysis.exits import resolve_exit
@@ -22,6 +24,7 @@ from digital_twin.contracts import Diagram, Finding, Severity, VisualEntry, Visu
 from digital_twin.ir import IR
 from digital_twin.ir.entities import L3Intf
 from digital_twin.ir.indexes import node_for, vc_root_map
+from digital_twin.representations.graph_data import L2Edge
 from digital_twin.representations.l2_graph import build_l2_graph
 from digital_twin.representations.vlan_graph import build_vlan_graph
 from digital_twin.viz.visual_map import build_visual_map
@@ -78,6 +81,37 @@ class _Ids:
 def _worst(*sevs: Severity | None) -> Severity | None:
     present = [s for s in sevs if s is not None]
     return max(present, key=lambda s: _SEV_RANK[s]) if present else None
+
+
+def _link_metadata_line(ir: IR, ids: _Ids, u: str, v: str, edge: L2Edge) -> str:
+    """Machine-readable endpoint metadata for richer UI rendering.
+
+    Mermaid ignores ``%%`` comments; other renderers stay unchanged while the web UI
+    can place each interface beside its actual end of the rendered link.
+    """
+    vc = vc_root_map(ir)
+
+    def _interfaces(node: str) -> list[str]:
+        names = {
+            ir.port(port_id).name
+            for port_id in edge.member_ports
+            if node_for(vc, ir.port(port_id).device_id) == node
+        }
+        return sorted(names)
+
+    payload = {
+        "source": ids.get(u),
+        "source_interfaces": _interfaces(u),
+        "target": ids.get(v),
+        "target_interfaces": _interfaces(v),
+        "kind": edge.kind,
+    }
+    return f"  %% mistmcp-link {json.dumps(payload, separators=(',', ':'))}"
+
+
+def _edge_label(edge: L2Edge) -> str:
+    vlans = ",".join(str(x) for x in sorted(edge.vlans)) or "No VLANs"
+    return f"{edge.kind.upper()} · {vlans}" if edge.kind in ("lag", "mclag") else vlans
 
 
 def _captions_and_causes(
@@ -179,7 +213,8 @@ def _l2_diagram(
         lines.append(f'  {ids.get(node)}["{label}"]')
     for u, v, data in g.edges(data=True):
         edge = data["data"]
-        lbl = ",".join(str(x) for x in sorted(edge.vlans)) or edge.kind
+        lines.append(_link_metadata_line(ir, ids, u, v, edge))
+        lbl = _edge_label(edge)
         lines.append(f'  {ids.get(u)} ---|"{_safe(lbl)}"| {ids.get(v)}')
     # paint classes from view_map
     cls_lines = _class_lines_from_map(ids, view_map)
@@ -219,11 +254,14 @@ def _vlan_diagram(
         dev = ir.devices.get(node)
         name = (dev.name or node) if dev else node
         if node in exit_nodes:
-            lines.append(f'  {ids.get(node)}(["{_label(name, "exit")}"])')
+            role = f"{dev.role.value if dev else '?'} · exit"
+            lines.append(f'  {ids.get(node)}["{_label(name, role)}"]')
         else:
             lines.append(f'  {ids.get(node)}["{_label(name, dev.role.value if dev else "?")}"]')
-    for u, v, _data in sorted(g.edges(data=True), key=lambda e: (min(e[0], e[1]), max(e[0], e[1]))):
+    for u, v, data in sorted(g.edges(data=True), key=lambda e: (min(e[0], e[1]), max(e[0], e[1]))):
         a, b = (u, v) if u <= v else (v, u)
+        edge = data["data"]
+        lines.append(_link_metadata_line(ir, ids, a, b, edge))
         lines.append(f'  {ids.get(a)} ---|"{_safe(vid)}"| {ids.get(b)}')
     # paint device-level classes from view_map (VLAN-scoped: only this view's entries)
     cls_lines = _class_lines_from_map(ids, view_map)
