@@ -17,7 +17,13 @@ from typing import Any
 
 import pytest
 
-from digital_twin.providers.base import FetchError, OrgScope, SiteScope
+from digital_twin.providers.base import (
+    FetchError,
+    OrgScope,
+    OrgSiteGroupContext,
+    PskUsageContext,
+    SiteScope,
+)
 from digital_twin.providers.mist_api import MistApiError, MistApiProvider, _checked
 
 
@@ -179,6 +185,63 @@ def test_org_nac_rules_failure_is_fetch_error_not_empty_ruleset(
     result = _provider().resolve_org_nac(OrgScope(org_id="o1"))
     assert isinstance(result, FetchError)
     assert result.failures[0].object == "nacrules"
+
+
+def test_sitegroup_resolution_returns_assigned_sites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.sitegroups,
+        "getOrgSiteGroup",
+        lambda session, org_id, sitegroup_id: FakeResp(
+            data={"id": sitegroup_id, "site_ids": ["s1", "s2"]}
+        ),
+    )
+    result = _provider().resolve_org_sitegroup(OrgScope("o1"), "g1")
+    assert isinstance(result, OrgSiteGroupContext)
+    assert result.assigned_site_ids == ("s1", "s2")
+
+
+def test_psk_usage_queries_the_whole_org_for_seven_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    provider = _provider()
+    calls: list[tuple[str, str, str, int]] = []
+
+    def sessions(session, org_id, *, psk_id, duration, limit, sort):
+        calls.append((org_id, psk_id, duration, limit))
+        return FakeResp(data={"results": [{"session_id": "used", "site_id": "s2"}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.clients,
+        "searchOrgWirelessClientSessions",
+        sessions,
+    )
+    result = provider.resolve_psk_usage(OrgScope("o1"), "p1", window_days=7)
+    assert isinstance(result, PskUsageContext)
+    assert result.active_site_ids == ("s2",)
+    assert result.checked_site_ids == ("*",)
+    assert calls == [("o1", "p1", "7d", 1)]
+
+
+def test_psk_usage_failure_is_returned_as_a_fetch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.clients,
+        "searchOrgWirelessClientSessions",
+        lambda session, org_id, **kwargs: FakeResp(status_code=503),
+    )
+    provider = _provider()
+    result = provider.resolve_psk_usage(OrgScope("o1"), "p1")
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "psk_sessions"
 
 
 def test_org_nac_rules_are_paginated(monkeypatch: pytest.MonkeyPatch) -> None:

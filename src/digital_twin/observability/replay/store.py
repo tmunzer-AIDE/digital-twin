@@ -21,9 +21,11 @@ from digital_twin.providers.base import (
     FetchFailure,
     NacFetch,
     OrgScope,
+    OrgSiteGroupContext,
     OrgTemplateContext,
     OrgWlanContext,
     OrgWlanTemplateContext,
+    PskUsageContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -442,6 +444,44 @@ class FixtureProvider:
             if rows:
                 by_site[sid] = rows
         return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
+
+    def resolve_org_sitegroup(
+        self, scope: OrgScope, sitegroup_id: str
+    ) -> OrgSiteGroupContext | FetchError:
+        groups = self._data.get("org_sitegroups") or {}
+        group = groups.get(sitegroup_id) if isinstance(groups, dict) else None
+        if not isinstance(group, dict):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure("org_sitegroup", "site group not captured in fixture"),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        site_ids = group.get("site_ids") or ()
+        return OrgSiteGroupContext(tuple(str(site_id) for site_id in site_ids))
+
+    def resolve_psk_usage(
+        self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
+    ) -> PskUsageContext | FetchError:
+        usage = self._data.get("psk_usage") or {}
+        row = usage.get(psk_id) if isinstance(usage, dict) else None
+        if not isinstance(row, dict):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure("psk_sessions", "PSK usage not captured in fixture"),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        return PskUsageContext(
+            active_site_ids=tuple(str(site_id) for site_id in row.get("active_site_ids", ())),
+            checked_site_ids=tuple(str(site_id) for site_id in row.get("checked_site_ids", ())),
+            failures=(),
+            window_days=window_days,
+        )
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         if self._wrong_org(scope):

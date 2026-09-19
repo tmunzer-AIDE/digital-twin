@@ -103,6 +103,27 @@ allowlist: `networks.*.vlan_id`, `port_usages.*.{mode,port_network,networks,all_
 into an out-of-scope effective field after template compilation — returns `UNKNOWN`,
 never a silently-wrong verdict.
 
+A non-empty update that changes only the top-level `name` is classified `SAFE`
+for Mist configuration objects without fetching topology.
+The security-sensitive `secintelprofiles`, `aamwprofiles`, `avprofiles`,
+`idpprofiles`, and `servicepolicies` families are explicitly excluded from this
+rule and return `UNKNOWN`.
+
+Additional configuration-policy coverage:
+
+- organization info and alarm-template changes are `SAFE`;
+- org WLAN changes use the WLAN simulator across every site where the derived
+  WLAN row is present;
+- site-group create/update is `SAFE`; deletion is `REVIEW` when sites are
+  assigned, and `SAFE` only after confirming that membership is empty;
+- org/site PSK create is `SAFE`; update/delete is `SAFE` only after a complete
+  seven-day org/site per-PSK session query finds no usage (usage or a telemetry gap is
+  `REVIEW`);
+- org/site webhook changes are always `REVIEW` because delivery impact is
+  external to the topology model.
+
+These explicit rules take precedence over the generic name-only rule.
+
 ## How it works
 
 ```text
@@ -173,13 +194,19 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
 
 ### Check inventory
 
-The twin ships **30 checks** over the IR. The **28 wired/wireless checks** run on
-site plans (and the org-template fan-out); the **2 NAC checks** run on org-NAC
-plans. Each is **delta-aware**: a finding *introduced* by the change gates the
-verdict; a pre-existing condition the change merely touches is reported as
-context and never floors an unrelated edit.
+The twin emits **37 distinct check IDs**. Its simulation engine ships **30 checks**:
+**28 wired/wireless checks** over the IR and **2 NAC checks** for org policy. The remaining
+**7 configuration-policy checks** make explicit decisions for objects whose
+impact does not require the topology IR, or whose safety depends on a targeted
+API observation such as site-group membership or recent PSK sessions.
 
-| # | Domain | Check | What it catches |
+The 30 simulation checks are **delta-aware**: a finding *introduced* by the
+change gates the verdict; a pre-existing condition the change merely touches is
+reported as context and never floors an unrelated edit. Policy checks state
+their own evidence and coverage; a failed membership or usage query can never
+produce `SAFE`.
+
+| # | Domain | Check | What it catches / decides |
 |---|---|---|---|
 | 1 | L2 / switching | `wired.l2.loop` | a cycle that STP is not protecting |
 | 2 | L2 / switching | `wired.l2.blackhole` | a VLAN segment that loses its path to its L3 exit |
@@ -211,6 +238,17 @@ context and never floors an unrelated edit.
 | 28 | L2 / switching | `wired.l2.topology_coverage` | topology-dependent changes when port/device observations are unavailable |
 | 29 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
 | 30 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+| P1 | Configuration policy | `config.name_change` | a non-empty, top-level `name`-only update; `SAFE` except for the explicitly excluded security profile/policy families |
+| P2 | Configuration policy | `config.org_info` | organization information changes, classified `SAFE` |
+| P3 | Configuration policy | `config.alarmtemplate` | alarm-template create/update/delete changes, classified `SAFE` |
+| P4 | Configuration policy | `config.sitegroup` | site-group create/update changes, classified `SAFE` |
+| P5 | Configuration policy | `config.sitegroup.delete` | site-group deletion; `REVIEW` when sites are assigned or membership cannot be verified, otherwise `SAFE` |
+| P6 | Configuration policy | `config.psk.recent_usage` | org/site PSK create is `SAFE`; update/delete is `REVIEW` after recent use or incomplete telemetry, otherwise `SAFE` after a complete seven-day query |
+| P7 | Configuration policy | `config.webhook.review` | org/site webhook changes, always `REVIEW` because delivery impact is external to the twin |
+
+Org WLAN changes do not add another check ID: they fan out to every site where
+the derived WLAN is present and run the applicable wired/wireless checks above,
+including checks 25–27.
 
 ## Project layout
 

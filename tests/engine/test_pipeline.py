@@ -243,13 +243,13 @@ def test_coverage_gap_plus_modeled_network_error_is_unsafe():
     assert any(f.code == "fake.network.error" for f in v.findings)
 
 
-def test_unknown_target_object_is_unknown():
+def test_name_only_rule_is_safe_without_target_fetch():
     v = simulate(
         _plan([_op(object_type="device", object_id="ghost", payload={"name": "x"})]),
         provider=FakeProvider(),
     )
-    assert v.decision is Decision.UNKNOWN
-    assert any("apply" in r for r in v.decision_reasons)
+    assert v.decision is Decision.SAFE
+    assert v.check_results[0].check_id == "config.name_change"
 
 
 def test_l0_findings_reach_verdict():
@@ -378,14 +378,12 @@ def test_normal_verdict_carries_diagrams():
     assert any(d.view == "l2" for d in v.diagrams)
 
 
-def test_unknown_short_circuit_has_no_diagrams():
-    # a HARD short-circuit (apply stage: no such object) returns via _unknown()
-    # before any simulation -> no diagrams
+def test_name_only_rule_has_no_diagrams():
     v = simulate(
         _plan([_op(object_type="device", object_id="ghost", payload={"name": "x"})]),
         provider=FakeProvider(),
     )
-    assert v.decision is Decision.UNKNOWN
+    assert v.decision is Decision.SAFE
     assert v.diagrams == ()
 
 
@@ -509,22 +507,15 @@ def test_site_apply_reject_carries_config_diff(monkeypatch):
     assert SITE in cds
 
 
-def test_update_op_on_ap_device_is_hard_field_gate_unknown():
-    # a HARD field-gate rejection (device role: AP is not a modeled switch) on a
-    # NON-delete op must short-circuit the per-op loop to UNKNOWN — no checks run,
-    # but the already-built config diff is carried out.
+def test_name_only_update_on_ap_device_is_safe_before_role_gate():
     raw = dc_replace(_raw(), devices=(SWITCH, AP))
     v = simulate(
         _plan([_op(object_type="device", object_id="ap-a", payload={"name": "renamed"})]),
         provider=FakeProvider(raw=raw),
     )
-    assert v.decision is Decision.UNKNOWN
-    assert any("field_gate" in r and "not modeled in M1" in r for r in v.decision_reasons), (
-        v.decision_reasons
-    )
-    assert v.check_results == ()  # short-circuit: the simulation never ran
-    cds = {d.object_id: d for d in v.config_diffs}
-    assert "ap-a" in cds and cds["ap-a"].action == "update"  # diff built before the gate
+    assert v.decision is Decision.SAFE
+    assert v.check_results[0].check_id == "config.name_change"
+    assert v.config_diffs == ()
 
 
 def test_wlan_delete_apply_reject_is_unknown_and_keeps_diff(monkeypatch):
@@ -575,6 +566,18 @@ def test_site_wlan_disable_with_active_client_is_unsafe_and_carries_config_diff(
     by = {c.path: c for c in cds["w1"].changes}
     assert by["enabled"].kind == "changed"
     assert by["enabled"].before is True and by["enabled"].after is False
+
+
+def test_site_wlan_display_name_only_update_is_safe():
+    raw = _raw_wlan(_wlan("w1"))
+    v = simulate(
+        _plan([_op(object_type="wlan", object_id="w1", payload={"name": "renamed"})]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+
+    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.check_results[0].check_id == "config.name_change"
 
 
 def test_site_wlan_delete_with_site_scope_survivor_is_safe_and_carries_config_diff():

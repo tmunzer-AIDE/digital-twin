@@ -33,6 +33,19 @@ ORG_OBJECT_TYPES: tuple[str, ...] = (
 # predicate to simulate_org_nac.
 NAC_OBJECT_TYPES: tuple[str, ...] = ("nacrule",)
 
+# Configuration objects governed by explicit operational policy rather than the
+# topology model. These names mirror the MCP configuration-tool collection names
+# so the bridge and verdict remain easy to audit.
+CONFIG_POLICY_OBJECT_TYPES: tuple[str, ...] = (
+    "org_info",
+    "org_alarmtemplates",
+    "org_sitegroups",
+    "org_psks",
+    "site_psks",
+    "org_webhooks",
+    "site_webhooks",
+)
+
 _NAC_MATCH_DIMS: tuple[str, ...] = (
     "auth_type", "port_types", "nactags", "site_ids", "sitegroup_ids",
     "family", "mfg", "model", "os_type", "vendor",

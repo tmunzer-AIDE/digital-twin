@@ -20,16 +20,23 @@ from digital_twin.drivers.render import (
     render_org_nac_human,
     verdict_to_dict,
 )
-from digital_twin.engine.pipeline import simulate, simulate_org_nac, simulate_org_template
+from digital_twin.engine.pipeline import (
+    simulate,
+    simulate_name_change,
+    simulate_org_nac,
+    simulate_org_template,
+)
 from digital_twin.engine.run_context import RunContext
 from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
 from digital_twin.providers.base import (
     FetchError,
     NacFetch,
     OrgScope,
+    OrgSiteGroupContext,
     OrgTemplateContext,
     OrgWlanContext,
     OrgWlanTemplateContext,
+    PskUsageContext,
     RawSiteState,
     SiteScope,
     StateProvider,
@@ -77,6 +84,16 @@ class _RecordingProvider:
         self, scope: OrgScope, template_id: str
     ) -> OrgWlanTemplateContext | FetchError:
         return self._inner.resolve_org_wlan_template(scope, template_id)
+
+    def resolve_org_sitegroup(
+        self, scope: OrgScope, sitegroup_id: str
+    ) -> OrgSiteGroupContext | FetchError:
+        return self._inner.resolve_org_sitegroup(scope, sitegroup_id)
+
+    def resolve_psk_usage(
+        self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
+    ) -> PskUsageContext | FetchError:
+        return self._inner.resolve_psk_usage(scope, psk_id, window_days=window_days)
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         return self._inner.resolve_org_nac(scope)
@@ -131,6 +148,16 @@ def main(argv: list[str] | None = None) -> int:
     plan_text = sys.stdin.read() if args.plan == "-" else Path(args.plan).read_text()
     plan_data = json.loads(plan_text)
 
+    run = RunContext()
+    name_change_verdict = simulate_name_change(plan_data, run=run)
+    if name_change_verdict is not None:
+        print(
+            json.dumps(verdict_to_dict(name_change_verdict), indent=1)
+            if args.json
+            else render_human(name_change_verdict)
+        )
+        return EXIT_CODES[name_change_verdict.decision]
+
     provider: StateProvider
     if args.replay_fixture:
         provider = FixtureProvider(args.replay_fixture)
@@ -139,8 +166,6 @@ def main(argv: list[str] | None = None) -> int:
 
         provider = MistApiProvider()
     recording = _RecordingProvider(provider)
-
-    run = RunContext()
 
     if _is_org_nac_plan(plan_data):
         nac_verdict = simulate_org_nac(

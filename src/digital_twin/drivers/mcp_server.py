@@ -19,7 +19,12 @@ from digital_twin.drivers.render import (
     org_verdict_to_dict,
     verdict_to_dict,
 )
-from digital_twin.engine.pipeline import simulate, simulate_org_nac, simulate_org_template
+from digital_twin.engine.pipeline import (
+    simulate,
+    simulate_name_change,
+    simulate_org_nac,
+    simulate_org_template,
+)
 from digital_twin.ir import IRDiff
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.providers.base import StateProvider
@@ -69,6 +74,10 @@ def simulate_change(
     replay_fixture: str | None = None,
     l0_full_object: bool = False,
 ) -> dict[str, Any]:
+    name_change_verdict = simulate_name_change(change_plan)
+    if name_change_verdict is not None:
+        return verdict_to_dict(name_change_verdict)
+
     if _is_org_nac_plan(change_plan):
         try:
             return org_nac_verdict_to_dict(simulate_org_nac(

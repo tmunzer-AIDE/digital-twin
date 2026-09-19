@@ -39,7 +39,13 @@ from digital_twin.adapters.mist.ingest.switch import (
 )
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.delta_cause import delta_index
-from digital_twin.checks.base import CheckContext
+from digital_twin.checks.base import (
+    CheckContext,
+    CheckResult,
+    Coverage,
+    CoverageState,
+    Status,
+)
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.contracts import (
@@ -50,6 +56,8 @@ from digital_twin.contracts import (
     Rejection,
     Severity,
 )
+from digital_twin.engine.config_policy import simulate_configuration_policy
+from digital_twin.engine.name_change import assess_name_only_change
 from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
 from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
@@ -215,6 +223,57 @@ def _unknown(
         ),
         config_diffs=config_diffs,
     )
+
+
+def simulate_name_change(
+    plan_data: Mapping[str, Any], *, run: RunContext | None = None
+) -> Verdict | None:
+    """Return a policy verdict for a pure name update, or ``None`` otherwise.
+
+    This deliberately runs before provider selection and state fetch.  The rule
+    reasons only about the request shape: every op must update exactly one
+    non-empty top-level ``name`` value.  All other payloads continue through the
+    normal default-deny simulation pipeline.
+    """
+    run = run or RunContext()
+    trace = run.trace
+    assert trace is not None
+    with trace.stage("name_change_rule"):
+        plan = parse_change_plan(plan_data)
+        if isinstance(plan, Rejection):
+            return None
+        assessment = assess_name_only_change(plan)
+        if assessment is None:
+            return None
+        if not assessment.safe:
+            return _unknown(
+                Rejection(stage="name_change_rule", reasons=(assessment.reason,)),
+                adapter_findings=(),
+                run=run,
+            )
+
+        result = CheckResult(
+            check_id="config.name_change",
+            status=Status.PASS,
+            findings=(),
+            coverage=Coverage(
+                CoverageState.COMPLETE,
+                ("request changes only the top-level configuration object name",),
+            ),
+            confidence=_HIGH,
+            reasoning=assessment.reason,
+        )
+        verdict = assemble(
+            inputs=DecisionInputs(
+                rejections=(),
+                l0_fatal=False,
+                baseline_unavailable=False,
+                check_results=(result,),
+            ),
+            ir_diff=_EMPTY_DIFF,
+            trace_ref=run.run_id,
+        )
+        return replace(verdict, decision_reasons=(assessment.reason,))
 
 
 def _simulate_site_state(
@@ -394,6 +453,12 @@ def simulate(
     l0_full_object: bool = False,
 ) -> Verdict:
     run = run or RunContext()
+    policy_verdict = simulate_configuration_policy(plan_data, provider=provider, run=run)
+    if policy_verdict is not None:
+        return policy_verdict
+    name_change_verdict = simulate_name_change(plan_data, run=run)
+    if name_change_verdict is not None:
+        return name_change_verdict
     trace = run.trace
     assert trace is not None  # RunContext.__post_init__ guarantees it
     adapter = adapter or MistAdapter()

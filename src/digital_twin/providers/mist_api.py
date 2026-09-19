@@ -44,9 +44,11 @@ from .base import (
     FetchFailure,
     NacFetch,
     OrgScope,
+    OrgSiteGroupContext,
     OrgTemplateContext,
     OrgWlanContext,
     OrgWlanTemplateContext,
+    PskUsageContext,
     RawSiteState,
     SiteScope,
     StateMeta,
@@ -327,6 +329,78 @@ class MistApiProvider(StateProvider):
                 host=self._host,
             )
         return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
+
+    def resolve_org_sitegroup(
+        self, scope: OrgScope, sitegroup_id: str
+    ) -> OrgSiteGroupContext | FetchError:
+        try:
+            response = mistapi.api.v1.orgs.sitegroups.getOrgSiteGroup(
+                self._session, scope.org_id, sitegroup_id
+            )
+            group = dict(_checked(response).data)
+            site_ids = group.get("site_ids") or ()
+            if not isinstance(site_ids, list):
+                raise MistApiError("site group returned a non-list site_ids value")
+        except Exception as exc:  # noqa: BLE001 — errors are values at this seam
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_sitegroup", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        return OrgSiteGroupContext(
+            assigned_site_ids=tuple(str(site_id) for site_id in site_ids)
+        )
+
+    def resolve_psk_usage(
+        self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
+    ) -> PskUsageContext | FetchError:
+        duration = f"{window_days}d"
+        try:
+            if isinstance(scope, SiteScope):
+                response = mistapi.api.v1.sites.clients.searchSiteWirelessClientSessions(
+                    self._session,
+                    scope.site_id,
+                    psk_id=psk_id,
+                    duration=duration,
+                    limit=1,
+                    sort="-timestamp",
+                )
+                checked_site_ids = (scope.site_id,)
+            else:
+                response = mistapi.api.v1.orgs.clients.searchOrgWirelessClientSessions(
+                    self._session,
+                    scope.org_id,
+                    psk_id=psk_id,
+                    duration=duration,
+                    limit=1,
+                    sort="-timestamp",
+                )
+                # The query itself covers the whole organization. Keep a stable
+                # coverage marker even when no session row exists to name a site.
+                checked_site_ids = ("*",)
+            response = _checked(response)
+            rows = _page_rows(response.data, response.url)
+        except Exception as exc:  # noqa: BLE001 — incomplete telemetry is REVIEW
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="psk_sessions", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+
+        active_site_ids = tuple(
+            dict.fromkeys(
+                str(row.get("site_id") or (scope.site_id if isinstance(scope, SiteScope) else "*"))
+                for row in rows
+            )
+        )
+        return PskUsageContext(
+            active_site_ids=active_site_ids,
+            checked_site_ids=checked_site_ids,
+            failures=(),
+            window_days=window_days,
+        )
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         # _pages (not .data): the raw read took only the FIRST page, and a failed

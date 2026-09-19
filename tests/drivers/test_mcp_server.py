@@ -30,6 +30,33 @@ def test_error_path_returns_the_full_verdict_document_shape(tmp_path):
     assert set(err.keys()) == set(ok.keys())  # identical document shape
 
 
+def test_name_only_rule_runs_before_provider_selection(monkeypatch):
+    import digital_twin.drivers.mcp_server as srv
+
+    def provider_must_not_run(*args, **kwargs):
+        raise AssertionError("name-only rule must not fetch state")
+
+    monkeypatch.setattr(srv, "_provider", provider_must_not_run)
+    out = simulate_change(
+        {
+            "source": "mist",
+            "scope": {"org_id": "o1"},
+            "ops": [
+                {
+                    "action": "update",
+                    "order": 0,
+                    "object_type": "networks",
+                    "object_id": "n1",
+                    "payload": {"name": "renamed"},
+                }
+            ],
+        }
+    )
+
+    assert out["decision"] == "safe"
+    assert out["check_results"][0]["check_id"] == "config.name_change"
+
+
 def test_l0_full_object_threads_to_simulate(tmp_path, monkeypatch):
     # the MCP tool exposes l0_full_object; it must reach the engine (default
     # False = changed-roots scope, True = whole-object validation)

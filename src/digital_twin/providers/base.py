@@ -114,6 +114,28 @@ class OrgWlanTemplateContext:
 
 
 @dataclass(frozen=True)
+class OrgSiteGroupContext:
+    """Current site-group membership used to guard deletion."""
+
+    assigned_site_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PskUsageContext:
+    """Observed PSK sessions in a bounded lookback window.
+
+    ``failures`` is intentionally retained alongside successful observations:
+    one active site is enough to require review, while a clean SAFE conclusion
+    requires every target site query to have succeeded.
+    """
+
+    active_site_ids: tuple[str, ...]
+    checked_site_ids: tuple[str, ...]
+    failures: tuple[FetchFailure, ...]
+    window_days: int
+
+
+@dataclass(frozen=True)
 class NacFetch:
     """Org-level NAC fetch result: rule payloads + tag payloads (vendor-shaped).
 
@@ -179,6 +201,18 @@ class StateProvider(Protocol):
         """Fetch the org WLAN template snapshot and determine affected sites from
         derived WLAN rows carrying that template_id. A lookup or membership-probe
         failure is a FetchError."""
+        ...
+
+    def resolve_org_sitegroup(
+        self, scope: OrgScope, sitegroup_id: str
+    ) -> OrgSiteGroupContext | FetchError:
+        """Fetch a site group and return its currently assigned site ids."""
+        ...
+
+    def resolve_psk_usage(
+        self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
+    ) -> PskUsageContext | FetchError:
+        """Find sites with sessions using ``psk_id`` in the lookback window."""
         ...
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
