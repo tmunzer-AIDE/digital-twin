@@ -17,7 +17,7 @@ from typing import Any
 from digital_twin.ir import IRCapability, Vlan, Wlan
 
 from .base import IngestContext
-from .wlan_vlans import ap_required_vlans
+from .wlan_vlans import ap_required_vlans, effective_apply_to
 
 
 def wlan_is_inherited(row: Mapping[str, Any]) -> bool:
@@ -37,7 +37,7 @@ def _mint_wlan(row: Mapping[str, Any]) -> Wlan:
         enabled=bool(row.get("enabled")),
         auth_type=str(auth_type) if auth_type is not None else None,
         isolation=bool(row.get("isolation")) or bool(row.get("l2_isolation")),
-        apply_to=str(av) if (av := row.get("apply_to")) is not None else None,
+        apply_to=(scope if (scope := effective_apply_to(row)) else None),
         ap_ids=tuple(sorted({str(x) for x in (row.get("ap_ids") or [])})),
         wxtag_ids=tuple(sorted({str(x) for x in (row.get("wxtag_ids") or [])})),
         inherited=wlan_is_inherited(row),

@@ -25,6 +25,9 @@ class ChangeOp:
     object_type: str
     object_id: str
     payload: Mapping[str, Any]
+    # Natural scope of this operation.  Optional for backwards compatibility
+    # with legacy ChangePlans where the plan-level scope was sufficient.
+    scope: str | None = None
 
 
 @dataclass(frozen=True)

@@ -96,8 +96,9 @@ if TYPE_CHECKING:
 
 _MEDIUM = Confidence(
     level=ConfidenceLevel.MEDIUM,
-    reasons=("the bridge domain (unmanaged switches, off-fabric roots, convergence) "
-             "is not provable",),
+    reasons=(
+        "the bridge domain (unmanaged switches, off-fabric roots, convergence) is not provable",
+    ),
 )
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _ONE_SIDED_TIE = Confidence(
@@ -106,8 +107,10 @@ _ONE_SIDED_TIE = Confidence(
 )
 _UNPROVABLE_ELECTION = Confidence(
     level=ConfidenceLevel.MEDIUM,
-    reasons=("the elected root is not known at HIGH confidence (a default-assumed "
-             "priority or an uninterpretable priority is present in the component)",),
+    reasons=(
+        "the elected root is not known at HIGH confidence (a default-assumed "
+        "priority or an uninterpretable priority is present in the component)",
+    ),
 )
 
 # .link_mismatch only ever compares these two knobs: stp_required and
@@ -121,8 +124,7 @@ _LINK_MISMATCH_KNOBS = ("use_vstp", "stp_p2p")
 def _changed_knobs(old: StpPolicy | None, new: StpPolicy | None) -> list[str]:
     o, n = old or StpPolicy(), new or StpPolicy()
     return [
-        f.name for f in dataclasses.fields(StpPolicy)
-        if getattr(o, f.name) != getattr(n, f.name)
+        f.name for f in dataclasses.fields(StpPolicy) if getattr(o, f.name) != getattr(n, f.name)
     ]
 
 
@@ -150,6 +152,7 @@ def _effective_knob(policy: StpPolicy | None, knob: str) -> bool | str:
 # device/link-add path), so the union is a no-op in practice; it exists so a
 # future ingestion path that DOES let baseline and proposed disagree on peer
 # evidence can't silently under-escalate an ERROR to the floor.
+
 
 def _ap_peer_links(ir: IR) -> dict[str, tuple[str, Link]]:
     """switch-port id -> (ap_device_id, the LLDP link) for every AP peer."""
@@ -280,8 +283,7 @@ class StpPolicyCheck:
         # changed fields — an unrelated port edit must not wake this check
         added_or_removed = any(r.kind == "port" for r in (*diff.added, *diff.removed))
         changed = any(
-            m.ref.kind == "port" and "stp_policy" in m.changed_fields
-            for m in diff.modified
+            m.ref.kind == "port" and "stp_policy" in m.changed_fields for m in diff.modified
         )
         return added_or_removed or changed
 
@@ -313,9 +315,7 @@ class StpPolicyCheck:
                 continue
             new_policy = new or StpPolicy()
             old_policy = old or StpPolicy()
-            unresolved_knobs = [
-                k for k in knobs if _is_unresolved(getattr(new_policy, k))
-            ]
+            unresolved_knobs = [k for k in knobs if _is_unresolved(getattr(new_policy, k))]
             for k in unresolved_knobs:
                 notes.append(
                     f"port {pid}: {k} is an unresolved: token — no precise "
@@ -368,15 +368,19 @@ class StpPolicyCheck:
                     notes.append(blocking_note)
                 if all(d.inert for d in decisions.values()):
                     provisional[pid] = Finding(
-                        source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                        code=f"{self.id}.inert_change", severity=Severity.INFO,
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.inert_change",
+                        severity=Severity.INFO,
                         confidence=_HIGH,
                         message=f"port {pid}: STP policy changed ({', '.join(knobs)}) — "
-                                f"provably inert against the telemetry-validated tree "
-                                f"(stable-state claim only)",
-                        affected_entities=(pid,), subject=ObjectRef("port", pid),
+                        f"provably inert against the telemetry-validated tree "
+                        f"(stable-state claim only)",
+                        affected_entities=(pid,),
+                        subject=ObjectRef("port", pid),
                         evidence={
-                            "port": pid, "knobs": knobs,
+                            "port": pid,
+                            "knobs": knobs,
                             "inertness": {k: d.evidence for k, d in decisions.items()},
                             "severity_reason": (
                                 "stable-state dataplane provably unchanged under the "
@@ -398,12 +402,15 @@ class StpPolicyCheck:
             ):
                 findings.append(
                     Finding(
-                        source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                        code=f"{self.id}.preexisting", severity=Severity.INFO,
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.preexisting",
+                        severity=Severity.INFO,
                         confidence=_HIGH,
                         message=f"port {pid}: stp_required is pre-existing (unchanged by "
-                                f"the delta) — context only",
-                        affected_entities=(pid,), subject=ObjectRef("port", pid),
+                        f"the delta) — context only",
+                        affected_entities=(pid,),
+                        subject=ObjectRef("port", pid),
                         evidence={"port": pid, "knob": "stp_required"},
                         caused_by=(),
                     )
@@ -426,7 +433,10 @@ class StpPolicyCheck:
                 knobs = list(grant.evidence["knobs"])
                 findings.append(
                     self._floor_finding(
-                        ctx, pid, knobs, None,
+                        ctx,
+                        pid,
+                        knobs,
+                        None,
                         suppressed_by="a WARNING-or-higher finding names this port",
                     )
                 )
@@ -446,8 +456,8 @@ class StpPolicyCheck:
             coverage=coverage,
             confidence=min_confidence(*confidences) if confidences else _HIGH,
             reasoning="compared per-port StpPolicy baseline vs proposed; every "
-                      "change floors REVIEW unless concrete harm escalates it "
-                      "or a telemetry-licensed inertness proof grants INFO",
+            "change floors REVIEW unless concrete harm escalates it "
+            "or a telemetry-licensed inertness proof grants INFO",
         )
 
     def _floor_finding(
@@ -463,18 +473,19 @@ class StpPolicyCheck:
         evidence for diagnosability — never a new severity or code."""
         evidence: dict[str, object] = {"port": pid, "knobs": knobs}
         if decisions is not None:
-            evidence["inertness"] = {
-                k: d.reasons for k, d in decisions.items() if not d.inert
-            }
+            evidence["inertness"] = {k: d.reasons for k, d in decisions.items() if not d.inert}
         if suppressed_by is not None:
             evidence["inertness"] = {"suppressed": suppressed_by}
         return Finding(
-            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-            code=f"{self.id}.policy_change", severity=Severity.WARNING,
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code=f"{self.id}.policy_change",
+            severity=Severity.WARNING,
             confidence=_MEDIUM,
             message=f"port {pid}: STP policy changed ({', '.join(knobs)}) — "
-                    f"impact not provable in this slice (review)",
-            affected_entities=(pid,), subject=ObjectRef("port", pid),
+            f"impact not provable in this slice (review)",
+            affected_entities=(pid,),
+            subject=ObjectRef("port", pid),
             evidence=evidence,
             caused_by=ctx.delta_index.causes("port", [pid]),
         )
@@ -516,13 +527,19 @@ class StpPolicyCheck:
             )
             return (
                 Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.blocking_risk", severity=severity, confidence=conf,
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.blocking_risk",
+                    severity=severity,
+                    confidence=conf,
                     message=f"port {pid}: stp_required enabled — AP {ap_id} peer will not "
-                            f"send BPDUs, the port may end up blocking",
-                    affected_entities=(pid, ap_id), subject=port_ref,
+                    f"send BPDUs, the port may end up blocking",
+                    affected_entities=(pid, ap_id),
+                    subject=port_ref,
                     evidence={
-                        "port": pid, "peer": ap_id, "peer_kind": "ap",
+                        "port": pid,
+                        "peer": ap_id,
+                        "peer_kind": "ap",
                         "tie_provenance": lk.meta.provenance.value,
                         "occupants_behind": _occupants_behind(occupants_ir(ap_id), ap_id),
                         "severity_reason": reason,
@@ -538,16 +555,21 @@ class StpPolicyCheck:
             reason = "observed wired client on the port, no modeled bridge peer"
             return (
                 Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.blocking_risk", severity=Severity.ERROR, confidence=_HIGH,
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.blocking_risk",
+                    severity=Severity.ERROR,
+                    confidence=_HIGH,
                     message=f"port {pid}: stp_required enabled — {n_wired} observed wired "
-                            f"client(s), no modeled bridge peer to send BPDUs",
-                    affected_entities=(pid,), subject=port_ref,
+                    f"client(s), no modeled bridge peer to send BPDUs",
+                    affected_entities=(pid,),
+                    subject=port_ref,
                     evidence={
-                        "port": pid, "peer": None, "peer_kind": "client",
+                        "port": pid,
+                        "peer": None,
+                        "peer_kind": "client",
                         "tie_provenance": "observed",
-                        "occupants_behind": {"member_ports": 0, "clients": n_wired,
-                                              "wlan_aps": 0},
+                        "occupants_behind": {"member_ports": 0, "clients": n_wired, "wlan_aps": 0},
                         "severity_reason": reason,
                     },
                     caused_by=ctx.delta_index.causes("port", [pid]),
@@ -563,19 +585,24 @@ class StpPolicyCheck:
                 "modeled peer port has bpdu_filter set, two-sided tie — the peer "
                 "drops BPDUs entirely"
                 if conf.level is ConfidenceLevel.HIGH
-                else "modeled bpdu_filter peer, one-sided tie — weaker evidence caps "
-                     "at WARNING"
+                else "modeled bpdu_filter peer, one-sided tie — weaker evidence caps at WARNING"
             )
             return (
                 Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.blocking_risk", severity=severity, confidence=conf,
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.blocking_risk",
+                    severity=severity,
+                    confidence=conf,
                     message=f"port {pid}: stp_required enabled — peer port "
-                            f"{peer_port.id} has bpdu_filter set and will not "
-                            f"forward BPDUs",
-                    affected_entities=(pid, peer_port.id), subject=port_ref,
+                    f"{peer_port.id} has bpdu_filter set and will not "
+                    f"forward BPDUs",
+                    affected_entities=(pid, peer_port.id),
+                    subject=port_ref,
                     evidence={
-                        "port": pid, "peer": peer_port.id, "peer_kind": "bpdu_filter",
+                        "port": pid,
+                        "peer": peer_port.id,
+                        "peer_kind": "bpdu_filter",
                         "tie_provenance": lk.meta.provenance.value,
                         "occupants_behind": _occupants_behind(
                             occupants_ir(peer_port.device_id), peer_port.device_id
@@ -591,12 +618,13 @@ class StpPolicyCheck:
         # through to the .policy_change floor, plus a coverage note.
         return (
             None,
-            f"stp_required enabled on {pid}: peer unobserved — blocking outcome "
-            f"not assessable",
+            f"stp_required enabled on {pid}: peer unobserved — blocking outcome not assessable",
         )
 
     def _root_protect_risk(
-        self, ctx: CheckContext, pid: str,
+        self,
+        ctx: CheckContext,
+        pid: str,
     ) -> tuple[Finding | None, str | None]:
         """Classify a port whose stp_no_root_port just went True: is it the
         device's ONLY graph path to the component's elected root? Election
@@ -645,7 +673,9 @@ class StpPolicyCheck:
         port_ref = ObjectRef("port", pid)
         reason = "port is the observed root port"
         evidence = {
-            "port": pid, "observed_role": "root", "election_confidence": "observed",
+            "port": pid,
+            "observed_role": "root",
+            "election_confidence": "observed",
             "severity_reason": reason,
         }
         if graph_finding is not None:
@@ -656,13 +686,16 @@ class StpPolicyCheck:
             affected = tuple(dict.fromkeys((*graph_finding.affected_entities, pid)))
             return (
                 Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.root_protect_risk", severity=Severity.ERROR,
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.root_protect_risk",
+                    severity=Severity.ERROR,
                     confidence=_HIGH,
                     message=f"port {pid}: stp_no_root_port enabled — this port is the "
-                            f"OBSERVED root port; it can never accept its root port and "
-                            f"the device will black-hole toward the root",
-                    affected_entities=affected, subject=port_ref,
+                    f"OBSERVED root port; it can never accept its root port and "
+                    f"the device will black-hole toward the root",
+                    affected_entities=affected,
+                    subject=port_ref,
                     evidence=evidence,
                     caused_by=ctx.delta_index.causes("port", [pid]),
                 ),
@@ -671,13 +704,16 @@ class StpPolicyCheck:
 
         return (
             Finding(
-                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                code=f"{self.id}.root_protect_risk", severity=Severity.ERROR,
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk",
+                severity=Severity.ERROR,
                 confidence=_HIGH,
                 message=f"port {pid}: stp_no_root_port enabled — this port is the "
-                        f"OBSERVED root port; it can never accept its root port and "
-                        f"the device will black-hole toward the root",
-                affected_entities=(pid,), subject=port_ref,
+                f"OBSERVED root port; it can never accept its root port and "
+                f"the device will black-hole toward the root",
+                affected_entities=(pid,),
+                subject=port_ref,
                 evidence={"port": pid, **evidence},
                 caused_by=ctx.delta_index.causes("port", [pid]),
             ),
@@ -685,7 +721,9 @@ class StpPolicyCheck:
         )
 
     def _root_protect_graph_route(
-        self, ctx: CheckContext, pid: str,
+        self,
+        ctx: CheckContext,
+        pid: str,
     ) -> tuple[Finding | None, str | None]:
         """The pre-Task-3 graph-election-based route, unchanged: is this port
         the device's ONLY graph path to the component's elected root? Split
@@ -763,14 +801,20 @@ class StpPolicyCheck:
             )
         return (
             Finding(
-                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                code=f"{self.id}.root_protect_risk", severity=severity, confidence=confidence,
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk",
+                severity=severity,
+                confidence=confidence,
                 message=f"port {pid}: stp_no_root_port enabled — this is the device's "
-                        f"only path to the elected root {root_id}; the port can never "
-                        f"become root port and the device may black-hole toward the root",
-                affected_entities=(pid, root_id), subject=port_ref,
+                f"only path to the elected root {root_id}; the port can never "
+                f"become root port and the device may black-hole toward the root",
+                affected_entities=(pid, root_id),
+                subject=port_ref,
                 evidence={
-                    "port": pid, "elected_root": root_id, "only_path": True,
+                    "port": pid,
+                    "elected_root": root_id,
+                    "only_path": True,
                     "election_confidence": confidence_label,
                     "severity_reason": reason,
                 },
@@ -780,7 +824,9 @@ class StpPolicyCheck:
         )
 
     def _root_protect_unprovable(
-        self, ctx: CheckContext, pid: str,
+        self,
+        ctx: CheckContext,
+        pid: str,
     ) -> tuple[Finding | None, str | None]:
         """Finding 2: _root_of ABSTAINED (_ABSTAIN -- an uninterpretable
         stp_priority is present in the component), so there is no candidate
@@ -804,15 +850,20 @@ class StpPolicyCheck:
         )
         return (
             Finding(
-                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                code=f"{self.id}.root_protect_risk", severity=Severity.WARNING,
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.root_protect_risk",
+                severity=Severity.WARNING,
                 confidence=_UNPROVABLE_ELECTION,
                 message=f"port {pid}: stp_no_root_port enabled — the component's root "
-                        f"election is not provable (uninterpretable priority present); "
-                        f"root-protect risk assessed at reduced confidence",
-                affected_entities=(pid,), subject=port_ref,
+                f"election is not provable (uninterpretable priority present); "
+                f"root-protect risk assessed at reduced confidence",
+                affected_entities=(pid,),
+                subject=port_ref,
                 evidence={
-                    "port": pid, "elected_root": None, "only_path": None,
+                    "port": pid,
+                    "elected_root": None,
+                    "only_path": None,
                     "election_confidence": "unprovable",
                     "severity_reason": reason,
                 },
@@ -850,66 +901,76 @@ class StpPolicyCheck:
             # If not, the link is entirely irrelevant to this run -- no
             # finding, not even a pre-existing-mismatch INFO one.
             link_touched = (
-                base_pa is None or base_pb is None
+                base_pa is None
+                or base_pb is None
                 or _changed_knobs(base_pa.stp_policy, pa.stp_policy)
                 or _changed_knobs(base_pb.stp_policy, pb.stp_policy)
             )
             if not link_touched:
                 continue
             for knob in _LINK_MISMATCH_KNOBS:
-                a_new, b_new = _effective_knob(pa.stp_policy, knob), _effective_knob(
-                    pb.stp_policy, knob
+                a_new, b_new = (
+                    _effective_knob(pa.stp_policy, knob),
+                    _effective_knob(pb.stp_policy, knob),
                 )
                 if _is_unresolved(a_new) or _is_unresolved(b_new):
                     continue  # token end -> floor path, never a mismatch claim
                 if a_new == b_new:
                     continue  # both ends agree in the proposed state
                 changed_here = (
-                    base_pa is None or base_pb is None
+                    base_pa is None
+                    or base_pb is None
                     or _effective_knob(base_pa.stp_policy, knob) != a_new
                     or _effective_knob(base_pb.stp_policy, knob) != b_new
                 )
                 conf = _tie_confidence(lnk)
                 observed_modes = {
-                    p.id: p.stp_mode
-                    for p in (pa, pb)
-                    if p.stp_mode is not StpMode.NONE
+                    p.id: p.stp_mode for p in (pa, pb) if p.stp_mode is not StpMode.NONE
                 }
                 evidence = {
-                    "link": lnk.id, "knob": knob,
+                    "link": lnk.id,
+                    "knob": knob,
                     "values": {pa.id: a_new, pb.id: b_new},
                     "observed_modes": observed_modes,
                 }
                 if changed_here:
                     out.append(
                         Finding(
-                            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                            code=f"{self.id}.link_mismatch", severity=Severity.WARNING,
+                            source=FindingSource.CHECK,
+                            category=FindingCategory.NETWORK,
+                            code=f"{self.id}.link_mismatch",
+                            severity=Severity.WARNING,
                             confidence=conf,
                             message=f"link {pa.id} <-> {pb.id}: {knob} disagreement "
-                                    f"({a_new} vs {b_new}) introduced or changed by "
-                                    f"this delta",
-                            affected_entities=(pa.id, pb.id), subject=ObjectRef("link", lnk.id),
+                            f"({a_new} vs {b_new}) introduced or changed by "
+                            f"this delta",
+                            affected_entities=(pa.id, pb.id),
+                            subject=ObjectRef("link", lnk.id),
                             evidence=evidence,
                             caused_by=tuple(
-                                c for c in (
+                                c
+                                for c in (
                                     ctx.delta_index.cause("port", pa.id),
                                     ctx.delta_index.cause("port", pb.id),
                                     ctx.delta_index.cause("link", lnk.id),
-                                ) if c is not None
+                                )
+                                if c is not None
                             ),
                         )
                     )
                 else:
                     out.append(
                         Finding(
-                            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                            code=f"{self.id}.link_mismatch", severity=Severity.INFO,
+                            source=FindingSource.CHECK,
+                            category=FindingCategory.NETWORK,
+                            code=f"{self.id}.link_mismatch",
+                            severity=Severity.INFO,
                             confidence=conf,
                             message=f"link {pa.id} <-> {pb.id}: pre-existing {knob} "
-                                    f"disagreement ({a_new} vs {b_new}), unchanged by "
-                                    f"this delta (context)",
-                            affected_entities=(pa.id, pb.id), subject=ObjectRef("link", lnk.id),
+                            f"disagreement ({a_new} vs {b_new}), unchanged by "
+                            f"this delta (context)",
+                            affected_entities=(pa.id, pb.id),
+                            subject=ObjectRef("link", lnk.id),
                             evidence=evidence,
                             caused_by=(),
                         )

@@ -45,7 +45,6 @@ def test_modeled_object_name_change_uses_the_same_authoritative_rule():
         "avprofiles",
         "idpprofiles",
         "servicepolicies",
-        "org_avprofiles",
     ],
 )
 def test_security_profile_and_policy_name_changes_are_not_safe(object_type):

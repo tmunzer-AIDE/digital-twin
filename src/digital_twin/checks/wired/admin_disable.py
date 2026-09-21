@@ -137,7 +137,9 @@ class AdminDisableCheck:
         port_ref = ObjectRef("port", pid)
         if base_port is None:
             return (
-                Severity.INFO, _HIGH, "wired.port.admin_disable.unattributable",
+                Severity.INFO,
+                _HIGH,
+                "wired.port.admin_disable.unattributable",
                 f"port {pid} administratively disabled — no baseline state, blast radius unknown",
                 port_ref,
             )
@@ -148,7 +150,8 @@ class AdminDisableCheck:
             high = conf.level is ConfidenceLevel.HIGH
             n = len(ap_clients.get(ap_id, []))
             return (
-                Severity.ERROR if high else Severity.WARNING, conf,
+                Severity.ERROR if high else Severity.WARNING,
+                conf,
                 "wired.port.admin_disable.impact",
                 f"port {pid} administratively disabled — AP {ap_id} ({n} observed "
                 "wireless client(s)) loses its uplink",
@@ -157,7 +160,9 @@ class AdminDisableCheck:
         n_wired = len(wired.get(pid, []))
         if n_wired:
             return (
-                Severity.WARNING, _HIGH, "wired.port.admin_disable.impact",
+                Severity.WARNING,
+                _HIGH,
+                "wired.port.admin_disable.impact",
                 f"port {pid} administratively disabled — {n_wired} active wired client(s) "
                 "disconnect",
                 port_ref,
@@ -167,7 +172,9 @@ class AdminDisableCheck:
             # a modeled inter-switch / gateway link: confidence is the LINK's
             # (a one-sided LLDP peer is weaker than a two-sided one)
             return (
-                Severity.WARNING, peer_lk.meta.confidence, "wired.port.admin_disable.impact",
+                Severity.WARNING,
+                peer_lk.meta.confidence,
+                "wired.port.admin_disable.impact",
                 f"port {pid} administratively disabled — an inter-switch / gateway link goes down",
                 port_ref,
             )
@@ -176,19 +183,25 @@ class AdminDisableCheck:
                 # POSITIVE evidence it is not an uplink and has no modeled peer/AP/
                 # client -> a configured-but-unconnected trunk, no impact (INFO).
                 return (
-                    Severity.INFO, _HIGH, "wired.port.admin_disable.edge",
+                    Severity.INFO,
+                    _HIGH,
+                    "wired.port.admin_disable.edge",
                     f"port {pid} administratively disabled — trunk port with no modeled "
                     "uplink or downstream, no impact",
                     port_ref,
                 )
             # is_uplink True (faces the core) OR None (unknown) -> conservative WARNING
             return (
-                Severity.WARNING, _HIGH, "wired.port.admin_disable.impact",
+                Severity.WARNING,
+                _HIGH,
+                "wired.port.admin_disable.impact",
                 f"port {pid} administratively disabled — a trunk link goes down",
                 port_ref,
             )
         return (
-            Severity.INFO, _HIGH, "wired.port.admin_disable.edge",
+            Severity.INFO,
+            _HIGH,
+            "wired.port.admin_disable.edge",
             f"port {pid} administratively disabled — edge port, no downstream impact modeled",
             port_ref,
         )

@@ -8,6 +8,20 @@
     "apply_to": { "type": "string", "enum": ["site", "aps", "wxtags"] },
     "ap_ids": { "type": "array", "items": { "type": "string" } },
     "wxtag_ids": { "type": "array", "items": { "type": "string" } },
+    "vlan_enabled": { "type": "boolean" },
+    "vlan_id": { "type": ["integer", "string"] },
+    "vlan_ids": {
+      "type": "array",
+      "items": { "type": ["integer", "string"] }
+    },
+    "interface": { "type": "string" },
+    "dynamic_vlan": {
+      "type": "object",
+      "properties": {
+        "default_vlan_id": { "type": ["integer", "string"] },
+        "vlans": { "type": "object" }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": { "type": { "type": "string" } }

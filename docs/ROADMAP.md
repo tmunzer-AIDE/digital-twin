@@ -14,6 +14,23 @@ test suite share one numbering.
 These are the gaps that made real changes resolve to REVIEW/MEDIUM instead of a
 sharp UNSAFE during live testing on the Live-Demo site.
 
+- 🟡 **Mist change-detection rule program** — active. The agreed deterministic
+  rule backlog, verdict contracts, exclusions, evidence prerequisites, and common
+  acceptance matrix live in
+  `docs/superpowers/specs/2026-09-20-change-detection-rule-program-design.md`.
+  First slice: `scope.effective_noop.{fully_overridden,partially_overridden}`
+  reports lower-layer changes masked by higher-precedence device configuration;
+  both outcomes require REVIEW because the requested change will not take effect
+  on all intended devices. Device-profile and gateway-profile compilation are the
+  next inheritance prerequisites.
+  P0 and P1 are implemented (2026-09-20): authenticator presence, NAC access
+  impact, WAN redundancy, BGP prefix delta, referenced-update impact, batch
+  integrity, DHCP capacity, static-route reachability, VRF membership leakage,
+  service-policy semantics, LAG redundancy, control-plane default-route loss,
+  RF coverage-sensitive template changes, and storm-control policy. Rules that
+  need unavailable live RIB, traffic-rate, AP-placement, or client-radio evidence
+  deliberately retain partial coverage and a REVIEW floor.
+
 - 🔵 **wxtag WLAN scoping** (GS20) — resolve which APs a `apply_to: wxtags` WLAN
   applies to (evaluate wxtag membership against AP model/name/etc.). Today these
   WLANs are recorded `unresolved` → REVIEW. This is the last unmodeled piece of
@@ -179,20 +196,19 @@ The WLAN client-impact checks are separate delta-conditioned impact checks: they
 are not single-state config lint. Remaining WLAN-template debt is update /
 assignment simulation and NAC/role-profile interactions.
 
-- 🔵 **WLAN auth-type transition (psk/eap → open) → sharp GS33** — the twin
-  models only `auth.type`, but Mist replaces the whole `auth` ROOT, so a
-  psk/eap→open edit drops companion `auth.{psk,…}` leaves. The field gate
-  rejects those deletions as out-of-scope → the op floors to UNKNOWN before
-  `wireless.wlan.open_guest` (GS33) can fire — exactly the transition it targets.
-  Never false-SAFE (UNKNOWN is conservative), just blunt. Pinned by
-  `tests/scope/test_wlan_object.py::test_auth_root_replace_currently_out_of_scope`.
-  Fix = a deliberate auth-leaf policy in the field gate: when `auth.type` is
-  among the changed leaves on a `wlan` op, ignore companion `auth.*` secret/
-  unmodeled churn so GS33 runs; a pure auth change with no type change stays
-  UNKNOWN. (Decide the psk→eap-reads-SAFE edge before building.)
+- ✅ **WLAN secured-to-open auth transition** — done 2026-09-20.
+  `wireless.wlan.auth_transition` narrowly admits the companion secret deletion
+  caused by Mist's whole-`auth`-root replacement only when a modeled secured
+  WLAN becomes open; arbitrary secret edits remain out of scope. The existing
+  seven-day WLAN-session query escalates a recently used WLAN to ERROR/UNSAFE;
+  a clean unused downgrade is WARNING/REVIEW, and missing usage telemetry is
+  partial-coverage REVIEW. `wireless.wlan.open_guest` remains the stronger
+  independent finding when isolation is absent. Other auth transitions remain
+  conservative until their companion semantics and authenticator dependencies
+  are modeled.
 
-- 🔵 **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`,
-  proposed) — on a switch's effective config, if **at least one ASSIGNED port profile
+- ✅ **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`)
+  — done 2026-09-20. On a switch's effective config, if **at least one ASSIGNED port profile
   uses 802.1X and/or MAC-auth (MAB)**, then **at least one RADIUS server OR Mist NAC
   must be configured**; otherwise authenticating clients are denied/dropped (no
   authenticator to reach). Single-state config-lint over the PROPOSED IR, **delta-
@@ -202,12 +218,38 @@ assignment simulation and NAC/role-profile interactions.
   a dot1x/MAB profile that no port uses must NOT fire (mirrors GS33's explicit-empty-scope
   rule). Coverage note (PARTIAL → REVIEW, never false-SAFE) when the auth mode or the
   RADIUS/NAC presence is unresolved (templated `{{var}}` server list / unparseable
-  profile). **Modeling gap to close first:** the IR does not yet carry port-profile auth
-  mode (dot1x / `enable_mac_auth`) nor the switch's authenticator config (site/template
-  `radius_config`/`auth_servers` + Mist-NAC enablement) — both need ingest + allowlist
-  leaves (secret-free: RADIUS shared secrets stay denied/redacted, presence-only). Severity
-  is REVIEW (config-certain misconfig, client-impact unconfirmed without observed auth
-  telemetry); a future telemetry layer (failed-auth events) could escalate.
+  profile). The IR now carries secret-free authenticator presence from effective
+  `radius_config.auth_servers` and `mist_nac.enabled`; shared secrets never enter the
+  IR. Severity is REVIEW (config-certain misconfig, client-impact unconfirmed without
+  observed auth telemetry); a future failed-auth telemetry layer could escalate.
+
+- ✅ **NAC rule access impact V1** (`nac.rule.access_impact`) — done 2026-09-20.
+  Updates and deletes are joined to the existing seven-day NAC-rule match query.
+  Removing, disabling, or changing a recently used allow rule to block is
+  ERROR/UNSAFE; other semantic changes to a used rule are WARNING/REVIEW; missing
+  telemetry is partial REVIEW. Attribute replay and fall-through comparison remain V2.
+
+- ✅ **Gateway WAN redundancy V1** (`gateway.wan.redundancy`) — done 2026-09-20.
+  Effective gateway `usage=wan` ports and admin state identify configured paths.
+  Removing a redundant path is REVIEW and removing the last path is UNSAFE. Health,
+  VPN-use, preference, and bandwidth telemetry are not modeled, so additions and
+  reductions retain explicit partial coverage.
+
+- ✅ **BGP prefix delta V1** (`routing.bgp.prefix_delta`) — done 2026-09-20.
+  Literal CIDRs in BGP export selectors are normalized and compared for additions,
+  withdrawals, and overlaps. A sole withdrawal escalates only for a baseline
+  ESTABLISHED peer. Named policies and VRF placement are retained as partial coverage.
+
+- ✅ **Referenced update impact V1** (`config.referenced_update_impact`) — done
+  2026-09-20. Exact dependent objects and paths are expanded for relationship-sensitive
+  profiles, services, policies, VPNs, RF templates, and security profiles. Complete
+  dependent bodies are not returned by the provider yet, so effective recompilation
+  remains explicit partial coverage.
+
+- ✅ **Batch integrity V1** (`config.batch_integrity`) — done 2026-09-20.
+  Duplicate final mutations are rejected, create/update references are checked against
+  objects deleted in the same batch, and known inbound references are evaluated against
+  the final rolling plan so a companion update/delete can repair the dependency.
 
 ### Routing & services tier (needs the L3/routing IR extension)
 

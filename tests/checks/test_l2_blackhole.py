@@ -5,12 +5,12 @@ INSUFFICIENT_DATA for that vlan (never PASS); pre-existing strands = context."""
 from dataclasses import replace
 
 from digital_twin.analysis.context import AnalysisContext
-from digital_twin.checks.base import CheckContext, Status
+from digital_twin.checks.base import CheckContext, CoverageState, Status
 from digital_twin.checks.wired.l2_blackhole import L2BlackholeCheck
 from digital_twin.contracts import ObjectRef, Severity
-from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, diff_ir
+from digital_twin.ir import ConfidenceLevel, IRBuilder, IRCapability, Vlan, Wlan, diff_ir
 from digital_twin.verdict.decision import Decision, DecisionInputs, decide
-from tests.factories import access_port, irb, link, sw, trunk_port
+from tests.factories import access_port, ap, irb, link, sw, trunk_port
 
 
 def _ir(*, connected: bool, with_irb: bool = True, with_member: bool = True):
@@ -122,6 +122,173 @@ def test_newly_added_member_on_isolated_switch_fails():
     result = L2BlackholeCheck().run(_ctx(base, prop))
     assert result.status is Status.FAIL
     assert any(f.code == "wired.l2.blackhole.new_member_stranded" for f in result.findings)
+
+
+def test_new_wlan_vlan_missing_from_ap_uplink_is_error():
+    """A WLAN-only delta must run the L2 check even when vlan 20 already exists.
+
+    The AP is physically disconnected from the switch that owns the HIGH-confidence
+    IRB exit, so requiring vlan 20 on that AP creates a deterministic blackhole.
+    """
+    def site(with_wlan: bool):
+        b = IRBuilder()
+        b.add_device(ap("AP1")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=20, name="guest", scope="s1"))
+        b.add_l3intf(irb("CORE", 20))
+        if with_wlan:
+            b.add_wlan(Wlan(
+                id="w-new", ssid="guest", enabled=True, apply_to="site"
+            ))
+            b.require_ap_vlans("AP1", frozenset({20}))
+        b.with_capability(IRCapability.WIRED_L2)
+        b.with_capability(IRCapability.L3_EXITS)
+        b.with_capability(IRCapability.WLAN_CONFIG)
+        return b.build()
+
+    ctx = _ctx(site(False), site(True))
+    check = L2BlackholeCheck()
+    assert check.applies_to(ctx.diff)
+    result = check.run(ctx)
+    finding = next(f for f in result.findings if f.code.endswith("new_member_stranded"))
+    assert result.status is Status.FAIL
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert finding.severity is Severity.ERROR
+    assert finding.evidence["new_wlan_members"] == ["AP1"]
+
+
+def test_new_wlan_vlan_path_is_safe_without_client_telemetry():
+    """Config-derived WLAN membership is enough to prove AP-to-IRB continuity."""
+    def site(with_wlan: bool):
+        b = IRBuilder()
+        b.add_device(ap("AP1")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=20, name="guest", scope="s1"))
+        b.add_port(trunk_port("AP1", "eth0", tagged=(20,)))
+        b.add_port(trunk_port("CORE", "to-ap", tagged=(20,)))
+        b.add_link(link("AP1:eth0", "CORE:to-ap"))
+        b.add_l3intf(irb("CORE", 20))
+        if with_wlan:
+            b.add_wlan(Wlan(
+                id="w-new", ssid="guest", enabled=True, apply_to="site"
+            ))
+            b.require_ap_vlans("AP1", frozenset({20}))
+        for capability in (
+            IRCapability.WIRED_L2,
+            IRCapability.L3_EXITS,
+            IRCapability.WLAN_CONFIG,
+        ):
+            b.with_capability(capability)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(False), site(True)))
+
+    assert result.status is Status.PASS
+    assert result.coverage.state is CoverageState.COMPLETE
+    assert result.confidence is not None
+    assert result.confidence.level is ConfidenceLevel.HIGH
+    decision, _ = decide(DecisionInputs(
+        rejections=(),
+        l0_fatal=False,
+        baseline_unavailable=False,
+        check_results=(result,),
+    ))
+    assert decision is Decision.SAFE
+
+
+def test_new_unresolved_wlan_membership_still_requires_review():
+    """Removing the client floor must not turn unknown AP targeting into SAFE."""
+    def site(with_unresolved_wlan: bool):
+        b = IRBuilder()
+        b.add_device(ap("AP1")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=20, name="guest", scope="s1"))
+        b.add_port(trunk_port("AP1", "eth0", tagged=(20,)))
+        b.add_port(trunk_port("CORE", "to-ap", tagged=(20,)))
+        b.add_link(link("AP1:eth0", "CORE:to-ap"))
+        b.add_l3intf(irb("CORE", 20))
+        if with_unresolved_wlan:
+            b.add_wlan(Wlan(
+                id="w-new", ssid="guest", enabled=True, apply_to="wxtags"
+            ))
+            b.mark_ap_wlan_unresolved(
+                "AP1", ("WLAN 'guest' is scoped by wxtag — AP membership not modelled",)
+            )
+        for capability in (
+            IRCapability.WIRED_L2,
+            IRCapability.L3_EXITS,
+            IRCapability.WLAN_CONFIG,
+        ):
+            b.with_capability(capability)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(False), site(True)))
+
+    assert result.status is Status.PASS
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("cannot be resolved" in note for note in result.coverage.notes)
+    decision, _ = decide(DecisionInputs(
+        rejections=(),
+        l0_fatal=False,
+        baseline_unavailable=False,
+        check_results=(result,),
+    ))
+    assert decision is Decision.REVIEW
+
+
+def test_preexisting_unresolved_wlan_ignores_additive_vlan_delivery():
+    """Adding an unrelated VLAN cannot degrade an unresolved existing WLAN."""
+    def site(with_added_vlan: bool):
+        b = IRBuilder()
+        b.add_device(ap("AP1")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=10, name="existing", scope="s1"))
+        b.add_port(trunk_port("AP1", "eth0", tagged=((10, 20) if with_added_vlan else (10,))))
+        b.add_port(trunk_port("CORE", "to-ap", tagged=((10, 20) if with_added_vlan else (10,))))
+        b.add_link(link("AP1:eth0", "CORE:to-ap"))
+        b.add_l3intf(irb("CORE", 10))
+        if with_added_vlan:
+            b.add_vlan(Vlan(vlan_id=20, name="new", scope="s1"))
+            b.add_l3intf(irb("CORE", 20))
+        b.mark_ap_wlan_unresolved(
+            "AP1", ("WLAN 'existing' has a partly-unresolvable vlan source",)
+        )
+        for capability in (
+            IRCapability.WIRED_L2,
+            IRCapability.L3_EXITS,
+            IRCapability.WLAN_CONFIG,
+        ):
+            b.with_capability(capability)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(False), site(True)))
+
+    assert result.status is Status.PASS
+    assert result.coverage.state is CoverageState.COMPLETE
+
+
+def test_preexisting_unresolved_wlan_marks_lost_delivery_partial():
+    """Removing VLAN delivery still exposes an unresolved-WLAN blind spot."""
+    def site(delivers_vlan: bool):
+        b = IRBuilder()
+        b.add_device(ap("AP1")).add_device(sw("CORE"))
+        b.add_vlan(Vlan(vlan_id=10, name="existing", scope="s1"))
+        tagged = (10,) if delivers_vlan else ()
+        b.add_port(trunk_port("AP1", "eth0", tagged=tagged))
+        b.add_port(trunk_port("CORE", "to-ap", tagged=tagged))
+        b.add_link(link("AP1:eth0", "CORE:to-ap"))
+        b.add_l3intf(irb("CORE", 10))
+        b.mark_ap_wlan_unresolved(
+            "AP1", ("WLAN 'existing' has a partly-unresolvable vlan source",)
+        )
+        for capability in (
+            IRCapability.WIRED_L2,
+            IRCapability.L3_EXITS,
+            IRCapability.WLAN_CONFIG,
+        ):
+            b.with_capability(capability)
+        return b.build()
+
+    result = L2BlackholeCheck().run(_ctx(site(True), site(False)))
+
+    assert result.coverage.state is CoverageState.PARTIAL
+    assert any("lost VLAN delivery" in note for note in result.coverage.notes)
 
 
 def test_new_member_port_on_already_stranded_node_fails():

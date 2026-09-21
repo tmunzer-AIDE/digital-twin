@@ -105,14 +105,20 @@ def test_org_wlan_assignment_edit_remains_out_of_scope():
     assert any("site_ids" in reason for reason in r.reasons)
 
 
-def test_auth_root_replace_currently_out_of_scope():
-    # PINS CURRENT (conservative) BEHAVIOR — see ROADMAP "WLAN auth-type transition".
-    # The twin models only auth.type, but Mist replaces the whole `auth` ROOT, so a
-    # psk->open transition drops the companion auth.psk leaf. The field gate rejects
-    # that deletion as out-of-scope -> the op floors to UNKNOWN before GS33 can warn.
-    # This is never false-SAFE (UNKNOWN is conservative); the deferred follow-up would
-    # make this transition a sharp GS33 REVIEW instead.
+def test_secure_to_open_auth_root_replace_ignores_removed_secret_companion():
+    # The modeled secure -> open transition necessarily replaces the auth root and
+    # drops its secret companion. The transition rule owns that consequence.
     psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
            "isolation": False, "auth": {"type": "psk", "psk": "secret"}}
     r = screen_op("wlan", psk, effective_update(psk, {"auth": {"type": "open"}}))
+    assert r is None
+
+
+def test_auth_secret_change_without_secure_to_open_transition_remains_out_of_scope():
+    psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
+           "isolation": False, "auth": {"type": "psk", "psk": "old"}}
+    r = screen_op(
+        "wlan", psk,
+        effective_update(psk, {"auth": {"type": "psk", "psk": "new"}}),
+    )
     assert isinstance(r, Rejection) and any("auth.psk" in x for x in r.reasons)

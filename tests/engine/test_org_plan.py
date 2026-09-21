@@ -30,6 +30,7 @@ from digital_twin.providers.base import (
     RawSiteState,
     SiteScope,
     StateMeta,
+    WlanUsageContext,
 )
 from digital_twin.verdict.decision import Decision
 
@@ -235,6 +236,14 @@ class FakeProvider:
     def fetch_site(self, scope: Any, *, include_derived: bool = False) -> RawSiteState:
         raise NotImplementedError  # org path never calls the single-site fetch
 
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+        return WlanUsageContext((), ("*",), (), window_days)
+
+
+class RecentWlanUsageProvider(FakeProvider):
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+        return WlanUsageContext(("s1",), ("s1",), (), window_days)
+
 
 def _plan(*ops: dict[str, Any], org_id: str = "o1") -> dict[str, Any]:
     return {"source": "mist", "scope": {"org_id": org_id}, "ops": list(ops)}
@@ -249,6 +258,13 @@ def _upd(
     object_type: str, object_id: str, payload: dict[str, Any], order: int = 0
 ) -> dict[str, Any]:
     return {"action": "update", "order": order, "object_type": object_type,
+            "object_id": object_id, "payload": payload}
+
+
+def _create(
+    object_type: str, object_id: str, payload: dict[str, Any], order: int = 0
+) -> dict[str, Any]:
+    return {"action": "create", "order": order, "object_type": object_type,
             "object_id": object_id, "payload": payload}
 
 
@@ -339,6 +355,56 @@ def test_zero_site_delete_is_safe_with_change_named():
     assert any("no assigned sites" in r for r in ov.decision_reasons)
 
 
+def test_gatewaytemplate_disabling_last_wan_path_is_unsafe():
+    gateway = {
+        "mac": "ee0000000001",
+        "id": "gw-1",
+        "type": "gateway",
+        "model": "SSR",
+        "name": "branch-gw",
+    }
+    template = {
+        "port_config": {
+            "wan0": {"usage": "wan"},
+            "wan1": {"usage": "wan"},
+        }
+    }
+    site = RawSiteState(
+        scope=SiteScope("o1", "s1"),
+        site={"id": "s1"},
+        setting={},
+        networktemplate=None,
+        sitetemplate=None,
+        devices=(gateway,),
+        device_stats=(),
+        port_stats=(),
+        wireless_clients=(),
+        wired_clients=(),
+        derived_setting=None,
+        meta=_wlan_meta(),
+        gatewaytemplate=template,
+    )
+    provider = FakeProvider(
+        {"s1": site},
+        {"gatewaytemplate": {"gt1": (template, ["s1"])}},
+    )
+    proposed_ports = {
+        "wan0": {"usage": "wan", "disabled": True},
+        "wan1": {"usage": "wan", "disabled": True},
+    }
+
+    verdict = simulate_org_plan(
+        _plan(_upd("gatewaytemplate", "gt1", {"port_config": proposed_ports})),
+        provider=provider,
+    )
+
+    assert verdict.decision is Decision.UNSAFE, verdict.decision_reasons
+    assert any(
+        finding.code == "gateway.wan.redundancy.last_path_removed"
+        for finding in verdict.per_site["s1"].findings
+    )
+
+
 # --- org WLAN coverage loss ----------------------------------------------
 
 def _org_wlan_provider(
@@ -358,6 +424,65 @@ def _org_wlan_provider(
 
 def _has_wlan_coverage_loss(verdict: Any) -> bool:
     return any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in verdict.findings)
+
+
+def test_org_wlan_create_unique_ssid_is_safe_across_sites():
+    provider = FakeProvider({
+        "s1": _wlan_site("s1", wlans=(_wlan_row("w1", ssid="corp"),)),
+        "s2": _wlan_site("s2", wlans=(_wlan_row("w2", ssid="staff"),)),
+    }, {})
+    ov = simulate_org_plan(_plan(_create("wlan", "new", {
+        "ssid": "guest", "enabled": True, "apply_to": "site",
+    })), provider=provider)
+
+    assert ov.decision is Decision.SAFE, ov.decision_reasons
+    assert set(ov.per_site) == {"s1", "s2"}
+    assert ov.config_diffs[0].action == "create"
+
+
+def test_org_wlan_create_duplicate_ssid_on_one_site_is_unsafe():
+    provider = FakeProvider({
+        "s1": _wlan_site("s1", wlans=(_wlan_row("w1", ssid="guest"),)),
+        "s2": _wlan_site("s2", wlans=(_wlan_row("w2", ssid="staff"),)),
+    }, {})
+    ov = simulate_org_plan(_plan(_create("wlan", "new", {
+        "ssid": "guest", "enabled": True, "apply_to": "site",
+    })), provider=provider)
+
+    assert ov.decision is Decision.UNSAFE
+    assert ov.driving_sites == ("s1",)
+    assert any(
+        "duplicate_ssid" in finding.code
+        for finding in ov.per_site["s1"].findings
+    )
+
+
+def test_org_wlan_batch_detects_duplicate_created_ssids():
+    provider = FakeProvider({"s1": _wlan_site("s1", wlans=())}, {})
+    ov = simulate_org_plan(_plan(
+        _create("wlan", "new-1", {
+            "ssid": "guest", "enabled": True, "apply_to": "site",
+        }, order=0),
+        _create("wlan", "new-2", {
+            "ssid": "guest", "enabled": True, "apply_to": "site",
+        }, order=1),
+    ), provider=provider)
+
+    assert ov.decision is Decision.UNSAFE
+    conflict = next(
+        finding for finding in ov.per_site["s1"].findings
+        if "duplicate_ssid" in finding.code
+    )
+    assert set(conflict.evidence["wlans"]) == {"new-1", "new-2"}
+
+
+def test_org_wlan_create_requires_discoverable_site_scope():
+    ov = simulate_org_plan(_plan(_create("wlan", "new", {
+        "ssid": "guest", "enabled": True, "apply_to": "site",
+    })), provider=FakeProvider({}, {}))
+
+    assert ov.decision is Decision.UNKNOWN
+    assert any("deployment scope cannot be verified" in reason for reason in ov.decision_reasons)
 
 
 def test_org_wlan_delete_with_active_client_is_unsafe_and_carries_config_diff():
@@ -386,6 +511,31 @@ def test_org_wlan_disable_update_with_active_client_is_unsafe():
 
     assert ov.decision is Decision.UNSAFE
     assert _has_wlan_coverage_loss(ov.per_site["s1"])
+
+
+def test_org_wlan_secure_to_open_with_recent_sessions_is_unsafe():
+    secure = {
+        **_wlan_row(),
+        "isolation": True,
+        "auth": {"type": "psk", "psk": "secret"},
+    }
+    provider = RecentWlanUsageProvider(
+        {"s1": _wlan_site("s1", wlans=(secure,))},
+        {},
+        org_wlans={"w1": secure},
+        wlan_membership={"w1": {"s1": secure}},
+    )
+
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", {"auth": {"type": "open"}})),
+        provider=provider,
+    )
+
+    assert ov.decision is Decision.UNSAFE, ov.decision_reasons
+    assert any(
+        finding.code == "wireless.wlan.auth_transition.recent_usage"
+        for finding in ov.template_findings
+    )
 
 
 def test_org_wlan_noop_update_equal_to_snapshot_is_safe():

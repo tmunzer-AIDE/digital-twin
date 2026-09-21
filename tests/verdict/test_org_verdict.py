@@ -99,3 +99,24 @@ def test_decide_org_floors_warning_template_finding():
     )
     decision, _, _ = decide_org({}, template_findings=(wf,), org_rejections=())
     assert decision is Decision.REVIEW
+
+
+def test_decide_org_floors_network_error_to_unsafe():
+    finding = Finding(
+        source=FindingSource.CHECK,
+        category=FindingCategory.NETWORK,
+        code="wireless.wlan.auth_transition.recent_usage",
+        severity=Severity.ERROR,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message="secured WLAN changed to open after recent client use",
+    )
+
+    decision, reasons, driving = decide_org(
+        {"s1": _verdict(Decision.SAFE)},
+        template_findings=(finding,),
+        org_rejections=(),
+    )
+
+    assert decision is Decision.UNSAFE
+    assert driving == ()
+    assert any("org-level finding" in reason for reason in reasons)

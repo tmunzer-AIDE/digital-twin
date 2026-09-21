@@ -118,7 +118,7 @@ class AuthAccessChangeCheck:
                 category=FindingCategory.NETWORK,
                 code=f"{self.id}.clients_at_risk",
                 severity=Severity.WARNING,  # capped at REVIEW — RADIUS may still admit
-                confidence=_HIGH,           # observed un-auth clients = direct evidence of risk
+                confidence=_HIGH,  # observed un-auth clients = direct evidence of risk
                 message=(
                     f"port {pid}: wired-auth now required; {len(at_risk)} connected client(s) "
                     f"observed un-authenticated may be blocked (RADIUS/NAC outcome not modeled)"

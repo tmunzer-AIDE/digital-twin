@@ -20,7 +20,9 @@ NAME_CHANGE_EXCEPTIONS: frozenset[str] = frozenset(
         "aamwprofiles",
         "avprofiles",
         "idpprofiles",
+        "services",
         "servicepolicies",
+        "vpns",
     }
 )
 

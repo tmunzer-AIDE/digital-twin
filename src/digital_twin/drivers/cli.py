@@ -10,8 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
+from digital_twin.drivers.composite import (
+    needs_composite_evaluation,
+    simulate_composite,
+)
 from digital_twin.drivers.render import (
     org_nac_verdict_to_dict,
     org_verdict_to_dict,
@@ -31,6 +36,9 @@ from digital_twin.observability.replay.store import FixtureProvider, ReplayStore
 from digital_twin.providers.base import (
     FetchError,
     NacFetch,
+    NacRuleUsageContext,
+    ObjectRelationshipContext,
+    OrgNetworksContext,
     OrgScope,
     OrgSiteGroupContext,
     OrgTemplateContext,
@@ -40,6 +48,7 @@ from digital_twin.providers.base import (
     RawSiteState,
     SiteScope,
     StateProvider,
+    WlanUsageContext,
 )
 from digital_twin.scope.allowlist import NAC_OBJECT_TYPES, ORG_OBJECT_TYPES
 from digital_twin.verdict.decision import Decision
@@ -66,11 +75,11 @@ class _RecordingProvider:
     def fetch_sites(
         self,
         scope: OrgScope,
-        site_ids: object = None,
+        site_ids: Sequence[str] | None = None,
         *,
         include_derived: bool = False,
     ) -> dict[str, RawSiteState | FetchError]:
-        return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)  # type: ignore[arg-type]
+        return self._inner.fetch_sites(scope, site_ids, include_derived=include_derived)
 
     def resolve_org_template(
         self, scope: OrgScope, template_id: str, object_type: str
@@ -90,10 +99,32 @@ class _RecordingProvider:
     ) -> OrgSiteGroupContext | FetchError:
         return self._inner.resolve_org_sitegroup(scope, sitegroup_id)
 
+    def resolve_org_networks(
+        self, scope: OrgScope
+    ) -> OrgNetworksContext | FetchError:
+        return self._inner.resolve_org_networks(scope)
+
     def resolve_psk_usage(
         self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
     ) -> PskUsageContext | FetchError:
         return self._inner.resolve_psk_usage(scope, psk_id, window_days=window_days)
+
+    def resolve_object_relationships(
+        self, scope: OrgScope, object_type: str, object_id: str
+    ) -> ObjectRelationshipContext | FetchError:
+        return self._inner.resolve_object_relationships(scope, object_type, object_id)
+
+    def resolve_wlan_usage(
+        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+    ) -> WlanUsageContext | FetchError:
+        return self._inner.resolve_wlan_usage(scope, wlan_id, window_days=window_days)
+
+    def resolve_nacrule_usage(
+        self, scope: OrgScope, nacrule_id: str, *, window_days: int = 7
+    ) -> NacRuleUsageContext | FetchError:
+        return self._inner.resolve_nacrule_usage(
+            scope, nacrule_id, window_days=window_days
+        )
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         return self._inner.resolve_org_nac(scope)
@@ -167,6 +198,20 @@ def main(argv: list[str] | None = None) -> int:
         provider = MistApiProvider()
     recording = _RecordingProvider(provider)
 
+    if needs_composite_evaluation(plan_data):
+        document = simulate_composite(
+            plan_data,
+            provider=recording,
+            run=run,
+            l0_full_object=args.l0_full_object,
+        )
+        print(
+            json.dumps(document, indent=1)
+            if args.json
+            else _render_composite_human(document)
+        )
+        return EXIT_CODES[Decision(str(document["decision"]))]
+
     if _is_org_nac_plan(plan_data):
         nac_verdict = simulate_org_nac(
             plan_data, provider=recording, run=run, l0_full_object=args.l0_full_object)
@@ -207,3 +252,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def script() -> None:
     raise SystemExit(main())
+
+
+def _render_composite_human(document: dict[str, object]) -> str:
+    lines = [f"batch decision: {str(document.get('decision', 'unknown')).upper()}"]
+    reasons = document.get("decision_reasons", [])
+    if isinstance(reasons, list):
+        lines.extend(f"  reason: {reason}" for reason in reasons[:20])
+    return "\n".join(lines)

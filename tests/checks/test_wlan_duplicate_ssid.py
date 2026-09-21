@@ -24,7 +24,8 @@ def test_two_site_scoped_same_ssid_introduced_warns():
     prop = _ir(Wlan(id="w1", ssid="corp", enabled=True, apply_to="site"),
                Wlan(id="w2", ssid="corp", enabled=True, apply_to="site"))
     res = WlanDuplicateSsidCheck().run(_ctx(base, prop))
-    assert res.status is Status.WARN and res.findings[0].code.endswith(".introduced")
+    assert res.status is Status.FAIL and res.findings[0].code.endswith(".introduced")
+    assert res.findings[0].severity is Severity.ERROR
 
 
 def test_disabled_duplicate_not_flagged():
@@ -47,10 +48,10 @@ def test_site_and_explicit_ap_scope_overlap_warns():
     prop = _ir(Wlan(id="w1", ssid="corp", enabled=True, apply_to="site"),
                Wlan(id="w2", ssid="corp", enabled=True, apply_to="aps", ap_ids=("ap1",)))
     res = WlanDuplicateSsidCheck().run(_ctx(base, prop))
-    assert res.status is Status.WARN
+    assert res.status is Status.FAIL
     f = res.findings[0]
     assert f.code == "wireless.wlan.duplicate_ssid.introduced"
-    assert f.severity is Severity.WARNING
+    assert f.severity is Severity.ERROR
     assert f.confidence.level is ConfidenceLevel.HIGH
     assert res.coverage.state is CoverageState.COMPLETE
 
@@ -61,10 +62,10 @@ def test_explicit_ap_and_site_scope_overlap_warns():
     prop = _ir(Wlan(id="w1", ssid="corp", enabled=True, apply_to="aps", ap_ids=("ap1",)),
                Wlan(id="w2", ssid="corp", enabled=True, apply_to="site"))
     res = WlanDuplicateSsidCheck().run(_ctx(base, prop))
-    assert res.status is Status.WARN
+    assert res.status is Status.FAIL
     f = res.findings[0]
     assert f.code == "wireless.wlan.duplicate_ssid.introduced"
-    assert f.severity is Severity.WARNING
+    assert f.severity is Severity.ERROR
     assert f.confidence.level is ConfidenceLevel.HIGH
 
 

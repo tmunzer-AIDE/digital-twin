@@ -120,3 +120,23 @@ def test_gateway_bgp_minted_from_materialized_config(make_raw_gateway=make_raw_g
                 "neighbors": {"203.0.113.1": {"neighbor_as": 65010}}}})
     p = _peers(MistAdapter().ingest(raw).ir)["203.0.113.1"]
     assert p.role is DeviceRole.GATEWAY and p.via == "wan"
+
+
+def test_literal_export_prefixes_are_normalized_and_opaque_policy_is_retained():
+    raw = make_raw_switch(bgp_config={
+        "a": {
+            "type": "external", "local_as": 65000,
+            "export": "10.0.0.1/24, 2001:db8::/64",
+            "neighbors": {"10.0.0.2": {"neighbor_as": 65001}},
+        },
+        "b": {
+            "type": "external", "local_as": 65000,
+            "export_policy": "branches-out",
+            "neighbors": {"10.0.0.3": {"neighbor_as": 65002}},
+        },
+    })
+    peers = _peers(MistAdapter().ingest(raw).ir)
+    assert peers["10.0.0.2"].advertised_prefixes == (
+        "10.0.0.0/24", "2001:db8::/64"
+    )
+    assert peers["10.0.0.3"].export_unresolved == "policy:branches-out"

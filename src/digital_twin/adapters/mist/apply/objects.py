@@ -87,6 +87,28 @@ def replace_object(
     return dc_replace(raw, devices=devices)
 
 
+def create_object(
+    raw: RawSiteState, object_type: str, object_id: str, payload: _Json
+) -> RawSiteState:
+    """Add a new object to raw state. Create support is intentionally narrow.
+
+    Site WLAN creation is modeled because it is fully represented by the WLAN
+    ingester and its wired-uplink requirements. The caller has already checked
+    that the id does not exist.
+    """
+    if object_type == "wlan":
+        created = {
+            **dict(payload),
+            "id": object_id,
+            # The API adds this ownership metadata to site-created WLAN rows.
+            # Pinning it here prevents the inherited-WLAN guard from treating a
+            # newly-created local WLAN as an org-template row.
+            "for_site": True,
+        }
+        return dc_replace(raw, wlans=(*raw.wlans, created))
+    raise ValueError(f"create is not supported for object_type {object_type!r}")
+
+
 def delete_object(raw: RawSiteState, object_type: str, object_id: str) -> RawSiteState:
     """Remove an object from raw state. The caller must have resolved it first."""
     if object_type == "wlan":

@@ -26,8 +26,19 @@ _CAVEAT = "currently-connected clients only (not-yet-connected clients are unobs
 # the ONLY ClientEnrichment fields projected into evidence — excludes `meta` so
 # observational provenance never leaks into the report.
 _IDENTITY_FIELDS = (
-    "hostname", "family", "mfg", "model", "os", "auth_type", "auth_method",
-    "auth_state", "nacrule", "status", "assigned_vlan", "vlan_source", "username",
+    "hostname",
+    "family",
+    "mfg",
+    "model",
+    "os",
+    "auth_type",
+    "auth_method",
+    "auth_state",
+    "nacrule",
+    "status",
+    "assigned_vlan",
+    "vlan_source",
+    "username",
 )
 
 
@@ -85,11 +96,17 @@ class ClientImpactCheck:
             if base_port is None:
                 return None
             if prop_port is None:
-                return self._entry(ctx, client, "disconnect", "attach port removed",
-                                   caused_by=ctx.delta_index.causes("port", [client.attach_id]))
+                return self._entry(
+                    ctx,
+                    client,
+                    "disconnect",
+                    "attach port removed",
+                    caused_by=ctx.delta_index.causes("port", [client.attach_id]),
+                )
             if base_port.native_vlan is not None and prop_port.native_vlan != base_port.native_vlan:
                 return self._entry(
-                    ctx, client,
+                    ctx,
+                    client,
                     "vlan_move",
                     f"access vlan {base_port.native_vlan} -> {prop_port.native_vlan}",
                     caused_by=ctx.delta_index.causes("port", [client.attach_id]),
@@ -98,7 +115,9 @@ class ClientImpactCheck:
             prop_offered = {prop_port.native_vlan, prop_port.voice_vlan} - {None}
             if client.vlan in base_offered and client.vlan not in prop_offered:
                 return self._entry(
-                    ctx, client, "vlan_removed",
+                    ctx,
+                    client,
+                    "vlan_removed",
                     f"vlan {client.vlan} no longer offered on this port",
                     caused_by=ctx.delta_index.causes("port", [client.attach_id]),
                 )
@@ -111,7 +130,9 @@ class ClientImpactCheck:
                         for base_comp in ctx.baseline.vlan_components(vlan):
                             if node in base_comp.nodes and base_comp.reaches_exit:
                                 return self._entry(
-                                    ctx, client, "blackhole",
+                                    ctx,
+                                    client,
+                                    "blackhole",
                                     f"vlan {vlan} segment loses its exit",
                                     caused_by=causes_for_blackhole(ctx, vlan, comp),
                                 )
@@ -128,7 +149,11 @@ class ClientImpactCheck:
         return None
 
     def _entry(
-        self, ctx: CheckContext, client: Client, impact: str, detail: str,
+        self,
+        ctx: CheckContext,
+        client: Client,
+        impact: str,
+        detail: str,
         caused_by: tuple[Cause, ...] = (),
     ) -> dict[str, Any]:
         entry: dict[str, Any] = {
@@ -154,9 +179,7 @@ class ClientImpactCheck:
         if ce is None:
             return {}
         return {
-            name: getattr(ce, name)
-            for name in _IDENTITY_FIELDS
-            if getattr(ce, name) is not None
+            name: getattr(ce, name) for name in _IDENTITY_FIELDS if getattr(ce, name) is not None
         }
 
     def _subnet(self, ctx: CheckContext, client: Client) -> str | None:
@@ -176,10 +199,12 @@ class ClientImpactCheck:
             bv, pv = base_ir.vlans.get(vid), prop_ir.vlans.get(vid)
             if bv is not None and pv is not None and bv.dhcp_sources != pv.dhcp_sources:
                 return True
+
             # (b) a DHCP scope SERVING this vlan was added/removed/changed
             # (DhcpScope exposes `vlan`, NOT `vlan_id` — entities.py:208)
             def serving(ir: Any) -> dict[str, Any]:
                 return {s.id: s for s in ir.dhcp_scopes if s.vlan == vid}
+
             if serving(base_ir) != serving(prop_ir):
                 return True
         # (d) the client's own attach port: dhcp_trusted flip
@@ -189,9 +214,13 @@ class ClientImpactCheck:
                 return True
             # (c) snooping on the client's switch — counts ONLY if it flips whether the
             # CLIENT's vlan is snooped (not any snooping change). Reuses snooped_vlans.
-            if bp is not None and vid is not None and (
-                (vid in snooped_vlans(base_ir, bp.device_id))
-                != (vid in snooped_vlans(prop_ir, bp.device_id))
+            if (
+                bp is not None
+                and vid is not None
+                and (
+                    (vid in snooped_vlans(base_ir, bp.device_id))
+                    != (vid in snooped_vlans(prop_ir, bp.device_id))
+                )
             ):
                 return True
         return False

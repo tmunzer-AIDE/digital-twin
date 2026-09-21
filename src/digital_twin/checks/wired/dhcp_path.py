@@ -120,18 +120,25 @@ class DhcpPathCheck:
                         "removed_sources": list(base_vlan.dhcp_sources),
                         "observed_clients": n_clients if clients_known else None,
                     },
-                    caused_by=tuple(dict.fromkeys((
-                        *ctx.delta_index.causes(
-                            "device",
-                            [s for s in base_vlan.dhcp_sources if s != "site"],
-                        ),
-                        *ctx.delta_index.causes(
-                            "dhcp_scope",
-                            [sc.id for sc in (*base_ir.dhcp_scopes, *prop_ir.dhcp_scopes)
-                             if sc.vlan == vid],
-                        ),
-                        *((c,) if (c := ctx.delta_index.cause("vlan", str(vid))) else ()),
-                    ))),
+                    caused_by=tuple(
+                        dict.fromkeys(
+                            (
+                                *ctx.delta_index.causes(
+                                    "device",
+                                    [s for s in base_vlan.dhcp_sources if s != "site"],
+                                ),
+                                *ctx.delta_index.causes(
+                                    "dhcp_scope",
+                                    [
+                                        sc.id
+                                        for sc in (*base_ir.dhcp_scopes, *prop_ir.dhcp_scopes)
+                                        if sc.vlan == vid
+                                    ],
+                                ),
+                                *((c,) if (c := ctx.delta_index.cause("vlan", str(vid))) else ()),
+                            )
+                        )
+                    ),
                 )
             )
         if findings and blind_notes:
@@ -145,8 +152,6 @@ class DhcpPathCheck:
                 state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
                 notes=tuple(notes),
             ),
-            confidence=(
-                min_confidence(*(f.confidence for f in findings)) if findings else _HIGH
-            ),
+            confidence=(min_confidence(*(f.confidence for f in findings)) if findings else _HIGH),
             reasoning="compared each vlan's modeled DHCP providers, baseline vs proposed",
         )

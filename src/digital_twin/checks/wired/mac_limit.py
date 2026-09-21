@@ -77,38 +77,70 @@ class MacLimitExceededCheck:
                 findings.append(f)
         worst = Status.WARN if findings else Status.PASS
         return CheckResult(
-            check_id=self.id, status=worst, findings=tuple(findings),
+            check_id=self.id,
+            status=worst,
+            findings=tuple(findings),
             coverage=Coverage(state=CoverageState.COMPLETE),
             confidence=_HIGH,
             reasoning="compared per-port mac_limit vs connected clients baseline vs proposed",
         )
 
     def _finding(
-        self, ctx: CheckContext, pid: str, new: int | str | None,
-        wired: dict[str, list[Client]], clients_known: bool,
+        self,
+        ctx: CheckContext,
+        pid: str,
+        new: int | str | None,
+        wired: dict[str, list[Client]],
+        clients_known: bool,
     ) -> Finding | None:
         cause = ctx.delta_index.causes("port", [pid])
         if isinstance(new, str):  # unresolved/templated
-            return self._mk(pid, "unresolved", _MEDIUM,
-                            f"mac_limit changed to a non-evaluable value ({new})", cause)
+            return self._mk(
+                pid,
+                "unresolved",
+                _MEDIUM,
+                f"mac_limit changed to a non-evaluable value ({new})",
+                cause,
+            )
         # new is a concrete int (restrictive, per the caller's _more_restrictive gate)
         if not isinstance(new, int):
             return None  # unreachable: _more_restrictive gates out None; satisfies mypy
         if not clients_known:
-            return self._mk(pid, "unverified", _MEDIUM,
-                            f"mac_limit set to {new}; current client count is unobservable", cause)
+            return self._mk(
+                pid,
+                "unverified",
+                _MEDIUM,
+                f"mac_limit set to {new}; current client count is unobservable",
+                cause,
+            )
         observed = len(wired.get(pid, []))
         if observed > new:
-            return self._mk(pid, "exceeded", _HIGH,
-                            f"{observed} connected client(s) exceed the new mac_limit {new}", cause)
+            return self._mk(
+                pid,
+                "exceeded",
+                _HIGH,
+                f"{observed} connected client(s) exceed the new mac_limit {new}",
+                cause,
+            )
         return None  # proven within the cap
 
     def _mk(
-        self, pid: str, code: str, conf: Confidence, msg: str, cause: tuple[Cause, ...],
+        self,
+        pid: str,
+        code: str,
+        conf: Confidence,
+        msg: str,
+        cause: tuple[Cause, ...],
     ) -> Finding:
         return Finding(
-            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-            code=f"{self.id}.{code}", severity=Severity.WARNING, confidence=conf,
-            message=f"port {pid}: {msg}", affected_entities=(pid,),
-            subject=ObjectRef("port", pid), evidence={"port": pid}, caused_by=cause,
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code=f"{self.id}.{code}",
+            severity=Severity.WARNING,
+            confidence=conf,
+            message=f"port {pid}: {msg}",
+            affected_entities=(pid,),
+            subject=ObjectRef("port", pid),
+            evidence={"port": pid},
+            caused_by=cause,
         )

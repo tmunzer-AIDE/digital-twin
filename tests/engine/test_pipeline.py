@@ -8,6 +8,7 @@ import pytest
 from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired.wlan_client_impact import WlanClientImpactCheck
+from digital_twin.checks.wired.wlan_duplicate_ssid import WlanDuplicateSsidCheck
 from digital_twin.contracts import (
     Finding,
     FindingCategory,
@@ -23,6 +24,7 @@ from digital_twin.providers.base import (
     RawSiteState,
     SiteScope,
     StateMeta,
+    WlanUsageContext,
 )
 from digital_twin.redaction import REDACTED
 from digital_twin.verdict.decision import Decision
@@ -65,14 +67,18 @@ def _raw() -> RawSiteState:
 
 
 class FakeProvider:
-    def __init__(self, raw=None):
+    def __init__(self, raw=None, wlan_usage=None):
         self._raw = raw if raw is not None else _raw()
+        self._wlan_usage = wlan_usage or WlanUsageContext((), (SITE,), (), 7)
 
     def fetch_site(self, scope, *, include_derived=False):
         return self._raw
 
     def fetch_sites(self, scope, site_ids=None, *, include_derived=False):
         return {SITE: self._raw}
+
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+        return self._wlan_usage
 
 
 def _plan(ops):
@@ -96,6 +102,21 @@ def _delete_op(object_type="wlan", object_id="w1", order=0):
         "object_type": object_type,
         "object_id": object_id,
         "payload": {},
+    }
+
+
+def _create_op(object_type="wlan", object_id="new-wlan", payload=None, order=0):
+    return {
+        "action": "create",
+        "order": order,
+        "object_type": object_type,
+        "object_id": object_id,
+        "payload": payload or {
+            "ssid": "guest",
+            "enabled": True,
+            "apply_to": "site",
+            "auth": {"type": "psk"},
+        },
     }
 
 
@@ -136,6 +157,10 @@ def _raw_wlan(*wlans, clients=()):
 
 def _wlan_registry():
     return CheckRegistry([WlanClientImpactCheck()])
+
+
+def _wlan_create_registry():
+    return CheckRegistry([WlanDuplicateSsidCheck()])
 
 
 class NeverFetch:
@@ -258,6 +283,35 @@ def test_l0_findings_reach_verdict():
     # the field gate fires too (networks subtree replaced by a string), but the
     # L0 finding must be present in the flat findings list regardless
     assert any(f.code.startswith("l0.schema") for f in v.findings)
+
+
+def test_adding_valid_unused_site_network_is_safe():
+    networks = {
+        **SETTING["networks"],
+        "guest": {"vlan_id": 20},
+    }
+    raw = dc_replace(
+        _raw(),
+        meta=StateMeta(
+            acquired_at=datetime.now(UTC),
+            host="t",
+            fetched=(
+                "site", "setting", "devices", "device_stats", "port_stats",
+                "wireless_clients", "wired_clients", "wlans", "org_networks",
+            ),
+            failures=(),
+        ),
+    )
+    verdict = simulate(
+        _plan([_op(payload={"networks": networks})]),
+        provider=FakeProvider(raw=raw),
+    )
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert verdict.config_diffs[0].action == "update"
+    assert any(
+        change.path == "networks.guest.vlan_id" and change.kind == "added"
+        for change in verdict.config_diffs[0].changes
+    )
 
 
 def test_in_scope_change_runs_checks_and_carries_state_meta():
@@ -538,6 +592,86 @@ def test_wlan_delete_apply_reject_is_unknown_and_keeps_diff(monkeypatch):
     assert cds["w1"].object_type == "wlan" and cds["w1"].action == "delete"
 
 
+def test_site_wlan_create_with_unique_ssid_is_safe_and_carries_create_diff():
+    raw = _raw_wlan(_wlan("w1", ssid="corp"))
+    verdict = simulate(
+        _plan([_create_op(payload={
+            "ssid": "guest",
+            "enabled": True,
+            "apply_to": "site",
+            "auth": {"type": "psk"},
+        })]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_create_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert verdict.config_diffs[0].action == "create"
+    assert any(c.path == "ssid" and c.kind == "added" for c in verdict.config_diffs[0].changes)
+
+
+def test_site_wlan_create_with_duplicate_ssid_is_unsafe():
+    raw = _raw_wlan(_wlan("w1", ssid="corp"))
+    verdict = simulate(
+        _plan([_create_op(payload={
+            "ssid": "corp",
+            "enabled": True,
+            "apply_to": "site",
+            "auth": {"type": "psk"},
+        })]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_create_registry(),
+    )
+
+    assert verdict.decision is Decision.UNSAFE
+    finding = next(f for f in verdict.findings if "duplicate_ssid" in f.code)
+    assert finding.severity is Severity.ERROR
+
+
+def test_two_wlan_creates_are_evaluated_as_one_rolling_proposed_state():
+    """Neither SSID exists in baseline; the conflict exists only inside the batch."""
+    raw = _raw_wlan()
+    first = _create_op(
+        object_id="w-new-1",
+        order=0,
+        payload={"ssid": "guest", "enabled": True, "apply_to": "site"},
+    )
+    second = _create_op(
+        object_id="w-new-2",
+        order=1,
+        payload={"ssid": "guest", "enabled": True, "apply_to": "site"},
+    )
+    verdict = simulate(
+        _plan([first, second]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_create_registry(),
+    )
+
+    assert verdict.decision is Decision.UNSAFE
+    assert len(verdict.config_diffs) == 2
+    conflict = next(f for f in verdict.findings if "duplicate_ssid" in f.code)
+    assert set(conflict.evidence["wlans"]) == {"w-new-1", "w-new-2"}
+
+
+def test_site_wlan_create_validates_vlan_fields_instead_of_returning_unknown():
+    raw = _raw_wlan(_wlan("w1", ssid="corp"))
+    verdict = simulate(
+        _plan([_create_op(payload={
+            "ssid": "guest",
+            "enabled": True,
+            "apply_to": "site",
+            "auth": {"type": "psk"},
+            "vlan_enabled": True,
+            "vlan_id": 20,
+            "interface": "all",
+        })]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_create_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+
+
 def test_site_wlan_delete_with_active_client_is_unsafe_and_carries_config_diff():
     raw = _raw_wlan(_wlan("w1"), clients=(_wireless_client(),))
     v = simulate(
@@ -591,6 +725,70 @@ def test_site_wlan_delete_with_site_scope_survivor_is_safe_and_carries_config_di
     assert v.check_results[0].status is Status.PASS
     cds = {d.object_id: d for d in v.config_diffs}
     assert cds["w1"].action == "delete"
+
+
+def test_site_wlan_delete_with_recent_sessions_requires_review():
+    raw = _raw_wlan(_wlan("w1"), _wlan("w2"), clients=(_wireless_client(),))
+    usage = WlanUsageContext((SITE,), (SITE,), (), 7)
+    verdict = simulate(
+        _plan([_delete_op("wlan", "w1")]),
+        provider=FakeProvider(raw=raw, wlan_usage=usage),
+        registry=_wlan_registry(),
+    )
+    assert verdict.decision is Decision.REVIEW
+    finding = next(f for f in verdict.findings if f.code == "wireless.wlan.recent_usage")
+    assert finding.evidence["active_site_ids"] == [SITE]
+
+
+def test_secure_to_open_wlan_with_recent_sessions_is_unsafe():
+    secure = {
+        **_wlan("w1"),
+        "isolation": True,
+        "auth": {"type": "psk", "psk": "secret"},
+    }
+    raw = _raw_wlan(secure)
+    usage = WlanUsageContext((SITE,), (SITE,), (), 7)
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={"auth": {"type": "open"}},
+        )]),
+        provider=FakeProvider(raw=raw, wlan_usage=usage),
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.UNSAFE, verdict.decision_reasons
+    finding = next(
+        finding for finding in verdict.findings
+        if finding.code == "wireless.wlan.auth_transition.recent_usage"
+    )
+    assert finding.evidence["before_auth_type"] == "psk"
+    assert finding.evidence["active_site_ids"] == [SITE]
+
+
+def test_secure_to_open_unused_wlan_requires_review():
+    secure = {
+        **_wlan("w1"),
+        "isolation": True,
+        "auth": {"type": "psk", "psk": "secret"},
+    }
+    raw = _raw_wlan(secure)
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={"auth": {"type": "open"}},
+        )]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert any(
+        finding.code == "wireless.wlan.auth_transition"
+        for finding in verdict.findings
+    )
 
 
 def test_inherited_wlan_delete_is_unknown_and_keeps_computable_diff():
@@ -688,6 +886,61 @@ def test_local_port_auth_change_is_simulated_not_unknown():
     codes = {f.code for f in v.findings}
     assert any(c.startswith("wired.auth.access_change") for c in codes), codes
     assert v.decision is Decision.REVIEW, v.decision
+
+
+def test_removing_last_radius_backend_with_assigned_dot1x_requires_review():
+    authenticated_office = {
+        **SETTING["port_usages"]["office"],
+        "port_auth": "dot1x",
+    }
+    setting = {
+        **SETTING,
+        "port_usages": {**SETTING["port_usages"], "office": authenticated_office},
+        "radius_config": {
+            "auth_servers": [{"host": "radius.example", "secret": "redacted-at-output"}]
+        },
+    }
+    raw = dc_replace(_raw(), setting=setting)
+    verdict = simulate(
+        _plan([_op(payload={"radius_config": {"auth_servers": []}})]),
+        provider=FakeProvider(raw=raw),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    finding = next(
+        finding for finding in verdict.findings
+        if finding.code == "wired.auth.radius_missing.introduced"
+    )
+    assert finding.evidence["authenticator_count"] == 0
+
+
+def test_explicit_bgp_export_withdrawal_requires_review():
+    baseline_bgp = {
+        "edge": {
+            "type": "external",
+            "local_as": 65000,
+            "export": "10.10.0.0/16",
+            "neighbors": {"192.0.2.1": {"neighbor_as": 65001}},
+        }
+    }
+    proposed_bgp = {
+        "edge": {
+            "type": "external",
+            "local_as": 65000,
+            "neighbors": {"192.0.2.1": {"neighbor_as": 65001}},
+        }
+    }
+    raw = dc_replace(_raw(), setting={**SETTING, "bgp_config": baseline_bgp})
+    verdict = simulate(
+        _plan([_op(payload={"bgp_config": proposed_bgp})]),
+        provider=FakeProvider(raw=raw),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert any(
+        finding.code == "routing.bgp.prefix_delta.withdrawn_sole"
+        for finding in verdict.findings
+    )
 
 
 def test_voip_removal_flags_active_phone_e2e():

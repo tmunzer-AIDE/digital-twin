@@ -105,6 +105,10 @@ class Device:
     # SWITCH dhcp_snooping intent (GS25): None = disabled, ("*",) =
     # all_networks, else the enabled network names (site-network namespace)
     dhcp_snooping: tuple[str, ...] | None = None
+    # Effective switch authentication backends. ``None`` means the configured
+    # server/NAC state could not be parsed; zero is a proven absence.
+    authenticator_count: int | None = 0
+    authenticator_unresolved: bool = False
     meta: FactMeta = CONFIG_META
 
 
@@ -116,11 +120,11 @@ class PortAuth:
     the whole surface is default/absent (a lone persist_mac/reauth change is a
     non-default PortAuth, never collapsed to None)."""
 
-    port_auth: str | None = None          # "dot1x" | None
-    mac_auth: bool = False                 # enable_mac_auth
+    port_auth: str | None = None  # "dot1x" | None
+    mac_auth: bool = False  # enable_mac_auth
     mac_auth_only: bool = False
     mac_auth_preferred: bool = False
-    mac_auth_protocol: str = "eap-md5"     # OAS default
+    mac_auth_protocol: str = "eap-md5"  # OAS default
     allow_multiple_supplicants: bool = False
     dynamic_vlan_networks: tuple[str, ...] = ()
     server_fail_network: str | None = None
@@ -130,20 +134,21 @@ class PortAuth:
     bypass_auth_when_server_down_for_unknown_client: bool = False
     bypass_auth_when_server_down_for_voip: bool = False
     persist_mac: bool = False
-    reauth_interval: str | None = None     # canonical (see ingest _reauth)
+    reauth_interval: str | None = None  # canonical (see ingest _reauth)
 
 
 @dataclass(frozen=True)
 class PortMisc:
-    """Recognized-but-unmodeled port knobs (SP4 + Spec 1), surfaced as REVIEW by
-    wired.port.unmodeled_change. Frozen + comparable; Port.misc is None ONLY
+    """Recognized port knobs (SP4 + Spec 1); unmodeled members surface as REVIEW
+    via wired.port.unmodeled_change. Frozen + comparable; Port.misc is None ONLY
     when all are default, so a lone flip is detectable. enable_qos left this
     surface in Spec 1 (benign SAFE — ignored by ingest entirely). Spec-1 scalar
     honesty: the boolean knob is `bool | str` — a templated/unparseable
     value stays a diff-bearing `unresolved:` token, never collapsed to a bool
     (blanket bool() would turn a template string into True and hide the change).
     Spec-2: the four STP policy knobs (stp_required, stp_no_root_port, stp_p2p,
-    use_vstp) graduated to StpPolicy — they no longer live here."""
+    use_vstp) graduated to StpPolicy; storm_control is consumed by its dedicated
+    policy check."""
 
     inter_switch_link: bool = False
     storm_control: str | None = None  # canonical digest of the storm_control object
@@ -205,9 +210,9 @@ def tightens(old: PortAuth | None, new: PortAuth | None) -> bool:
     admitted), and a single method dropped ({dot1x,mac} -> {dot1x})."""
     old_m, new_m = admitted_methods(old), admitted_methods(new)
     if new_m is None:
-        narrowed = False              # new admits everyone -> nothing removed
+        narrowed = False  # new admits everyone -> nothing removed
     elif old_m is None:
-        narrowed = True               # old admitted everyone -> new restricts
+        narrowed = True  # old admitted everyone -> new restricts
     else:
         narrowed = bool(old_m - new_m)  # a previously-admitted method is gone
     return narrowed or bool(_fallbacks(old) - _fallbacks(new))
@@ -244,6 +249,11 @@ class Port:
     # weights admin_disable, never a config change.
     is_uplink: bool | None = None
     profile: str | None = None
+    # Configured aggregate membership. A concrete ae_idx becomes "ae<N>";
+    # lag_unresolved records aggregated=true without a stable bundle id.
+    lag_bundle: str | None = None
+    lacp_mode: str | None = None  # active|passive|static, optionally "-slow"
+    lag_unresolved: bool = False
     disabled: bool = False  # admin-down (usage `disabled` attr): forwards NOTHING
     auth: PortAuth | None = None  # SP3: effective wired-auth surface; None = all-default
     # CONFIG intent (usage stp_edge / stp_disable): an edge port does not
@@ -341,6 +351,12 @@ class DhcpScope:
     ip_start: str | None = None
     ip_end: str | None = None
     gateway: str | None = None
+    # Client options distributed by the scope. They are diff-bearing so an
+    # edit to an existing scope can be reviewed for its connectivity impact.
+    dns_servers: tuple[str, ...] = ()
+    dns_servers_unresolved: bool = False
+    lease_time: int | None = None
+    lease_time_unresolved: str | None = None
     subnet: str | None = None
     # True iff subnet INTENT exists but is unreadable (templated value) or
     # unknowable (unfetched org namespace). False when the namespace is
@@ -362,6 +378,38 @@ class DhcpScope:
 
 
 @dataclass(frozen=True)
+class StaticRoute:
+    """Normalized configured static route (global table or named VRF)."""
+
+    device_id: str
+    destination: str
+    vrf: str = "default"
+    next_hops: tuple[str, ...] = ()
+    discard: bool = False
+    unresolved: bool = False
+    meta: FactMeta = CONFIG_META
+
+    @property
+    def id(self) -> str:
+        return f"{self.device_id}:{self.vrf}:{self.destination}"
+
+
+@dataclass(frozen=True)
+class VrfInstance:
+    """A routing instance and its explicit network membership."""
+
+    device_id: str
+    name: str
+    networks: tuple[str, ...] = ()
+    unresolved: bool = False
+    meta: FactMeta = CONFIG_META
+
+    @property
+    def id(self) -> str:
+        return f"{self.device_id}:{self.name}"
+
+
+@dataclass(frozen=True)
 class L3Intf:
     device_id: str
     role: L3Role
@@ -369,6 +417,12 @@ class L3Intf:
     port: str | None = None
     subnet: str | None = None
     ip: str | None = None
+    # Explicit addressing intent from ip_configs/other_ip_configs. Keeping the
+    # mask as a fact makes mask-only changes visible in the IR diff; subnet is
+    # the normalized network derived from ip+mask when possible.
+    addressing: str | None = None
+    netmask: str | None = None
+    subnet_unresolved: bool = False
     meta: FactMeta = CONFIG_META
     id: str = ""  # auto-derived in __post_init__ if empty
 
@@ -397,7 +451,7 @@ class OspfIntf:
     area: str = "0"
     network_name: str = ""
     passive: bool = False
-    metric: int | None = None        # OSPF cost; None = absent OR present-but-unparseable
+    metric: int | None = None  # OSPF cost; None = absent OR present-but-unparseable
     # raw metric token when present-but-unparseable (templated/garbage), else None. Carried
     # SEPARATELY from `metric` (and diff-bearing) so an absent->templated or templated->other
     # metric edit produces a diff — else it collapses to metric=None==None -> false-SAFE.
@@ -408,9 +462,7 @@ class OspfIntf:
 
     def __post_init__(self) -> None:
         if not self.id:
-            object.__setattr__(
-                self, "id", f"{self.device_id}:ospf:{self.area}:{self.network_name}"
-            )
+            object.__setattr__(self, "id", f"{self.device_id}:ospf:{self.area}:{self.network_name}")
 
 
 @dataclass(frozen=True)
@@ -422,7 +474,7 @@ class OspfNeighbor:
     device_id: str
     peer_ip: str
     area: str | None = None
-    state: str = ""                       # raw Mist state, e.g. "Full"
+    state: str = ""  # raw Mist state, e.g. "Full"
     vrf: str | None = None
     neighbor_router_id: str | None = None
     meta: FactMeta = OBSERVED_META
@@ -454,14 +506,19 @@ class BgpPeer:
     neighbor_ip: str
     local_as: int | None = None
     neighbor_as: int | None = None
-    session_type: str | None = None   # "external" | "internal"; None if absent OR unparseable
-    disabled: bool = False            # per-neighbor admin shutdown (schema default False)
-    via: str | None = None            # transport lan|tunnel|vpn|wan; None if absent/unparseable
+    session_type: str | None = None  # "external" | "internal"; None if absent OR unparseable
+    disabled: bool = False  # per-neighbor admin shutdown (schema default False)
+    via: str | None = None  # transport lan|tunnel|vpn|wan; None if absent/unparseable
     local_as_unresolved: str | None = None
     neighbor_as_unresolved: str | None = None
     session_type_unresolved: str | None = None
     via_unresolved: str | None = None
     disabled_unresolved: str | None = None
+    # Explicit literal CIDRs carried by the session export selector. Mist also
+    # permits named/opaque export policies; those remain in export_unresolved so
+    # a policy change cannot disappear from the diff or become a false SAFE.
+    advertised_prefixes: tuple[str, ...] = ()
+    export_unresolved: str | None = None
     unresolved: bool = False
     ambiguous: bool = False
     meta: FactMeta = CONFIG_META
@@ -481,7 +538,7 @@ class BgpNeighbor:
 
     device_id: str
     peer_ip: str
-    state: str = ""                   # raw BGP state, e.g. "Established"
+    state: str = ""  # raw BGP state, e.g. "Established"
     up: bool | None = None
     neighbor_as: int | None = None
     vrf: str | None = None
@@ -542,15 +599,15 @@ class Wlan:
     config-lint checks. Secret-free by construction. `inherited` = org-template
     owned (NOT site-writable); it is observational ownership, not a lint fact."""
 
-    id: str            # provider WLAN id (pragmatic identity: rename => modify)
+    id: str  # provider WLAN id (pragmatic identity: rename => modify)
     ssid: str
     enabled: bool = False
-    auth_type: str | None = None     # auth.type ("open"|"psk"|"eap"|…); None = unparsed
-    isolation: bool = False          # isolation OR l2_isolation
-    apply_to: str | None = None      # "site" | "aps" | "wxtags" | None
-    ap_ids: tuple[str, ...] = ()     # sorted+deduped explicit AP scope
+    auth_type: str | None = None  # auth.type ("open"|"psk"|"eap"|…); None = unparsed
+    isolation: bool = False  # isolation OR l2_isolation
+    apply_to: str | None = None  # "site" | "aps" | "wxtags" | None
+    ap_ids: tuple[str, ...] = ()  # sorted+deduped explicit AP scope
     wxtag_ids: tuple[str, ...] = ()  # sorted+deduped
-    inherited: bool = False          # True = org-template-owned (fail-closed at ingest)
+    inherited: bool = False  # True = org-template-owned (fail-closed at ingest)
     meta: FactMeta = CONFIG_META
 
 
@@ -558,12 +615,12 @@ class Wlan:
 class NacRule:
     id: str
     name: str | None = None
-    order: int | None = None        # None = unparseable/absent → never ordered/proven
-    enabled: bool = True            # absent ⇒ True (OAS default); non-bool ⇒ opaque_digest
-    action: str | None = None       # "allow" | "block" | None
-    auth_types: frozenset[str] = frozenset()   # ∅ = genuinely unconstrained (any)
+    order: int | None = None  # None = unparseable/absent → never ordered/proven
+    enabled: bool = True  # absent ⇒ True (OAS default); non-bool ⇒ opaque_digest
+    action: str | None = None  # "allow" | "block" | None
+    auth_types: frozenset[str] = frozenset()  # ∅ = genuinely unconstrained (any)
     port_types: frozenset[str] = frozenset()
-    match_tags: frozenset[str] = frozenset()   # matching.nactags ids
+    match_tags: frozenset[str] = frozenset()  # matching.nactags ids
     site_ids: frozenset[str] = frozenset()
     sitegroup_ids: frozenset[str] = frozenset()
     family: frozenset[str] = frozenset()
@@ -589,7 +646,7 @@ class NacTag:
     id: str
     name: str | None = None
     type: str | None = None
-    match: str | None = None        # the match field, for type == "match"
+    match: str | None = None  # the match field, for type == "match"
     values: frozenset[str] = frozenset()
     match_all: bool = False
     meta: FactMeta = CONFIG_META

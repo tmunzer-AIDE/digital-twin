@@ -194,13 +194,14 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
 
 ### Check inventory
 
-The twin emits **37 distinct check IDs**. Its simulation engine ships **30 checks**:
-**28 wired/wireless checks** over the IR and **2 NAC checks** for org policy. The remaining
-**7 configuration-policy checks** make explicit decisions for objects whose
+The twin emits **53 distinct check IDs**. Its simulation engine ships **39 checks**:
+**37 wired/wireless checks** over the IR and **2 NAC checks** for org policy. The remaining
+**14 targeted policy checks** make explicit decisions for objects whose
 impact does not require the topology IR, or whose safety depends on a targeted
-API observation such as site-group membership or recent PSK sessions.
+API observation such as site-group membership, recent PSK/WLAN sessions, or
+effective-layer precedence.
 
-The 30 simulation checks are **delta-aware**: a finding *introduced* by the
+The 33 simulation checks are **delta-aware**: a finding *introduced* by the
 change gates the verdict; a pre-existing condition the change merely touches is
 reported as context and never floors an unrelated edit. Policy checks state
 their own evidence and coverage; a failed membership or usage query can never
@@ -229,7 +230,7 @@ produce `SAFE`.
 | 19 | Power / clients | `wired.poe.disconnect` | cutting PoE to a port that powers an AP / device |
 | 20 | Port / config | `wired.port.admin_disable` | administratively disabling a port that carries an AP, clients, or a modeled link |
 | 21 | Port / config | `wired.port.mac_limit_exceeded` | a lowered MAC limit dropping currently-connected wired clients |
-| 22 | Port / config | `wired.port.unmodeled_change` | a recognized-but-unmodeled port knob changed (`inter_switch_link`, storm control, QoS) |
+| 22 | Port / config | `wired.port.unmodeled_change` | a recognized-but-unmodeled port knob changed (`inter_switch_link`, PoE priority, private-VLAN metadata) |
 | 23 | Wired auth | `wired.auth.access_change` | a port's 802.1X / MAC-auth admission policy changed (RADIUS outcome unverifiable) |
 | 24 | Power / clients | `wired.client.impact` | currently-connected clients in the blast radius (enriched) |
 | 25 | Wireless / WLAN | `wireless.wlan.client_impact` | active wireless clients losing SSID coverage from a WLAN change |
@@ -238,6 +239,15 @@ produce `SAFE`.
 | 28 | L2 / switching | `wired.l2.topology_coverage` | topology-dependent changes when port/device observations are unavailable |
 | 29 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
 | 30 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+| 31 | Wired auth | `wired.auth.radius_missing` | assigned 802.1X/MAB ports without a proven RADIUS or Mist NAC backend; unresolved backend state is partial coverage |
+| 32 | Gateway / WAN | `gateway.wan.redundancy` | loss of a redundant configured WAN path or the final WAN path; additions require health verification |
+| 33 | **L3 / routing — BGP** | `routing.bgp.prefix_delta` | explicit export-prefix additions, withdrawals, and overlaps; opaque policies and unmodeled VRFs remain partial |
+| 34 | DHCP | `wired.dhcp.capacity` | proposed usable pool capacity below observed demand or with low headroom; complete active-client evidence is required |
+| 35 | L3 / routing | `routing.static_route_reachability` | sole-route removal, unreachable or unreadable next hops, and more-specific discard routes; live RIB remains partial |
+| 36 | L3 / routing | `routing.vrf_leak` | duplicate network membership across VRFs and loss or movement across explicit VRF boundaries |
+| 37 | Switching / LAG | `switch.lag_redundancy` | configured or observed member loss, unresolved membership, and incompatible peer LACP intent; per-member forwarding telemetry remains partial |
+| 38 | Device services | `wired.control_plane_reachability` | loss of a modeled default route or changes to static-route, L3-interface, and VRF dependencies used by Mist cloud, DNS, NTP, AAA, and syslog paths |
+| 39 | Switching / policy | `wired.storm_control_policy` | shutdown-on-trigger on linked/uplink ports and threshold reductions; traffic-rate telemetry remains partial |
 | P1 | Configuration policy | `config.name_change` | a non-empty, top-level `name`-only update; `SAFE` except for the explicitly excluded security profile/policy families |
 | P2 | Configuration policy | `config.org_info` | organization information changes, classified `SAFE` |
 | P3 | Configuration policy | `config.alarmtemplate` | alarm-template create/update/delete changes, classified `SAFE` |
@@ -245,10 +255,17 @@ produce `SAFE`.
 | P5 | Configuration policy | `config.sitegroup.delete` | site-group deletion; `REVIEW` when sites are assigned or membership cannot be verified, otherwise `SAFE` |
 | P6 | Configuration policy | `config.psk.recent_usage` | org/site PSK create is `SAFE`; update/delete is `REVIEW` after recent use or incomplete telemetry, otherwise `SAFE` after a complete seven-day query |
 | P7 | Configuration policy | `config.webhook.review` | org/site webhook changes, always `REVIEW` because delivery impact is external to the twin |
+| P8 | Effective configuration | `scope.effective_noop` | lower-layer edits masked on every device or only some devices; both cases are `REVIEW` and identify exact paths and devices |
+| P9 | Wireless / WLAN | `wireless.wlan.auth_transition` | secured-to-open WLAN transitions are `UNSAFE` after client use in the preceding seven days and otherwise `REVIEW`; incomplete usage telemetry also requires review |
+| P10 | NAC policy | `nac.rule.access_impact` | changed/deleted rules are joined to seven-day match evidence; removing a recently used allow decision is `UNSAFE`, other used-rule changes are `REVIEW` |
+| P11 | Configuration policy | `config.referenced_update_impact` | expands exact dependent references for profile/service/policy/VPN/RF/security updates; absent dependent recompilation is explicit partial coverage |
+| P12 | Configuration policy | `config.batch_integrity` | rejects duplicate mutations and reports dangling or final-plan-resolved references across related object changes |
+| P13 | Security policy | `security.service_policy_semantics` | detects broad permits, conflicting or shadowed rules, and effective policy-order changes; referenced policies retain a compilation review floor |
+| P14 | Wireless / RF | `wireless.rf_coverage_regression` | assigned RF-template band, width, power, and minimum-rate changes require review when AP placement or client radio evidence is incomplete |
 
 Org WLAN changes do not add another check ID: they fan out to every site where
 the derived WLAN is present and run the applicable wired/wireless checks above,
-including checks 25–27.
+including checks 25–27 and the targeted authentication-transition policy P9.
 
 ## Project layout
 
@@ -258,7 +275,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution, STP tree prediction + agreement + STP-aware reachability taint + policy inertness license (memoized)
-├── checks/           the 28 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
+├── checks/           the 37 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
 ├── verdict/          decision precedence, coverage/confidence rollups, assembly
 ├── scope/            envelope / object / field / derived gates + allowlist data
 ├── providers/        Mist API fetch (single-site + org-batched multi-site)

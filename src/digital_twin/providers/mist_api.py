@@ -30,8 +30,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import mistapi
@@ -43,6 +44,10 @@ from .base import (
     FetchError,
     FetchFailure,
     NacFetch,
+    NacRuleUsageContext,
+    ObjectReference,
+    ObjectRelationshipContext,
+    OrgNetworksContext,
     OrgScope,
     OrgSiteGroupContext,
     OrgTemplateContext,
@@ -53,6 +58,7 @@ from .base import (
     SiteScope,
     StateMeta,
     StateProvider,
+    WlanUsageContext,
 )
 
 _Json = dict[str, Any]
@@ -133,6 +139,64 @@ def _group_by_site(rows: list[_Json], endpoint: str = "org rows") -> dict[str, l
             dropped,
         )
     return grouped
+
+
+_NAME_REFERENCE_HINTS: dict[str, tuple[str, ...]] = {
+    "org_networks": ("network", "networks"),
+    "org_services": ("service", "services"),
+    "org_servicepolicies": ("servicepolicy", "service_policy"),
+    "org_vpns": ("vpn", "vpns"),
+}
+
+
+def _reference_paths(
+    value: Any,
+    *,
+    object_type: str,
+    object_id: str,
+    object_name: str | None,
+    path: str = "$",
+    parent_key: str = "",
+) -> tuple[str, ...]:
+    """Return exact vendor-JSON paths that reference ``object_id``/name.
+
+    IDs are globally distinctive and may appear under nested or list-valued
+    fields, so an exact scalar id match is accepted anywhere.  Names are used by
+    several gateway namespaces; they are accepted only below a family-specific
+    key hint to avoid treating an unrelated display name as a relationship.
+    """
+    if isinstance(value, Mapping):
+        found: list[str] = []
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            found.extend(_reference_paths(
+                child,
+                object_type=object_type,
+                object_id=object_id,
+                object_name=object_name,
+                path=child_path,
+                parent_key=str(key).casefold(),
+            ))
+        return tuple(found)
+    if isinstance(value, list | tuple):
+        found = []
+        for index, child in enumerate(value):
+            found.extend(_reference_paths(
+                child,
+                object_type=object_type,
+                object_id=object_id,
+                object_name=object_name,
+                path=f"{path}[{index}]",
+                parent_key=parent_key,
+            ))
+        return tuple(found)
+    if isinstance(value, str):
+        if value == object_id:
+            return (path,)
+        hints = _NAME_REFERENCE_HINTS.get(object_type, ())
+        if object_name and value == object_name and any(hint in parent_key for hint in hints):
+            return (path,)
+    return ()
 
 
 def _site_thunk(
@@ -321,6 +385,11 @@ class MistApiProvider(StateProvider):
                 )
                 if rows:
                     by_site[site_id] = rows
+            template_wlans = tuple(
+                dict(row)
+                for row in self._org_wlans(scope)
+                if str(row.get("template_id") or "") == template_id
+            )
         except Exception as exc:  # noqa: BLE001 — membership cannot be guessed safely
             return FetchError(
                 scope=scope,
@@ -328,7 +397,12 @@ class MistApiProvider(StateProvider):
                 acquired_at=_now(),
                 host=self._host,
             )
-        return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
+        return OrgWlanTemplateContext(
+            template=dict(template),
+            derived_rows_by_site=by_site,
+            template_wlans=template_wlans,
+            template_wlans_complete=True,
+        )
 
     def resolve_org_sitegroup(
         self, scope: OrgScope, sitegroup_id: str
@@ -351,6 +425,20 @@ class MistApiProvider(StateProvider):
         return OrgSiteGroupContext(
             assigned_site_ids=tuple(str(site_id) for site_id in site_ids)
         )
+
+    def resolve_org_networks(
+        self, scope: OrgScope
+    ) -> OrgNetworksContext | FetchError:
+        try:
+            networks = self._org_networks(SiteScope(scope.org_id, ""))
+        except Exception as exc:  # noqa: BLE001 — errors are values at this seam
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="org_networks", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        return OrgNetworksContext(networks=tuple(dict(row) for row in networks))
 
     def resolve_psk_usage(
         self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
@@ -402,6 +490,155 @@ class MistApiProvider(StateProvider):
             window_days=window_days,
         )
 
+    def resolve_object_relationships(
+        self, scope: OrgScope, object_type: str, object_id: str
+    ) -> ObjectRelationshipContext | FetchError:
+        """Resolve references from the configuration domains relevant to a target.
+
+        Mist object relationships are not exposed by one API endpoint.  This
+        method therefore reads the small set of potential referrers for the
+        target family and records exact id/name matches together with their JSON
+        paths.  Partial source failures are retained in the context so policy
+        may still reject a known-used deletion while refusing a false SAFE for
+        an apparently-unused object.
+        """
+        try:
+            targets = self._relationship_target_rows(scope, object_type)
+        except Exception as exc:  # noqa: BLE001 — target absence is a total failure
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object=object_type, error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        target = next(
+            (row for row in targets if str(row.get("id") or "") == object_id),
+            None,
+        )
+        if target is None:
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure(object=object_type, error=f"{object_id} not found"),
+                ),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        if object_type == "org_networks":
+            try:
+                target = dict(_checked(
+                    mistapi.api.v1.orgs.networks.getOrgNetwork(
+                        self._session, scope.org_id, object_id
+                    )
+                ).data)
+            except Exception as exc:  # noqa: BLE001 — update validation needs the full row
+                return FetchError(
+                    scope=scope,
+                    failures=(FetchFailure(object="org_network", error=str(exc)),),
+                    acquired_at=_now(),
+                    host=self._host,
+                )
+
+        sources, failures = self._relationship_source_rows(scope, object_type, object_id)
+        target_name = target.get("name")
+        references: list[ObjectReference] = []
+        for source_type, site_id, row in sources:
+            source_id = str(row.get("id") or row.get("mac") or row.get("name") or "unknown")
+            source_name = row.get("name") or row.get("hostname")
+            for path in _reference_paths(
+                row,
+                object_type=object_type,
+                object_id=object_id,
+                object_name=target_name if isinstance(target_name, str) else None,
+            ):
+                references.append(ObjectReference(
+                    source_type=source_type,
+                    source_id=source_id,
+                    source_name=str(source_name) if source_name is not None else None,
+                    site_id=site_id,
+                    path=path,
+                ))
+        unique = tuple(dict.fromkeys(references))
+        return ObjectRelationshipContext(
+            target=dict(target),
+            references=unique,
+            checked_sources=tuple(dict.fromkeys(source_type for source_type, _, _ in sources)),
+            failures=tuple(failures),
+        )
+
+    def resolve_wlan_usage(
+        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+    ) -> WlanUsageContext | FetchError:
+        duration = f"{window_days}d"
+        try:
+            if isinstance(scope, SiteScope):
+                response = mistapi.api.v1.sites.clients.searchSiteWirelessClientSessions(
+                    self._session,
+                    scope.site_id,
+                    wlan_id=wlan_id,
+                    duration=duration,
+                    limit=1,
+                    sort="-timestamp",
+                )
+                checked_site_ids = (scope.site_id,)
+            else:
+                response = mistapi.api.v1.orgs.clients.searchOrgWirelessClientSessions(
+                    self._session,
+                    scope.org_id,
+                    wlan_id=wlan_id,
+                    duration=duration,
+                    limit=1,
+                    sort="-timestamp",
+                )
+                checked_site_ids = ("*",)
+            response = _checked(response)
+            rows = _page_rows(response.data, response.url)
+        except Exception as exc:  # noqa: BLE001 — incomplete telemetry is REVIEW
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="wlan_sessions", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        active_site_ids = tuple(dict.fromkeys(
+            str(row.get("site_id") or (scope.site_id if isinstance(scope, SiteScope) else "*"))
+            for row in rows
+        ))
+        return WlanUsageContext(
+            active_site_ids=active_site_ids,
+            checked_site_ids=checked_site_ids,
+            failures=(),
+            window_days=window_days,
+        )
+
+    def resolve_nacrule_usage(
+        self, scope: OrgScope, nacrule_id: str, *, window_days: int = 7
+    ) -> NacRuleUsageContext | FetchError:
+        try:
+            response = mistapi.api.v1.orgs.nac_clients.searchOrgNacClients(
+                self._session,
+                scope.org_id,
+                nacrule_id=nacrule_id,
+                duration=f"{window_days}d",
+                limit=1,
+                sort="-timestamp",
+            )
+            response = _checked(response)
+            rows = _page_rows(response.data, response.url)
+        except Exception as exc:  # noqa: BLE001
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="nacrule_usage", error=str(exc)),),
+                acquired_at=_now(),
+                host=self._host,
+            )
+        return NacRuleUsageContext(
+            active_site_ids=tuple(dict.fromkeys(str(row.get("site_id") or "*") for row in rows)),
+            checked_site_ids=("*",),
+            failures=(),
+            window_days=window_days,
+        )
+
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         # _pages (not .data): the raw read took only the FIRST page, and a failed
         # call yielded data={} -> rules=() accepted as a successful empty ruleset
@@ -422,6 +659,137 @@ class MistApiProvider(StateProvider):
             tag_findings = (_nactag_fetch_finding(str(e)),)
         return NacFetch(rules=tuple(rules), tags=tuple(tags),
                         tag_findings=tag_findings)
+
+    def _relationship_target_rows(
+        self, scope: OrgScope, object_type: str
+    ) -> list[_Json]:
+        endpoint: dict[str, Callable[[], Any]] = {
+            "org_avprofiles": lambda: mistapi.api.v1.orgs.avprofiles.listOrgAntivirusProfiles(
+                self._session, scope.org_id
+            ),
+            "org_idpprofiles": lambda: mistapi.api.v1.orgs.idpprofiles.listOrgIdpProfiles(
+                self._session, scope.org_id
+            ),
+            "org_aamwprofiles": lambda: mistapi.api.v1.orgs.aamwprofiles.listOrgAAMWProfiles(
+                self._session, scope.org_id
+            ),
+            "org_nactags": lambda: mistapi.api.v1.orgs.nactags.listOrgNacTags(
+                self._session, scope.org_id
+            ),
+            "org_rftemplates": lambda: mistapi.api.v1.orgs.rftemplates.listOrgRfTemplates(
+                self._session, scope.org_id
+            ),
+            "org_services": lambda: mistapi.api.v1.orgs.services.listOrgServices(
+                self._session, scope.org_id
+            ),
+            "org_servicepolicies": (
+                lambda: mistapi.api.v1.orgs.servicepolicies.listOrgServicePolicies(
+                    self._session, scope.org_id
+                )
+            ),
+            "org_sites": lambda: mistapi.api.v1.orgs.sites.listOrgSites(
+                self._session, scope.org_id
+            ),
+            "org_vpns": lambda: mistapi.api.v1.orgs.vpns.listOrgVpns(
+                self._session, scope.org_id
+            ),
+            "org_networks": lambda: mistapi.api.v1.orgs.networks.listOrgNetworks(
+                self._session, scope.org_id
+            ),
+        }
+        if object_type == "org_deviceprofiles":
+            rows: list[_Json] = []
+            for device_type in ("ap", "switch", "gateway"):
+                rows.extend(self._pages(
+                    mistapi.api.v1.orgs.deviceprofiles.listOrgDeviceProfiles(
+                        self._session, scope.org_id, type=device_type
+                    )
+                ))
+            return rows
+        factory = endpoint.get(object_type)
+        if factory is None:
+            raise MistApiError(f"relationship target type {object_type!r} is unsupported")
+        return self._pages(factory())
+
+    def _relationship_source_rows(
+        self, scope: OrgScope, object_type: str, object_id: str
+    ) -> tuple[list[tuple[str, str | None, _Json]], list[FetchFailure]]:
+        sources: list[tuple[str, str | None, _Json]] = []
+        failures: list[FetchFailure] = []
+
+        def collect(name: str, fn: Callable[[], list[_Json]], site_id: str | None = None) -> None:
+            try:
+                sources.extend((name, site_id, dict(row)) for row in fn())
+            except Exception as exc:  # noqa: BLE001 — retained for partial coverage
+                label = f"{name}:{site_id}" if site_id else name
+                failures.append(FetchFailure(object=label, error=str(exc)))
+
+        if object_type == "org_nactags":
+            collect(
+                "org_nacrules",
+                lambda: self._pages(
+                    mistapi.api.v1.orgs.nacrules.listOrgNacRules(
+                        self._session, scope.org_id
+                    )
+                ),
+            )
+            return sources, failures
+
+        try:
+            sites = self._org_sites(scope)
+            sources.extend(("org_sites", None, dict(site)) for site in sites)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(FetchFailure(object="org_sites", error=str(exc)))
+            sites = []
+
+        if object_type == "org_sites":
+            sites = [site for site in sites if str(site.get("id") or "") == object_id]
+
+        for site in sites:
+            site_id = str(site.get("id") or "")
+            if not site_id:
+                continue
+            site_scope = SiteScope(scope.org_id, site_id)
+            collect("site_devices", partial(self._devices, site_scope), site_id)
+            if object_type != "org_deviceprofiles" and object_type != "org_sites":
+                collect(
+                    "site_settings",
+                    partial(self._relationship_site_setting, site_scope),
+                    site_id,
+                )
+
+        if object_type in {
+            "org_avprofiles",
+            "org_aamwprofiles",
+            "org_idpprofiles",
+            "org_networks",
+            "org_services",
+            "org_servicepolicies",
+            "org_vpns",
+        }:
+            collect(
+                "org_gatewaytemplates",
+                lambda: self._pages(
+                    mistapi.api.v1.orgs.gatewaytemplates.listOrgGatewayTemplates(
+                        self._session, scope.org_id
+                    )
+                ),
+            )
+            for device_type in ("gateway", "switch", "ap"):
+                collect(
+                    f"org_deviceprofiles.{device_type}",
+                    partial(self._org_device_profiles, scope, device_type),
+                )
+        if object_type == "org_services":
+            collect(
+                "org_servicepolicies",
+                lambda: self._pages(
+                    mistapi.api.v1.orgs.servicepolicies.listOrgServicePolicies(
+                        self._session, scope.org_id
+                    )
+                ),
+            )
+        return sources, failures
 
     # -- shared per-site assembly ---------------------------------------------
     def _fetch_one(
@@ -603,6 +971,16 @@ class MistApiProvider(StateProvider):
             _checked(mistapi.api.v1.sites.setting.getSiteSetting(self._session, s.site_id)).data
         )
 
+    def _relationship_site_setting(self, s: SiteScope) -> list[_Json]:
+        return [self._setting(s)]
+
+    def _org_device_profiles(self, s: OrgScope, device_type: str) -> list[_Json]:
+        return self._pages(
+            mistapi.api.v1.orgs.deviceprofiles.listOrgDeviceProfiles(
+                self._session, s.org_id, type=device_type
+            )
+        )
+
     def _derived(self, s: SiteScope) -> _Json:
         return dict(
             _checked(
@@ -702,6 +1080,10 @@ class MistApiProvider(StateProvider):
     def _org_wlan(self, s: OrgScope, wlan_id: str) -> _Json:
         resp = mistapi.api.v1.orgs.wlans.getOrgWLAN(self._session, s.org_id, wlan_id)
         return dict(_checked(resp).data)
+
+    def _org_wlans(self, s: OrgScope) -> list[_Json]:
+        resp = mistapi.api.v1.orgs.wlans.listOrgWlans(self._session, s.org_id)
+        return self._pages(resp)
 
     def _org_wlan_template(self, s: OrgScope, template_id: str) -> _Json:
         resp = mistapi.api.v1.orgs.templates.getOrgTemplate(

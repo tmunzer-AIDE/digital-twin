@@ -104,9 +104,11 @@ def test_org_object_types_includes_all_fanout_types():
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
     gw = set(RAW_ALLOWLIST["gatewaytemplate"])
     assert "port_config.*.disabled" in gw and "ip_configs.*.ip" in gw
+    assert {"ip_configs.*.type", "ip_configs.*.netmask"} <= gw
+    assert {"dhcpd_config.*.dns_servers", "dhcpd_config.*.lease_time"} <= gw
     assert "vars.*" in gw                        # a vars edit must pass the RAW field
     # gate so the derived gate can evaluate the ripple (mirrors site_setting)
-    assert "port_config.*.usage" not in gw      # inert -> excluded
+    assert "port_config.*.usage" in gw          # gateway WAN redundancy classifier
     assert "networks.*.vlan_id" not in gw       # org-namespace -> excluded
 
 
@@ -119,6 +121,8 @@ def test_sitetemplate_raw_allowlist_is_union():
 def test_gateway_effective_allowlist_includes_disabled_ip_and_vars():
     gw = set(GATEWAY_EFFECTIVE_ALLOWLIST)
     assert {"port_config.*.disabled", "ip_configs.*.ip", "vars.*"} <= gw
+    assert {"ip_configs.*.type", "ip_configs.*.netmask"} <= gw
+    assert {"dhcpd_config.*.dns_servers", "dhcpd_config.*.lease_time"} <= gw
     assert "port_config.*.disabled" not in set(EFFECTIVE_ALLOWLIST)  # switch lacks it
 
 

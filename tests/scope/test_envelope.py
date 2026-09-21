@@ -31,6 +31,23 @@ def test_valid_plan_parses():
     assert plan.intent == "why"
 
 
+def test_operation_scope_is_optional_and_preserved():
+    ops = [
+        {**dict(VALID["ops"][0]), "scope": "site"},
+        {**dict(VALID["ops"][1]), "scope": "org"},
+    ]
+    plan = parse_change_plan({**VALID, "ops": ops})
+    assert isinstance(plan, ChangePlan)
+    assert [op.scope for op in plan.ops] == ["site", "org"]
+
+
+def test_invalid_operation_scope_rejects():
+    bad = {**dict(VALID["ops"][0]), "scope": "global"}
+    result = parse_change_plan({**VALID, "ops": [bad]})
+    assert isinstance(result, Rejection)
+    assert any("scope" in reason for reason in result.reasons)
+
+
 def test_intent_is_optional():
     data = {k: v for k, v in VALID.items() if k != "intent"}
     plan = parse_change_plan(data)

@@ -56,13 +56,15 @@ _UNVERIFIED = Confidence(
 # Session-breaking sub-codes: the structural change is certain to drop the session.
 # .peering_added is deliberately excluded — a new peering cannot be session-BREAKING
 # (it doesn't break an existing session), so telemetry escalation never applies to it.
-_SESSION_BREAKING: frozenset[str] = frozenset({
-    "peering_removed",
-    "peering_disabled",
-    "as_changed",
-    "session_type_changed",
-    "transport_changed",
-})
+_SESSION_BREAKING: frozenset[str] = frozenset(
+    {
+        "peering_removed",
+        "peering_disabled",
+        "as_changed",
+        "session_type_changed",
+        "transport_changed",
+    }
+)
 
 
 def is_established(n: BgpNeighbor) -> bool:
@@ -102,9 +104,13 @@ class BgpAdjacencyCheck:
 
         def _mk(code: str, p: BgpPeer, message: str, extra: dict[str, Any]) -> Finding:
             return Finding(
-                source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                code=f"{self.id}.{code}", subject=ObjectRef("device", p.device_id),
-                severity=Severity.WARNING, confidence=_UNVERIFIED, message=message,
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=f"{self.id}.{code}",
+                subject=ObjectRef("device", p.device_id),
+                severity=Severity.WARNING,
+                confidence=_UNVERIFIED,
+                message=message,
                 affected_entities=(p.neighbor_ip,),
                 evidence={"device": p.device_id, "neighbor_ip": p.neighbor_ip, **extra},
                 caused_by=_caused_by(p),
@@ -131,8 +137,9 @@ class BgpAdjacencyCheck:
                     "change impact cannot be verified"
                 )
                 return True
-            if (b is not None and b.disabled_unresolved is not None) or \
-                    (p is not None and p.disabled_unresolved is not None):
+            if (b is not None and b.disabled_unresolved is not None) or (
+                p is not None and p.disabled_unresolved is not None
+            ):
                 notes.append(
                     f"BGP peer {nip} on {did} has a templated/non-boolean admin "
                     "state — active-ness is unknown, change detection skipped"
@@ -169,19 +176,25 @@ class BgpAdjacencyCheck:
             if b_active and not p_active:
                 assert b is not None  # b_active => b is not None
                 if p is None:
-                    findings.append(_mk(
-                        "peering_removed", b,
-                        f"BGP peering to {nip} on {did} is removed — the session is "
-                        "withdrawn; routes learned/advertised over it are lost",
-                        {},
-                    ))
+                    findings.append(
+                        _mk(
+                            "peering_removed",
+                            b,
+                            f"BGP peering to {nip} on {did} is removed — the session is "
+                            "withdrawn; routes learned/advertised over it are lost",
+                            {},
+                        )
+                    )
                 else:
-                    findings.append(_mk(
-                        "peering_disabled", p,
-                        f"BGP peering to {nip} on {did} is administratively disabled — "
-                        "the session goes down",
-                        {},
-                    ))
+                    findings.append(
+                        _mk(
+                            "peering_disabled",
+                            p,
+                            f"BGP peering to {nip} on {did} is administratively disabled — "
+                            "the session goes down",
+                            {},
+                        )
+                    )
                 continue
             # added / enabled (not active -> active)
             if not b_active and p_active:
@@ -194,19 +207,24 @@ class BgpAdjacencyCheck:
                         "— new-peering details unverifiable"
                     )
                     continue
-                findings.append(_mk(
-                    "peering_added", p,
-                    f"BGP peering to {nip} on {did} is newly added — a new session shifts "
-                    "advertised/learned routes; review intended scope",
-                    {},
-                ))
+                findings.append(
+                    _mk(
+                        "peering_added",
+                        p,
+                        f"BGP peering to {nip} on {did} is newly added — a new session shifts "
+                        "advertised/learned routes; review intended scope",
+                        {},
+                    )
+                )
                 continue
             # retained active peering: compare session-breaking attributes
             if b_active and p_active:
                 assert b is not None and p is not None
                 # AS (with unresolved-token guard)
-                if b.local_as_unresolved != p.local_as_unresolved or \
-                        b.neighbor_as_unresolved != p.neighbor_as_unresolved:
+                if (
+                    b.local_as_unresolved != p.local_as_unresolved
+                    or b.neighbor_as_unresolved != p.neighbor_as_unresolved
+                ):
                     notes.append(
                         f"BGP peer {nip} on {did} has a templated AS on one side "
                         "— AS-change impact unverifiable"
@@ -215,20 +233,23 @@ class BgpAdjacencyCheck:
                     local_changed = b.local_as != p.local_as
                     neighbor_changed = b.neighbor_as != p.neighbor_as
                     if local_changed or neighbor_changed:
-                        findings.append(_mk(
-                            "as_changed", p,
-                            f"BGP peering to {nip} on {did} changed AS (local "
-                            f"{b.local_as}->{p.local_as}, neighbor {b.neighbor_as}->"
-                            f"{p.neighbor_as}) — the session must re-establish",
-                            {
-                                "local_as_changed": local_changed,
-                                "neighbor_as_changed": neighbor_changed,
-                                "base_local_as": b.local_as,
-                                "proposed_local_as": p.local_as,
-                                "base_neighbor_as": b.neighbor_as,
-                                "proposed_neighbor_as": p.neighbor_as,
-                            },
-                        ))
+                        findings.append(
+                            _mk(
+                                "as_changed",
+                                p,
+                                f"BGP peering to {nip} on {did} changed AS (local "
+                                f"{b.local_as}->{p.local_as}, neighbor {b.neighbor_as}->"
+                                f"{p.neighbor_as}) — the session must re-establish",
+                                {
+                                    "local_as_changed": local_changed,
+                                    "neighbor_as_changed": neighbor_changed,
+                                    "base_local_as": b.local_as,
+                                    "proposed_local_as": p.local_as,
+                                    "base_neighbor_as": b.neighbor_as,
+                                    "proposed_neighbor_as": p.neighbor_as,
+                                },
+                            )
+                        )
                 # session type
                 if b.session_type_unresolved != p.session_type_unresolved:
                     notes.append(
@@ -236,12 +257,15 @@ class BgpAdjacencyCheck:
                         "one side — type-change impact unverifiable"
                     )
                 elif b.session_type != p.session_type:
-                    findings.append(_mk(
-                        "session_type_changed", p,
-                        f"BGP peering to {nip} on {did} changed type {b.session_type}->"
-                        f"{p.session_type} (iBGP/eBGP) — the session must re-establish",
-                        {"base_type": b.session_type, "proposed_type": p.session_type},
-                    ))
+                    findings.append(
+                        _mk(
+                            "session_type_changed",
+                            p,
+                            f"BGP peering to {nip} on {did} changed type {b.session_type}->"
+                            f"{p.session_type} (iBGP/eBGP) — the session must re-establish",
+                            {"base_type": b.session_type, "proposed_type": p.session_type},
+                        )
+                    )
                 # transport (gateway via) — role-gated: switches are implicitly LAN and
                 # have no transport dimension; never rely on field-gate invariants in a
                 # pure check (p.role == b.role, same device).
@@ -252,12 +276,15 @@ class BgpAdjacencyCheck:
                             "one side — transport-change impact unverifiable"
                         )
                     elif b.via != p.via:
-                        findings.append(_mk(
-                            "transport_changed", p,
-                            f"BGP peering to {nip} on {did} changed transport "
-                            f"{b.via}->{p.via} — the session path changed",
-                            {"base_via": b.via, "proposed_via": p.via},
-                        ))
+                        findings.append(
+                            _mk(
+                                "transport_changed",
+                                p,
+                                f"BGP peering to {nip} on {did} changed transport "
+                                f"{b.via}->{p.via} — the session path changed",
+                                {"base_via": b.via, "proposed_via": p.via},
+                            )
+                        )
                 # (admin-state-unresolved is handled UP FRONT by _note_if_fuzzy, which
                 # abstains before active-state classification — so a retained peer that
                 # reaches here has resolved admin-state on both sides.)
@@ -271,9 +298,7 @@ class BgpAdjacencyCheck:
 
         if telemetry_known:
             established = {
-                (n.device_id, n.peer_ip): n
-                for n in base_ir.bgp_neighbors
-                if is_established(n)
+                (n.device_id, n.peer_ip): n for n in base_ir.bgp_neighbors if is_established(n)
             }
             for i, f in enumerate(findings):
                 if f.code not in session_breaking_codes:
@@ -287,8 +312,12 @@ class BgpAdjacencyCheck:
                 if n is None:
                     continue
                 findings[i] = Finding(
-                    source=f.source, category=f.category, code=f.code, subject=f.subject,
-                    severity=Severity.ERROR, confidence=_HIGH,
+                    source=f.source,
+                    category=f.category,
+                    code=f.code,
+                    subject=f.subject,
+                    severity=Severity.ERROR,
+                    confidence=_HIGH,
                     message=(
                         f"{f.message} | telemetry: this peer was ESTABLISHED in baseline "
                         "— this change is session-breaking, so the peering would drop"
@@ -333,7 +362,9 @@ class BgpAdjacencyCheck:
     def _finish(self, findings: list[Finding], notes: list[str]) -> CheckResult:
         worst = status_from_findings(findings)
         return CheckResult(
-            check_id=self.id, status=worst, findings=tuple(findings),
+            check_id=self.id,
+            status=worst,
+            findings=tuple(findings),
             coverage=Coverage(
                 state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
                 notes=tuple(notes),

@@ -62,6 +62,9 @@ _NOT_VISUALIZED = {
     "base_local_as", "proposed_local_as", "base_neighbor_as", "proposed_neighbor_as",
     "local_as_changed", "neighbor_as_changed",
     "base_type", "proposed_type", "base_via", "proposed_via",
+    # --- bgp_prefix_delta: route-policy facts have no topology entity ---
+    "prefix", "overlapping_prefixes", "baseline_export", "proposed_export",
+    "sole_modeled_advertisement", "baseline_established",
     # --- ospf_withdrawal: protocol scalars; "device"/"vlan" already paint ---
     "area", "base_areas", "proposed_areas",
     "base_metric", "proposed_metric",
@@ -84,8 +87,9 @@ _NOT_VISUALIZED = {
     # --- l2_loop.self_loop: "ports" (added to _PORT_EV_KEYS) already paints
     #     the pair; observed_states is a per-port {state,role} scalar dict ---
     "observed_states",
-    # --- gateway_gap: "vlan" paints the view; these are IP/interface scalars ---
+    # --- gateway_gap: "vlan"/subject paint the view; these are address scalars ---
     "gateway", "subnet", "l3_interfaces", "baseline_l3_interfaces",
+    "interface_subnet", "network_subnet",
     # --- dhcp_path / snooping provenance scalars ---
     "removed_sources",      # names of removed DHCP sources (strings, not entities)
     "source",               # snooping data source label (config vs stats)
@@ -99,10 +103,12 @@ _NOT_VISUALIZED = {
     # --- vlan_collision: subject already paints the vlan view ---
     "vlan_id", "collisions",
     # --- scope_lint: address scopes are config objects, not diagram entities ---
-    "scope", "scopes", "declared", "handed", "violations",
+    "scope", "scopes", "declared", "handed", "violations", "changed_options",
     # --- misc config-knob scalars ---
     "disabled",             # admin_disable boolean; "port" already paints
     "knobs",                # unmodeled_change knob names (strings)
+    # --- auth/WAN policy scalar evidence; path arrays are painted as ports ---
+    "authenticator_count", "health_evidence",
     # --- stp_policy.blocking_risk: entities already paint via "port"/
     #     affected_entities; these are classification/explanatory scalars ---
     "knob",                 # the single changed knob name (stp_required), a string
@@ -126,6 +132,16 @@ _NOT_VISUALIZED = {
     "inertness",             # {knob: reasons} near-miss facts, or {"suppressed": ...}
     # --- nac (org-level policy objects, no site topology to paint) ---
     "kind", "changed_fields", "shadower", "shadowed_action",
+    # --- P1 routing/capacity/LAG/storm checks: scalar policy evidence; the
+    #     device/port subject and affected_entities already paint topology ---
+    "capacity", "headroom", "previous_capacity",
+    "destination", "next_hops",
+    "network", "baseline_vrfs", "proposed_vrfs",
+    "bundle", "baseline_members", "proposed_members",
+    "observed_forwarding_member", "lacp_modes", "lag_unresolved",
+    "baseline_routes", "proposed_routes", "services",
+    "changed_dependencies",
+    "baseline_storm_control", "proposed_storm_control", "traffic_telemetry",
 }
 
 

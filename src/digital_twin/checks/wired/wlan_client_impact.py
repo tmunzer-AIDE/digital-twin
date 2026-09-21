@@ -37,10 +37,7 @@ _AFFECTING_FIELDS = frozenset({"ssid", "enabled", "apply_to", "ap_ids", "wxtag_i
 
 
 def _active_wireless_clients(ir: IR) -> list[Client]:
-    return [
-        c for c in ir.clients
-        if c.active is True and c.kind is ClientKind.WIRELESS
-    ]
+    return [c for c in ir.clients if c.active is True and c.kind is ClientKind.WIRELESS]
 
 
 def _covers(wlan: Wlan, ap_id: str | None) -> Literal["yes", "unknown"]:
@@ -92,10 +89,7 @@ class WlanClientImpactCheck:
 
     def _has_survivor(self, ir: IR, ssid: str, ap_id: str | None) -> bool:
         return any(
-            w.enabled is True
-            and w.ssid == ssid
-            and _covers(w, ap_id) == "yes"
-            for w in ir.wlans
+            w.enabled is True and w.ssid == ssid and _covers(w, ap_id) == "yes" for w in ir.wlans
         )
 
     def _coverage_lost(
@@ -108,9 +102,7 @@ class WlanClientImpactCheck:
             code=f"{self.id}.coverage_lost",
             severity=Severity.ERROR,
             confidence=_HIGH,
-            message=(
-                f"{len(clients)} active wireless client(s) lose SSID '{ssid}' coverage"
-            ),
+            message=(f"{len(clients)} active wireless client(s) lose SSID '{ssid}' coverage"),
             subject=ObjectRef("wlan", headline, ssid),
             affected_entities=tuple(c.id for c in clients),
             caused_by=ctx.delta_index.causes("wlan", changed_ids),
@@ -149,8 +141,7 @@ class WlanClientImpactCheck:
                 "reason": reason,
                 "affected_ssids": affected_ssids,
                 "clients": [
-                    {"mac": c.mac, "ap": c.attach_id, "ssid": c.ssid}
-                    for c in listed_clients
+                    {"mac": c.mac, "ap": c.attach_id, "ssid": c.ssid} for c in listed_clients
                 ],
             },
         )
@@ -172,9 +163,8 @@ class WlanClientImpactCheck:
                     if client.ssid is None:
                         unknown_ssid_clients.append(client)
                         continue
-                    if (
-                        client.ssid in affected
-                        and not self._has_survivor(ctx.proposed.ir, client.ssid, client.attach_id)
+                    if client.ssid in affected and not self._has_survivor(
+                        ctx.proposed.ir, client.ssid, client.attach_id
                     ):
                         impacted_by_ssid[client.ssid].append(client)
                 for ssid, clients in sorted(impacted_by_ssid.items()):

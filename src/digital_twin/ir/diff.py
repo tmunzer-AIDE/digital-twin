@@ -38,6 +38,8 @@ _ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
     ("dhcp_scope", lambda ir: ir.dhcp_scopes),
     ("wlan", lambda ir: ir.wlans),
     ("bgp_peer", lambda ir: ir.bgp_peers),
+    ("static_route", lambda ir: ir.static_routes),
+    ("vrf_instance", lambda ir: ir.vrf_instances),
     ("nacrule", lambda ir: ir.nacrules),
 ]
 

@@ -21,8 +21,10 @@ Per VLAN (spec contract):
   reachability relies on it — a transit-only vlan (no members) never consults
   its exit, so a LOW uplink there cannot taint the check.
 - Switched membership is configuration-based (access ports — empty ports count).
-  AP/wireless membership is observation-based; when client data is absent the
-  coverage is PARTIAL (noted), never silently complete.
+  AP/WLAN membership is configuration-based when WLAN configuration resolves
+  the target APs and VLANs. Connected-client observations are a fallback for
+  membership absent from configuration, and only those observation-only
+  conclusions make coverage PARTIAL.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ from digital_twin.ir import (
     IRDiff,
     min_confidence,
 )
-from digital_twin.ir.entities import DeviceRole
+from digital_twin.ir.entities import AttachKind, DeviceRole
 from digital_twin.ir.indexes import node_for, vc_root_map
 
 
@@ -67,36 +69,30 @@ class L2BlackholeCheck:
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        return any(diff.touches(k) for k in ("link", "port", "vlan", "l3intf", "device"))
+        return any(diff.touches(k) for k in ("link", "port", "vlan", "l3intf", "device", "wlan"))
 
     def run(self, ctx: CheckContext) -> CheckResult:
         findings: list[Finding] = []
         statuses: list[Status] = []
         confidences: list[Confidence] = []
         notes: list[str] = []
-        if IRCapability.CLIENTS_ACTIVE not in ctx.proposed.capabilities:
-            notes.append(
-                "AP/wireless VLAN membership is observation-based and client data "
-                "is absent — wireless membership not evaluated"
-            )
-        wireless_in_play = False
+        observation_only_wireless_in_play = False
         for vid in sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans)):
             statuses.append(self._check_vlan(ctx, vid, findings, confidences))
             notes.extend(self._soft_taint(ctx, vid, confidences))
-            # observation-based coverage matters only for conclusions that RELIED
-            # on it: the delta touched this vlan AND wireless members are in play
-            wireless_in_play = wireless_in_play or (
-                _vlan_changed(ctx, vid)
-                and any(c.wireless_members for c in ctx.stp_reachability.proposed_components(vid))
+            # Client telemetry is not required when WLAN configuration already
+            # identifies every AP that needs this VLAN. Coverage is partial only
+            # when the conclusion relies on an observed client/AP membership that
+            # the WLAN configuration did not establish.
+            observation_only_wireless_in_play = observation_only_wireless_in_play or (
+                _vlan_changed(ctx, vid) and self._has_observation_only_wireless_members(ctx, vid)
             )
             notes.extend(self._ap_blind_spots(ctx, vid))
         notes.extend(self._wlan_unresolved_notes(ctx))
-        if wireless_in_play:
-            # spec: AP membership is observation-based — not-yet-connected clients
-            # are a known coverage gap, so this conclusion can never be "complete"
+        if observation_only_wireless_in_play:
             notes.append(
-                "AP VLAN membership is observation-based (currently-connected "
-                "clients only) — coverage partial by construction"
+                "some AP VLAN membership is known only from currently-connected "
+                "clients — coverage partial for observation-based membership"
             )
         status = _aggregate(statuses)
         coverage_state = CoverageState.PARTIAL if notes else CoverageState.COMPLETE
@@ -118,6 +114,26 @@ class L2BlackholeCheck:
             confidence=confidence,
             reasoning="compared member-component exit reachability per vlan",
         )
+
+    @staticmethod
+    def _has_observation_only_wireless_members(ctx: CheckContext, vid: int) -> bool:
+        """Whether client telemetry is the only membership basis for an AP/VLAN.
+
+        A configured WLAN requirement is structural evidence and remains valid
+        with zero connected clients. Observations only create a coverage caveat
+        when they reveal an AP/VLAN membership absent from that configuration.
+        """
+        ir = ctx.proposed.ir
+        vc_root = vc_root_map(ir)
+        configured_nodes = {
+            node_for(vc_root, ap_id) for ap_id, vlans in ir.ap_wlan_vlans.items() if vid in vlans
+        }
+        observed_nodes = {
+            node_for(vc_root, client.attach_id)
+            for client in ir.clients
+            if client.attach_kind is AttachKind.AP and client.vlan == vid
+        }
+        return bool(observed_nodes - configured_nodes)
 
     def _ap_blind_spots(self, ctx: CheckContext, vid: int) -> list[str]:
         """APs whose reach to this vlan the DELTA degraded, with ZERO observed
@@ -174,13 +190,16 @@ class L2BlackholeCheck:
 
     def _wlan_unresolved_notes(self, ctx: CheckContext) -> list[str]:
         """APs carrying a WLAN whose VLAN need could not be statically resolved
-        (wxtag-scoped, template vlan) AND whose VLAN delivery the delta changed:
+        (wxtag-scoped, template vlan) AND whose VLAN delivery the delta degraded:
         we cannot verify those WLANs are unaffected -> coverage blind spot
-        (REVIEW). Delta-conditioned via the AP's per-vlan participation, so an
-        untouched AP with unresolved WLANs is not flagged."""
+        (REVIEW). Adding delivery for another VLAN cannot break a pre-existing
+        unresolved WLAN, so only lost delivery is relevant. Delta-conditioned
+        via the AP's per-vlan participation, so an untouched AP with unresolved
+        WLANs is not flagged."""
         unresolved = ctx.proposed.ir.ap_wlan_unresolved
         if not unresolved:
             return []
+        baseline_unresolved = ctx.baseline.ir.ap_wlan_unresolved
         vc_root = vc_root_map(ctx.proposed.ir)
         vids = sorted(set(ctx.baseline.ir.vlans) | set(ctx.proposed.ir.vlans))
 
@@ -197,8 +216,15 @@ class L2BlackholeCheck:
         notes: list[str] = []
         for ap_id, reasons in unresolved.items():
             node = node_for(vc_root, ap_id)
-            if base.get(node, set()) != prop.get(node, set()) and reasons:
-                notes.append(f"AP {ap_id}: VLAN delivery changed and {reasons[0]}")
+            new_reasons = tuple(
+                reason for reason in reasons if reason not in baseline_unresolved.get(ap_id, ())
+            )
+            if new_reasons:
+                notes.append(
+                    f"AP {ap_id}: new WLAN membership cannot be resolved: {new_reasons[0]}"
+                )
+            elif (lost := base.get(node, set()) - prop.get(node, set())) and reasons:
+                notes.append(f"AP {ap_id}: lost VLAN delivery for {sorted(lost)} and {reasons[0]}")
         return notes
 
     def _check_vlan(
@@ -335,14 +361,18 @@ class L2BlackholeCheck:
                 f"vlan {vid}: member segment loses its path to the {proposed_exit.kind} exit"
                 if lost_exit
                 else (
-                    f"vlan {vid}: newly configured member port(s) have no path to the "
+                    f"vlan {vid}: newly configured member(s) have no path to the "
                     f"{proposed_exit.kind} exit"
                 )
             )
             caused_by = (
                 causes_for_vlan_cut(ctx, vid, comp)
                 if lost_exit
-                else (ctx.delta_index.causes("port", new_ports) or causes_for_severance(ctx, comp))
+                else (
+                    ctx.delta_index.causes("port", new_ports)
+                    or ctx.delta_index.causes("wlan", new_wlan)
+                    or causes_for_severance(ctx, comp)
+                )
             )
             findings.append(
                 self._finding(
@@ -358,15 +388,14 @@ class L2BlackholeCheck:
                     vid=vid,
                     nodes=sorted(comp.nodes),
                     new_member_ports=new_ports,
+                    new_wlan_members=new_wlan,
                     caused_by=caused_by,
                 )
             )
             worst = _aggregate([worst, Status.FAIL if high else Status.WARN])
         return worst
 
-    def _soft_taint(
-        self, ctx: CheckContext, vid: int, confidences: list[Confidence]
-    ) -> list[str]:
+    def _soft_taint(self, ctx: CheckContext, vid: int, confidences: list[Confidence]) -> list[str]:
         """Spec-5 soft floor: a delta-relevant reach that survives only because of
         a soft-only (unconfirmed / low-confidence / unlicensed) predicted block is
         not SAFE-certifiable — append a sub-HIGH confidence (REVIEW floor) + note.
@@ -406,11 +435,14 @@ class L2BlackholeCheck:
         vid: int,
         nodes: list[str],
         new_member_ports: list[str] | None = None,
+        new_wlan_members: list[str] | None = None,
         caused_by: tuple[Cause, ...] = (),
     ) -> Finding:
         evidence: dict[str, object] = {"vlan": vid, "component_nodes": nodes}
         if new_member_ports:
             evidence["new_member_ports"] = new_member_ports
+        if new_wlan_members:
+            evidence["new_wlan_members"] = new_wlan_members
         return Finding(
             source=FindingSource.CHECK,
             category=category,

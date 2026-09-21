@@ -19,11 +19,13 @@ class OrgOverlay:
     object_type: str
     object_id: str
     name: str | None
-    action: str                               # "update" | "delete"
+    action: str                               # "create" | "update" | "delete"
     assigned_site_ids: frozenset[str]
     baseline: Mapping[str, Any]
     proposed: Mapping[str, Any] | None         # None == REMOVED (layer absent)
-    wlan_baseline_by_site: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    wlan_baseline_by_site: Mapping[str, Mapping[str, Any] | None] = field(
+        default_factory=dict
+    )
     wlan_proposed_by_site: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict)
     wlan_template_rows_by_site: Mapping[str, tuple[Mapping[str, Any], ...]] = (
         field(default_factory=dict)
