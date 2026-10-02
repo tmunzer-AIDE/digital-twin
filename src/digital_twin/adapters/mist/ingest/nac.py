@@ -18,10 +18,10 @@ from digital_twin.ir import (
     NacRule,
     NacTag,
 )
-from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS
 
 _Json = Mapping[str, Any]
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
+_RULE_METADATA = frozenset({"id", "org_id", "created_time", "modified_time"})
 # positive match dims that are plain id/string lists
 _LIST_DIMS = ("port_types", "nactags", "site_ids", "sitegroup_ids",
               "family", "mfg", "model", "os_type", "vendor")
@@ -40,7 +40,7 @@ def _finding(code: str, message: str, rule_id: str | None) -> Finding:
 
 
 def _digest(row: _Json) -> str:
-    clean = {k: v for k, v in row.items() if k not in IGNORED_RAW_FIELDS}
+    clean = {k: v for k, v in row.items() if k not in _RULE_METADATA}
     blob = json.dumps(clean, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -104,6 +104,19 @@ def _not_matching(block: Any) -> frozenset[tuple[str, str]]:
 
 def _build_rule(row: _Json) -> NacRule:
     """Parse a rule row into a clean NacRule. Raises on any proof-field problem."""
+    # An unchanged unsupported predicate/status still affects a proof. The raw
+    # changed-field gate cannot protect baseline rows that lose these semantics
+    # during ingestion. Retain them as opaque rather than a clean catch-all.
+    known_roots = {
+        *_RULE_METADATA, "name", "order", "enabled", "action", "matching",
+        "not_matching", "apply_tags", "dry_run", "guest_auth_state",
+    }
+    if set(row) - known_roots:
+        raise ValueError("unmodeled rule field")
+    if "dry_run" in row and row["dry_run"] is not False:
+        raise ValueError("dry-run status is not modeled")
+    if row.get("guest_auth_state") is not None:
+        raise ValueError("guest authentication state is not modeled")
     m = row.get("matching")
     if m is None:
         m = {}                                   # absent/null = no match constraints
@@ -111,6 +124,12 @@ def _build_rule(row: _Json) -> NacRule:
         # present-but-non-Mapping ([] / "" / 0) is MALFORMED — raise → opaque row, never
         # a silent clean catch-all (`row.get("matching") or {}` would have masked this).
         raise ValueError("matching present but not an object")
+    known_dimensions = {*_LIST_DIMS, "auth_type"}
+    if set(m) - known_dimensions:
+        raise ValueError("unmodeled matching dimension")
+    negative = row.get("not_matching")
+    if isinstance(negative, Mapping) and set(negative) - known_dimensions:
+        raise ValueError("unmodeled negative matching dimension")
     enabled = row.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("enabled not a bool")

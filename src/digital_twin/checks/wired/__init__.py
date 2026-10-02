@@ -6,6 +6,7 @@ from .admin_disable import AdminDisableCheck
 from .auth_change import AuthAccessChangeCheck
 from .bgp_adjacency import BgpAdjacencyCheck
 from .client_impact import ClientImpactCheck
+from .control_plane_reachability import ControlPlaneReachabilityCheck
 from .dhcp_path import DhcpPathCheck
 from .gateway_gap import GatewayGapCheck
 from .l1_param_mismatch import L1ParamMismatchCheck
@@ -18,8 +19,11 @@ from .mtu_mismatch import MtuMismatchCheck
 from .native_mismatch import NativeVlanMismatchCheck
 from .ospf_withdrawal import OspfWithdrawalCheck
 from .poe_disconnect import PoeDisconnectCheck
+from .radius_missing import RadiusMissingCheck
 from .scope_lint import DhcpScopeLintCheck
 from .snooping import DhcpSnoopingCheck
+from .static_route_reachability import StaticRouteReachabilityCheck
+from .storm_control_policy import StormControlPolicyCheck
 from .stp_edge import StpEdgeOnUplinkCheck
 from .stp_policy import StpPolicyCheck
 from .stp_root import StpRootChangeCheck
@@ -60,6 +64,10 @@ ALL_WIRED_CHECKS: list[Check] = [
     VlanCollisionCheck(),
     MacLimitExceededCheck(),
     PortUnmodeledChangeCheck(),
+    RadiusMissingCheck(),
+    StaticRouteReachabilityCheck(),
+    ControlPlaneReachabilityCheck(),
+    StormControlPolicyCheck(),
 ]
 
 __all__ = [
@@ -92,4 +100,8 @@ __all__ = [
     "WlanClientImpactCheck",
     "WlanOpenGuestCheck",
     "PortUnmodeledChangeCheck",
+    "RadiusMissingCheck",
+    "StaticRouteReachabilityCheck",
+    "ControlPlaneReachabilityCheck",
+    "StormControlPolicyCheck",
 ]

@@ -31,6 +31,7 @@ from .entities import (
     OspfIntf,
     OspfNeighbor,
     Port,
+    StaticRoute,
     Vlan,
     Wlan,
     client_id,
@@ -77,6 +78,9 @@ class IR:
     bgp_peers: tuple[BgpPeer, ...] = ()
     bgp_neighbors: tuple[BgpNeighbor, ...] = ()
     bgp_telemetry_unparsed_count: int = 0
+    # Observation rows that could not be attached; never interpreted as zero clients.
+    client_telemetry_gaps: tuple[str, ...] = ()
+    static_routes: tuple[StaticRoute, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -97,6 +101,7 @@ class IRBuilder:
         self._vlans: dict[int, Vlan] = {}
         self._l3intfs: list[L3Intf] = []
         self._l3intf_ids: set[str] = set()
+        self._static_routes: dict[str, StaticRoute] = {}
         self._ospf_intfs: list[OspfIntf] = []
         self._ospf_intf_ids: set[str] = set()
         self._bgp_peers: list[BgpPeer] = []
@@ -104,6 +109,7 @@ class IRBuilder:
         self._bgp_neighbors: list[BgpNeighbor] = []
         self._bgp_unparsed = 0
         self._clients: list[Client] = []
+        self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
         self._capabilities: set[Capability] = set()
@@ -148,6 +154,12 @@ class IRBuilder:
             raise IRValidationError(f"duplicate l3intf id {intf.id}")
         self._l3intf_ids.add(intf.id)
         self._l3intfs.append(intf)
+        return self
+
+    def add_static_route(self, route: StaticRoute) -> IRBuilder:
+        if route.id in self._static_routes:
+            raise IRValidationError(f"duplicate static route id {route.id}")
+        self._static_routes[route.id] = route
         return self
 
     def add_ospf_intf(self, intf: OspfIntf) -> IRBuilder:
@@ -218,6 +230,10 @@ class IRBuilder:
         self._client_enrichment = dict(enrichment)
         return self
 
+    def mark_client_telemetry_gap(self, reason: str) -> IRBuilder:
+        self._client_telemetry_gaps.append(reason)
+        return self
+
     def set_ospf_neighbors(
         self, neighbors: Iterable[OspfNeighbor], unparsed_count: int = 0
     ) -> IRBuilder:
@@ -265,6 +281,11 @@ class IRBuilder:
         errors += self._validate_ports()
         errors += self._validate_links()
         errors += self._validate_l3intfs()
+        for route in self._static_routes.values():
+            if route.device_id not in self._devices:
+                errors.append(
+                    f"static route {route.id} references unknown device {route.device_id}"
+                )
         errors += self._validate_ospf_intfs()
         errors += self._validate_bgp_peers()
         errors += self._validate_clients()
@@ -433,4 +454,6 @@ class IRBuilder:
             bgp_peers=tuple(self._bgp_peers),
             bgp_neighbors=tuple(self._bgp_neighbors),
             bgp_telemetry_unparsed_count=self._bgp_unparsed,
+            client_telemetry_gaps=tuple(self._client_telemetry_gaps),
+            static_routes=tuple(sorted(self._static_routes.values(), key=lambda r: r.id)),
         )

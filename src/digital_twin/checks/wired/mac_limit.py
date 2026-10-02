@@ -76,9 +76,17 @@ class MacLimitExceededCheck:
             if f is not None:
                 findings.append(f)
         worst = Status.WARN if findings else Status.PASS
+        unverified = not clients_known and any(
+            f.code in (f"{self.id}.unverified", f"{self.id}.exceeded") for f in findings
+        )
         return CheckResult(
             check_id=self.id, status=worst, findings=tuple(findings),
-            coverage=Coverage(state=CoverageState.COMPLETE),
+            coverage=Coverage(
+                state=CoverageState.PARTIAL if unverified else CoverageState.COMPLETE,
+                notes=tuple(dict.fromkeys(
+                    (*base_ir.client_telemetry_gaps, *prop_ir.client_telemetry_gaps)
+                )) if unverified else (),
+            ),
             confidence=_HIGH,
             reasoning="compared per-port mac_limit vs connected clients baseline vs proposed",
         )
@@ -94,13 +102,13 @@ class MacLimitExceededCheck:
         # new is a concrete int (restrictive, per the caller's _more_restrictive gate)
         if not isinstance(new, int):
             return None  # unreachable: _more_restrictive gates out None; satisfies mypy
+        observed = len(wired.get(pid, []))
+        if ctx.client_observations_available and observed > new:
+            return self._mk(pid, "exceeded", _HIGH,
+                            f"{observed} connected client(s) exceed the new mac_limit {new}", cause)
         if not clients_known:
             return self._mk(pid, "unverified", _MEDIUM,
                             f"mac_limit set to {new}; current client count is unobservable", cause)
-        observed = len(wired.get(pid, []))
-        if observed > new:
-            return self._mk(pid, "exceeded", _HIGH,
-                            f"{observed} connected client(s) exceed the new mac_limit {new}", cause)
         return None  # proven within the cap
 
     def _mk(

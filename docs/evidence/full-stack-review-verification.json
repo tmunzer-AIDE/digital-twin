@@ -1,0 +1,130 @@
+{
+  "review_date": "2026-10-01",
+  "scope": "Direct source review, pinned OAS traversal, offline fake-provider and synthetic regression tests; no live Mist calls",
+  "repository_base_commit": "1ae2ac739e9ea3aedb342441e74c832db9500313",
+  "spec_version": "2609.1.0",
+  "spec_sha256": "22f55432535ab38f6c0539392a729b8fd515a9ccae9df693fbd4ff23d40b8fac",
+  "inventory_summary": {
+    "fields": 7240,
+    "mutation_operations": 473,
+    "operation_input_fields": 22048,
+    "operation_field_kinds": {
+      "value": 21742,
+      "open_object_boundary": 306
+    },
+    "field_kinds": {
+      "value": 7191,
+      "open_object_boundary": 49
+    },
+    "legacy_dispositions": {
+      "no_existing_simulation_path": 3361,
+      "legacy_rejects": 3549,
+      "legacy_ignored_not_semantic_proof": 34,
+      "legacy_admitted_not_semantic_proof": 296
+    }
+  },
+  "checks": [
+    {
+      "command": "uv run pytest",
+      "status": "passed",
+      "passed": 1972,
+      "deselected": 2,
+      "deselection": "live tests excluded by repository default"
+    },
+    {
+      "command": "uv run mypy src/digital_twin experiments tools/audit_oas_coverage.py",
+      "status": "passed",
+      "source_files": 148
+    },
+    {
+      "command": "uv run ruff check <changed Python paths>",
+      "status": "passed"
+    },
+    {
+      "command": "regenerate inventory and compare full JSON structure",
+      "status": "passed"
+    },
+    {
+      "command": "regenerate saved semantic experiment and compare normalized results",
+      "status": "passed"
+    }
+  ],
+  "external_review": {
+    "coderabbit": "unavailable",
+    "reason": "CLI not installed; no CodeRabbit review performed"
+  },
+  "counterfactual_vendor_validation": "not performed",
+  "probes": [
+    {
+      "case": "EAP to PSK with observed client",
+      "decision": "unknown",
+      "reasons": [
+        "COVERAGE GAP [field_gate]: out-of-scope raw path changed: auth.type (not in the M1 allowlist)"
+      ]
+    },
+    {
+      "case": "zero observed clients does not prove decommission intent",
+      "decision": "safe",
+      "reasons": [
+        "all applicable checks passed (wireless.wlan.client_impact, wireless.wlan.open_guest, wireless.wlan.duplicate_ssid); coverage complete; confidence HIGH"
+      ]
+    },
+    {
+      "case": "add empty routing_policies",
+      "decision": "unknown",
+      "reasons": [
+        "COVERAGE GAP [field_gate]: out-of-scope raw path changed: routing_policies (not in the M1 allowlist)",
+        "COVERAGE GAP [derived_gate]: routing_policies: out-of-scope EFFECTIVE leaf differs in site config (change ripples beyond the M1 model)",
+        "COVERAGE GAP [derived_gate]: routing_policies: out-of-scope EFFECTIVE leaf differs in device aa0000000001 config (change ripples beyond the M1 model)"
+      ]
+    },
+    {
+      "case": "add empty evpn_options",
+      "decision": "unknown",
+      "reasons": [
+        "COVERAGE GAP [field_gate]: out-of-scope raw path changed: evpn_options (not in the M1 allowlist)",
+        "COVERAGE GAP [derived_gate]: evpn_options: out-of-scope EFFECTIVE leaf differs in site config (change ripples beyond the M1 model)",
+        "COVERAGE GAP [derived_gate]: evpn_options: out-of-scope EFFECTIVE leaf differs in device aa0000000001 config (change ripples beyond the M1 model)"
+      ]
+    },
+    {
+      "case": "add empty radio_config",
+      "decision": "unknown",
+      "reasons": [
+        "COVERAGE GAP [field_gate]: out-of-scope raw path changed: radio_config (not in the M1 allowlist)",
+        "COVERAGE GAP [derived_gate]: radio_config: out-of-scope EFFECTIVE leaf differs in site config (change ripples beyond the M1 model)",
+        "COVERAGE GAP [derived_gate]: radio_config: out-of-scope EFFECTIVE leaf differs in device aa0000000001 config (change ripples beyond the M1 model)"
+      ]
+    },
+    {
+      "case": "add empty new_domain",
+      "decision": "unknown",
+      "reasons": [
+        "COVERAGE GAP [field_gate]: out-of-scope raw path changed: new_domain (not in the M1 allowlist)",
+        "COVERAGE GAP [derived_gate]: new_domain: out-of-scope EFFECTIVE leaf differs in site config (change ripples beyond the M1 model)",
+        "COVERAGE GAP [derived_gate]: new_domain: out-of-scope EFFECTIVE leaf differs in device aa0000000001 config (change ripples beyond the M1 model)"
+      ]
+    },
+    {
+      "case": "unchanged unsupported NAC baseline {'dry_run': True}",
+      "decision": "review",
+      "adapter_codes": [
+        "nac.ingest.opaque"
+      ],
+      "shadow_codes": []
+    },
+    {
+      "case": "unchanged unsupported NAC baseline {'matching': {'future_filter': {}}}",
+      "decision": "review",
+      "adapter_codes": [
+        "nac.ingest.opaque"
+      ],
+      "shadow_codes": []
+    },
+    {
+      "case": "mistyped boolean compatibility",
+      "decision": "unknown"
+    }
+  ],
+  "remaining_work": "Coverage receipts and protocol/stateful Mist semantic models are specified, not implemented or certified by this review."
+}

@@ -738,15 +738,8 @@ def test_mac_limit_lowered_below_clients_is_review():
     assert v.decision is Decision.REVIEW
 
 
-# Spec 1's six benign-leaf buckets: each attribute is allowed by the raw +
-# effective gates but deliberately never read by ingest (site_setting buckets)
-# or never in the device-profile modeled surface (device buckets) — so a
-# delta touching ONLY that leaf must resolve SAFE end-to-end, with the raw
-# diff still surfacing the changed leaf as non-load-bearing evidence.
-# Bucket 2 (port_usages.*.enable_qos) supersedes the former
-# test_enable_qos_change_is_safe_not_unmodeled_change (site_setting side);
-# bucket 3 (local_port_config.*.enable_qos) is that prior test's device-side
-# case, carried over verbatim (including its `usage` padding rationale).
+# The audit revoked M1's benign exception for scheduling, reboot power and
+# retry timing. Only the UI field remains inert within the supported model.
 _SITE_SETTING_BENIGN_BUCKETS = [
     pytest.param(
         "ui_evpntopo_id",
@@ -781,39 +774,38 @@ _SITE_SETTING_BENIGN_BUCKETS = [
 
 
 @pytest.mark.parametrize("leaf, extra", _SITE_SETTING_BENIGN_BUCKETS)
-def test_site_setting_benign_leaf_change_is_safe_with_diff_surfaced(leaf, extra):
+def test_site_setting_unmodeled_operational_leaf_has_coverage_gap_with_diff(leaf, extra):
     new_setting = {**SETTING, **extra}
     v = simulate(_plan([_op(payload=new_setting)]), provider=FakeProvider())
-    assert v.decision is Decision.SAFE, v.decision_reasons
-    assert not any("coverage" in f.code for f in v.findings)
+    if leaf == "ui_evpntopo_id":
+        assert v.decision is Decision.SAFE, v.decision_reasons
+        assert not any("coverage" in f.code for f in v.findings)
+    else:
+        assert v.decision is Decision.UNKNOWN, v.decision_reasons
+        assert any("coverage" in f.code for f in v.findings)
     assert not any(f.code.startswith("wired.port.unmodeled_change") for f in v.findings)
     assert v.config_diffs
     assert any(leaf in c.path for d in v.config_diffs for c in d.changes), v.config_diffs
 
 
-def test_enable_qos_change_is_safe_not_unmodeled_change():
-    # Spec 1 moved enable_qos to the benign SAFE group: it never reaches
-    # PortMisc (ignored by ingest entirely), so an enable_qos-only delta must
-    # NOT wake wired.port.unmodeled_change end-to-end. `usage` is included in
-    # the local_port_config payload (unlike the sibling mac_limit/enable_qos
-    # tests above) so the assertion isn't confounded by the pre-existing,
-    # unrelated l0.schema.violation ("'usage' is a required property") that a
-    # bare local_port_config override otherwise trips.
+def test_enable_qos_change_is_unknown_with_coverage_gap():
+    # The valid `usage` avoids conflating missing model coverage with an L0
+    # shape violation. A scheduling change is not an inert UI edit.
     sw_a = {**SWITCH, "port_config": {
         **SWITCH["port_config"], "ge-0/0/0": {"usage": "office", "no_local_overwrite": False}}}
     raw = dc_replace(_raw(), devices=(sw_a,))
     payload = {"local_port_config": {"ge-0/0/0": {"usage": "office", "enable_qos": True}}}
     v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
                  provider=FakeProvider(raw=raw))
-    assert v.decision is not Decision.UNKNOWN, v.decision_reasons
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
     codes = {f.code for f in v.findings}
     assert not any(c.startswith("wired.port.unmodeled_change") for c in codes)
-    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert "coverage.gap" in codes
     assert v.config_diffs
     assert any("enable_qos" in c.path for d in v.config_diffs for c in d.changes), v.config_diffs
 
 
-def test_poe_keep_state_when_reboot_on_port_config_overwrite_is_safe():
+def test_poe_keep_state_when_reboot_on_port_config_overwrite_is_unknown():
     # Device-side bucket 5: port_config_overwrite.*.poe_keep_state_when_reboot.
     # Unlike local_port_config (bucket 3), port_config_overwrite has NO `usage`
     # key on the OAS at all (ingest/ports.py _OVERWRITE_ATTRS: port_network,
@@ -826,9 +818,9 @@ def test_poe_keep_state_when_reboot_on_port_config_overwrite_is_safe():
         "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
     v = simulate(_plan([_op(object_type="device", object_id="dev-a", payload=payload)]),
                  provider=FakeProvider(raw=raw))
-    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
     codes = {f.code for f in v.findings}
-    assert not any("coverage" in c for c in codes)
+    assert "coverage.gap" in codes
     assert not any(c.startswith("wired.port.unmodeled_change") for c in codes)
     assert v.config_diffs
     assert any("poe_keep_state_when_reboot" in c.path

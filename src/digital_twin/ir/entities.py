@@ -106,6 +106,12 @@ class Device:
     # all_networks, else the enabled network names (site-network namespace)
     dhcp_snooping: tuple[str, ...] | None = None
     meta: FactMeta = CONFIG_META
+    # None = not collected; zero = collected and no configured authenticator.
+    authenticator_count: int | None = None
+    authenticator_unresolved: bool = False
+    # Opaque change token: backend edits (including credentials) must be detected
+    # without publishing secrets in the IR or findings. No reachability claim.
+    authenticator_config: str | None = None
 
 
 @dataclass(frozen=True)
@@ -371,11 +377,31 @@ class L3Intf:
     ip: str | None = None
     meta: FactMeta = CONFIG_META
     id: str = ""  # auto-derived in __post_init__ if empty
+    netmask: str | None = None
+    addressing: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id:
             key = str(self.vlan_id) if self.vlan_id is not None else (self.port or "?")
             object.__setattr__(self, "id", f"{self.device_id}:l3:{self.role.value}:{key}")
+
+
+@dataclass(frozen=True)
+class StaticRoute:
+    """Configured static intent, never proof of an installed forwarding route."""
+
+    device_id: str
+    destination: str
+    next_hops: tuple[str, ...] = ()
+    discard: bool = False
+    unresolved: bool = False
+    # Retains malformed/templated edits so two unresolved values still diff.
+    unresolved_token: str | None = None
+    meta: FactMeta = CONFIG_META
+
+    @property
+    def id(self) -> str:
+        return f"{self.device_id}:route:default:{self.destination}"
 
 
 @dataclass(frozen=True)

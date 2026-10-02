@@ -42,6 +42,7 @@ from digital_twin.ir import (
 from digital_twin.ir.entities import PortAuth, PortMisc, StpPolicy
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
+from .auth_routing import authenticator_state, static_routes
 from .base import IngestContext
 from .dynamic_usage import classify_dynamic_port
 from .ports import (
@@ -428,8 +429,12 @@ def _storm_digest(sc: Any) -> str | None:
     None when absent OR all-default (so unset == explicit-default). Unknown keys
     are kept (conservative)."""
     if not isinstance(sc, dict):
-        return None
-    nondefault = {k: v for k, v in sc.items() if _STORM_DEFAULTS.get(k, _SENTINEL) != v}
+        return None if sc is None else f"unresolved:{sc!r}"
+    nondefault = {
+        k: v for k, v in sc.items()
+        if type(_STORM_DEFAULTS.get(k, _SENTINEL)) is not type(v)
+        or _STORM_DEFAULTS.get(k, _SENTINEL) != v
+    }
     if not nondefault:
         return None
     return ";".join(f"{k}={nondefault[k]}" for k in sorted(nondefault))
@@ -575,6 +580,9 @@ class SwitchIngester:
                 self._switch_ports_and_l3(ctx, dev)
                 self._ospf(ctx, dev)
                 self._bgp(ctx, dev, DeviceRole.SWITCH)
+                did = device_id(str(dev["mac"]))
+                for route in static_routes(ctx.device_effective.get(did, ctx.site_effective), did):
+                    ctx.builder.add_static_route(route)
             elif dev.get("type") == "gateway":
                 self._gateway_ports_and_l3(ctx, dev)
                 self._bgp(ctx, dev, DeviceRole.GATEWAY)
@@ -591,6 +599,9 @@ class SwitchIngester:
             stp_priority: int | None = None
             stp_invalid = False
             dhcp_snooping: tuple[str, ...] | None = None
+            auth_count: int | None = None
+            auth_unresolved = False
+            auth_config: str | None = None
             if role is DeviceRole.SWITCH:
                 eff = ctx.device_effective.get(did) or ctx.site_effective
                 cfg = eff.get("stp_config")
@@ -600,6 +611,14 @@ class SwitchIngester:
                     stp_priority is None and (cfg or {}).get("bridge_priority") is not None
                 )
                 dhcp_snooping = _snooping(eff)
+                auth_count, auth_unresolved, auth_config = authenticator_state(eff)
+                # A missing inherited layer is not evidence that no backend
+                # exists. Live providers fail closed; offline/custom providers
+                # can supply a partial snapshot, so keep this distinction in IR.
+                auth_unresolved |= "setting" not in ctx.raw.meta.fetched or any(
+                    ctx.raw.site.get(f"{layer}_id") and layer not in ctx.raw.meta.fetched
+                    for layer in ("networktemplate", "sitetemplate")
+                )
             ctx.builder.add_device(
                 Device(
                     id=did,
@@ -610,6 +629,9 @@ class SwitchIngester:
                     stp_priority=stp_priority,
                     stp_priority_invalid=stp_invalid,
                     dhcp_snooping=dhcp_snooping,
+                    authenticator_count=auth_count,
+                    authenticator_unresolved=auth_unresolved,
+                    authenticator_config=auth_config,
                     # gateway namespace unfetched -> its L3 model is UNKNOWN
                     l3_unmodeled=(
                         role is DeviceRole.GATEWAY
@@ -996,6 +1018,8 @@ class SwitchIngester:
                         vlan_id=int(vid),
                         ip=ipc.get("ip"),
                         subnet=None,
+                        netmask=str(ipc["netmask"]) if ipc.get("netmask") is not None else None,
+                        addressing=str(ipc["type"]) if ipc.get("type") is not None else None,
                     )
                 )
 

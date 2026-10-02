@@ -70,7 +70,12 @@ def screen_op_split(
         ), ()
     allowlist = RAW_ALLOWLIST.get(object_type, ())
     changed = changed_paths(current, payload)
-    reasons = [_offense_reason(p, current, payload) for p in changed if not allowed(p, allowlist)]
+    reasons = [
+        _offense_reason(p, current, payload)
+        for p in changed
+        if not allowed(p, allowlist)
+        and not _known_empty_nac_match(object_type, p, current, payload)
+    ]
     if object_type == "device":
         # no_local_overwrite is in scope, but flipping it activates/deactivates the
         # member's local_port_config entry wholesale — including UNMODELED local
@@ -80,6 +85,17 @@ def screen_op_split(
         reasons.extend(_local_overwrite_ripple(changed, current, payload, allowlist))
     gaps = (Rejection(stage=_STAGE, reasons=tuple(reasons)),) if reasons else ()
     return None, gaps
+
+
+def _known_empty_nac_match(
+    object_type: str, path: str, current: Mapping[str, Any], proposed: Mapping[str, Any]
+) -> bool:
+    """An explicit empty NAC match is a supported unconstrained rule. Only
+    exactly empty objects qualify; unknown children and null-only trees do not."""
+    if object_type != "nacrule" or path not in ("matching", "not_matching"):
+        return False
+    before, after = current.get(path), proposed.get(path)
+    return (before is None or before == {}) and (after is None or after == {})
 
 
 def screen_op(

@@ -273,9 +273,14 @@ def test_no_modeled_allowlist_leaf_is_flagged():
             for i, s in enumerate(segs):
                 key = "k" if s == "*" else "10.0.0.1" if s == "**" else s
                 if i == len(segs) - 1:
-                    cur[key] = 1
+                    cur.setdefault(key, 1)
                 else:
-                    cur = cur.setdefault(key, {})
+                    # Parent/child entries can coexist (e.g. an opaque root
+                    # token plus recognized storm-control leaves). Retain the
+                    # deepest concrete shape for the unknown-key walker.
+                    if not isinstance(cur.get(key), dict):
+                        cur[key] = {}
+                    cur = cur[key]
         return d
 
     for ot in ("device", "networktemplate", "site_setting", "gatewaytemplate"):

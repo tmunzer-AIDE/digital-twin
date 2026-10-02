@@ -47,6 +47,11 @@ _INLINE_PAINTED = {"vlan", "affected_vlans", "impacts"}
 # One comment per entry. If your new key lands here, say WHY it should not
 # paint (scalar/count/non-entity string), or add it to a visual_map allowlist.
 _NOT_VISUALIZED = {
+    # --- auth/routing/storm detail: device/port subjects already paint;
+    # counts, addresses, service names and threshold values are not graph ids ---
+    "configured_backends", "configured_backends_before", "configured_backends_after",
+    "route", "destination", "next_hops", "discard", "lost_configured_defaults",
+    "services_to_verify", "disable_port", "percentage_before", "percentage_after",
     # --- registry crash note ---
     "error",                # exception text from a crashed check; not an entity
     # --- pairwise mismatch checks (l1/mtu/native): the "link" key already

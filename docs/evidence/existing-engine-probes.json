@@ -1,0 +1,46 @@
+{
+  "scope": "Offline probes against an augmented, redacted project fixture. Targeted WLAN has no active clients; disabling it removes its VLAN delivery requirement. This does not prove service intent or full-stack coverage.",
+  "inspected_on": "2026-10-01",
+  "live_mist_calls": 0,
+  "results": [
+    {
+      "scenario": "wired_only",
+      "decision": "unsafe",
+      "decision_reasons": [
+        "wired.l2.blackhole.exit_lost: vlan 3100: member segment loses its path to the irb exit"
+      ],
+      "network_finding_codes": [
+        "wired.l2.blackhole.exit_lost",
+        "wired.l2.loop.preexisting",
+        "wired.l2.vlan_segmentation.split"
+      ]
+    },
+    {
+      "scenario": "wireless_only",
+      "decision": "safe",
+      "decision_reasons": [
+        "all applicable checks passed (wireless.wlan.client_impact, wireless.wlan.open_guest, wireless.wlan.duplicate_ssid); coverage complete; confidence HIGH"
+      ],
+      "network_finding_codes": []
+    },
+    {
+      "scenario": "combined",
+      "decision": "review",
+      "decision_reasons": [
+        "wired.l2.loop: result confidence MEDIUM"
+      ],
+      "network_finding_codes": [
+        "wired.l2.loop.preexisting",
+        "wired.l2.vlan_segmentation.reshape"
+      ]
+    },
+    {
+      "scenario": "mixed_nac",
+      "decision": "unknown",
+      "decision_reasons": [
+        "UNSUPPORTED [object_gate]: ops[order=2]: unsupported object_type 'nacrule' (templates/org objects fan out beyond one site; not modeled in M1)"
+      ],
+      "network_finding_codes": []
+    }
+  ]
+}

@@ -5,8 +5,11 @@ vlan carriage in config (uplink ports are stat-ensured), so the spec scenarios
 that need specific preconditions use a documented AUGMENTED variant of the
 fixture: an isolated vlan-999 world (network + usages + IRB + a parallel link
 on synthetic spare ports + one wired and one wireless client) layered onto the
-real topology. The pipeline, gates and checks run UNMODIFIED on it — only the
-baseline data is staged. GS5/GS8 run on the untouched fixture.
+real topology. These variants stage a known client population: the captured
+wired search rows aggregate historical device/port lists and cannot certify
+current attachments. Reliability scenarios explicitly retain those rows.
+The pipeline, gates and checks run UNMODIFIED on it — only the baseline data is
+staged. GS5/GS8 run on the untouched fixture.
 """
 
 from __future__ import annotations
@@ -53,11 +56,16 @@ def _drop_nones(obj: Any) -> Any:
 
 
 def augmented_doc(
-    *, parallel_carries_gs: bool, with_wireless_client: bool = True
+    *, parallel_carries_gs: bool, with_wireless_client: bool = True,
+    retain_captured_client_history: bool = False,
 ) -> dict[str, Any]:
     """The vlan-999 world. parallel_carries_gs=True -> redundant carriage (GS2);
     False -> single carrier, the parallel link rides an empty trunk (GS1/GS3)."""
     doc = fixture_doc()
+    if not retain_captured_client_history:
+        # Controlled golden precondition, not production filtering: retain the
+        # original fixture on disk and exercise its uncertainty separately.
+        doc["wired_clients"] = []
     doc["setting"]["networks"][GS_NET] = {"vlan_id": GS_VLAN}
     doc["setting"]["port_usages"]["gs_trunk"] = {"mode": "trunk", "networks": [GS_NET]}
     doc["setting"]["port_usages"]["gs_empty_trunk"] = {"mode": "trunk", "networks": []}
@@ -651,9 +659,10 @@ def _ms_site_a() -> dict[str, Any]:
 
 
 def _ms_site_b(*, networktemplate_id: str = MS_TEMPLATE_ID) -> dict[str, Any]:
-    """Site B doc: the untouched real fixture, assigned to `networktemplate_id`.
+    """Site B topology with a known client population, assigned to the template.
     It carries NO corp member and NO corp IRB, so a corp edit cannot break it."""
     doc = fixture_doc()
+    doc["wired_clients"] = []  # omit ambiguous historical aggregates in this control
     doc["site"]["networktemplate_id"] = networktemplate_id
     doc["scope"]["site_id"] = MS_SITE_B
     return doc

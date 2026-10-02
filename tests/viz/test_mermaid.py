@@ -107,7 +107,9 @@ def test_zero_vlan_physical_edge_is_labeled_as_no_vlans_not_physical():
     b.add_device(Device(id="s2", role=DeviceRole.SWITCH, site="s1", name="sw2"))
     b.add_port(Port(id="s1:p1", device_id="s1", name="p1", mode=PortMode.TRUNK))
     b.add_port(Port(id="s2:p2", device_id="s2", name="p2", mode=PortMode.TRUNK))
-    b.add_link(Link(id=link_id("s1:p1", "s2:p2"), a_port="s1:p1", b_port="s2:p2", kind=LinkKind.PHYSICAL))
+    b.add_link(Link(
+        id=link_id("s1:p1", "s2:p2"), a_port="s1:p1", b_port="s2:p2", kind=LinkKind.PHYSICAL,
+    ))
     l2 = next(d for d in build_diagrams(b.build(), b.build(), ()) if d.view == "l2")
     assert '|"No VLANs"|' in l2.mermaid
     assert '|"physical"|' not in l2.mermaid
