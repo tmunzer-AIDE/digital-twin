@@ -366,11 +366,8 @@ def test_below_profile_benign_edit_on_profiled_switch_is_not_unknown():
     assert not _coverage_gap_findings(verdict)
 
 
-def test_below_profile_benign_local_enable_qos_is_not_unknown():
-    """Device-map benign twin (review P1 round 2): local_port_config.*.enable_qos
-    reaches raw+effective via _BENIGN_DEVICE_PORT_LEAVES but is NOT in the
-    switch device-profile overridable list — a below-profile edit of it on a
-    profiled switch must NOT taint to UNKNOWN."""
+def test_below_profile_unmodeled_qos_change_is_unknown():
+    """A device profile must not hide the coverage gap of a local QoS edit."""
     dev = copy.deepcopy(PROFILED_SWITCH)
     dev["local_port_config"] = {"ge-0/0/0": {"enable_qos": True}}
     op = _device_op("dev-p1", dev)
@@ -378,14 +375,6 @@ def test_below_profile_benign_local_enable_qos_is_not_unknown():
     provider = FakeProvider(_raw())
     verdict = simulate(_plan([op]), provider=provider)
 
-    # local_port_config.*.enable_qos is allowed by the raw/effective gates
-    # (_BENIGN_DEVICE_PORT_LEAVES) but NOT in the switch device-profile
-    # overridable surface, so this must not resolve UNKNOWN via the gate.
-    assert verdict.decision is not Decision.UNKNOWN or not any(
-        "device_profile_gate" in r for r in verdict.decision_reasons
-    ), (
-        f"a below-profile local_port_config.*.enable_qos edit is IR-ignored and "
-        f"must not taint via device_profile_gate; got {verdict.decision}: "
-        f"{verdict.decision_reasons}"
-    )
-    assert not _coverage_gap_findings(verdict)
+    assert verdict.decision is Decision.UNKNOWN
+    assert any("enable_qos" in reason for reason in verdict.decision_reasons)
+    assert _coverage_gap_findings(verdict)

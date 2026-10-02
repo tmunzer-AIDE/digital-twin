@@ -71,8 +71,7 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     "storm_control",
     # Spec 1 reviewed STP knobs — local-capable per the refreshed OAS, so they
     # ride the same local+usage surface as inter_switch_link/storm_control.
-    # (enable_qos moved OUT of this tuple: it is benign — allowed by the gates
-    # but deliberately ignored by IR; see _BENIGN_PROFILE_USAGE_ATTRS.)
+    # QoS scheduling remains unmodeled and is denied by the scope gates.
     "stp_no_root_port",
     "stp_p2p",
     "use_vstp",
@@ -93,34 +92,23 @@ _USAGE_ONLY_REVIEWED_ATTRS: tuple[str, ...] = (
     "stp_required",
 )
 
-# Spec 1 benign SAFE leaves: allowed by the raw + effective gates, deliberately
+# Benign UI leaves: allowed by the raw + effective gates, deliberately
 # NEVER read by ingest and NEVER in the device-profile modeled surface (a
 # profile overriding a leaf the IR ignores changes nothing, so it must not
 # taint profiled switches to UNKNOWN). ui_evpntopo_id: UI selection helper for
 # ESI-LAG profiles (uuid string — pinned by the OAS placement test).
-# enable_qos: scheduling knob, M1 usability ruling. poe_keep_state_when_reboot:
-# reboot-time behavior only. server_fail_retry_interval: RADIUS retry timing —
-# explicit M1 tradeoff, revisit with a RADIUS-outage model (spec 2026-06-29).
+# Scheduling, reboot-time PoE, and RADIUS retry timing were previously treated
+# as benign in M1. The full-stack audit revoked that exception: those effects
+# are not modeled and can affect experience and failure/rollout scenarios.
 _BENIGN_PROFILE_USAGE_ATTRS: tuple[str, ...] = (
     "ui_evpntopo_id",
-    "enable_qos",
-    "poe_keep_state_when_reboot",
-    "server_fail_retry_interval",
 )
 _BENIGN_USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}" for a in _BENIGN_PROFILE_USAGE_ATTRS
 )
-# Benign leaves on the DEVICE inline maps (refreshed OAS: enable_qos also lives
-# on local_port_config; poe_keep_state_when_reboot also on port_config_overwrite).
-# A SEPARATE tuple on purpose: _LOCAL_PORT_CONFIG_LEAVES/_OVERWRITE_LEAVES feed
-# _DEVICE_PORT_LEAVES, which feeds the switch device-profile overridable list —
-# benign leaves must reach ONLY the raw + effective gates, never the
-# device-profile modeled surface (IR-ignored: a profile overriding one changes
-# nothing, so it must not taint profiled switches to UNKNOWN).
-_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = (
-    "local_port_config.*.enable_qos",
-    "port_config_overwrite.*.poe_keep_state_when_reboot",
-)
+# No device inline operational leaves currently qualify as benign. Keep this
+# separate from the modeled device-profile surface for future audited UI fields.
+_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = ()
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
 # atomically, so it is a single leaf) and `reset_default_when` (down-port
@@ -204,7 +192,7 @@ _SNOOPING_LEAVES: tuple[str, ...] = (
 # OSPF participation the IR models AND acts on (GS26 wired.l3.ospf_withdrawal):
 # the master enable (disable = full collapse) + the per-network passive flag
 # (active vs adjacency-bearing). EVERYTHING else (metric, area type, auth,
-# timers, interface_type) stays DENIED -> UNKNOWN: GS27 owns those mutations,
+# timers, interface_type) stays DENIED -> UNKNOWN; GS27 models metric changes,
 # and allowlisting a leaf no check reasons about would be a false-SAFE.
 _OSPF_LEAVES: tuple[str, ...] = (
     "ospf_config.enabled",
@@ -300,10 +288,13 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Modeled WLAN leaves (exactly what _mint_wlan consumes). ap_ids/wxtag_ids are
+# Validated WLAN change leaves. Merely storing auth.type in the IR is not
+# evidence that authentication transitions or client compatibility are modeled;
+# changing it now creates a coverage gap instead of silently resolving SAFE.
+# ap_ids/wxtag_ids are
 # atomic list leaves (NOT ap_ids.* — the path flattener treats lists atomically).
 _WLAN_LEAVES: tuple[str, ...] = (
-    "ssid", "enabled", "auth.type", "isolation", "l2_isolation",
+    "ssid", "enabled", "isolation", "l2_isolation",
     "apply_to", "ap_ids", "wxtag_ids",
 )
 RAW_ALLOWLIST["wlan"] = _WLAN_LEAVES

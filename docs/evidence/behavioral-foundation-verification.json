@@ -1,0 +1,114 @@
+{
+  "verified_at": "2026-10-01T16:08:14.070614+00:00",
+  "scope": "behavioral foundation milestone 1; not full-stack Mist behavioral coverage",
+  "base_commit": "5e5dad70c93d37a806f4c50ef91b4af921075a60",
+  "origin_main_at_sync": "5e5dad70c93d37a806f4c50ef91b4af921075a60",
+  "changes_committed": false,
+  "preserved_backup_stash": "7c3ac7db120de58f5eb2199913e09b6f6d439d82",
+  "checks": {
+    "offline_suite": {
+      "command": "uv run --frozen pytest",
+      "passed": 2066,
+      "live_deselected": 2
+    },
+    "behavioral_cases": 79,
+    "lint": {
+      "command": "uv run --frozen ruff check src tests experiments tools/audit_oas_coverage.py",
+      "passed": true
+    },
+    "types": {
+      "command": "uv run --frozen mypy src",
+      "passed": true,
+      "source_files": 155
+    },
+    "build": {
+      "command": "uv build --no-sources",
+      "passed": true,
+      "warning": "existing uv-build constraint excludes the current uv executable version"
+    },
+    "installed_wheel": {
+      "passed": true,
+      "outside_checkout": true,
+      "isolated_python": true,
+      "installed_without_dependencies": true,
+      "sdk_loaded": false
+    },
+    "diff_whitespace": {
+      "command": "git diff --check",
+      "passed": true
+    },
+    "coderabbit": {
+      "performed": false,
+      "reason": "CLI not installed; local review performed"
+    },
+    "live_organization": {
+      "performed": false
+    },
+    "independent_device_calibration": {
+      "performed": false
+    }
+  },
+  "demo": {
+    "source": "synthetic reference-1 grammar",
+    "property": "VLAN carriage for supplied admitted cohorts",
+    "baseline": {
+      "carriage:a": "satisfied",
+      "carriage:b": "satisfied"
+    },
+    "proposed": {
+      "carriage:a": "satisfied",
+      "carriage:b": "satisfied"
+    },
+    "mixed_states": [
+      {
+        "operations": [
+          0
+        ],
+        "results": {
+          "carriage:a": "violated",
+          "carriage:b": "satisfied"
+        }
+      },
+      {
+        "operations": [
+          1
+        ],
+        "results": {
+          "carriage:a": "violated",
+          "carriage:b": "satisfied"
+        }
+      }
+    ],
+    "deployment_gaps": [
+      "configuration subsets exclude retained runtime/session state"
+    ]
+  },
+  "limitations": [
+    "production Mist-to-behavior compiler absent",
+    "raw capture has explicit incomplete behavioral-inventory gap",
+    "NAC onboarding, radio/client compatibility and Mist Edge not implemented",
+    "no control-plane convergence or existing-session change simulation",
+    "nonsingleton copy correlations explicitly uncertain",
+    "large-organization performance not benchmarked"
+  ],
+  "source_sha256": {
+    "src/digital_twin/behavioral/__init__.py": "fb996e52d5fe27272ce5b20b3e9678721b2c38efac9222892e72337982431a20",
+    "src/digital_twin/behavioral/coverage.py": "05c938aec6250065b3190d69c12ddc3f65a5b8364a31e954143389a7f81a7132",
+    "src/digital_twin/behavioral/demo.py": "0ca3ca804a4efac58c74fbc9a4bd335c42b508150595dc77410aabfcc0c88340",
+    "src/digital_twin/behavioral/juniper.py": "6af7bf3ee8322ef3811a41353a9ccf28afe895790a03409e453b37cfcc45f50f",
+    "src/digital_twin/behavioral/program.py": "2ad5d9f77e0803364c16bc8beeeca963e697d747b6f2edbaa0b74c397881f5c3",
+    "src/digital_twin/behavioral/snapshot.py": "d0fbde288e82542ead2da45ad19cd6433470f13637f57bfdca6d17b253216406",
+    "src/digital_twin/behavioral/space.py": "0fd9a2e670a81b777d8df6bf690870c9f3a268f68e0985af40cc9702c3175a54",
+    "src/digital_twin/behavioral/ssr.py": "db144dadce965e2519f11e39b8a79ea5ed4dcffcb170d816579b5c6e2ecc0951",
+    "src/digital_twin/behavioral/twin.py": "46f7c61a23977634aa6e9fcc8fde1b0fbc12950d767c71257f59b200582fbf92",
+    "src/digital_twin/adapters/mist/behavioral_capture.py": "d5c0967a27cb8c75154bdf174bdd61e2e4260bf559061edb3c14f873057136a7",
+    "src/digital_twin/providers/__init__.py": "19d61c04b1ae1681df9e77ddbbff809bbe6638dcc618a34f385c9a55de8bb7ce",
+    "tests/behavioral/test_capture.py": "2ed3afc27c879da19346e62826e1cc51161518478c725e3019496e6eaa011e2b",
+    "tests/behavioral/test_contracts.py": "0342b41200b8ecfe299e9a66a1674b8f6fc76a82223925f4e94956ccaffa7fa8",
+    "tests/behavioral/test_imports.py": "6c6f8349262d783a9267956b420073cd1e61cc02e8dbf0bd0118ae82c81b5cfc",
+    "tests/behavioral/test_juniper.py": "25bd12a2edda88709ed301e00bfd10732b15773f7ac9ed3af14fa9427c00e0d4",
+    "tests/behavioral/test_symbolic.py": "d64bdabec33c5133e23419a10bdcb799add9fe610c36b9e79e77e80d95c28342",
+    "tests/behavioral/test_twin.py": "6c2f2f4246e8546b30ff09d1858d73f76d20ec90d896d7ae6e530e183750986e"
+  },
+  "wheel_sha256": "d21da10d7a9469fbf73dc9e7ebd0cb044c16cd8db07a7cb68d0592c397f955ce"
+}

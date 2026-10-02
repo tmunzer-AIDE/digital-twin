@@ -457,32 +457,29 @@ def test_auth_in_local_port_config_passes_for_device():
     assert screen_op("device", SWITCH_CUR, payload) is None
 
 
-def test_spec1_benign_leaves_are_in_scope_no_findings():
-    # Spec 1 benign leaves: IR-ignored but gate-allowed — a payload changing
-    # ONLY one of these must be decidable (no rejection, no coverage gap),
-    # mirroring the `description` cosmetic idiom above.
+def test_ui_leaf_is_benign_but_unmodeled_operational_leaves_are_gaps():
     payload = {**SWITCH_CUR, "port_usages": {"office": {"mode": "access",
                                                          "ui_evpntopo_id": "abc-123"}}}
     assert screen_op("device", SWITCH_CUR, payload) is None
 
     payload = {**SWITCH_CUR, "port_usages": {"office": {"mode": "access",
                                                          "enable_qos": True}}}
-    assert screen_op("device", SWITCH_CUR, payload) is None
+    assert screen_op("device", SWITCH_CUR, payload) is not None
 
     payload = {**SWITCH_CUR, "local_port_config": {"ge-0/0/0": {"enable_qos": True}}}
-    assert screen_op("device", SWITCH_CUR, payload) is None
+    assert screen_op("device", SWITCH_CUR, payload) is not None
 
     payload = {**SWITCH_CUR, "port_usages": {"office": {
         "mode": "access", "poe_keep_state_when_reboot": True}}}
-    assert screen_op("device", SWITCH_CUR, payload) is None
+    assert screen_op("device", SWITCH_CUR, payload) is not None
 
     payload = {**SWITCH_CUR, "port_config_overwrite": {
         "ge-0/0/0": {"poe_keep_state_when_reboot": True}}}
-    assert screen_op("device", SWITCH_CUR, payload) is None
+    assert screen_op("device", SWITCH_CUR, payload) is not None
 
     payload = {**SWITCH_CUR, "port_usages": {"office": {
-        "mode": "access", "server_fail_retry_interval": 30}}}
-    assert screen_op("device", SWITCH_CUR, payload) is None
+        "mode": "access", "server_fail_retry_interval": 300}}}
+    assert screen_op("device", SWITCH_CUR, payload) is not None
 
 
 def test_fabricated_unknown_leaf_still_coverage_gap():

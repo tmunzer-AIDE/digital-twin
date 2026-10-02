@@ -77,6 +77,8 @@ class IR:
     bgp_peers: tuple[BgpPeer, ...] = ()
     bgp_neighbors: tuple[BgpNeighbor, ...] = ()
     bgp_telemetry_unparsed_count: int = 0
+    # Observation rows that could not be attached; never interpreted as zero clients.
+    client_telemetry_gaps: tuple[str, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -104,6 +106,7 @@ class IRBuilder:
         self._bgp_neighbors: list[BgpNeighbor] = []
         self._bgp_unparsed = 0
         self._clients: list[Client] = []
+        self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
         self._capabilities: set[Capability] = set()
@@ -216,6 +219,10 @@ class IRBuilder:
         (not merging) keeps 'broken enrichment == no enrichment': a partial map is never
         observed."""
         self._client_enrichment = dict(enrichment)
+        return self
+
+    def mark_client_telemetry_gap(self, reason: str) -> IRBuilder:
+        self._client_telemetry_gaps.append(reason)
         return self
 
     def set_ospf_neighbors(
@@ -433,4 +440,5 @@ class IRBuilder:
             bgp_peers=tuple(self._bgp_peers),
             bgp_neighbors=tuple(self._bgp_neighbors),
             bgp_telemetry_unparsed_count=self._bgp_unparsed,
+            client_telemetry_gaps=tuple(self._client_telemetry_gaps),
         )

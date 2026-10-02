@@ -64,6 +64,7 @@ from digital_twin.providers.base import (
     StateMeta,
     StateProvider,
 )
+from digital_twin.providers.fetch_limits import with_fetch_budget
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived_gaps
 from digital_twin.scope.device_profile_gate import device_profile_gaps
@@ -384,6 +385,7 @@ def _simulate_site_state(
         )
 
 
+@with_fetch_budget
 def simulate(
     plan_data: Mapping[str, Any],
     *,
@@ -589,6 +591,7 @@ def simulate(
     return replace(verdict, config_diffs=tuple(site_diffs))
 
 
+@with_fetch_budget
 def simulate_org_plan(
     plan_data: Mapping[str, Any],
     *,
@@ -875,6 +878,7 @@ def _org_nac_unknown(
                          (rej,) if rej else (), tuple(config_diffs))
 
 
+@with_fetch_budget
 def simulate_org_nac(
     plan_data: Mapping[str, Any],
     *,

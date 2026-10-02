@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Protocol
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.delta_cause import DeltaIndex, delta_index
 from digital_twin.contracts import Finding, Severity
-from digital_twin.ir import Capability, Confidence, IRDiff
+from digital_twin.ir import Capability, Confidence, IRCapability, IRDiff
 
 if TYPE_CHECKING:
     from digital_twin.analysis.stp_agreement import StpAgreementReport
@@ -83,6 +83,18 @@ class CheckContext:
     def __post_init__(self) -> None:
         if self.delta_index is None:
             object.__setattr__(self, "delta_index", delta_index(self.diff))
+
+    @property
+    def client_observations_available(self) -> bool:
+        """Valid observed clients can prove impact even when the population is partial.
+
+        Gaps are published only after successful client fetches; a failed fetch
+        does not make LLDP-only clients into an authoritative active population.
+        """
+        return all(
+            IRCapability.CLIENTS_ACTIVE in ir.capabilities or bool(ir.client_telemetry_gaps)
+            for ir in (self.baseline.ir, self.proposed.ir)
+        )
 
     @property
     def stp_agreement(self) -> StpAgreementReport:

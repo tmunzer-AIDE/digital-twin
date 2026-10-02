@@ -3,8 +3,10 @@
 Per check: (1) applies_to(diff) -> NOT_APPLICABLE and stop (checked FIRST, so a
 cosmetic change is never INSUFFICIENT_DATA); (2) requires() vs the IRs'
 capabilities (INTERSECTION of baseline+proposed — a comparison needs facts on
-both sides) -> INSUFFICIENT_DATA; (3) run, exceptions isolated to CHECK_ERROR +
-an OPERATIONAL finding (a crash is never network breakage -> REVIEW, not UNSAFE).
+both sides) -> INSUFFICIENT_DATA, unless a check explicitly supports partial
+client observations (then coverage stays PARTIAL); (3) run, exceptions isolated
+to CHECK_ERROR + an OPERATIONAL finding (a crash is never network breakage
+-> REVIEW, not UNSAFE).
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
-from digital_twin.ir import Capability, Confidence, ConfidenceLevel
+from digital_twin.ir import Capability, Confidence, ConfidenceLevel, IRCapability
 
 from .base import Check, CheckContext, CheckResult, Coverage, CoverageState, Status
 from .subjects import name_findings
@@ -39,20 +41,37 @@ class CheckRegistry:
                 reasoning="delta does not touch this check's domain",
             )
         missing = check.requires() - capabilities
+        partial_clients = (
+            IRCapability.CLIENTS_ACTIVE in missing
+            and getattr(check, "supports_partial_clients", False)
+            and ctx.client_observations_available
+        )
+        client_notes = tuple(dict.fromkeys(
+            (*ctx.baseline.ir.client_telemetry_gaps, *ctx.proposed.ir.client_telemetry_gaps)
+        ))
+        if partial_clients:
+            missing = missing - {IRCapability.CLIENTS_ACTIVE}
         if missing:
+            notes = tuple(f"missing capability: {m}" for m in sorted(missing))
+            if IRCapability.CLIENTS_ACTIVE in missing:
+                notes += client_notes
             return CheckResult(
                 check_id=check.id,
                 status=Status.INSUFFICIENT_DATA,
                 findings=(),
                 coverage=Coverage(
                     state=CoverageState.INSUFFICIENT,
-                    notes=tuple(f"missing capability: {m}" for m in sorted(missing)),
+                    notes=notes,
                 ),
                 confidence=None,
                 reasoning=f"applicable but lacking capabilities: {sorted(missing)}",
             )
         try:
             result = check.run(ctx)
+            if partial_clients:
+                result = replace(result, coverage=Coverage(
+                    state=CoverageState.PARTIAL, notes=(*result.coverage.notes, *client_notes),
+                ))
             # resolve each finding's headline-object NAME centrally (the check set
             # only kind+id) — proposed IR first, baseline fallback for removals
             return replace(

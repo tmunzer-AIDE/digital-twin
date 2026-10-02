@@ -139,3 +139,22 @@ def test_nactag_mapped():
                                "match": "client_mac", "values": ["aabb"], "match_all": True}])
     t = ir.nactags[0]
     assert t.match == "client_mac" and t.match_all is True and t.values == frozenset({"aabb"})
+
+
+def test_unmodeled_baseline_predicate_or_status_cannot_be_a_clean_catch_all():
+    for extra in (
+        {"matching": {"future_filter": {}}},
+        {"not_matching": {"future_filter": []}},
+        {"dry_run": True},
+        {"dry_run": 0},
+        {"guest_auth_state": "authorized"},
+        {"future_status": {}},
+        {"type": "future-policy-mechanism"},
+    ):
+        ir, findings = build_nac_ir([_rule(**extra)], [])
+        assert ir.nacrules[0].opaque_digest is not None and findings, extra
+
+
+def test_explicit_non_dry_run_rule_remains_provable():
+    ir, findings = build_nac_ir([_rule(dry_run=False)], [])
+    assert ir.nacrules[0].opaque_digest is None and findings == ()

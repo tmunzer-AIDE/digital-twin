@@ -19,7 +19,7 @@ import re
 from collections import Counter
 from typing import Any
 
-REDACTION_VERSION = "8"  # v8: metadata/trace strings + case-insensitive exact name keys
+REDACTION_VERSION = "9"  # v9: routing key aliases plus v8 metadata/trace protections
 
 # strip outright (substring match on the key, case-insensitive) — never hash
 STRIP_KEY_PARTS: tuple[str, ...] = (
@@ -30,6 +30,9 @@ STRIP_KEY_PARTS: tuple[str, ...] = (
     "token",
     "community",
     "private_key",
+    "auth_key",
+    "authentication_key",
+    "md5_key",
     "cert",
 )
 # keys whose STRING values are name-like -> "name-<h8>" (EXACT, case-insensitive)

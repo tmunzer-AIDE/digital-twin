@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from digital_twin.providers.base import FetchError, OrgScope, SiteScope
+from digital_twin.providers.fetch_limits import FetchLimits
 from digital_twin.providers.mist_api import MistApiError, MistApiProvider, _checked
 
 
@@ -133,6 +134,34 @@ def test_pages_raises_on_an_unexpected_page_shape() -> None:
     p = _provider()
     with pytest.raises(MistApiError, match="shape"):
         p._pages(FakeResp(data={"detail": "weird"}))
+
+
+def test_pages_rejects_a_repeated_next_page() -> None:
+    p = _provider(FakeSession({"/page2": FakeResp(data=[{"id": "b"}], next="/page2")}))
+    with pytest.raises(MistApiError, match="cycle"):
+        p._pages(FakeResp(data=[{"id": "a"}], next="/page2"))
+
+
+def test_pages_rejects_an_unfetched_next_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mistapi
+
+    monkeypatch.setattr(mistapi, "get_next", lambda *args: None)
+    with pytest.raises(MistApiError, match="before the next page"):
+        _provider()._pages(FakeResp(data=[{"id": "a"}], next="/page2"))
+
+
+def test_pages_enforces_page_limit() -> None:
+    p = _provider()
+    p._fetch_limits = FetchLimits(max_pages=1)
+    with pytest.raises(MistApiError, match="page limit"):
+        p._pages(FakeResp(data=[{"id": "a"}], next="/page2"))
+
+
+def test_pages_enforces_total_row_limit() -> None:
+    p = _provider(FakeSession({"/page2": FakeResp(data=[{"id": "b"}])}))
+    p._fetch_limits = FetchLimits(max_rows=1)
+    with pytest.raises(MistApiError, match="row limit"):
+        p._pages(FakeResp(data=[{"id": "a"}], next="/page2"))
 
 
 # -- endpoint wiring ----------------------------------------------------------

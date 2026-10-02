@@ -34,3 +34,25 @@ def test_back_compat_import_path_still_works():
     from digital_twin.observability.replay.redaction import REDACTION_VERSION, redact
     assert isinstance(REDACTION_VERSION, str)
     assert redact({"psk": "x"})["psk"] is None
+
+
+def test_routing_authentication_key_aliases_are_never_exported():
+    from digital_twin.redaction import redact
+
+    for key in ("auth_key", "authentication_key", "md5_key"):
+        assert redact({key: "synthetic-short-key"})[key] is None
+        assert redact_leaf(f"routing.{key}", "synthetic-short-key") == REDACTED
+
+
+def test_routing_key_and_upstream_diagnostic_redaction_compose():
+    from digital_twin.redaction import redact
+
+    result = redact({
+        "bgp": {"auth_key": "short-key"},
+        "Name": "Synthetic Switch",
+        "error": "password=short-pass client_secret: short-secret",
+    })
+    assert result["bgp"]["auth_key"] is None
+    assert result["Name"].startswith("name-")
+    assert "short-pass" not in result["error"]
+    assert "short-secret" not in result["error"]
