@@ -50,6 +50,7 @@ from digital_twin.contracts import (
     Rejection,
     Severity,
 )
+from digital_twin.engine.effective_override import effective_override_result
 from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
 from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
@@ -86,7 +87,12 @@ _EMPTY_DIFF = IRDiff((), (), ())
 # here would false-UNKNOWN those edits). For gatewaytemplate edits the FULL
 # effective is screened (full=True) to catch networks changes owned by the
 # gateway namespace that never appear in site_effective.
-GATEWAY_SCREENED_ROOTS: tuple[str, ...] = ("port_config", "ip_configs", "dhcpd_config", "vars")
+GATEWAY_SCREENED_ROOTS: tuple[str, ...] = (
+    "port_config", "ip_configs", "dhcpd_config", "vars",
+    # Newly recognized switch roots also survive the generic gateway fold.
+    # Until gateway semantics are modeled, changes here must remain UNKNOWN.
+    "radius_config", "mist_nac", "extra_routes", "extra_routes6",
+)
 
 
 def _gw_screen_view(eff: dict[str, Any], *, full: bool) -> dict[str, Any]:
@@ -348,6 +354,13 @@ def _simulate_site_state(
                 delta_index=delta_index(diff),
             )
         )
+        override = effective_override_result(
+            site_id=baseline_raw.scope.site_id,
+            baseline_lower=baseline.site_effective, proposed_lower=proposed.site_effective,
+            baseline_devices=baseline.device_effective, proposed_devices=proposed.device_effective,
+        )
+        if override is not None:
+            results = (*results, override)
     profile_outcome = profile_proposed if profile_proposed is not None else proposed
     dp_gaps = device_profile_gaps(
         proposed_raw.devices,

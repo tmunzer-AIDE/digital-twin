@@ -133,7 +133,7 @@ A verdict is more than a yes/no. Each one bundles three kinds of value.
 
 ### 3. Validations — what it actually checks
 
-The twin ships **30 checks** over the IR. The **28 wired/wireless checks** run on
+The twin ships **34 checks** over the IR. The **32 wired/wireless checks** run on
 site plans (and the org-template fan-out); the **2 NAC checks** run on org-NAC
 plans. Each is **delta-aware**: a finding *introduced* by the change gates the
 verdict; a pre-existing condition the change merely touches is reported as
@@ -171,6 +171,23 @@ context and never floors an unrelated edit.
 | 28 | L2 / switching | `wired.l2.topology_coverage` | topology-dependent changes when port/device observations are unavailable |
 | 29 | **NAC (org)** | `nac.rule.change` | an honest before→after delta of NAC rules |
 | 30 | **NAC (org)** | `nac.rule.shadowed` | a rule provably shadowed by an earlier superset |
+| 31 | Wired auth | `wired.auth.radius_missing` | active auth ports without configured backends; backend edits requiring admission verification |
+| 32 | L3 / routing | `wired.l3.static_route_reachability` | static-route edits or local L3 changes requiring forwarding verification |
+| 33 | L3 / management | `wired.l3.control_plane_reachability` | loss of a configured IPv4/IPv6 default or changed routing dependencies |
+| 34 | Port / config | `wired.port.storm_control_policy` | storm-triggered uplink shutdown and threshold changes |
+
+Lower-layer edits that leave compiled switch values unchanged are also reported
+as `scope.effective_noop` warnings, with fully/partially overridden paths and
+device lists. Device-profile coverage gaps still prevent confident conclusions.
+
+The new authentication and routing checks distinguish configured intent from
+runtime operation: a server entry is not proof of successful authentication, and
+a static route is not proof of an installed forwarding path. Changes require
+`REVIEW` without live admission/forwarding evidence. Only default-instance switch
+`extra_routes`/`extra_routes6` next hops and discard flags enter this routing
+surface; VRFs, metrics, route policy and qualified next-hop edits remain `UNKNOWN`.
+Storm-control thresholds likewise require traffic measurements before predicting
+packet loss. Unchanged hazards remain informational context.
 
 ## Quick start
 
@@ -360,7 +377,7 @@ src/digital_twin/
 ├── ir/               vendor-neutral model + diff + confidence/provenance
 ├── representations/  L2 multigraph, per-VLAN graphs (pure views)
 ├── analysis/         cycles, VLAN reachability, exit resolution, cause attribution, STP tree prediction + agreement + STP-aware reachability taint + policy inertness license (memoized)
-├── checks/           the 28 wired/wireless + 2 NAC checks + registry (the ONLY layer with severity)
+├── checks/           the 32 wired/wireless + 2 NAC checks + registry
 ├── verdict/          decision precedence, coverage/confidence rollups, site + org + NAC assembly
 ├── scope/            envelope / object / field / derived / device-profile gates + allowlist data
 ├── providers/        Mist API fetch (single-site, org-batched multi-site, NAC, template resolve)

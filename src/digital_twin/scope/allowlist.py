@@ -69,6 +69,12 @@ _MODELED_USAGE_ATTRS: tuple[str, ...] = (
     *_AUTH_ATTRS,
     "inter_switch_link",
     "storm_control",
+    # The field gate descends objects: retaining only the root denies every
+    # real storm-control edit. Exact children preserve default-deny for new knobs.
+    *(f"storm_control.{a}" for a in (
+        "disable_port", "percentage", "no_broadcast", "no_multicast",
+        "no_registered_multicast", "no_unknown_unicast",
+    )),
     # Spec 1 reviewed STP knobs — local-capable per the refreshed OAS, so they
     # ride the same local+usage surface as inter_switch_link/storm_control.
     # QoS scheduling remains unmodeled and is denied by the scope gates.
@@ -161,6 +167,15 @@ _BGP_LEAVES: tuple[str, ...] = (
 # Gateway BGP adds the transport selector `via` (lan|tunnel|vpn|wan); switches are
 # implicitly LAN and have no via.
 _BGP_GATEWAY_LEAVES: tuple[str, ...] = (*_BGP_LEAVES, "bgp_config.*.via")
+
+# Presence/config-change warnings only: live RADIUS and forwarding outcomes
+# remain unverified. VRFs, route policy/metrics and qualified next-hop edits
+# retain the default-deny boundary until their semantics are modeled.
+_AUTH_BACKEND_LEAVES: tuple[str, ...] = ("radius_config.auth_servers", "mist_nac.enabled")
+_STATIC_ROUTE_LEAVES: tuple[str, ...] = (
+    "extra_routes.**.via", "extra_routes.**.discard",
+    "extra_routes6.**.via", "extra_routes6.**.discard",
+)
 
 # Gateway modeled effective leaves: exactly what _gateway_ports_and_l3 + gateway
 # dhcp consume AND act on. NOT port_config.*.usage (inert -> Port.profile), NOT
@@ -270,6 +285,8 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
         *_BGP_LEAVES,
+        *_AUTH_BACKEND_LEAVES,
+        *_STATIC_ROUTE_LEAVES,
         "vars.*",
     ),
     "device": (
@@ -283,6 +300,8 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
         *_BGP_LEAVES,
+        *_AUTH_BACKEND_LEAVES,
+        *_STATIC_ROUTE_LEAVES,
         "name",
         "notes",
     ),
@@ -357,6 +376,8 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_SNOOPING_LEAVES,
     *_OSPF_LEAVES,
     *_BGP_LEAVES,
+    *_AUTH_BACKEND_LEAVES,
+    *_STATIC_ROUTE_LEAVES,
     "vars.*",
 )
 
@@ -381,5 +402,6 @@ DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     "switch": (
         *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
         *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
+        *_AUTH_BACKEND_LEAVES, *_STATIC_ROUTE_LEAVES,
     ),
 }
