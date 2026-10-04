@@ -1,16 +1,2578 @@
 {
-  "type": "object",
+  "description": "**Note**: portal_template will be forked out of wlan objects soon. To fetch portal_template, please query portal_template_url. To update portal_template, use Wlan Portal Template.",
   "properties": {
-    "ssid": { "type": "string" },
-    "enabled": { "type": "boolean" },
-    "isolation": { "type": "boolean" },
-    "l2_isolation": { "type": "boolean" },
-    "apply_to": { "type": "string", "enum": ["site", "aps", "wxtags"] },
-    "ap_ids": { "type": "array", "items": { "type": "string" } },
-    "wxtag_ids": { "type": "array", "items": { "type": "string" } },
+    "acct_immediate_update": {
+      "default": false,
+      "description": "Enable coa-immediate-update and address-change-immediate-update on the access profile.",
+      "type": "boolean"
+    },
+    "acct_interim_interval": {
+      "default": 0,
+      "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from RADIUS Server). Very frequent messages can affect the performance of the RADIUS server, 600 and up is recommended when enabled",
+      "examples": [
+        0
+      ],
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "acct_servers": {
+      "description": "RADIUS accounting servers used by this WLAN",
+      "items": {
+        "additionalProperties": false,
+        "description": "RADIUS accounting server settings",
+        "properties": {
+          "host": {
+            "description": "Address or hostname of the RADIUS accounting server",
+            "examples": [
+              "1.2.3.4"
+            ],
+            "type": "string"
+          },
+          "keywrap_enabled": {
+            "description": "Whether RADIUS keywrap is enabled for messages sent to this accounting server",
+            "type": "boolean"
+          },
+          "keywrap_format": {
+            "description": "Encoding format for RADIUS keywrap KEK and MACK values",
+            "enum": [
+              "ascii",
+              "hex"
+            ],
+            "type": "string"
+          },
+          "keywrap_kek": {
+            "description": "RADIUS keywrap key encryption key (KEK)",
+            "examples": [
+              "1122334455"
+            ],
+            "type": "string"
+          },
+          "keywrap_mack": {
+            "description": "RADIUS keywrap message authentication code key (MACK)",
+            "examples": [
+              "1122334455"
+            ],
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65545,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "UDP port used by the RADIUS accounting server"
+          },
+          "secret": {
+            "description": "Shared secret used with this RADIUS accounting server",
+            "examples": [
+              "testing123"
+            ],
+            "format": "password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "airwatch": {
+      "additionalProperties": false,
+      "description": "Integration settings for AirWatch device compliance on this WLAN",
+      "properties": {
+        "api_key": {
+          "default": "",
+          "description": "API key used to authenticate to the AirWatch service",
+          "examples": [
+            "aHhlbGxvYXNkZmFzZGZhc2Rmc2RmCg==\""
+          ],
+          "type": "string"
+        },
+        "console_url": {
+          "default": "",
+          "description": "Base console URL of the AirWatch deployment",
+          "examples": [
+            "https://hs1.airwatchportals.com"
+          ],
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether AirWatch integration is enabled for the WLAN",
+          "type": "boolean"
+        },
+        "password": {
+          "default": "",
+          "description": "AirWatch integration account password for this WLAN",
+          "examples": [
+            "user1"
+          ],
+          "format": "password",
+          "type": "string"
+        },
+        "username": {
+          "default": "",
+          "description": "AirWatch integration account username for this WLAN",
+          "examples": [
+            "test123"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "allow_ipv6_ndp": {
+      "default": true,
+      "description": "Only applicable when `limit_bcast`==`true`, which allows or disallows ipv6 Neighbor Discovery packets to go through",
+      "type": "boolean"
+    },
+    "allow_mdns": {
+      "default": false,
+      "description": "Only applicable when `limit_bcast`==`true`, which allows mDNS / Bonjour packets to go through",
+      "type": "boolean"
+    },
+    "allow_ssdp": {
+      "default": false,
+      "description": "Only applicable when `limit_bcast`==`true`, which allows SSDP",
+      "type": "boolean"
+    },
+    "ap_ids": {
+      "description": "Access point identifiers used when `apply_to`==`aps`",
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "app_limit": {
+      "additionalProperties": false,
+      "description": "Bandwidth limits for applications on this WLAN",
+      "properties": {
+        "apps": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Map from app key to bandwidth in kbps. \nProperty key is the app key, defined in Get Application List",
+          "examples": [
+            {
+              "dropbox": 300,
+              "netflix": 60
+            }
+          ],
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether application bandwidth limits are enabled for this WLAN",
+          "type": "boolean"
+        },
+        "wxtag_ids": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Map from wxtag_id of Hostname Wxlan Tags to bandwidth in kbps. Property key is the `wxtag_id`",
+          "examples": [
+            {
+              "f99862d9-2726-931f-7559-3dfdf5d070d3": 30
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "app_qos": {
+      "additionalProperties": false,
+      "description": "QoS rules for application traffic on this WLAN",
+      "properties": {
+        "apps": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "description": "QoS rewrite settings for traffic matching a named application",
+            "properties": {
+              "dscp": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 63,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ],
+                "description": "Differentiated Services Code Point value applied to matching application traffic"
+              },
+              "dst_subnet": {
+                "description": "Subnet filter is not required but helps AP to only inspect certain traffic (thus reducing AP load)",
+                "type": "string"
+              },
+              "src_subnet": {
+                "description": "Subnet filter is not required but helps AP to only inspect certain traffic (thus reducing AP load)",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "description": "Map of application keys to QoS rewrite settings",
+          "examples": [
+            {
+              "skype-business-video": {
+                "dscp": 32,
+                "dst_subnet": "10.2.0.0/16",
+                "src_subnet": "10.2.0.0/16"
+              }
+            }
+          ],
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether application QoS rewrite rules are enabled for this WLAN",
+          "type": "boolean"
+        },
+        "others": {
+          "description": "Custom traffic QoS rules that are not tied to named applications",
+          "items": {
+            "additionalProperties": false,
+            "description": "Custom QoS rewrite rule for traffic not matched by a named application",
+            "properties": {
+              "dscp": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 63,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ],
+                "description": "Differentiated Services Code Point value applied to matching traffic"
+              },
+              "dst_subnet": {
+                "description": "Destination subnet filter for this custom QoS rule",
+                "examples": [
+                  "10.2.0.0/16"
+                ],
+                "type": "string"
+              },
+              "port_ranges": {
+                "description": "TCP or UDP port ranges matched by this custom QoS rule",
+                "examples": [
+                  "80,1024-6553"
+                ],
+                "type": "string"
+              },
+              "protocol": {
+                "description": "IP protocol matched by this custom QoS rule",
+                "examples": [
+                  "udp"
+                ],
+                "type": "string"
+              },
+              "src_subnet": {
+                "description": "Source subnet filter for this custom QoS rule",
+                "examples": [
+                  "10.2.0.0/16"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "type": "object"
+    },
+    "apply_to": {
+      "description": "Scope that determines where this WLAN is applied",
+      "enum": [
+        "aps",
+        "site",
+        "wxtags"
+      ],
+      "type": "string"
+    },
+    "arp_filter": {
+      "default": false,
+      "description": "Whether to enable smart arp filter",
+      "type": "boolean"
+    },
     "auth": {
-      "type": "object",
-      "properties": { "type": { "type": "string" } }
+      "additionalProperties": false,
+      "description": "Settings that control client authentication for this WLAN",
+      "properties": {
+        "anticlog_threshold": {
+          "default": 16,
+          "description": "SAE anti-clogging token threshold",
+          "examples": [
+            16
+          ],
+          "maximum": 32,
+          "minimum": 16,
+          "type": "integer"
+        },
+        "eap_reauth": {
+          "default": false,
+          "description": "Whether to trigger EAP reauth when the session ends",
+          "type": "boolean"
+        },
+        "enable_beacon_protection": {
+          "default": false,
+          "description": "Enable Beacon Protection; default is false for better compatibility",
+          "type": "boolean"
+        },
+        "enable_gcmp256": {
+          "default": false,
+          "description": "Enable GCMP-256 encryption suite; default is false for better compatibility",
+          "type": "boolean"
+        },
+        "enable_mac_auth": {
+          "default": false,
+          "description": "Whether to enable MAC Auth, uses the same auth_servers",
+          "type": "boolean"
+        },
+        "key_idx": {
+          "default": 1,
+          "description": "When `type`==`wep`, index of the WEP key used as the default transmit key",
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "keys": {
+          "default": [],
+          "description": "When `type`==`wep`, WEP keys configured for this WLAN",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "multi_psk_only": {
+          "default": false,
+          "description": "When `type`==`psk`, whether to only use multi_psk",
+          "type": "boolean"
+        },
+        "owe": {
+          "default": "disabled",
+          "description": "When `type`==`open`, Opportunistic Wireless Encryption mode for this WLAN",
+          "enum": [
+            "disabled",
+            "enabled",
+            "required"
+          ],
+          "type": "string"
+        },
+        "pairwise": {
+          "default": [
+            "wpa2-ccmp"
+          ],
+          "description": "When `type`==`psk` or `type`==`eap`, pairwise cipher suites allowed for this WLAN",
+          "items": {
+            "description": "enum: `wpa1-ccmp`, `wpa1-tkip`, `wpa2-ccmp`, `wpa2-tkip`, `wpa3`",
+            "enum": [
+              "wpa1-ccmp",
+              "wpa1-tkip",
+              "wpa2-ccmp",
+              "wpa2-tkip",
+              "wpa3"
+            ],
+            "examples": [
+              "wpa3"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "private_wlan": {
+          "default": false,
+          "description": "When `multi_psk_only`==`true`, whether private wlan is enabled",
+          "type": "boolean"
+        },
+        "psk": {
+          "default": "",
+          "description": "When `type`==`psk`, 8-64 characters, or 64 hex characters",
+          "examples": [
+            "foryoureyesonly"
+          ],
+          "maxLength": 64,
+          "minLength": 8,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "default": "open",
+          "description": "Authentication mode used by this WLAN",
+          "enum": [
+            "eap",
+            "eap192",
+            "open",
+            "psk",
+            "psk-tkip",
+            "psk-wpa2-tkip",
+            "wep"
+          ],
+          "examples": [
+            "psk"
+          ],
+          "type": "string"
+        },
+        "wep_as_secondary_auth": {
+          "default": false,
+          "description": "Enable WEP as secondary auth",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "auth_server_selection": {
+      "default": "ordered",
+      "description": "RADIUS authentication server selection behavior for this WLAN",
+      "enum": [
+        "ordered",
+        "unordered"
+      ],
+      "examples": [
+        "ordered"
+      ],
+      "type": "string"
+    },
+    "auth_servers": {
+      "description": "RADIUS authentication servers used by this WLAN. Required when `auth.type`==`eap`",
+      "items": {
+        "additionalProperties": false,
+        "description": "RADIUS authentication server settings",
+        "properties": {
+          "host": {
+            "description": "Address or hostname of the RADIUS authentication server",
+            "examples": [
+              "1.2.3.4"
+            ],
+            "type": "string"
+          },
+          "keywrap_enabled": {
+            "description": "Whether RADIUS keywrap is enabled for messages sent to this authentication server",
+            "type": "boolean"
+          },
+          "keywrap_format": {
+            "description": "Encoding format for RADIUS keywrap KEK and MACK values",
+            "enum": [
+              "ascii",
+              "hex"
+            ],
+            "type": "string"
+          },
+          "keywrap_kek": {
+            "description": "RADIUS keywrap key encryption key (KEK)",
+            "examples": [
+              "1122334455"
+            ],
+            "type": "string"
+          },
+          "keywrap_mack": {
+            "description": "RADIUS keywrap message authentication code key (MACK)",
+            "examples": [
+              "1122334455"
+            ],
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65545,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "UDP port used by the RADIUS authentication server"
+          },
+          "require_message_authenticator": {
+            "default": false,
+            "description": "Whether to require Message-Authenticator in requests",
+            "type": "boolean"
+          },
+          "secret": {
+            "description": "Shared secret used with this RADIUS authentication server",
+            "examples": [
+              "testing123"
+            ],
+            "format": "password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "auth_servers_nas_id": {
+      "description": "Optional, up to 48 bytes, will be dynamically generated if not provided. used only for authentication servers",
+      "examples": [
+        "5c5b350e0101-nas"
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_servers_nas_ip": {
+      "description": "Optional, NAS-IP-ADDRESS to use",
+      "examples": [
+        "15.3.1.5"
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_servers_retries": {
+      "default": 2,
+      "description": "RADIUS auth session retries. Following fast timers are set if \"fast_dot1x_timers\" knob is enabled. \u2018retries\u2019 are set to value of auth_servers_retries. \u2018max-requests\u2019 is also set when setting auth_servers_retries and is set to default value to 3.",
+      "examples": [
+        5
+      ],
+      "type": "integer"
+    },
+    "auth_servers_timeout": {
+      "default": 5,
+      "description": "RADIUS auth session timeout. Following fast timers are set if \"fast_dot1x_timers\" knob is enabled. \u2018quite-period\u2019  and \u2018transmit-period\u2019 are set to half the value of auth_servers_timeout. \u2018supplicant-timeout\u2019 is also set when setting auth_servers_timeout and is set to default value of 10.",
+      "type": "integer"
+    },
+    "band": {
+      "deprecated": true,
+      "description": "`band` is deprecated and kept for backward compatibility. Use `bands` instead",
+      "type": "string"
+    },
+    "band_steer": {
+      "default": false,
+      "description": "Whether to enable band_steering, this works only when band==both",
+      "type": "boolean"
+    },
+    "band_steer_force_band5": {
+      "default": false,
+      "description": "Force dual_band capable client to connect to 5G",
+      "type": "boolean"
+    },
+    "bands": {
+      "default": [
+        "24",
+        "5",
+        "6"
+      ],
+      "description": "Radio bands on which this WLAN is broadcast",
+      "items": {
+        "description": "enum: `24`, `5`, `5-dedicated`, `5-selectable`, `6`, `6-dedicated`, `6-selectable`",
+        "enum": [
+          "24",
+          "5",
+          "5-dedicated",
+          "5-selectable",
+          "6",
+          "6-dedicated",
+          "6-selectable"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "block_blacklist_clients": {
+      "default": false,
+      "description": "Whether to block the clients in the blacklist (up to first 256 macs)",
+      "type": "boolean"
+    },
+    "bonjour": {
+      "additionalProperties": false,
+      "description": "Service discovery gateway settings for Bonjour traffic on this WLAN",
+      "properties": {
+        "additional_vlan_ids": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "description": "Additional VLAN IDs represented as an array",
+              "items": {
+                "description": "VLAN ID, either numeric or expressed as a template variable string",
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 4094,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          ],
+          "description": "VLAN IDs, beyond the client VLAN, where Bonjour queries and responses are forwarded"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether to enable bonjour for this WLAN. Once enabled, limit_bcast is assumed true, allow_mdns is assumed false",
+          "type": "boolean"
+        },
+        "services": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "description": "Bonjour service discovery settings for one advertised service",
+            "properties": {
+              "disable_local": {
+                "default": false,
+                "description": "Whether to prevent wireless clients to discover bonjour devices on the same WLAN",
+                "type": "boolean"
+              },
+              "radius_groups": {
+                "description": "RADIUS groups allowed to discover this Bonjour service, when restricted",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "scope": {
+                "default": "same_site",
+                "description": "Discovery scope for this Bonjour service on the WLAN",
+                "enum": [
+                  "same_ap",
+                  "same_map",
+                  "same_site"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "What services are allowed. \nProperty key is the service name",
+          "examples": [
+            {
+              "airplay": {
+                "radius_groups": [
+                  "teachers"
+                ],
+                "scope": "same_ap"
+              }
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "cisco_cwa": {
+      "additionalProperties": false,
+      "description": "Central web authentication settings for Cisco CWA on this WLAN",
+      "properties": {
+        "allowed_hostnames": {
+          "description": "Hostnames allowed for Cisco CWA client access before authorization",
+          "items": {
+            "examples": [
+              "snapchat.com"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "allowed_subnets": {
+          "description": "CIDR subnets allowed for Cisco CWA client access before authorization",
+          "items": {
+            "examples": [
+              "63.5.3.0/24"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "blocked_subnets": {
+          "description": "CIDR subnets blocked for Cisco CWA client access",
+          "items": {
+            "examples": [
+              "192.168.0.0/16"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether Cisco CWA is enabled for this WLAN",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "client_limit_down": {
+      "anyOf": [
+        {
+          "maximum": 999000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "Downlink bandwidth limit applied per client"
+    },
+    "client_limit_down_enabled": {
+      "default": false,
+      "description": "If downlink limiting per-client is enabled",
+      "type": "boolean"
+    },
+    "client_limit_up": {
+      "anyOf": [
+        {
+          "maximum": 999000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "Uplink bandwidth limit applied per client"
+    },
+    "client_limit_up_enabled": {
+      "default": false,
+      "description": "If uplink limiting per-client is enabled",
+      "type": "boolean"
+    },
+    "coa_servers": {
+      "description": "RADIUS Change of Authorization servers available to this WLAN",
+      "items": {
+        "additionalProperties": false,
+        "description": "RADIUS Change of Authorization (CoA) server settings",
+        "properties": {
+          "disable_event_timestamp_check": {
+            "default": false,
+            "description": "Whether to disable Event-Timestamp Check",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": false,
+            "description": "Whether this RADIUS CoA server is enabled",
+            "type": "boolean"
+          },
+          "ip": {
+            "description": "Server IPv4 address for RADIUS CoA messages",
+            "examples": [
+              "1.2.3.4"
+            ],
+            "format": "ipv4",
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65545,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "UDP port used to send RADIUS CoA messages to the server"
+          },
+          "secret": {
+            "description": "Shared secret used to authenticate RADIUS CoA messages",
+            "examples": [
+              "testing456"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "created_time": {
+      "description": "Time when this WLAN was created, in epoch seconds",
+      "format": "double",
+      "readOnly": true,
+      "type": "number"
+    },
+    "disable_11ax": {
+      "default": false,
+      "description": "Some old WLAN drivers may not be compatible",
+      "type": "boolean"
+    },
+    "disable_11be": {
+      "default": false,
+      "description": "To disable Wi-Fi 7 EHT IEs",
+      "type": "boolean"
+    },
+    "disable_ht_vht_rates": {
+      "default": false,
+      "description": "To disable ht or vht rates",
+      "type": "boolean"
+    },
+    "disable_message_authenticator_check": {
+      "default": false,
+      "description": "whether to disable Message-Authenticator Check, which is used to verify the integrity of RADIUS messages, default is false (i.e. for better security)",
+      "type": "boolean"
+    },
+    "disable_uapsd": {
+      "default": false,
+      "description": "Whether to disable U-APSD",
+      "type": "boolean"
+    },
+    "disable_v1_roam_notify": {
+      "default": false,
+      "description": "Disable sending v2 roam notification messages",
+      "type": "boolean"
+    },
+    "disable_v2_roam_notify": {
+      "default": false,
+      "description": "Disable sending v2 roam notification messages",
+      "type": "boolean"
+    },
+    "disable_when_gateway_unreachable": {
+      "default": false,
+      "description": "When any of the following is true, this WLAN will be disabled\n   * cannot get IP\n   * cannot obtain default gateway\n   * cannot reach default gateway",
+      "type": "boolean"
+    },
+    "disable_when_mxtunnel_down": {
+      "default": false,
+      "description": "Whether to disable this WLAN when the configured Mist tunnel is down",
+      "type": "boolean"
+    },
+    "disable_wmm": {
+      "default": false,
+      "description": "Whether to disable WMM",
+      "type": "boolean"
+    },
+    "dns_server_rewrite": {
+      "additionalProperties": false,
+      "description": "RADIUS group based DNS server rewrite settings for this WLAN",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether DNS server rewrite by RADIUS group is enabled for this WLAN",
+          "type": "boolean"
+        },
+        "radius_groups": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Map between radius_group and the desired DNS server (IPv4 only). Property key is the RADIUS group, property value is the desired DNS Server",
+          "examples": [
+            {
+              "contractor": "172.1.1.1",
+              "guest": "8.8.8.8"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "dtim": {
+      "default": 2,
+      "description": "Delivery Traffic Indication Message interval for this WLAN",
+      "type": "integer"
+    },
+    "dynamic_psk": {
+      "additionalProperties": false,
+      "description": "Per-user PSK selection settings for this WLAN",
+      "properties": {
+        "default_psk": {
+          "description": "Default PSK to use if cloud WLC is not available, 8-63 characters",
+          "examples": [
+            "foryoureyesonly"
+          ],
+          "maxLength": 63,
+          "minLength": 8,
+          "type": "string"
+        },
+        "default_vlan_id": {
+          "description": "Default VLAN ID used when dynamic PSK lookup does not return a VLAN",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "maximum": 4094,
+              "minimum": 1,
+              "type": "integer"
+            }
+          ]
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether dynamic PSK is enabled for this WLAN",
+          "type": "boolean"
+        },
+        "force_lookup": {
+          "default": false,
+          "description": "When 11r is enabled, we'll try to use the cached PMK, this can be disabled. `false` means auto",
+          "type": "boolean"
+        },
+        "source": {
+          "default": "radius",
+          "description": "Origin used to retrieve per-user PSKs",
+          "enum": [
+            "cloud_psks",
+            "radius"
+          ],
+          "examples": [
+            "cloud_psks"
+          ],
+          "type": "string"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "dynamic_vlan": {
+      "additionalProperties": false,
+      "description": "VLAN assignment settings for 802.1X dynamic VLANs",
+      "properties": {
+        "default_vlan_id": {
+          "deprecated": true,
+          "description": "Deprecated default VLAN ID used when no RADIUS VLAN match is returned. Please use `default_vlan_ids` instead, which can support VLAN pools.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "default": 999,
+              "maximum": 4094,
+              "minimum": 1,
+              "type": "integer"
+            }
+          ]
+        },
+        "default_vlan_ids": {
+          "description": "Fallback VLAN IDs, ranges, or variables used when no RADIUS VLAN match is returned",
+          "items": {
+            "description": "VLAN ID, VLAN range or variable to use when there\u2019s no match from RADIUS",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "default": 999,
+                "maximum": 4094,
+                "minimum": 1,
+                "type": "integer"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Requires `vlan_enabled`==`true` to be set to `true`. Whether to enable dynamic vlan",
+          "type": "boolean"
+        },
+        "local_vlan_ids": {
+          "description": "VLAN IDs that should be locally bridged for dynamic VLAN assignment",
+          "items": {
+            "description": "VLAN ID, either numeric or expressed as a template variable string",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "maximum": 4094,
+                "minimum": 1,
+                "type": "integer"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "type": {
+          "default": "standard",
+          "description": "Dynamic VLAN mapping method used for RADIUS-provided VLAN attributes",
+          "enum": [
+            "airespace-interface-name",
+            "standard"
+          ],
+          "examples": [
+            "airespace-interface-name"
+          ],
+          "type": "string"
+        },
+        "vlans": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Map between vlan_id (as string) to airespace interface names (comma-separated) or null for standard mapping\n  * if `dynamic_vlan.type`==`standard`, property key is the VLAN ID and property value is \\\"\\\"\n  * if `dynamic_vlan.type`==`airespace-interface-name`, property key is the VLAN ID and property value is the Airespace Interface Name",
+          "examples": [
+            {
+              "131": "default",
+              "322": "fast,video"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "enable_local_keycaching": {
+      "default": false,
+      "description": "Enable AP-AP keycaching via multicast",
+      "type": "boolean"
+    },
+    "enable_wireless_bridging": {
+      "default": false,
+      "description": "By default, we'd inspect all DHCP packets and drop those unrelated to the wireless client itself in the case where client is a wireless bridge (DHCP packets for other MACs will need to be forwarded), wireless_bridging can be enabled",
+      "type": "boolean"
+    },
+    "enable_wireless_bridging_dhcp_tracking": {
+      "default": false,
+      "description": "If the client bridge is doing DHCP on behalf of other devices (L2-NAT), enable dhcp_tracking will cut down DHCP response packets to be forwarded to wireless",
+      "type": "boolean"
+    },
+    "enabled": {
+      "default": true,
+      "description": "If this wlan is enabled",
+      "type": "boolean"
+    },
+    "fast_dot1x_timers": {
+      "default": false,
+      "description": "If set to true, sets default fast-timers with values calculated from \u2018auth_servers_timeout\u2019 and \u2018auth_server_retries\u2019 .",
+      "type": "boolean"
+    },
+    "for_site": {
+      "description": "Whether this WLAN record is scoped to a site",
+      "readOnly": true,
+      "type": "boolean"
+    },
+    "hide_ssid": {
+      "default": false,
+      "description": "Whether to hide SSID in beacon",
+      "type": "boolean"
+    },
+    "hostname_ie": {
+      "default": false,
+      "description": "Include hostname inside IE in AP beacons / probe responses",
+      "type": "boolean"
+    },
+    "hotspot20": {
+      "additionalProperties": false,
+      "description": "Passpoint and Hotspot 2.0 settings for this WLAN",
+      "properties": {
+        "domain_name": {
+          "description": "Advertised domain names for Hotspot 2.0 clients",
+          "examples": [
+            [
+              "mist.com"
+            ]
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Whether to enable hotspot 2.0 config",
+          "type": "boolean"
+        },
+        "nai_realms": {
+          "description": "NAI realms advertised for Hotspot 2.0 authentication",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "operators": {
+          "description": "Operator profiles supported by this Hotspot 2.0 configuration",
+          "examples": [
+            [
+              "google",
+              "att"
+            ]
+          ],
+          "items": {
+            "description": "enum: `ameriband`, `att`, `boingo`, `charter`, `eduroam`, `global_reach`, `google`, `hughes_systique`, `openroaming_legacy`, `openroaming_settled`, `openroaming_settlement_free`, `single_digits`, `tmobile`, `verizon`",
+            "enum": [
+              "ameriband",
+              "att",
+              "boingo",
+              "charter",
+              "eduroam",
+              "global_reach",
+              "google",
+              "hughes_systique",
+              "openroaming_legacy",
+              "openroaming_settled",
+              "openroaming_settlement_free",
+              "single_digits",
+              "tmobile",
+              "verizon"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rcoi": {
+          "description": "Roaming Consortium Organization Identifiers advertised for Hotspot 2.0",
+          "examples": [
+            [
+              "5A03BA0000"
+            ]
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "venue_name": {
+          "description": "Venue name, default is site name",
+          "examples": [
+            "some_name"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "id": {
+      "description": "Unique identifier for this WLAN",
+      "examples": [
+        "53f10664-3ce8-4c27-b382-0ef66432349f"
+      ],
+      "format": "uuid",
+      "readOnly": true,
+      "type": "string"
+    },
+    "inject_dhcp_option_82": {
+      "additionalProperties": false,
+      "description": "DHCP Option 82 insertion settings for this WLAN",
+      "properties": {
+        "circuit_id": {
+          "description": "Information to set in the `circuit_id` field of the DHCP Option 82. It is possible to use static string or the following variables (e.g. `{{SSID}}:{{AP_MAC}}`):\n  * {{AP_MAC}}\n  * {{AP_MAC_DASHED}}\n  * {{AP_MODEL}}\n  * {{AP_NAME}}\n  * {{SITE_NAME}}\n  * {{SSID}}",
+          "examples": [
+            "{{SSID}}:{{AP_MAC}}"
+          ],
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether to inject option 82 when forwarding DHCP packets",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "interface": {
+      "default": "all",
+      "description": "Network interface or tunnel where this WLAN bridges client traffic",
+      "enum": [
+        "all",
+        "eth0",
+        "eth1",
+        "eth2",
+        "eth3",
+        "mxtunnel",
+        "site_mxedge",
+        "wxtunnel"
+      ],
+      "examples": [
+        "all"
+      ],
+      "type": "string"
+    },
+    "isolation": {
+      "default": false,
+      "description": "Whether to stop clients to talk to each other",
+      "type": "boolean"
+    },
+    "l2_isolation": {
+      "default": false,
+      "description": "If isolation is enabled, whether to deny clients to talk to L2 on the LAN",
+      "type": "boolean"
+    },
+    "legacy_overds": {
+      "default": false,
+      "description": "Legacy devices requires the Over-DS (for Fast BSS Transition) bit set (while our chip doesn\u2019t support it). Warning! Enabling this will cause problem for iOS devices.",
+      "type": "boolean"
+    },
+    "limit_bcast": {
+      "default": false,
+      "description": "Whether to limit broadcast packets going to wireless (i.e. only allow certain bcast packets to go through)",
+      "type": "boolean"
+    },
+    "limit_probe_response": {
+      "default": false,
+      "description": "Limit probe response base on some heuristic rules",
+      "type": "boolean"
+    },
+    "max_idletime": {
+      "default": 1800,
+      "description": "Max idle time in seconds",
+      "examples": [
+        1800
+      ],
+      "maximum": 86400,
+      "minimum": 60,
+      "type": "integer"
+    },
+    "max_num_clients": {
+      "default": 0,
+      "description": "Maximum number of client connected to the SSID. `0` means unlimited",
+      "maximum": 128,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mist_nac": {
+      "additionalProperties": false,
+      "description": "Juniper Mist NAC settings used by this WLAN",
+      "properties": {
+        "acct_interim_interval": {
+          "default": 0,
+          "description": "How frequently should interim accounting be reported, 60-65535. default is 0 (use one specified in Access-Accept request from Server). Very frequent messages can affect the performance of the RADIUS server, 600 and up is recommended when enabled.",
+          "examples": [
+            60
+          ],
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "auth_servers_retries": {
+          "default": 2,
+          "description": "RADIUS auth session retries. Following fast timers are set if `fast_dot1x_timers` knob is enabled. \"retries\" are set to value of `auth_servers_timeout`. \"max-requests\" is also set when setting `auth_servers_retries` is set to default value to 3.",
+          "examples": [
+            3
+          ],
+          "maximum": 10,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "auth_servers_timeout": {
+          "default": 5,
+          "description": "RADIUS auth session timeout. Following fast timers are set if `fast_dot1x_timers` knob is enabled. \"quite-period\" and \"transmit-period\" are set to half the value of `auth_servers_timeout`. \"supplicant-timeout\" is also set when setting `auth_servers_timeout` is set to default value of 10.",
+          "examples": [
+            5
+          ],
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "coa_enabled": {
+          "default": false,
+          "description": "Allows a RADIUS server to dynamically modify the authorization status of a user session.",
+          "type": "boolean"
+        },
+        "coa_port": {
+          "description": "the communication port used for \u201cChange of Authorization\u201d (CoA) messages",
+          "examples": [
+            3799
+          ],
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "description": "When enabled:\n  * `auth_servers` is ignored\n  * `acct_servers` is ignored\n  * `auth_servers_*` are ignored\n  * `coa_servers` is ignored\n  * `radsec` is ignored\n  * `coa_enabled` is assumed",
+          "type": "boolean"
+        },
+        "fast_dot1x_timers": {
+          "default": false,
+          "description": "If set to true, sets default fast-timers with values calculated from `auth_servers_timeout` and `auth_server_retries`.",
+          "type": "boolean"
+        },
+        "network": {
+          "description": "Which network the mist nac server resides in",
+          "examples": [
+            "default"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_ip": {
+          "description": "In case there is a static IP for this network, we can specify it using source ip",
+          "examples": [
+            "1.2.3.4"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "modified_time": {
+      "description": "Time when this WLAN was last modified, in epoch seconds",
+      "format": "double",
+      "readOnly": true,
+      "type": "number"
+    },
+    "msp_id": {
+      "description": "Managed service provider identifier associated with this WLAN",
+      "examples": [
+        "b9d42c2e-88ee-41f8-b798-f009ce7fe909"
+      ],
+      "format": "uuid",
+      "readOnly": true,
+      "type": "string"
+    },
+    "mxtunnel_id": {
+      "deprecated": true,
+      "description": "(deprecated, use mxtunnel_ids instead) when `interface`==`mxtunnel`, id of the Mist Tunnel",
+      "format": "uuid",
+      "type": "string"
+    },
+    "mxtunnel_ids": {
+      "description": "Mist Tunnel identifiers used when `interface`==`mxtunnel`",
+      "format": "uuid",
+      "items": {
+        "examples": [
+          "08cd7499-5841-51c8-e663-fb16b6f3b45e"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "mxtunnel_name": {
+      "description": "Mist Tunnel names used when `interface`==`site_mxedge`",
+      "items": {
+        "default": "default",
+        "examples": [
+          "default"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "no_static_dns": {
+      "default": false,
+      "description": "Whether to only allow client to use DNS that we\u2019ve learned from DHCP response",
+      "type": "boolean"
+    },
+    "no_static_ip": {
+      "default": false,
+      "description": "Whether to only allow client that we\u2019ve learned from DHCP exchange to talk",
+      "type": "boolean"
+    },
+    "org_id": {
+      "description": "Owning organization associated with this WLAN",
+      "examples": [
+        "a97c1b22-a4e9-411e-9bfd-d8695a0f9e61"
+      ],
+      "format": "uuid",
+      "readOnly": true,
+      "type": "string"
+    },
+    "portal": {
+      "additionalProperties": false,
+      "description": "Guest portal settings for this WLAN",
+      "properties": {
+        "allow_wlan_id_roam": {
+          "default": false,
+          "description": "Optional if `amazon_enabled`==`true`. Whether to allow guest to connect to other Guest WLANs (with different `WLAN.ssid`) of same org without reauthentication (disable random_mac for seamless roaming)",
+          "type": "boolean"
+        },
+        "amazon_client_id": {
+          "default": "",
+          "description": "Optional if `amazon_enabled`==`true`. Amazon OAuth2 client id. This is optional. If not provided, it will use a default one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amazon_client_secret": {
+          "default": "",
+          "description": "Optional if `amazon_enabled`==`true`. Amazon OAuth2 client secret. If amazon_client_id was provided, provide a corresponding value. Else leave blank.",
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amazon_email_domains": {
+          "default": [],
+          "description": "Optional if `amazon_enabled`==`true`. Email domains allowed for Amazon-authenticated guest users. If null or empty, any authenticated Amazon email domain is allowed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "amazon_enabled": {
+          "default": false,
+          "description": "Whether amazon is enabled as a login method",
+          "type": "boolean"
+        },
+        "amazon_expire": {
+          "default": null,
+          "description": "Optional if `amazon_enabled`==`true`. Interval for which guest remains authorized using amazon auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "auth": {
+          "default": "none",
+          "description": "Guest portal login scheme used by the WLAN",
+          "enum": [
+            "amazon",
+            "azure",
+            "email",
+            "external",
+            "facebook",
+            "google",
+            "microsoft",
+            "multi",
+            "none",
+            "password",
+            "sms",
+            "sponsor",
+            "sso"
+          ],
+          "examples": [
+            "none"
+          ],
+          "type": "string"
+        },
+        "azure_client_id": {
+          "default": "",
+          "description": "Required if `azure_enabled`==`true`. Azure active directory app client id",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "azure_client_secret": {
+          "default": "",
+          "description": "Required if `azure_enabled`==`true`. Azure active directory app client secret",
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "azure_enabled": {
+          "default": false,
+          "description": "Whether Azure Active Directory is enabled as a login method",
+          "type": "boolean"
+        },
+        "azure_expire": {
+          "default": null,
+          "description": "Interval for which guest remains authorized using azure auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "azure_tenant_id": {
+          "default": "",
+          "description": "Required if `azure_enabled`==`true`. Azure active directory tenant id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "broadnet_password": {
+          "default": "",
+          "description": "Required if `sms_provider`==`broadnet`. Password for the Broadnet SMS provider account",
+          "examples": [
+            "password"
+          ],
+          "format": "password",
+          "type": "string"
+        },
+        "broadnet_sid": {
+          "description": "Required if `sms_provider`==`broadnet`. SID for the Broadnet SMS provider account",
+          "examples": [
+            "MIST"
+          ],
+          "type": "string"
+        },
+        "broadnet_user_id": {
+          "description": "Required if `sms_provider`==`broadnet`. User ID for the Broadnet SMS provider account",
+          "examples": [
+            "juniper"
+          ],
+          "type": "string"
+        },
+        "bypass_when_cloud_down": {
+          "default": false,
+          "description": "Whether to bypass the guest portal when cloud not reachable (and apply the default policies)",
+          "type": "boolean"
+        },
+        "clickatell_api_key": {
+          "description": "Required if `sms_provider`==`clickatell`. API key for the Clickatell SMS provider account",
+          "type": "string"
+        },
+        "cross_site": {
+          "default": false,
+          "description": "Whether to allow guest to roam between WLANs (with same `WLAN.ssid`, regardless of variables) of different sites of same org without reauthentication (disable random_mac for seamless roaming)",
+          "type": "boolean"
+        },
+        "email_enabled": {
+          "default": false,
+          "description": "Whether email (access code verification) is enabled as a login method",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether guest portal is enabled",
+          "type": "boolean"
+        },
+        "expire": {
+          "default": 1440,
+          "description": "How long to remain authorized, in minutes",
+          "examples": [
+            1440
+          ],
+          "type": "integer"
+        },
+        "external_portal_url": {
+          "default": "",
+          "description": "Required if `wlan_portal_auth`==`external`. External portal URL (e.g. https://host/url) where we can append our query parameters to",
+          "type": "string"
+        },
+        "facebook_client_id": {
+          "default": "",
+          "description": "Required if `facebook_enabled`==`true`. Facebook OAuth2 app id. This is optional. If not provided, it will use a default one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facebook_client_secret": {
+          "default": "",
+          "description": "Required if `facebook_enabled`==`true`. Facebook OAuth2 app secret. If facebook_client_id was provided, provide a corresponding value. Else leave blank.",
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facebook_email_domains": {
+          "default": [],
+          "description": "Optional if `facebook_enabled`==`true`. Email domains allowed for Facebook-authenticated guest users. If null or empty, any authenticated Facebook email domain is allowed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "facebook_enabled": {
+          "default": false,
+          "description": "Whether facebook is enabled as a login method",
+          "type": "boolean"
+        },
+        "facebook_expire": {
+          "default": null,
+          "description": "Optional if `facebook_enabled`==`true`. Interval for which guest remains authorized using facebook auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "forward": {
+          "default": false,
+          "description": "Whether to forward the user to another URL after authorized",
+          "type": "boolean"
+        },
+        "forward_url": {
+          "default": "",
+          "description": "URL to forward the user to",
+          "examples": [
+            "https://abc.com/promotions"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "google_client_id": {
+          "default": "",
+          "description": "Google OAuth2 app id. This is optional. If not provided, it will use a default one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "google_client_secret": {
+          "default": "",
+          "description": "Optional if `google_enabled`==`true`. Google OAuth2 app secret. If google_client_id was provided, provide a corresponding value. Else leave blank.",
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "google_email_domains": {
+          "default": [],
+          "description": "Optional if `google_enabled`==`true`. Email domains allowed for Google-authenticated guest users. If null or empty, any authenticated Google email domain is allowed.",
+          "examples": [
+            [
+              "mydomain.edu",
+              "mydomain.org"
+            ]
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "google_enabled": {
+          "default": false,
+          "description": "Whether Google is enabled as login method",
+          "type": "boolean"
+        },
+        "google_expire": {
+          "default": null,
+          "description": "Optional if `google_enabled`==`true`. Interval for which guest remains authorized using Google Auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "gupshup_password": {
+          "description": "Required if `sms_provider`==`gupshup`. Password for the Gupshup SMS provider account",
+          "format": "password",
+          "type": "string"
+        },
+        "gupshup_userid": {
+          "description": "Required if `sms_provider`==`gupshup`. User ID for the Gupshup SMS provider account",
+          "type": "string"
+        },
+        "microsoft_client_id": {
+          "default": "",
+          "description": "Optional if `microsoft_enabled`==`true`. Microsoft 365 OAuth2 client id. This is optional. If not provided, it will use a default one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "microsoft_client_secret": {
+          "default": "",
+          "description": "Optional if `microsoft_enabled`==`true`. Microsoft 365 OAuth2 client secret. If microsoft_client_id was provided, provide a corresponding value. Else leave blank.",
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "microsoft_email_domains": {
+          "default": [],
+          "description": "Optional if `microsoft_enabled`==`true`. Email domains allowed for Microsoft 365-authenticated guest users. If null or empty, any authenticated Microsoft 365 email domain is allowed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "microsoft_enabled": {
+          "default": false,
+          "description": "Whether microsoft 365 is enabled as a login method",
+          "type": "boolean"
+        },
+        "microsoft_expire": {
+          "default": null,
+          "description": "Optional if `microsoft_enabled`==`true`. Interval for which guest remains authorized using microsoft auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passphrase_enabled": {
+          "default": false,
+          "description": "Whether password is enabled",
+          "type": "boolean"
+        },
+        "passphrase_expire": {
+          "default": null,
+          "description": "Optional if `passphrase_enabled`==`true`. Interval for which guest remains authorized using passphrase auth (in minutes), if not provided, uses `expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "password": {
+          "default": "",
+          "description": "Required if `passphrase_enabled`==`true`. Passphrase guests must enter when passphrase authentication is enabled",
+          "examples": [
+            "let me in"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "predefined_sponsors_enabled": {
+          "default": true,
+          "description": "Whether to show list of sponsor emails mentioned in `sponsors` object as a dropdown. If both `sponsor_notify_all` and `predefined_sponsors_enabled` are false, behavior is acc to `sponsor_email_domains`",
+          "type": "boolean"
+        },
+        "predefined_sponsors_hide_email": {
+          "default": false,
+          "description": "Whether to hide sponsor\u2019s email from list of sponsors",
+          "type": "boolean"
+        },
+        "privacy": {
+          "default": false,
+          "description": "Whether to show the privacy policy in the WLAN guest portal",
+          "type": "boolean"
+        },
+        "puzzel_password": {
+          "description": "Required if `sms_provider`==`puzzel`. Password for the Puzzel SMS provider account",
+          "format": "password",
+          "type": "string"
+        },
+        "puzzel_service_id": {
+          "description": "Required if `sms_provider`==`puzzel`. Service ID for the Puzzel SMS provider account",
+          "type": "string"
+        },
+        "puzzel_username": {
+          "description": "Required if `sms_provider`==`puzzel`. Username for the Puzzel SMS provider account",
+          "type": "string"
+        },
+        "smsMessageFormat": {
+          "default": "Code {{code}} expires in {{duration}} minutes.",
+          "description": "Optional if `sms_enabled`==`true`. SMS Message format",
+          "type": "string"
+        },
+        "sms_enabled": {
+          "default": false,
+          "description": "Whether sms is enabled as a login method",
+          "type": "boolean"
+        },
+        "sms_expire": {
+          "default": null,
+          "description": "Optional if `sms_enabled`==`true`. Interval for which guest remains authorized using sms auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sms_provider": {
+          "default": "manual",
+          "description": "Optional if `sms_enabled`==`true`. SMS provider used to deliver guest portal access codes",
+          "enum": [
+            "broadnet",
+            "clickatell",
+            "gupshup",
+            "manual",
+            "puzzel",
+            "telstra",
+            "twilio",
+            "smsglobal"
+          ],
+          "examples": [
+            "twilio"
+          ],
+          "type": "string"
+        },
+        "smsglobal_api_key": {
+          "description": "Required if `sms_provider`==`smsglobal`, Client API Key",
+          "type": "string"
+        },
+        "smsglobal_api_secret": {
+          "description": "Required if `sms_provider`==`smsglobal`, Client secret",
+          "format": "password",
+          "type": "string"
+        },
+        "sponsor_auto_approve": {
+          "default": false,
+          "description": "Optional if `sponsor_enabled`==`true`. Whether to automatically approve guest and allow sponsor to revoke guest access, needs predefined_sponsors_enabled enabled and sponsor_notify_all disabled",
+          "type": "boolean"
+        },
+        "sponsor_email_domains": {
+          "description": "Email domains allowed for sponsor email addresses. Required if `sponsor_enabled` is `true` and `sponsors` is empty.",
+          "examples": [
+            [
+              "reserved.net",
+              "reserved.org"
+            ]
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sponsor_enabled": {
+          "default": false,
+          "description": "Whether sponsor is enabled",
+          "type": "boolean"
+        },
+        "sponsor_expire": {
+          "default": null,
+          "description": "Optional if `sponsor_enabled`==`true`. Interval for which guest remains authorized using sponsor auth (in minutes), if not provided, uses expire`",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sponsor_link_validity_duration": {
+          "anyOf": [
+            {
+              "default": 60,
+              "maximum": 60,
+              "minimum": 5,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Optional if `sponsor_enabled`==`true`. Validity duration, in minutes, for approve or deny links in sponsor emails. Valid values are 5 to 60."
+        },
+        "sponsor_notify_all": {
+          "default": false,
+          "description": "Optional if `sponsor_enabled`==`true`. whether to notify all sponsors that are mentioned in `sponsors` object. Both `sponsor_notify_all` and `predefined_sponsors_enabled` should be true in order to notify sponsors. If true, email sent to 10 sponsors in no particular order.",
+          "type": "boolean"
+        },
+        "sponsor_status_notify": {
+          "default": false,
+          "description": "Optional if `sponsor_enabled`==`true`. If enabled, guest will get email about sponsor's action (approve/deny)",
+          "type": "boolean"
+        },
+        "sponsors": {
+          "description": "Allowed sponsor email addresses and display names. Required if `sponsor_enabled` is `true` and `sponsor_email_domains` is empty.",
+          "oneOf": [
+            {
+              "description": "Allowed sponsor email addresses for guest portal sponsor approval",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Allowed guest portal sponsors keyed by email address with sponsor names as values",
+              "examples": [
+                {
+                  "sponsor1@company.com": "FirstName1 LastName1",
+                  "sponsor2@company.com": "FirstName2 LastName2"
+                }
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "sso_default_role": {
+          "default": "",
+          "description": "Optional if `wlan_portal_auth`==`sso`, default role to assign if there\u2019s no match. By default, an assertion is treated as invalid when there\u2019s no role matched",
+          "type": "string"
+        },
+        "sso_forced_role": {
+          "default": "",
+          "description": "Optional if `wlan_portal_auth`==`sso`. Role assigned to authenticated users when guest SSO is used",
+          "type": "string"
+        },
+        "sso_idp_cert": {
+          "default": "",
+          "description": "Required if `wlan_portal_auth`==`sso`. IDP Cert (used to verify the signed response)",
+          "type": "string"
+        },
+        "sso_idp_sign_algo": {
+          "default": "sha1",
+          "description": "Optional if `wlan_portal_auth`==`sso`. Signing algorithm used for SAML assertions from the identity provider",
+          "enum": [
+            "sha1",
+            "sha256",
+            "sha384",
+            "sha512"
+          ],
+          "type": "string"
+        },
+        "sso_idp_sso_url": {
+          "default": "",
+          "description": "Required if `wlan_portal_auth`==`sso`, IDP Single-Sign-On URL",
+          "type": "string"
+        },
+        "sso_issuer": {
+          "default": "",
+          "description": "Required if `wlan_portal_auth`==`sso`, IDP issuer URL",
+          "type": "string"
+        },
+        "sso_nameid_format": {
+          "default": "email",
+          "description": "Optional if `wlan_portal_auth`==`sso`. SAML NameID format expected from the identity provider",
+          "enum": [
+            "email",
+            "unspecified"
+          ],
+          "type": "string"
+        },
+        "telstra_client_id": {
+          "description": "Required if `sms_provider`==`telstra`, Client ID provided by Telstra",
+          "type": "string"
+        },
+        "telstra_client_secret": {
+          "description": "Required if `sms_provider`==`telstra`, Client secret provided by Telstra",
+          "format": "password",
+          "type": "string"
+        },
+        "twilio_auth_token": {
+          "description": "Required if `sms_provider`==`twilio`, Auth token account with twilio account",
+          "examples": [
+            "af9dac44c344a875ab5d31cb7abcdefg"
+          ],
+          "format": "password",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "twilio_phone_number": {
+          "description": "Required if `sms_provider`==`twilio`, Twilio phone number associated with the account. See example for accepted format.",
+          "examples": [
+            "+18548888888"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "twilio_sid": {
+          "description": "Required if `sms_provider`==`twilio`, Account SID provided by Twilio",
+          "examples": [
+            "af9dac44c344a875ab5d31cb7abcdefg"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "portal_allowed_hostnames": {
+      "default": [],
+      "description": "Guest portal hostnames that clients may reach before authorization",
+      "examples": [
+        [
+          "snapchat.com",
+          "ibm.com"
+        ]
+      ],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "portal_allowed_subnets": {
+      "default": [],
+      "description": "Guest portal CIDR subnets that clients may reach before authorization",
+      "examples": [
+        [
+          "63.5.3.0/24"
+        ]
+      ],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "portal_api_secret": {
+      "default": "",
+      "description": "API secret (auto-generated) that can be used to sign guest authorization requests, only generated when auth is set to `external`",
+      "examples": [
+        "EIfPMOykI3lMlDdNPub2WcbqT6dNOtWwmYHAd6bY"
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "portal_denied_hostnames": {
+      "default": [],
+      "description": "Guest portal hostnames denied before authorization, taking precedence over allowed hostnames",
+      "examples": [
+        [
+          "msg.snapchat.com"
+        ]
+      ],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "portal_image": {
+      "default": "",
+      "description": "Url of portal background image",
+      "examples": [
+        "https://url/to/image.png"
+      ],
+      "format": "uri",
+      "readOnly": true,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "portal_sso_url": {
+      "description": "URL used in the SSO process, auto-generated when auth is set to `sso`",
+      "readOnly": true,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "portal_template_url": {
+      "default": "",
+      "description": "N.B portal_template will be forked out of wlan objects soon. To fetch portal_template, please query portal_template_url. To update portal_template, use Wlan Portal Template.",
+      "readOnly": true,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "qos": {
+      "additionalProperties": false,
+      "description": "Quality-of-service settings for WLAN client traffic",
+      "properties": {
+        "class": {
+          "default": "best_effort",
+          "description": "QoS traffic class applied when WLAN QoS override is enabled",
+          "enum": [
+            "background",
+            "best_effort",
+            "video",
+            "voice"
+          ],
+          "examples": [
+            "best_effort"
+          ],
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "description": "Whether to overwrite QoS",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "radsec": {
+      "additionalProperties": false,
+      "description": "TLS-secured RADIUS transport settings for this WLAN",
+      "properties": {
+        "coa_enabled": {
+          "default": false,
+          "description": "Whether RADIUS Change of Authorization (CoA) is enabled for RadSec traffic",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Whether RadSec is enabled",
+          "type": "boolean"
+        },
+        "idle_timeout": {
+          "anyOf": [
+            {
+              "default": 60,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Idle timeout, in seconds, for RadSec connections"
+        },
+        "mxcluster_ids": {
+          "description": "Mist Edge cluster IDs used as RadSec proxies when the WLAN does not use mxtunnel",
+          "items": {
+            "examples": [
+              "572586b7-f97b-a22b-526c-8b97a3f609c4"
+            ],
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "proxy_hosts": {
+          "description": "RadSec proxy hostnames advertised to APs",
+          "items": {
+            "examples": [
+              "mxedge1.local"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "server_name": {
+          "description": "TLS server name to verify against the CA certificates in Org Setting. Only if not Mist Edge.",
+          "examples": [
+            "radsec.abc.com"
+          ],
+          "type": "string"
+        },
+        "servers": {
+          "description": "External RadSec servers. Only if not Mist Edge.",
+          "items": {
+            "additionalProperties": false,
+            "description": "External RadSec server settings",
+            "properties": {
+              "host": {
+                "description": "Address or hostname of the RadSec server",
+                "examples": [
+                  "1.1.1.1"
+                ],
+                "type": "string"
+              },
+              "port": {
+                "description": "TCP port used by the RadSec server",
+                "examples": [
+                  1812
+                ],
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "use_mxedge": {
+          "description": "Whether to use organization Mist Edge instances as RadSec proxies",
+          "type": "boolean"
+        },
+        "use_site_mxedge": {
+          "default": false,
+          "description": "Whether to use site Mist Edge instances when this WLAN does not use mxtunnel",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "rateset": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "description": "Data rates wlan settings",
+        "properties": {
+          "eht": {
+            "description": "If `template`==`custom`. EHT MCS bitmasks for 4 streams (16-bit for each stream, MCS0 is least significant bit)",
+            "examples": [
+              "3fff0fff0fff03ff"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "he": {
+            "description": "If `template`==`custom`. HE MCS bitmasks for 4 streams (16-bit for each stream, MCS0 is least significant bit",
+            "examples": [
+              "0fff0fff0fff0fff"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ht": {
+            "description": "If `template`==`custom`. MCS bitmasks for 4 streams (16-bit for each stream, MCS0 is least significant bit), e.g. 00ff 00f0 001f limits HT rates to MCS 0-7 for 1 stream, MCS 4-7 for 2 stream (i.e. MCS 12-15), MCS 1-5 for 3 stream (i.e. MCS 16-20)",
+            "examples": [
+              "00ff00ff00ff"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "legacy": {
+            "description": "If `template`==`custom`, legacy 802.11 data rates allowed on this WLAN",
+            "examples": [
+              [
+                "6",
+                "9",
+                "12",
+                "18",
+                "24b",
+                "36",
+                "48",
+                "54"
+              ]
+            ],
+            "items": {
+              "description": "enum: `1`, `11`, `11b`, `12`, `12b`, `18`, `18b`, `1b`, `2`, `24`, `24b`, `2b`, `36`, `36b`, `48`, `48b`, `5.5`, `5.5b`, `54`, `54b`, `6`, `6b`, `9`, `9b`",
+              "enum": [
+                "1",
+                "11",
+                "11b",
+                "12",
+                "12b",
+                "18",
+                "18b",
+                "1b",
+                "2",
+                "24",
+                "24b",
+                "2b",
+                "36",
+                "36b",
+                "48",
+                "48b",
+                "5.5",
+                "5.5b",
+                "54",
+                "54b",
+                "6",
+                "6b",
+                "9",
+                "9b"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "min_rssi": {
+            "default": 0,
+            "description": "Minimum RSSI for client to connect, 0 means not enforcing",
+            "examples": [
+              -70
+            ],
+            "type": "integer"
+          },
+          "template": {
+            "default": "compatible",
+            "description": "Data rate template used to derive WLAN rate settings",
+            "enum": [
+              "compatible",
+              "legacy-only",
+              "custom",
+              "no-legacy",
+              "high-density"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vht": {
+            "description": "If `template`==`custom`. MCS bitmasks for 4 streams (16-bit for each stream, MCS0 is least significant bit), e.g. 03ff 01ff 00ff limits VHT rates to MCS 0-9 for 1 stream, MCS 0-8 for 2 streams, and MCS 0-7 for 3 streams.",
+            "examples": [
+              "03ff03ff03ff01ff"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "description": "Data rate settings by RF band for this WLAN",
+      "type": "object"
+    },
+    "reconnect_clients_when_roaming_mxcluster": {
+      "default": false,
+      "description": "When different mxcluster is on different subnet, we'd want to disconnect clients (so they'll reconnect and get new IPs)",
+      "type": "boolean"
+    },
+    "roam_mode": {
+      "default": "NONE",
+      "description": "Fast roaming mode configured for this WLAN",
+      "enum": [
+        "11r",
+        "NONE",
+        "OKC"
+      ],
+      "examples": [
+        "NONE"
+      ],
+      "type": "string"
+    },
+    "schedule": {
+      "additionalProperties": false,
+      "description": "Operating schedule controlling when this WLAN is active",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether the WLAN operating schedule is enabled",
+          "type": "boolean"
+        },
+        "hours": {
+          "additionalProperties": false,
+          "description": "Time ranges when the WLAN is scheduled to operate",
+          "properties": {
+            "fri": {
+              "default": "",
+              "description": "Operating hour range for Friday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "mon": {
+              "default": "",
+              "description": "Operating hour range for Monday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "sat": {
+              "default": "",
+              "description": "Operating hour range for Saturday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "sun": {
+              "default": "",
+              "description": "Operating hour range for Sunday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "thu": {
+              "default": "",
+              "description": "Operating hour range for Thursday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "tue": {
+              "default": "",
+              "description": "Operating hour range for Tuesday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            },
+            "wed": {
+              "default": "",
+              "description": "Operating hour range for Wednesday",
+              "examples": [
+                "09:00-17:00"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "site_id": {
+      "description": "Mist site associated with this WLAN, when site-scoped",
+      "examples": [
+        "441a1214-6928-442a-8e92-e1d34b8ec6a6"
+      ],
+      "format": "uuid",
+      "readOnly": true,
+      "type": "string"
+    },
+    "sle_excluded": {
+      "default": false,
+      "description": "Whether to exclude this WLAN from SLE metrics",
+      "type": "boolean"
+    },
+    "ssid": {
+      "description": "Name of the SSID",
+      "examples": [
+        "corporate"
+      ],
+      "type": "string"
+    },
+    "template_id": {
+      "default": "",
+      "description": "Identifier of the WLAN template associated with this WLAN",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thumbnail": {
+      "default": "",
+      "description": "Url of portal background image thumbnail",
+      "format": "uri",
+      "readOnly": true,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "use_eapol_v1": {
+      "default": false,
+      "description": "If `auth.type`==`eap` or `auth.type`==`psk`, should only be set for legacy client, such as pre-2004, 802.11b devices",
+      "type": "boolean"
+    },
+    "vlan_enabled": {
+      "default": false,
+      "description": "If vlan tagging is enabled",
+      "type": "boolean"
+    },
+    "vlan_id": {
+      "description": "Default VLAN ID, range, or variable used when `vlan_enabled`==`true`",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "maximum": 4094,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vlan_ids": {
+      "description": "Pool of VLAN IDs used when `vlan_enabled`==`true` and `vlan_pooling`==`true`",
+      "oneOf": [
+        {
+          "description": "If `vlan_enabled`==`true` and `vlan_pooling`==`true`. List of VLAN IDs to be used in the VLAN Pool",
+          "examples": [
+            "1,2"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "If `vlan_enabled`==`true` and `vlan_pooling`==`true`. List of VLAN IDs (comma separated) to be used in the VLAN Pool",
+          "examples": [
+            [
+              3,
+              4,
+              5
+            ]
+          ],
+          "items": {
+            "description": "VLAN ID, either numeric or expressed as a template variable string",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "maximum": 4094,
+                "minimum": 1,
+                "type": "integer"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "vlan_pooling": {
+      "default": false,
+      "description": "Requires `vlan_enabled`==`true` to be set to `true`. Vlan pooling allows AP to place client on different VLAN using a deterministic algorithm",
+      "type": "boolean"
+    },
+    "wlan_limit_down": {
+      "anyOf": [
+        {
+          "maximum": 999000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "Downlink bandwidth limit applied to the whole WLAN"
+    },
+    "wlan_limit_down_enabled": {
+      "default": false,
+      "description": "If downlink limiting for whole wlan is enabled",
+      "type": "boolean"
+    },
+    "wlan_limit_up": {
+      "anyOf": [
+        {
+          "maximum": 999000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "Uplink bandwidth limit applied to the whole WLAN"
+    },
+    "wlan_limit_up_enabled": {
+      "default": false,
+      "description": "If uplink limiting for whole wlan is enabled",
+      "type": "boolean"
+    },
+    "wxtag_ids": {
+      "description": "Identifiers of WxLAN tags used when `apply_to`==`wxtags`",
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "wxtunnel_id": {
+      "default": "",
+      "description": "When `interface`=`wxtunnel`, id of the WXLAN Tunnel",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "wxtunnel_remote_id": {
+      "default": "",
+      "description": "When `interface`=`wxtunnel`, remote tunnel identifier",
+      "type": [
+        "string",
+        "null"
+      ]
     }
-  }
+  },
+  "required": [
+    "ssid"
+  ],
+  "type": "object"
 }

@@ -27,6 +27,20 @@ def test_apply_to_site_tags_all_aps():
     assert unresolved == {}
 
 
+def test_site_owned_wlan_defaults_missing_scope_to_whole_site():
+    resolved, unresolved = ap_required_vlans(
+        [_wlan(for_site=True, vlan_id=420)], APS
+    )
+    assert resolved == {ID1: frozenset({420}), ID2: frozenset({420})}
+    assert unresolved == {}
+
+
+def test_missing_scope_without_positive_site_ownership_stays_unresolved():
+    resolved, unresolved = ap_required_vlans([_wlan(vlan_id=420)], APS)
+    assert resolved == {}
+    assert unresolved == {}
+
+
 def test_apply_to_aps_only_named_ids():
     resolved, _ = ap_required_vlans(
         [_wlan(apply_to="aps", ap_ids=["uuid-ap-1"], vlan_id=20)], APS

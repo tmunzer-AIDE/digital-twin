@@ -1,11 +1,11 @@
 """wired.port.unmodeled_change — a recognized port-profile knob changed whose
-impact the twin does not model yet (inter_switch_link, storm_control,
+impact the twin does not model yet (inter_switch_link,
 poe_priority, community_vlan_id, inter_isolation_network_link). The twin
 recognizes the change and floors REVIEW — never SAFE, never ERROR/UNSAFE.
 (enable_qos left this surface in Spec 1: benign SAFE.) Spec-2: the four STP
 knobs (stp_required, stp_no_root_port, stp_p2p, use_vstp) graduated out of
-PortMisc into Port.stp_policy — they are now covered by wired.stp.policy
-instead of this check.
+PortMisc into Port.stp_policy; storm_control is covered by
+wired.storm_control_policy instead of this check.
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ _MEDIUM = Confidence(
 def _changed(old: PortMisc | None, new: PortMisc | None) -> list[str]:
     o, n = old or PortMisc(), new or PortMisc()
     return [
-        f.name for f in dataclasses.fields(PortMisc)
-        if getattr(o, f.name) != getattr(n, f.name)
+        f.name
+        for f in dataclasses.fields(PortMisc)
+        if f.name != "storm_control" and getattr(o, f.name) != getattr(n, f.name)
     ]
 
 
@@ -56,17 +57,23 @@ class PortUnmodeledChangeCheck:
                 continue
             findings.append(
                 Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.recognized", severity=Severity.WARNING, confidence=_MEDIUM,
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.recognized",
+                    severity=Severity.WARNING,
+                    confidence=_MEDIUM,
                     message=f"port {pid}: {', '.join(knobs)} changed — impact not modeled (review)",
-                    affected_entities=(pid,), subject=ObjectRef("port", pid),
+                    affected_entities=(pid,),
+                    subject=ObjectRef("port", pid),
                     evidence={"port": pid, "knobs": knobs},
                     caused_by=ctx.delta_index.causes("port", [pid]),
                 )
             )
         return CheckResult(
-            check_id=self.id, status=Status.WARN if findings else Status.PASS,
-            findings=tuple(findings), coverage=Coverage(state=CoverageState.COMPLETE),
+            check_id=self.id,
+            status=Status.WARN if findings else Status.PASS,
+            findings=tuple(findings),
+            coverage=Coverage(state=CoverageState.COMPLETE),
             confidence=_MEDIUM if findings else Confidence(level=ConfidenceLevel.HIGH),
             reasoning="compared per-port recognized-but-unmodeled knobs baseline vs proposed",
         )

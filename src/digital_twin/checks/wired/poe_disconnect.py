@@ -130,8 +130,7 @@ class PoeDisconnectCheck:
                     severity=Severity.ERROR if high else Severity.WARNING,
                     confidence=confidence,
                     message=(
-                        f"port {pid} stops delivering PoE — {who} loses power and "
-                        "disconnects"
+                        f"port {pid} stops delivering PoE — {who} loses power and disconnects"
                     ),
                     affected_entities=(ap_id,) if ap_id else (pid,),
                     subject=ObjectRef("device", ap_id) if ap_id else ObjectRef("port", pid),

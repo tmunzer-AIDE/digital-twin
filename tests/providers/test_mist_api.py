@@ -42,7 +42,7 @@ class FakeProvider(MistApiProvider):
         self._templates = templates or {}
         self._gatewaytemplates = gatewaytemplates or {}
         self._sitetemplates = sitetemplates or {}
-        self._org_wlans = org_wlans or {}
+        self._org_wlan_rows = org_wlans or {}
         self._org_wlantemplates = org_wlantemplates or {}
         self._wlans_by_site = wlans_by_site or {}
         self.nt_calls: list[str] = []
@@ -90,7 +90,10 @@ class FakeProvider(MistApiProvider):
         return self._sitetemplates[st_id]
 
     def _org_wlan(self, s: Any, wlan_id: str) -> dict[str, Any]:
-        return self._org_wlans[wlan_id]
+        return self._org_wlan_rows[wlan_id]
+
+    def _org_wlans(self, s: Any) -> list[dict[str, Any]]:
+        return list(self._org_wlan_rows.values())
 
     def _org_wlan_template(self, s: Any, template_id: str) -> dict[str, Any]:
         return self._org_wlantemplates[template_id]

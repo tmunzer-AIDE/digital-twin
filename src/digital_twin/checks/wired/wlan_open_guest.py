@@ -79,9 +79,11 @@ class WlanOpenGuestCheck:
         notes = tuple(
             f"WLAN '{w.ssid}' is open without isolation but its AP scope "
             f"({w.apply_to}) is unresolved — potentially active"
-            for w in self._unresolved(ctx.proposed.ir) if w.id in touched
+            for w in self._unresolved(ctx.proposed.ir)
+            if w.id in touched
         )
         coverage = Coverage(
-            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE, notes=notes,
+            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
+            notes=notes,
         )
         return run_delta_lint(check_id=self.id, base=base, proposed=prop, coverage=coverage)

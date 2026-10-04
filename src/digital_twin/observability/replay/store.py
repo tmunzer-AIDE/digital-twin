@@ -20,13 +20,19 @@ from digital_twin.providers.base import (
     FetchError,
     FetchFailure,
     NacFetch,
+    NacRuleUsageContext,
+    ObjectRelationshipContext,
+    OrgNetworksContext,
     OrgScope,
+    OrgSiteGroupContext,
     OrgTemplateContext,
     OrgWlanContext,
     OrgWlanTemplateContext,
+    PskUsageContext,
     RawSiteState,
     SiteScope,
     StateMeta,
+    WlanUsageContext,
 )
 
 from .redaction import REDACTION_VERSION, redact
@@ -148,6 +154,7 @@ class FixtureProvider:
         self._site_docs: dict[str, dict[str, Any]] = {}
         self._template: dict[str, Any] | None = None
         self._org_wlans: dict[str, dict[str, Any]] = {}
+        self._org_wlans_complete = False
         self._fetch_failures: frozenset[str] = frozenset()
         self._raw: RawSiteState | None = None  # set only for single-site fixtures
         self._multisite = "sites" in data
@@ -178,6 +185,7 @@ class FixtureProvider:
                 str(wlan_id): dict(wlan)
                 for wlan_id, wlan in (data.get("org_wlans") or {}).items()
             }
+            self._org_wlans_complete = "org_wlans" in data
         else:  # single-site fixture (unchanged)
             self._raw = load_fixture_doc(data)
             self._host = self._raw.meta.host
@@ -441,7 +449,140 @@ class FixtureProvider:
             )
             if rows:
                 by_site[sid] = rows
-        return OrgWlanTemplateContext(template=dict(template), derived_rows_by_site=by_site)
+        template_wlans = tuple(
+            dict(wlan)
+            for wlan in self._org_wlans.values()
+            if str(wlan.get("template_id") or "") == template_id
+        )
+        return OrgWlanTemplateContext(
+            template=dict(template),
+            derived_rows_by_site=by_site,
+            template_wlans=template_wlans,
+            template_wlans_complete=self._org_wlans_complete,
+        )
+
+    def resolve_org_sitegroup(
+        self, scope: OrgScope, sitegroup_id: str
+    ) -> OrgSiteGroupContext | FetchError:
+        groups = self._data.get("org_sitegroups") or {}
+        group = groups.get(sitegroup_id) if isinstance(groups, dict) else None
+        if not isinstance(group, dict):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure("org_sitegroup", "site group not captured in fixture"),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        site_ids = group.get("site_ids") or ()
+        return OrgSiteGroupContext(tuple(str(site_id) for site_id in site_ids))
+
+    def resolve_org_networks(
+        self, scope: OrgScope
+    ) -> OrgNetworksContext | FetchError:
+        if self._wrong_org(scope):
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(
+                    object="fixture",
+                    error=f"fixture holds org {self._org_id}, not the requested {scope.org_id}",
+                ),),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        if self._multisite:
+            first = next(iter(self._sites.values()), None)
+            rows = first.org_networks if first is not None else ()
+        else:
+            rows = self._single.org_networks
+        return OrgNetworksContext(networks=tuple(rows))
+
+    def resolve_psk_usage(
+        self, scope: OrgScope | SiteScope, psk_id: str, *, window_days: int = 7
+    ) -> PskUsageContext | FetchError:
+        usage = self._data.get("psk_usage") or {}
+        row = usage.get(psk_id) if isinstance(usage, dict) else None
+        if not isinstance(row, dict):
+            return FetchError(
+                scope=scope,
+                failures=(
+                    FetchFailure("psk_sessions", "PSK usage not captured in fixture"),
+                ),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        return PskUsageContext(
+            active_site_ids=tuple(str(site_id) for site_id in row.get("active_site_ids", ())),
+            checked_site_ids=tuple(str(site_id) for site_id in row.get("checked_site_ids", ())),
+            failures=(),
+            window_days=window_days,
+        )
+
+    def resolve_object_relationships(
+        self, scope: OrgScope, object_type: str, object_id: str
+    ) -> ObjectRelationshipContext | FetchError:
+        return FetchError(
+            scope=scope,
+            failures=(FetchFailure(
+                "object_relationships",
+                "object relationships not captured in fixture",
+            ),),
+            acquired_at=self._acquired_at,
+            host=self._host,
+        )
+
+    def resolve_wlan_usage(
+        self,
+        scope: OrgScope | SiteScope,
+        wlan_id: str,
+        *,
+        window_days: int = 7,
+        band: str | None = None,
+    ) -> WlanUsageContext | FetchError:
+        usage = self._data.get("wlan_usage") or {}
+        row = usage.get(wlan_id) if isinstance(usage, dict) else None
+        if isinstance(row, dict) and band is not None:
+            bands = row.get("bands")
+            row = bands.get(band) if isinstance(bands, dict) else None
+        if not isinstance(row, dict):
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(
+                    "wlan_sessions",
+                    "WLAN usage not captured in fixture"
+                    + (f" for band {band}" if band is not None else ""),
+                ),),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        return WlanUsageContext(
+            active_site_ids=tuple(str(sid) for sid in row.get("active_site_ids", ())),
+            checked_site_ids=tuple(str(sid) for sid in row.get("checked_site_ids", ())),
+            failures=(),
+            window_days=window_days,
+        )
+
+    def resolve_nacrule_usage(
+        self, scope: OrgScope, nacrule_id: str, *, window_days: int = 7
+    ) -> NacRuleUsageContext | FetchError:
+        usage = self._data.get("nacrule_usage") or {}
+        row = usage.get(nacrule_id) if isinstance(usage, dict) else None
+        if not isinstance(row, dict):
+            return FetchError(
+                scope=scope,
+                failures=(FetchFailure(
+                    "nacrule_usage", "NAC rule usage not captured in fixture"
+                ),),
+                acquired_at=self._acquired_at,
+                host=self._host,
+            )
+        return NacRuleUsageContext(
+            active_site_ids=tuple(str(sid) for sid in row.get("active_site_ids", ())),
+            checked_site_ids=tuple(str(sid) for sid in row.get("checked_site_ids", ())),
+            failures=(),
+            window_days=window_days,
+        )
 
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         if self._wrong_org(scope):

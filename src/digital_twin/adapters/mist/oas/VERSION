@@ -11,6 +11,9 @@ re-extract is reproducible. The other schemas stay pinned (device-only scope);
 refresh them from mistsys when widening enforcement beyond `device`.
 gatewaytemplate.schema.json + sitetemplate.schema.json extracted 2026-06-15 from
 github tmunzer/mist_openapi master (components: gateway_template, site_template).
+The full wlan.schema.json was refreshed 2026-09-22 from the Mist OpenAPI schema
+embedded by mistmcp (component: wlan; 105 top-level attributes) while widening
+the WLAN decision policy. tools/extract_oas.py now owns future wlan refreshes.
 NOTE: the OAS `site_template` component is incomplete (auto_upgrade/name/vars only);
 a real sitetemplate carries the switch-config surface — confirmed with the domain
 owner, OAS fix upstream. L0 stays permissive for sitetemplate (no additionalProperties).

@@ -14,12 +14,21 @@ from mcp.server.fastmcp import FastMCP
 
 from digital_twin.contracts import Rejection
 from digital_twin.drivers.cli import _is_org_nac_plan, _is_org_plan
+from digital_twin.drivers.composite import (
+    needs_composite_evaluation,
+    simulate_composite,
+)
 from digital_twin.drivers.render import (
     org_nac_verdict_to_dict,
     org_verdict_to_dict,
     verdict_to_dict,
 )
-from digital_twin.engine.pipeline import simulate, simulate_org_nac, simulate_org_template
+from digital_twin.engine.pipeline import (
+    simulate,
+    simulate_name_change,
+    simulate_org_nac,
+    simulate_org_template,
+)
 from digital_twin.ir import IRDiff
 from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.providers.base import StateProvider
@@ -69,6 +78,29 @@ def simulate_change(
     replay_fixture: str | None = None,
     l0_full_object: bool = False,
 ) -> dict[str, Any]:
+    name_change_verdict = simulate_name_change(change_plan)
+    if name_change_verdict is not None:
+        return verdict_to_dict(name_change_verdict)
+
+    if needs_composite_evaluation(change_plan):
+        try:
+            return simulate_composite(
+                change_plan,
+                provider=_provider(replay_fixture),
+                l0_full_object=l0_full_object,
+            )
+        except Exception as e:  # noqa: BLE001 — the tool never throws to the agent
+            return {
+                "decision": "unknown",
+                "decision_reasons": [f"internal error: {e}"],
+                "findings": [],
+                "check_results": [],
+                "config_diffs": [],
+                "changes": [],
+                "composite": True,
+                "segments": [],
+            }
+
     if _is_org_nac_plan(change_plan):
         try:
             return org_nac_verdict_to_dict(simulate_org_nac(
@@ -115,6 +147,10 @@ def simulate_change_tool(
     For org fan-out plans (ops all have object_type in ORG_OBJECT_TYPES and
     no site_id in scope), returns an
     OrgVerdict document with per-site rollup.
+    Multi-operation plans are evaluated atomically and also return
+    change_assessments (one SAFE|REVIEW|UNSAFE|UNKNOWN explanation per ordered
+    operation) plus batch_interaction for cross-change effects. The overall
+    decision remains the worst-case decision for the complete atomic batch.
     Payloads follow Mist update semantics: root attributes present in the
     payload replace the current values wholesale, omitted roots persist, and
     {"-attribute": ""} deletes an attribute.

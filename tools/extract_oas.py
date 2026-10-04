@@ -24,6 +24,7 @@ WANTED = {
     "device_switch": "device_switch.schema.json",
     "gateway_template": "gatewaytemplate.schema.json",
     "site_template": "sitetemplate.schema.json",
+    "wlan": "wlan.schema.json",
     "nac_rule": "nacrule.schema.json",
     "nac_rule_matching": "nacrule_matching.schema.json",
 }

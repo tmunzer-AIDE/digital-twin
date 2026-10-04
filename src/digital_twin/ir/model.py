@@ -33,6 +33,7 @@ from .entities import (
     Port,
     StaticRoute,
     Vlan,
+    VrfInstance,
     Wlan,
     client_id,
     link_id,
@@ -78,9 +79,10 @@ class IR:
     bgp_peers: tuple[BgpPeer, ...] = ()
     bgp_neighbors: tuple[BgpNeighbor, ...] = ()
     bgp_telemetry_unparsed_count: int = 0
+    static_routes: tuple[StaticRoute, ...] = ()
+    vrf_instances: tuple[VrfInstance, ...] = ()
     # Observation rows that could not be attached; never interpreted as zero clients.
     client_telemetry_gaps: tuple[str, ...] = ()
-    static_routes: tuple[StaticRoute, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -108,6 +110,7 @@ class IRBuilder:
         self._bgp_peer_ids: set[str] = set()
         self._bgp_neighbors: list[BgpNeighbor] = []
         self._bgp_unparsed = 0
+        self._vrf_instances: dict[str, VrfInstance] = {}
         self._clients: list[Client] = []
         self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
@@ -209,6 +212,12 @@ class IRBuilder:
         self._dhcp_scopes[scope.id] = scope
         return self
 
+    def add_vrf_instance(self, vrf: VrfInstance) -> IRBuilder:
+        if vrf.id in self._vrf_instances:
+            raise IRValidationError(f"duplicate vrf instance id {vrf.id}")
+        self._vrf_instances[vrf.id] = vrf
+        return self
+
     def with_capability(self, cap: Capability) -> IRBuilder:
         self._capabilities.add(cap)
         return self
@@ -281,17 +290,13 @@ class IRBuilder:
         errors += self._validate_ports()
         errors += self._validate_links()
         errors += self._validate_l3intfs()
-        for route in self._static_routes.values():
-            if route.device_id not in self._devices:
-                errors.append(
-                    f"static route {route.id} references unknown device {route.device_id}"
-                )
         errors += self._validate_ospf_intfs()
         errors += self._validate_bgp_peers()
         errors += self._validate_clients()
         errors += self._validate_vc()
         errors += self._validate_wlan_reqs()
         errors += self._validate_dhcp_scopes()
+        errors += self._validate_routing()
         if errors:
             raise IRValidationError("invalid IR:\n  " + "\n  ".join(errors))
 
@@ -426,6 +431,20 @@ class IRBuilder:
                 errors.append(f"dhcp scope {s.id} provider {s.provider} is not a gateway")
         return errors
 
+    def _validate_routing(self) -> list[str]:
+        errors: list[str] = []
+        for route in self._static_routes.values():
+            if route.device_id not in self._devices:
+                errors.append(
+                    f"routing entity {route.id} references unknown device {route.device_id}"
+                )
+        for vrf in self._vrf_instances.values():
+            if vrf.device_id not in self._devices:
+                errors.append(
+                    f"routing entity {vrf.id} references unknown device {vrf.device_id}"
+                )
+        return errors
+
     def build(self) -> IR:
         self._validate()
         return IR(
@@ -454,6 +473,7 @@ class IRBuilder:
             bgp_peers=tuple(self._bgp_peers),
             bgp_neighbors=tuple(self._bgp_neighbors),
             bgp_telemetry_unparsed_count=self._bgp_unparsed,
-            client_telemetry_gaps=tuple(self._client_telemetry_gaps),
             static_routes=tuple(sorted(self._static_routes.values(), key=lambda r: r.id)),
+            vrf_instances=tuple(sorted(self._vrf_instances.values(), key=lambda v: v.id)),
+            client_telemetry_gaps=tuple(self._client_telemetry_gaps),
         )

@@ -74,6 +74,7 @@ def screen_op_split(
         _offense_reason(p, current, payload)
         for p in changed
         if not allowed(p, allowlist)
+        and not _wlan_secure_to_open_companion_delete(object_type, p, changed, current, payload)
         and not _known_empty_nac_match(object_type, p, current, payload)
     ]
     if object_type == "device":
@@ -85,6 +86,34 @@ def screen_op_split(
         reasons.extend(_local_overwrite_ripple(changed, current, payload, allowlist))
     gaps = (Rejection(stage=_STAGE, reasons=tuple(reasons)),) if reasons else ()
     return None, gaps
+
+
+def _wlan_secure_to_open_companion_delete(
+    object_type: str,
+    path: str,
+    changed: tuple[str, ...],
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> bool:
+    """Ignore only auth companions removed by a secure -> open root replacement.
+
+    Mist replaces the whole ``auth`` root. The twin models ``auth.type`` but not
+    secret-bearing companions such as ``auth.psk``. Dropping those companions is
+    an inseparable consequence of the modeled transition, not an independent
+    unsupported change. Other auth edits remain denied by the normal allowlist.
+    """
+    if object_type != "wlan" or path == "auth.type" or not path.startswith("auth."):
+        return False
+    if "auth.type" not in changed or _present(payload, path):
+        return False
+    current_auth = current.get("auth")
+    proposed_auth = payload.get("auth")
+    return (
+        isinstance(current_auth, Mapping)
+        and isinstance(proposed_auth, Mapping)
+        and current_auth.get("type") not in (None, "open")
+        and proposed_auth.get("type") == "open"
+    )
 
 
 def _known_empty_nac_match(

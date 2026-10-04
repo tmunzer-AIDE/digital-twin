@@ -54,11 +54,7 @@ def snooped_vlans(ir: IR, did: str) -> tuple[int, ...]:
     if dev.dhcp_snooping == ("*",):
         return tuple(sorted(v.vlan_id for v in ir.vlans.values() if v.dhcp_sources))
     names = set(dev.dhcp_snooping)
-    return tuple(
-        sorted(
-            v.vlan_id for v in ir.vlans.values() if v.name in names and v.dhcp_sources
-        )
-    )
+    return tuple(sorted(v.vlan_id for v in ir.vlans.values() if v.name in names and v.dhcp_sources))
 
 
 def _egress_trust(
@@ -168,7 +164,7 @@ class DhcpSnoopingCheck:
                     )
                     if not site_pre:
                         notes.append(
-                            f"{did} vlan {vlan}: a \"site\" DHCP source is unlocatable — "
+                            f'{did} vlan {vlan}: a "site" DHCP source is unlocatable — '
                             "site-hosted service placement is unmodeled, snooping trust "
                             "toward it cannot be verified"
                         )
@@ -237,8 +233,7 @@ class DhcpSnoopingCheck:
                                 f"toward DHCP source {source} is untrusted — offers "
                                 "are dropped at lease renewal"
                                 + (
-                                    " — an unmodeled site-hosted service may still "
-                                    "serve this vlan"
+                                    " — an unmodeled site-hosted service may still serve this vlan"
                                     if has_site
                                     else ""
                                 )
@@ -251,14 +246,26 @@ class DhcpSnoopingCheck:
                                 "source": source,
                                 "untrusted_egress": list(blocked),
                             },
-                            caused_by=tuple(dict.fromkeys((
-                                *(c for c in (ctx.delta_index.cause("device", did),)
-                                  if c is not None),
-                                *ctx.delta_index.causes("port", blocked),
-                                *(c for c in (ctx.delta_index.cause("vlan", str(vlan)),)
-                                  if c is not None),
-                                *ctx.delta_index.causes("link", path_links),
-                            ))) if not pre else (),
+                            caused_by=tuple(
+                                dict.fromkeys(
+                                    (
+                                        *(
+                                            c
+                                            for c in (ctx.delta_index.cause("device", did),)
+                                            if c is not None
+                                        ),
+                                        *ctx.delta_index.causes("port", blocked),
+                                        *(
+                                            c
+                                            for c in (ctx.delta_index.cause("vlan", str(vlan)),)
+                                            if c is not None
+                                        ),
+                                        *ctx.delta_index.causes("link", path_links),
+                                    )
+                                )
+                            )
+                            if not pre
+                            else (),
                         )
                     )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]

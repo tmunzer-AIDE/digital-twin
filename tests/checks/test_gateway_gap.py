@@ -272,6 +272,51 @@ def test_no_interfaces_stays_with_existence_codes():
     assert not any(c.endswith("gateway_unowned") for c in codes)
 
 
+def test_static_interface_subnet_mismatch_requires_review():
+    from digital_twin.ir.entities import L3Intf, L3Role
+
+    base = _routed_ir()
+    b = IRBuilder().add_device(sw("S"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", subnet="10.0.0.0/24", gateway="10.0.0.1"))
+    b.add_l3intf(
+        L3Intf(
+            device_id="S",
+            role=L3Role.IRB,
+            vlan_id=10,
+            ip="10.0.1.1",
+            subnet="10.0.1.0/24",
+            addressing="static",
+            netmask="/24",
+        )
+    )
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    r = _run(base, b.build())
+    f = next(x for x in r.findings if x.code.endswith("interface_subnet_mismatch"))
+    assert f.severity is Severity.WARNING
+    assert f.evidence["interface_subnet"] == "10.0.1.0/24"
+
+
+def test_touched_unresolved_static_interface_is_partial():
+    from digital_twin.ir.entities import L3Intf, L3Role
+
+    b = IRBuilder().add_device(sw("S"))
+    b.add_vlan(Vlan(vlan_id=10, name="corp", subnet="10.0.0.0/24"))
+    b.add_l3intf(
+        L3Intf(
+            device_id="S",
+            role=L3Role.IRB,
+            vlan_id=10,
+            ip="10.0.0.1",
+            addressing="static",
+            subnet_unresolved=True,
+        )
+    )
+    b.with_capability(IRCapability.WIRED_L2).with_capability(IRCapability.L3_EXITS)
+    r = _run(_ir(), b.build())
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("static IP or netmask" in note for note in r.coverage.notes)
+
+
 # --- unresolved subnet abstain (GS22-SUB Task 5) ---
 
 

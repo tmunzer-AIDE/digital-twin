@@ -12,6 +12,8 @@ _MODELED = {
     "bgp_config.*.type",
     "bgp_config.*.neighbors.**.neighbor_as",
     "bgp_config.*.neighbors.**.disabled",
+    "bgp_config.*.export",
+    "bgp_config.*.export_policy",
 }
 _DENIED = {
     "bgp_config.*.auth_key",
@@ -21,10 +23,12 @@ _DENIED = {
 }
 
 
-def test_switch_surfaces_carry_the_four_modeled_leaves():
+def test_switch_surfaces_carry_the_modeled_leaves():
     assert _MODELED == set(_BGP_LEAVES)
-    for obj in ("site_setting", "device", "networktemplate", "sitetemplate"):
+    for obj in ("site_setting", "networktemplate", "sitetemplate"):
         assert _MODELED <= set(RAW_ALLOWLIST[obj])
+    assert _MODELED - {"bgp_config.*.export"} <= set(RAW_ALLOWLIST["device"])
+    assert "bgp_config.*.export" not in RAW_ALLOWLIST["device"]
     assert _MODELED <= set(EFFECTIVE_ALLOWLIST)
 
 

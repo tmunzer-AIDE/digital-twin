@@ -68,6 +68,27 @@ def test_devices_created_for_switches_and_aps():
     assert ir.device("cc0000000001").role is DeviceRole.AP
 
 
+def test_switch_authenticator_presence_is_modeled_without_secrets():
+    effective = {
+        **SITE_EFFECTIVE,
+        **SWITCH_A,
+        "radius_config": {"auth_servers": [
+            {"host": "radius.example", "secret": "must-not-enter-ir"}
+        ]},
+        "mist_nac": {"enabled": True},
+    }
+    ctx = IngestContext(
+        raw=raw_site(),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": effective},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    device = ctx.builder.build().device("aa0000000001")
+    assert device.authenticator_count == 2
+    assert device.authenticator_unresolved is False
+
+
 def test_ports_expanded_with_modes_and_vlans():
     ir = _ingest().builder.build()
     p0 = ir.port("aa0000000001:ge-0/0/0")
@@ -82,6 +103,57 @@ def test_vlans_and_irb_exits_created():
     assert ir.vlans[10].name == "corp" and ir.vlans[30].name == "voice"
     irbs = [i for i in ir.l3intfs if i.role is L3Role.IRB]
     assert len(irbs) == 1 and irbs[0].vlan_id == 10 and irbs[0].device_id == "aa0000000001"
+
+
+def test_static_routes_and_vrf_membership_are_normalized():
+    effective = {
+        **SITE_EFFECTIVE,
+        **SWITCH_A,
+        "extra_routes": {"10.0.0.7/8": {"via": "192.0.2.1"}},
+        "vrf_instances": {
+            "guest": {
+                "networks": ["guest"],
+                "extra_routes": {"0.0.0.0/0": {"via": "192.0.2.254"}},
+            }
+        },
+    }
+    ctx = IngestContext(
+        raw=raw_site(), site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": effective}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    ir = ctx.builder.build()
+    assert {(route.vrf, route.destination, route.next_hops) for route in ir.static_routes} == {
+        ("default", "10.0.0.0/8", ("192.0.2.1",)),
+        ("guest", "0.0.0.0/0", ("192.0.2.254",)),
+    }
+    assert ir.vrf_instances[0].name == "guest"
+    assert ir.vrf_instances[0].networks == ("guest",)
+
+
+def test_configured_lag_and_lacp_mode_are_normalized_on_ports():
+    effective = {
+        **SITE_EFFECTIVE,
+        **SWITCH_A,
+        "port_config": {
+            "ge-0/0/0": {
+                "usage": "access",
+                "aggregated": True,
+                "ae_idx": 3,
+                "ae_lacp_passive": True,
+                "ae_lacp_slow": True,
+            }
+        },
+    }
+    ctx = IngestContext(
+        raw=raw_site(), site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": effective}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    port = ctx.builder.build().ports["aa0000000001:ge-0/0/0"]
+    assert port.lag_bundle == "ae3"
+    assert port.lacp_mode == "passive-slow"
+    assert port.lag_unresolved is False
 
 
 def test_device_local_network_also_creates_vlan_entity():
@@ -388,6 +460,7 @@ def test_gateway_wan_port_carries_no_site_vlans():
     ir = _gateway_ir()
     p = ir.ports["cc0000000001:ge-0/0/0"]
     assert p.native_vlan is None and p.tagged_vlans == ()
+    assert p.profile == "wan"
 
 
 def test_gateway_l3_interfaces_from_ip_configs_and_attached_routed_networks():
@@ -401,6 +474,27 @@ def test_gateway_l3_interfaces_from_ip_configs_and_attached_routed_networks():
     # 'corp' is ALSO routed (subnet) + attached to the LAN port — same intf;
     # 'iot' has no subnet and no ip_config -> no L3 claim for vlan 20
     assert 20 not in gw_intfs
+
+
+def test_gateway_static_ip_config_derives_normalized_subnet():
+    gw = {
+        **_GATEWAY,
+        "ip_configs": {
+            "corp": {"type": "static", "ip": "198.51.100.9", "netmask": "/24"}
+        },
+    }
+    ctx = IngestContext(
+        raw=raw_site(devices=(gw,), org_networks=_ORG_NETWORKS),
+        site_effective={"networks": {}},
+        device_effective={},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    intf = next(i for i in ctx.builder.build().l3intfs if i.vlan_id == 10)
+    assert (intf.addressing, intf.netmask, intf.subnet) == (
+        "static", "/24", "198.51.100.0/24"
+    )
+    assert intf.subnet_unresolved is False
 
 
 def test_gateway_attached_routed_network_without_ip_config_is_an_inferred_exit():
@@ -911,6 +1005,22 @@ def test_gateway_scope_resolves_via_org_namespace():
     s = next(x for x in ir.dhcp_scopes if x.provider == "cc0000000001")
     # org net corp: vlan 10, subnet 198.51.100.0/24 (_ORG_NETWORKS fixture)
     assert (s.vlan, s.subnet) == (10, "198.51.100.0/24")
+
+
+def test_gateway_scope_mints_dns_and_lease_options():
+    gw = {**_GATEWAY, "ip_configs": {}, "dhcpd_config": {
+        "corp": {"type": "server", "dns_servers": ["1.1.1.1"], "lease_time": "3600"}
+    }}
+    ctx = IngestContext(
+        raw=raw_site(devices=(SWITCH_A, gw), org_networks=_ORG_NETWORKS),
+        site_effective={}, device_effective={}, builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    scope = next(s for s in ctx.builder.build().dhcp_scopes if s.provider == "cc0000000001")
+    assert scope.dns_servers == ("1.1.1.1",)
+    assert scope.lease_time == 3600
+    assert scope.dns_servers_unresolved is False
+    assert scope.lease_time_unresolved is None
 
 
 def test_unfetched_org_namespace_still_mints_gateway_scope_ranges():

@@ -17,6 +17,7 @@ def _defaults(ir: IR, did: str) -> set[str]:
         r.destination
         for r in ir.static_routes
         if r.device_id == did
+        and r.vrf == "default"
         and r.destination in {"0.0.0.0/0", "::/0"}
         and not r.discard
         and not r.unresolved
@@ -36,6 +37,7 @@ class ControlPlaneReachabilityCheck:
         return (
             diff.touches("static_route")
             or diff.touches("l3intf")
+            or diff.touches("vrf_instance")
             or any(r.kind == "port" for r in (*diff.added, *diff.removed))
             or any(
                 m.ref.kind == "port" and _FORWARDING_FIELDS.intersection(m.changed_fields)
@@ -48,6 +50,9 @@ class ControlPlaneReachabilityCheck:
         routes = (*ctx.baseline.ir.static_routes, *ctx.proposed.ir.static_routes)
         devices = {r.device_id for r in routes if r.id in route_ids}
         devices |= changed_l3_devices(ctx) & {r.device_id for r in routes}
+        vrf_ids = touched_ids(ctx.diff, "vrf_instance")
+        vrfs = (*ctx.baseline.ir.vrf_instances, *ctx.proposed.ir.vrf_instances)
+        devices |= {v.device_id for v in vrfs if v.id in vrf_ids}
         ports = {
             m.ref.id
             for m in ctx.diff.modified
@@ -98,6 +103,10 @@ class ControlPlaneReachabilityCheck:
                                 *ctx.delta_index.causes(
                                     "static_route",
                                     sorted(r.id for r in routes if r.device_id == did),
+                                ),
+                                *ctx.delta_index.causes(
+                                    "vrf_instance",
+                                    sorted(v.id for v in vrfs if v.device_id == did),
                                 ),
                                 *ctx.delta_index.causes(
                                     "l3intf",

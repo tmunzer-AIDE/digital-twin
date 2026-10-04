@@ -21,6 +21,20 @@ from digital_twin.ir import device_id
 _LOCAL_INTERFACES = frozenset({"all", "eth0", "eth1", "eth2", "eth3"})
 
 
+def effective_apply_to(wlan: Mapping[str, Any]) -> str:
+    """Return the effective WLAN AP scope.
+
+    Mist permits ``apply_to`` to be omitted for a site-owned WLAN.  Such a WLAN
+    applies to the site; treating the omission as unknown loses both its WLAN
+    policy checks and its AP/VLAN connectivity requirements.  Rows that are not
+    positively site-owned stay unresolved instead of inheriting that default.
+    """
+    apply_to = wlan.get("apply_to")
+    if apply_to is not None and str(apply_to):
+        return str(apply_to)
+    return "site" if wlan.get("for_site") is True else ""
+
+
 def _as_vlan(v: Any) -> int | None:
     try:
         return int(str(v))
@@ -82,7 +96,7 @@ def ap_required_vlans(
             continue
         if str(wlan.get("interface", "all")) not in _LOCAL_INTERFACES:
             continue
-        apply_to = str(wlan.get("apply_to", ""))
+        apply_to = effective_apply_to(wlan)
         ssid = str(wlan.get("ssid", "?"))
         if apply_to == "site":
             targets: list[str] = list(all_ids)

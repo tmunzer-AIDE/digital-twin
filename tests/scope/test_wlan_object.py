@@ -11,6 +11,7 @@ from digital_twin.contracts import ChangeOp, ChangePlan, ChangeScope, Rejection
 from digital_twin.providers.base import RawSiteState, SiteScope, StateMeta
 from digital_twin.scope.field_gate import screen_op
 from digital_twin.scope.object_gate import check_objects
+from digital_twin.scope.wlan_policy import classify_wlan_delta, usage_gated_paths_for_update
 
 _SITE = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True, "isolation": False}
 _INHERITED = {"id": "w2", "ssid": "guest", "enabled": True, "for_site": False, "template_id": "t1"}
@@ -71,12 +72,15 @@ def test_apply_plan_rejects_unsupported_delete_without_crashing():
     assert "delete is not supported" in out.reasons[0]
 
 
-def test_field_gate_modeled_leaf_passes_unmodeled_rejects():
+def test_field_gate_admits_usage_gated_wlan_leaf_but_still_denies_output_only_leaf():
     # the engine passes the EFFECTIVE object (effective_update) to screen_op, not the
     # partial payload — a partial dict would read every other root as a deletion.
     assert screen_op("wlan", _SITE, effective_update(_SITE, {"isolation": True})) is None
-    r = screen_op("wlan", _SITE, effective_update(_SITE, {"hide_ssid": True}))   # unmodeled
-    assert isinstance(r, Rejection)
+    hidden = effective_update(_SITE, {"hide_ssid": True})
+    assert screen_op("wlan", _SITE, hidden) is None
+    assert classify_wlan_delta(_SITE, hidden).usage_gated == ("hide_ssid",)
+    generated = effective_update(_SITE, {"portal_api_secret": "server-owned"})
+    assert isinstance(screen_op("wlan", _SITE, generated), Rejection)
 
 
 def test_inherited_wlan_op_rejected_post_fetch():
@@ -105,14 +109,18 @@ def test_org_wlan_assignment_edit_remains_out_of_scope():
     assert any("site_ids" in reason for reason in r.reasons)
 
 
-def test_auth_root_replace_currently_out_of_scope():
-    # PINS CURRENT (conservative) BEHAVIOR — see ROADMAP "WLAN auth-type transition".
-    # The twin models only auth.type, but Mist replaces the whole `auth` ROOT, so a
-    # psk->open transition drops the companion auth.psk leaf. The field gate rejects
-    # that deletion as out-of-scope -> the op floors to UNKNOWN before GS33 can warn.
-    # This is never false-SAFE (UNKNOWN is conservative); the deferred follow-up would
-    # make this transition a sharp GS33 REVIEW instead.
+def test_secure_to_open_auth_root_replace_ignores_removed_secret_companion():
+    # The modeled secure -> open transition necessarily replaces the auth root and
+    # drops its secret companion. The transition rule owns that consequence.
     psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
            "isolation": False, "auth": {"type": "psk", "psk": "secret"}}
     r = screen_op("wlan", psk, effective_update(psk, {"auth": {"type": "open"}}))
-    assert isinstance(r, Rejection) and any("auth.psk" in x for x in r.reasons)
+    assert r is None
+
+
+def test_auth_secret_change_is_admitted_but_owned_by_usage_gate():
+    psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
+           "isolation": False, "auth": {"type": "psk", "psk": "old"}}
+    proposed = effective_update(psk, {"auth": {"type": "psk", "psk": "new"}})
+    assert screen_op("wlan", psk, proposed) is None
+    assert usage_gated_paths_for_update(psk, proposed) == ("auth.psk",)

@@ -116,8 +116,6 @@ class StpRootChangeCheck:
                 state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
                 notes=tuple(notes),
             ),
-            confidence=(
-                min_confidence(*(f.confidence for f in findings)) if findings else _HIGH
-            ),
+            confidence=(min_confidence(*(f.confidence for f in findings)) if findings else _HIGH),
             reasoning="elected the root bridge per L2 component, baseline vs proposed",
         )

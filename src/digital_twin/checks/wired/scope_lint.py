@@ -80,6 +80,17 @@ def _overlaps(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
     return a[0] == b[0] and a[1] <= b[2] and b[1] <= a[2]
 
 
+def _dns_readable(scope: DhcpScope) -> bool:
+    if scope.dns_servers_unresolved:
+        return False
+    try:
+        for value in scope.dns_servers:
+            ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _subnet_violations(scope: DhcpScope) -> tuple[str, ...]:
     """Each parseable ip_start/ip_end/gateway outside the scope's parseable
     subnet, as stable "field=value" strings (the parity comparison key)."""
@@ -157,7 +168,8 @@ class DhcpScopeLintCheck:
                     evidence={"scopes": [a.id, b.id]},
                     caused_by=(
                         ctx.delta_index.causes("dhcp_scope", (a.id, b.id))
-                        if severity is not Severity.INFO else ()
+                        if severity is not Severity.INFO
+                        else ()
                     ),
                 )
             )
@@ -187,7 +199,8 @@ class DhcpScopeLintCheck:
                     evidence={"scope": s.id, "subnet": s.subnet, "violations": list(violations)},
                     caused_by=(
                         ctx.delta_index.causes("dhcp_scope", (s.id,))
-                        if severity is not Severity.INFO else ()
+                        if severity is not Severity.INFO
+                        else ()
                     ),
                 )
             )
@@ -224,9 +237,47 @@ class DhcpScopeLintCheck:
                         "declared": s.network_gateway,
                     },
                     caused_by=(
-                        ctx.delta_index.causes("dhcp_scope", (s.id,))
-                        if not preexisting else ()
+                        ctx.delta_index.causes("dhcp_scope", (s.id,)) if not preexisting else ()
                     ),
+                )
+            )
+
+        # Changing client options on an EXISTING scope may disrupt active
+        # clients (DNS reachability) or alter renewal load/timing. A newly
+        # created, schema-valid scope is handled by the coherence checks above
+        # and is not reviewed merely for declaring these normal options.
+        for s in prop_sorted:
+            bs = base.get(s.id)
+            if bs is None:
+                continue
+            changed: list[str] = []
+            if (bs.dns_servers, bs.dns_servers_unresolved) != (
+                s.dns_servers,
+                s.dns_servers_unresolved,
+            ):
+                changed.append("DNS servers")
+            if (bs.lease_time, bs.lease_time_unresolved) != (
+                s.lease_time,
+                s.lease_time_unresolved,
+            ):
+                changed.append("lease time")
+            if not changed:
+                continue
+            findings.append(
+                Finding(
+                    source=FindingSource.CHECK,
+                    category=FindingCategory.NETWORK,
+                    code=f"{self.id}.client_options_changed",
+                    subject=ObjectRef("dhcp_scope", s.id),
+                    severity=Severity.WARNING,
+                    confidence=_HIGH,
+                    message=(
+                        f"DHCP scope {s.id} changes {', '.join(changed)} — active "
+                        "clients may receive different connectivity settings at renewal"
+                    ),
+                    affected_entities=(s.id,),
+                    evidence={"scope": s.id, "changed_options": changed},
+                    caused_by=ctx.delta_index.causes("dhcp_scope", (s.id,)),
                 )
             )
 
@@ -270,6 +321,17 @@ class DhcpScopeLintCheck:
             and same_ip(s.gateway, s.network_gateway) is None
             and s.id in changed_ids
         )
+        notes.extend(
+            f"scope {s.id}: one or more DNS server values are unresolved or "
+            "unparseable — client DNS reachability cannot be verified"
+            for s in prop_sorted
+            if s.dns_servers and not _dns_readable(s) and s.id in changed_ids
+        )
+        notes.extend(
+            f"scope {s.id}: lease time is unresolved — renewal behavior cannot be verified"
+            for s in prop_sorted
+            if s.lease_time_unresolved is not None and s.id in changed_ids
+        )
 
         return CheckResult(
             check_id=self.id,
@@ -279,9 +341,7 @@ class DhcpScopeLintCheck:
                 state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
                 notes=tuple(notes),
             ),
-            confidence=(
-                min_confidence(*(f.confidence for f in non_info)) if non_info else _HIGH
-            ),
-            reasoning="linted proposed DHCP scopes pairwise for range overlap and "
-            "per-scope against the declared subnet, demoting baseline-identical violations",
+            confidence=(min_confidence(*(f.confidence for f in non_info)) if non_info else _HIGH),
+            reasoning="linted DHCP ranges, subnet/gateway coherence, and client-option "
+            "changes, demoting baseline-identical violations",
         )

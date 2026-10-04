@@ -52,6 +52,8 @@ class VlanCollisionCheck:
         base = self._violations(ctx, ctx.baseline.ir)
         prop = self._violations(ctx, ctx.proposed.ir)
         return run_delta_lint(
-            check_id=self.id, base=base, proposed=prop,
+            check_id=self.id,
+            base=base,
+            proposed=prop,
             coverage=Coverage(state=CoverageState.COMPLETE),
         )

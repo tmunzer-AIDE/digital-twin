@@ -48,10 +48,7 @@ class TopologyCoverageCheck:
         return frozenset({IRCapability.L2_TOPOLOGY})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        if any(
-            ref.kind in _TOPOLOGY_ADDED_REMOVED_KINDS
-            for ref in (*diff.added, *diff.removed)
-        ):
+        if any(ref.kind in _TOPOLOGY_ADDED_REMOVED_KINDS for ref in (*diff.added, *diff.removed)):
             return True
         return any(
             modified.ref.kind in _TOPOLOGY_MODIFIED_KINDS

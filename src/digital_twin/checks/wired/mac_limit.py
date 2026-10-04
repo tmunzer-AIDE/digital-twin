@@ -92,13 +92,22 @@ class MacLimitExceededCheck:
         )
 
     def _finding(
-        self, ctx: CheckContext, pid: str, new: int | str | None,
-        wired: dict[str, list[Client]], clients_known: bool,
+        self,
+        ctx: CheckContext,
+        pid: str,
+        new: int | str | None,
+        wired: dict[str, list[Client]],
+        clients_known: bool,
     ) -> Finding | None:
         cause = ctx.delta_index.causes("port", [pid])
         if isinstance(new, str):  # unresolved/templated
-            return self._mk(pid, "unresolved", _MEDIUM,
-                            f"mac_limit changed to a non-evaluable value ({new})", cause)
+            return self._mk(
+                pid,
+                "unresolved",
+                _MEDIUM,
+                f"mac_limit changed to a non-evaluable value ({new})",
+                cause,
+            )
         # new is a concrete int (restrictive, per the caller's _more_restrictive gate)
         if not isinstance(new, int):
             return None  # unreachable: _more_restrictive gates out None; satisfies mypy
@@ -112,11 +121,22 @@ class MacLimitExceededCheck:
         return None  # proven within the cap
 
     def _mk(
-        self, pid: str, code: str, conf: Confidence, msg: str, cause: tuple[Cause, ...],
+        self,
+        pid: str,
+        code: str,
+        conf: Confidence,
+        msg: str,
+        cause: tuple[Cause, ...],
     ) -> Finding:
         return Finding(
-            source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-            code=f"{self.id}.{code}", severity=Severity.WARNING, confidence=conf,
-            message=f"port {pid}: {msg}", affected_entities=(pid,),
-            subject=ObjectRef("port", pid), evidence={"port": pid}, caused_by=cause,
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code=f"{self.id}.{code}",
+            severity=Severity.WARNING,
+            confidence=conf,
+            message=f"port {pid}: {msg}",
+            affected_entities=(pid,),
+            subject=ObjectRef("port", pid),
+            evidence={"port": pid},
+            caused_by=cause,
         )

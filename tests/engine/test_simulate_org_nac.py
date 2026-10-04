@@ -1,15 +1,19 @@
 from dataclasses import dataclass
 
 from digital_twin.engine.pipeline import simulate_org_nac
-from digital_twin.providers.base import FetchError, NacFetch, OrgScope
+from digital_twin.providers.base import FetchError, NacFetch, NacRuleUsageContext, OrgScope
 from digital_twin.verdict.decision import Decision
 
 
 @dataclass
 class FakeProvider:
     fetch: object
+    usage: object = None
     def resolve_org_nac(self, scope: OrgScope):
         return self.fetch
+
+    def resolve_nacrule_usage(self, scope: OrgScope, nacrule_id: str, *, window_days=7):
+        return self.usage or NacRuleUsageContext((), ("*",), (), window_days)
 
 
 def _rule(id, order, action="allow", **m):
@@ -98,6 +102,56 @@ def test_delete_drops_row_review():
     v = simulate_org_nac(_plan(_op("delete", "b", {})), provider=FakeProvider(nf))
     assert v.decision is Decision.REVIEW
     assert any(c.kind == "removed" and c.rule_id == "b" for c in v.changes)
+
+
+def test_delete_reports_recent_nacrule_usage():
+    nf = NacFetch(rules=BASE, tags=())
+    usage = NacRuleUsageContext(("s1",), ("*",), (), 7)
+    verdict = simulate_org_nac(
+        _plan(_op("delete", "b", {})), provider=FakeProvider(nf, usage)
+    )
+    finding = next(
+        finding
+        for result in verdict.check_results
+        for finding in result.findings
+        if finding.code == "nac.rule.access_impact.allow_removed"
+    )
+    assert finding.evidence["active_site_ids"] == ["s1"]
+    assert verdict.decision is Decision.UNSAFE
+
+
+def test_recently_used_allow_rule_changed_to_block_is_unsafe():
+    nf = NacFetch(rules=BASE, tags=())
+    usage = NacRuleUsageContext(("s1",), ("*",), (), 7)
+    verdict = simulate_org_nac(
+        _plan(_op("update", "b", {"action": "block"})),
+        provider=FakeProvider(nf, usage),
+    )
+
+    assert verdict.decision is Decision.UNSAFE
+    finding = next(
+        finding
+        for result in verdict.check_results
+        for finding in result.findings
+        if finding.code == "nac.rule.access_impact.allow_removed"
+    )
+    assert finding.evidence["changed_fields"] == ["action"]
+
+
+def test_used_rule_match_change_requires_review():
+    nf = NacFetch(rules=BASE, tags=())
+    usage = NacRuleUsageContext(("s1",), ("*",), (), 7)
+    verdict = simulate_org_nac(
+        _plan(_op("update", "b", {"matching": {"auth_type": ["eap-tls"]}})),
+        provider=FakeProvider(nf, usage),
+    )
+
+    assert verdict.decision is Decision.REVIEW
+    assert any(
+        finding.code == "nac.rule.access_impact.recent_usage"
+        for result in verdict.check_results
+        for finding in result.findings
+    )
 
 
 def test_partial_update_no_bogus_required():

@@ -27,15 +27,62 @@ ORG_OBJECT_TYPES: tuple[str, ...] = (
     "wlantemplate",
 )
 
+# Creating these org templates is inert until a site/device references the new
+# identifier. Their payloads have committed schemas, so L0 can still prevent an
+# invalid definition from receiving SAFE.
+INERT_ORG_CREATE_OBJECT_TYPES: tuple[str, ...] = (
+    "networktemplate",
+    "gatewaytemplate",
+    "sitetemplate",
+)
+
 # Org-level NAC rules (GS34). SEPARATE from SUPPORTED_OBJECT_TYPES (the site
 # whitelist, whose gate branch requires a site_id) and from ORG_OBJECT_TYPES
 # (which drives the per-site fan-out). Routed by its own gate branch + driver
 # predicate to simulate_org_nac.
 NAC_OBJECT_TYPES: tuple[str, ...] = ("nacrule",)
 
+# Configuration objects governed by explicit operational policy rather than the
+# topology model. These names mirror the MCP configuration-tool collection names
+# so the bridge and verdict remain easy to audit.
+CONFIG_POLICY_OBJECT_TYPES: tuple[str, ...] = (
+    "wlantemplate",
+    "org_info",
+    "org_settings",
+    "org_alarmtemplates",
+    "org_sitegroups",
+    "org_avprofiles",
+    "org_deviceprofiles",
+    "org_idpprofiles",
+    "org_aamwprofiles",
+    "org_nactags",
+    "org_psks",
+    "site_psks",
+    "org_rftemplates",
+    "org_services",
+    "org_servicepolicies",
+    "org_sites",
+    "org_vpns",
+    "org_webhooks",
+    "site_webhooks",
+    "org_wxrules",
+    "org_wxtags",
+    "site_wxrules",
+    "site_wxtags",
+    "org_networks",
+)
+
 _NAC_MATCH_DIMS: tuple[str, ...] = (
-    "auth_type", "port_types", "nactags", "site_ids", "sitegroup_ids",
-    "family", "mfg", "model", "os_type", "vendor",
+    "auth_type",
+    "port_types",
+    "nactags",
+    "site_ids",
+    "sitegroup_ids",
+    "family",
+    "mfg",
+    "model",
+    "os_type",
+    "vendor",
 )
 
 # Wired-auth attrs (SP3) — modeled by wired.auth.access_change (policy-floor).
@@ -44,11 +91,20 @@ _NAC_MATCH_DIMS: tuple[str, ...] = (
 # and local_port_config.* in scope for device only — and nothing on
 # port_config/port_config_overwrite (auth is absent from those maps).
 _AUTH_ATTRS: tuple[str, ...] = (
-    "port_auth", "enable_mac_auth", "mac_auth_only", "mac_auth_preferred",
-    "mac_auth_protocol", "allow_multiple_supplicants", "dynamic_vlan_networks",
-    "server_fail_network", "server_reject_network", "guest_network",
-    "bypass_auth_when_server_down", "bypass_auth_when_server_down_for_unknown_client",
-    "persist_mac", "reauth_interval",
+    "port_auth",
+    "enable_mac_auth",
+    "mac_auth_only",
+    "mac_auth_preferred",
+    "mac_auth_protocol",
+    "allow_multiple_supplicants",
+    "dynamic_vlan_networks",
+    "server_fail_network",
+    "server_reject_network",
+    "guest_network",
+    "bypass_auth_when_server_down",
+    "bypass_auth_when_server_down_for_unknown_client",
+    "persist_mac",
+    "reauth_interval",
 )
 # What the IR consumes from a port usage: VLAN semantics (ingest.ports.usage_vlans)
 # + `poe_disabled` (ingest populates Port.poe; the poe.disconnect check reasons
@@ -154,47 +210,78 @@ _DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.gateway",
 )
 # BGP peering the IR models AND acts on (GS28 wired.l3.bgp_adjacency): per-neighbor
-# AS + admin-state (the break signals), session local_as + type. EVERYTHING else
-# (auth_key=secret, networks=advertised prefixes [no v1 check], timers, policies,
-# bfd, multihop) stays DENIED -> UNKNOWN: allowlisting a leaf no check reasons
-# about is a false-SAFE.
+# AS + admin-state (the break signals), session local_as + type, and explicit
+# export selectors/policy names consumed by routing.bgp.prefix_delta. EVERYTHING
+# else (auth_key=secret, timers, import policies, bfd, multihop) stays DENIED ->
+# UNKNOWN: allowlisting a leaf no check reasons about is a false-SAFE.
 _BGP_LEAVES: tuple[str, ...] = (
     "bgp_config.*.local_as",
     "bgp_config.*.type",
+    "bgp_config.*.export",
+    "bgp_config.*.export_policy",
     "bgp_config.*.neighbors.**.neighbor_as",
     "bgp_config.*.neighbors.**.disabled",
+)
+# The closed switch-device OAS exposes named export_policy but not the site-level
+# explicit export selector. Inherited effective config can still carry export, so
+# only the raw device surface uses this narrower tuple.
+_BGP_DEVICE_LEAVES: tuple[str, ...] = tuple(
+    leaf for leaf in _BGP_LEAVES if leaf != "bgp_config.*.export"
 )
 # Gateway BGP adds the transport selector `via` (lan|tunnel|vpn|wan); switches are
 # implicitly LAN and have no via.
 _BGP_GATEWAY_LEAVES: tuple[str, ...] = (*_BGP_LEAVES, "bgp_config.*.via")
 
 # Presence/config-change warnings only: live RADIUS and forwarding outcomes
-# remain unverified. VRFs, route policy/metrics and qualified next-hop edits
-# retain the default-deny boundary until their semantics are modeled.
+# remain unverified. Route metrics/preference and qualified next-hop edits are
+# not modeled, so they retain the default-deny boundary.
 _AUTH_BACKEND_LEAVES: tuple[str, ...] = ("radius_config.auth_servers", "mist_nac.enabled")
+# Destination IPs contain dots, so `**` is required at those dictionary-key
+# positions (the same path-walker constraint as BGP peers).
 _STATIC_ROUTE_LEAVES: tuple[str, ...] = (
     "extra_routes.**.via", "extra_routes.**.discard",
     "extra_routes6.**.via", "extra_routes6.**.discard",
 )
+# VRF membership and per-VRF routes consumed by VrfInstance/StaticRoute(vrf=...).
+_VRF_LEAVES: tuple[str, ...] = (
+    "vrf_instances.*.networks",
+    "vrf_instances.*.extra_routes.**.via",
+    "vrf_instances.*.extra_routes6.**.via",
+)
 
-# Gateway modeled effective leaves: exactly what _gateway_ports_and_l3 + gateway
-# dhcp consume AND act on. NOT port_config.*.usage (inert -> Port.profile), NOT
-# networks (gateway namespace is org_networks, not the device's own networks).
+# Gateway modeled effective leaves: exactly what _gateway_ports_and_l3, WAN
+# redundancy, and gateway DHCP consume and act on. Gateway networks remain the
+# org_networks namespace, not the device's own networks.
 _GATEWAY_PORT_LEAVES: tuple[str, ...] = (
+    "port_config.*.usage",
     "port_config.*.networks",
     "port_config.*.port_network",
     "port_config.*.disabled",
 )
-_GATEWAY_L3_LEAVES: tuple[str, ...] = ("ip_configs.*.ip",)
+
+# Presence-only switch authentication facts. Shared secrets stay inside the
+# atomic auth_servers value and are redacted by the config-diff layer.
+_GATEWAY_L3_LEAVES: tuple[str, ...] = (
+    "ip_configs.*.type",
+    "ip_configs.*.ip",
+    "ip_configs.*.netmask",
+)
 _GATEWAY_DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.type",
     "dhcpd_config.*.servers",
     "dhcpd_config.*.ip_start",
     "dhcpd_config.*.ip_end",
     "dhcpd_config.*.gateway",
+    "dhcpd_config.*.dns_servers",
+    "dhcpd_config.*.lease_time",
 )
 _GATEWAY_LEAVES: tuple[str, ...] = (
-    *_GATEWAY_PORT_LEAVES, *_GATEWAY_L3_LEAVES, *_GATEWAY_DHCP_LEAVES, *_BGP_GATEWAY_LEAVES,
+    *_GATEWAY_PORT_LEAVES,
+    *_GATEWAY_L3_LEAVES,
+    *_GATEWAY_DHCP_LEAVES,
+    *_BGP_GATEWAY_LEAVES,
+    *_STATIC_ROUTE_LEAVES,
+    *_VRF_LEAVES,
 )
 
 # Snooping intent (Device.dhcp_snooping, the wired.dhcp.snooping check):
@@ -248,9 +335,19 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # ripple remains as the backstop for the still-unmodeled remainder of the
 # OAS local_port_config map, e.g. `note`.)
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
-    "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
-    "speed", "duplex", "disable_autoneg", "description", "critical",
+    "usage",
+    "dynamic_usage",
+    "port_network",
+    "networks",
+    "poe_disabled",
+    "mtu",
+    "speed",
+    "duplex",
+    "disable_autoneg",
+    "description",
+    "critical",
     "no_local_overwrite",
+    "aggregated", "ae_idx", "ae_disable_lacp", "ae_lacp_passive", "ae_lacp_slow",
 )
 _PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(f"port_config.*.{a}" for a in _PORT_CONFIG_ATTRS)
 _LOCAL_PORT_CONFIG_LEAVES: tuple[str, ...] = tuple(
@@ -285,8 +382,14 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
         *_BGP_LEAVES,
-        *_AUTH_BACKEND_LEAVES,
         *_STATIC_ROUTE_LEAVES,
+        *_VRF_LEAVES,
+        *_AUTH_BACKEND_LEAVES,
+        "port_config.*.aggregated",
+        "port_config.*.ae_idx",
+        "port_config.*.ae_disable_lacp",
+        "port_config.*.ae_lacp_passive",
+        "port_config.*.ae_lacp_slow",
         "vars.*",
     ),
     "device": (
@@ -299,30 +402,32 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_IRB_LEAVES,
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
-        *_BGP_LEAVES,
-        *_AUTH_BACKEND_LEAVES,
+        *_BGP_DEVICE_LEAVES,
         *_STATIC_ROUTE_LEAVES,
+        *_VRF_LEAVES,
+        *_AUTH_BACKEND_LEAVES,
         "name",
         "notes",
     ),
 }
 
-# Validated WLAN change leaves. Merely storing auth.type in the IR is not
-# evidence that authentication transitions or client compatibility are modeled;
-# changing it now creates a coverage gap instead of silently resolving SAFE.
-# ap_ids/wxtag_ids are
-# atomic list leaves (NOT ap_ids.* — the path flattener treats lists atomically).
-_WLAN_LEAVES: tuple[str, ...] = (
-    "ssid", "enabled", "isolation", "l2_isolation",
-    "apply_to", "ap_ids", "wxtag_ids",
-)
-RAW_ALLOWLIST["wlan"] = _WLAN_LEAVES
+# The WLAN boundary is wider than the topology IR: every admitted leaf is owned
+# either by an existing WLAN/topology check, the explicit benign policy, the
+# band-transition policy, or the seven-day usage gate.  Keeping the ownership
+# table in one module prevents a newly-safe leaf from bypassing its decision rule.
+from digital_twin.scope.wlan_policy import WLAN_POLICY_ALLOWLIST  # noqa: E402
+
+RAW_ALLOWLIST["wlan"] = WLAN_POLICY_ALLOWLIST
 
 # nacrule leaves — exact, leaf-tightened (no matching.* subtree). List values are
 # atomic leaves (the path flattener treats lists atomically, as with ap_ids).
 # id/org_id/created_time/modified_time are dropped by IGNORED_RAW_FIELDS.
 RAW_ALLOWLIST["nacrule"] = (
-    "name", "order", "enabled", "action", "apply_tags",
+    "name",
+    "order",
+    "enabled",
+    "action",
+    "apply_tags",
     *(f"matching.{d}" for d in _NAC_MATCH_DIMS),
     *(f"not_matching.{d}" for d in _NAC_MATCH_DIMS),
 )
@@ -376,8 +481,9 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_SNOOPING_LEAVES,
     *_OSPF_LEAVES,
     *_BGP_LEAVES,
-    *_AUTH_BACKEND_LEAVES,
     *_STATIC_ROUTE_LEAVES,
+    *_VRF_LEAVES,
+    *_AUTH_BACKEND_LEAVES,
     "vars.*",
 )
 
@@ -400,8 +506,17 @@ DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     # switch would resolve SAFE/REVIEW instead of UNKNOWN. Fail-safe = list every
     # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
     "switch": (
-        *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
-        *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
-        *_AUTH_BACKEND_LEAVES, *_STATIC_ROUTE_LEAVES,
+        *_NETWORK_LEAVES,
+        *_USAGE_LEAVES,
+        *_DEVICE_PORT_LEAVES,
+        *_STP_CONFIG_LEAVES,
+        *_IRB_LEAVES,
+        *_DHCP_LEAVES,
+        *_SNOOPING_LEAVES,
+        *_OSPF_LEAVES,
+        *_BGP_LEAVES,
+        *_STATIC_ROUTE_LEAVES,
+        *_VRF_LEAVES,
+        *_AUTH_BACKEND_LEAVES,
     ),
 }

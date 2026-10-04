@@ -55,6 +55,7 @@ _DEVICE_OWN_FIELDS = (
     "mist_nac",
     "extra_routes",
     "extra_routes6",
+    "vrf_instances",
 )
 
 

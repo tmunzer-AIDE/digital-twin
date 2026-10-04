@@ -17,9 +17,22 @@ from typing import Any
 
 import pytest
 
-from digital_twin.providers.base import FetchError, OrgScope, SiteScope
+from digital_twin.providers.base import (
+    FetchError,
+    NacRuleUsageContext,
+    OrgScope,
+    OrgSiteGroupContext,
+    PskUsageContext,
+    SiteScope,
+    WlanUsageContext,
+)
 from digital_twin.providers.fetch_limits import FetchLimits
-from digital_twin.providers.mist_api import MistApiError, MistApiProvider, _checked
+from digital_twin.providers.mist_api import (
+    MistApiError,
+    MistApiProvider,
+    _checked,
+    _reference_paths,
+)
 
 
 class FakeResp:
@@ -136,6 +149,21 @@ def test_pages_raises_on_an_unexpected_page_shape() -> None:
         p._pages(FakeResp(data={"detail": "weird"}))
 
 
+def test_relationship_paths_find_nested_ids_and_family_scoped_names() -> None:
+    row = {
+        "id": "gateway-1",
+        "name": "corp",  # same display name is not itself a network reference
+        "ip_configs": {"wan": {"network": "corp"}},
+        "policies": [{"service_ids": ["svc-1"]}],
+    }
+    assert _reference_paths(
+        row, object_type="org_networks", object_id="network-id", object_name="corp"
+    ) == ("$.ip_configs.wan.network",)
+    assert _reference_paths(
+        row, object_type="org_services", object_id="svc-1", object_name="web"
+    ) == ("$.policies[0].service_ids[0]",)
+
+
 def test_pages_rejects_a_repeated_next_page() -> None:
     p = _provider(FakeSession({"/page2": FakeResp(data=[{"id": "b"}], next="/page2")}))
     with pytest.raises(MistApiError, match="cycle"):
@@ -208,6 +236,125 @@ def test_org_nac_rules_failure_is_fetch_error_not_empty_ruleset(
     result = _provider().resolve_org_nac(OrgScope(org_id="o1"))
     assert isinstance(result, FetchError)
     assert result.failures[0].object == "nacrules"
+
+
+def test_sitegroup_resolution_returns_assigned_sites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.sitegroups,
+        "getOrgSiteGroup",
+        lambda session, org_id, sitegroup_id: FakeResp(
+            data={"id": sitegroup_id, "site_ids": ["s1", "s2"]}
+        ),
+    )
+    result = _provider().resolve_org_sitegroup(OrgScope("o1"), "g1")
+    assert isinstance(result, OrgSiteGroupContext)
+    assert result.assigned_site_ids == ("s1", "s2")
+
+
+def test_psk_usage_queries_the_whole_org_for_seven_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    provider = _provider()
+    calls: list[tuple[str, str, str, int]] = []
+
+    def sessions(session, org_id, *, psk_id, duration, limit, sort):
+        calls.append((org_id, psk_id, duration, limit))
+        return FakeResp(data={"results": [{"session_id": "used", "site_id": "s2"}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.clients,
+        "searchOrgWirelessClientSessions",
+        sessions,
+    )
+    result = provider.resolve_psk_usage(OrgScope("o1"), "p1", window_days=7)
+    assert isinstance(result, PskUsageContext)
+    assert result.active_site_ids == ("s2",)
+    assert result.checked_site_ids == ("*",)
+    assert calls == [("o1", "p1", "7d", 1)]
+
+
+def test_psk_usage_failure_is_returned_as_a_fetch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.clients,
+        "searchOrgWirelessClientSessions",
+        lambda session, org_id, **kwargs: FakeResp(status_code=503),
+    )
+    provider = _provider()
+    result = provider.resolve_psk_usage(OrgScope("o1"), "p1")
+    assert isinstance(result, FetchError)
+    assert result.failures[0].object == "psk_sessions"
+
+
+def test_wlan_usage_queries_wlan_sessions_for_seven_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    calls: list[tuple[str, str, str, int]] = []
+
+    def sessions(session, org_id, *, wlan_id, duration, limit, sort):
+        calls.append((org_id, wlan_id, duration, limit))
+        return FakeResp(data={"results": [{"site_id": "s3"}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.clients, "searchOrgWirelessClientSessions", sessions
+    )
+    result = _provider().resolve_wlan_usage(OrgScope("o1"), "w1", window_days=7)
+    assert isinstance(result, WlanUsageContext)
+    assert result.active_site_ids == ("s3",)
+    assert calls == [("o1", "w1", "7d", 1)]
+
+
+def test_wlan_usage_can_filter_an_exact_radio_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    calls: list[tuple[str, str, str]] = []
+
+    def sessions(session, site_id, *, wlan_id, band, duration, limit, sort):
+        calls.append((site_id, wlan_id, band))
+        return FakeResp(data={"results": [{"site_id": site_id}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.sites.clients, "searchSiteWirelessClientSessions", sessions
+    )
+    result = _provider().resolve_wlan_usage(
+        SiteScope("o1", "s1"), "w1", window_days=7, band="5-dedicated"
+    )
+    assert isinstance(result, WlanUsageContext)
+    assert result.active_site_ids == ("s1",)
+    assert calls == [("s1", "w1", "5-dedicated")]
+
+
+def test_nacrule_usage_queries_nac_clients_for_seven_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    calls: list[tuple[str, str, str, int]] = []
+
+    def clients(session, org_id, *, nacrule_id, duration, limit, sort):
+        calls.append((org_id, nacrule_id, duration, limit))
+        return FakeResp(data={"results": [{"site_id": "s4"}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.orgs.nac_clients, "searchOrgNacClients", clients
+    )
+    result = _provider().resolve_nacrule_usage(OrgScope("o1"), "r1", window_days=7)
+    assert isinstance(result, NacRuleUsageContext)
+    assert result.active_site_ids == ("s4",)
+    assert calls == [("o1", "r1", "7d", 1)]
 
 
 def test_org_nac_rules_are_paginated(monkeypatch: pytest.MonkeyPatch) -> None:

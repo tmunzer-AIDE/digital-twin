@@ -35,6 +35,7 @@ def _critical(ir: IR, port: Port | None) -> bool:
         and not port.disabled
         and (
             port.is_uplink
+            or port.profile in {"ap", "uplink"}
             or (port.misc and port.misc.inter_switch_link)
             or any(port.id in (link.a_port, link.b_port) for link in ir.links)
         )

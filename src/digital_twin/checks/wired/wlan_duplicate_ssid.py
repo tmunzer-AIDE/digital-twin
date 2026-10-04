@@ -35,7 +35,7 @@ class WlanDuplicateSsidCheck:
     id = "wireless.wlan.duplicate_ssid"
     title = "duplicate SSID on overlapping APs"
     domain = "wireless.wlan"
-    default_severity = Severity.WARNING
+    default_severity = Severity.ERROR
 
     def requires(self) -> frozenset[Capability]:
         # applies_to ("wlan" touched) implies WLAN_CONFIG was earned — Wlan entities
@@ -60,8 +60,12 @@ class WlanDuplicateSsidCheck:
                 if _overlap(a, b) == "yes":
                     pair = (a.id, b.id)
                     causes = tuple(
-                        c for c in (ctx.delta_index.cause("wlan", a.id),
-                                    ctx.delta_index.cause("wlan", b.id)) if c is not None
+                        c
+                        for c in (
+                            ctx.delta_index.cause("wlan", a.id),
+                            ctx.delta_index.cause("wlan", b.id),
+                        )
+                        if c is not None
                     )
                     viols.append(
                         Violation(
@@ -93,12 +97,22 @@ class WlanDuplicateSsidCheck:
         # RELEVANCE-SCOPED: note an unverifiable duplicate only when one of its WLANs is
         # delta-touched, so a pre-existing wxtag duplicate never floors an unrelated change.
         touched = touched_ids(ctx.diff, "wlan")
-        notes = tuple(dict.fromkeys(
-            f"SSID '{ssid}' duplicated across WLANs with wxtag/unknown scope — overlap unverifiable"
-            for ssid, a_id, b_id in self._unverifiable(ctx.proposed.ir)
-            if a_id in touched or b_id in touched
-        ))
-        coverage = Coverage(
-            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE, notes=notes,
+        notes = tuple(
+            dict.fromkeys(
+                f"SSID '{ssid}' duplicated across WLANs with wxtag/unknown scope — "
+                "overlap unverifiable"
+                for ssid, a_id, b_id in self._unverifiable(ctx.proposed.ir)
+                if a_id in touched or b_id in touched
+            )
         )
-        return run_delta_lint(check_id=self.id, base=base, proposed=prop, coverage=coverage)
+        coverage = Coverage(
+            state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
+            notes=notes,
+        )
+        return run_delta_lint(
+            check_id=self.id,
+            base=base,
+            proposed=prop,
+            coverage=coverage,
+            introduced_severity=Severity.ERROR,
+        )

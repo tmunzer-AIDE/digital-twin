@@ -91,7 +91,10 @@ class MistAdapter:
                 # dhcpd_config from the site-level layers (sitetemplate /
                 # site_setting), so the gateway effective only carries the
                 # gatewaytemplate + device scopes.  There is no double-mint risk.
-                keys = ("port_config", "ip_configs", "dhcpd_config", "bgp_config")
+                keys = (
+                    "port_config", "ip_configs", "dhcpd_config", "bgp_config",
+                    "extra_routes", "extra_routes6", "vrf_instances",
+                )
                 return {**d, **{k: eff.get(k, {}) for k in keys}}
             return d
 
