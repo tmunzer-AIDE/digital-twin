@@ -111,6 +111,36 @@ def test_gs2_redundant_vlan_removal_is_safe(tmp_path):
     assert v.decision is Decision.SAFE, v.decision_reasons
 
 
+def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
+    doc = augmented_doc(
+        parallel_carries_gs=True, with_wireless_client=False,
+        retain_captured_client_history=True,
+    )
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
+    )
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is Decision.REVIEW
+    impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
+    assert impact.coverage.state is CoverageState.PARTIAL
+    assert any("unknown port attachment" in note for note in impact.coverage.notes)
+
+
+def test_known_breakage_survives_partial_captured_client_telemetry(tmp_path):
+    doc = augmented_doc(
+        parallel_carries_gs=False, with_wireless_client=False,
+        retain_captured_client_history=True,
+    )
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
+    )
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is Decision.UNSAFE
+    impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
+    assert impact.coverage.state is CoverageState.PARTIAL
+    assert WIRED_CLIENT_MAC in impact.findings[0].affected_entities
+
+
 def test_gs3_new_unprotected_cycle_is_review_at_unknown_stp(tmp_path):
     # the delta adds vlan 999 to the parallel link -> a NEW cycle; STP state is
     # unknown on those ports (live data has no stp rows for them) -> the spec's

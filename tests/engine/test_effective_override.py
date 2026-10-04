@@ -10,7 +10,7 @@ SITE = "s1"
 ORG = "o1"
 
 
-def _switch(mac: str, *, override_qos: bool | None) -> dict:
+def _switch(mac: str, *, override_edge: bool | None) -> dict:
     device = {
         "mac": mac,
         "id": f"dev-{mac[-1]}",
@@ -18,12 +18,12 @@ def _switch(mac: str, *, override_qos: bool | None) -> dict:
         "model": "EX4100-48P",
         "port_config": {"ge-0/0/0": {"usage": "office"}},
     }
-    if override_qos is not None:
+    if override_edge is not None:
         device["port_usages"] = {
             "office": {
                 "mode": "access",
                 "port_network": "corp",
-                "enable_qos": override_qos,
+                "stp_edge": override_edge,
             }
         }
     return device
@@ -39,7 +39,7 @@ def _raw(devices: tuple[dict, ...]) -> RawSiteState:
                 "office": {
                     "mode": "access",
                     "port_network": "corp",
-                    "enable_qos": False,
+                    "stp_edge": False,
                 }
             },
         },
@@ -81,7 +81,7 @@ def _plan() -> dict:
                     "office": {
                         "mode": "access",
                         "port_network": "corp",
-                        "enable_qos": True,
+                        "stp_edge": True,
                     }
                 }
             },
@@ -91,8 +91,8 @@ def _plan() -> dict:
 
 def test_fully_overridden_lower_layer_change_is_reported():
     raw = _raw((
-        _switch("aa0000000001", override_qos=False),
-        _switch("aa0000000002", override_qos=False),
+        _switch("aa0000000001", override_edge=False),
+        _switch("aa0000000002", override_edge=False),
     ))
     verdict = simulate(_plan(), provider=Provider(raw))
 
@@ -101,14 +101,14 @@ def test_fully_overridden_lower_layer_change_is_reported():
         finding for finding in verdict.findings
         if finding.code == "scope.effective_noop.fully_overridden"
     )
-    assert finding.evidence["paths"] == ["port_usages.office.enable_qos"]
+    assert finding.evidence["paths"] == ["port_usages.office.stp_edge"]
     assert finding.affected_entities == ("aa0000000001", "aa0000000002")
 
 
 def test_partially_overridden_lower_layer_change_is_reported():
     raw = _raw((
-        _switch("aa0000000001", override_qos=False),
-        _switch("aa0000000002", override_qos=None),
+        _switch("aa0000000001", override_edge=False),
+        _switch("aa0000000002", override_edge=None),
     ))
     verdict = simulate(_plan(), provider=Provider(raw))
 
@@ -118,8 +118,8 @@ def test_partially_overridden_lower_layer_change_is_reported():
         if finding.code == "scope.effective_noop.partially_overridden"
     )
     assert finding.evidence["overridden_devices_by_path"] == {
-        "port_usages.office.enable_qos": ["aa0000000001"]
+        "port_usages.office.stp_edge": ["aa0000000001"]
     }
     assert finding.evidence["applied_devices_by_path"] == {
-        "port_usages.office.enable_qos": ["aa0000000002"]
+        "port_usages.office.stp_edge": ["aa0000000002"]
     }

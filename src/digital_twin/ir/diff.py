@@ -33,12 +33,12 @@ _ENTITY_KINDS: list[tuple[str, Callable[[IR], Iterable[Any]]]] = [
     ("link", lambda ir: ir.links),
     ("vlan", lambda ir: ir.vlans.values()),
     ("l3intf", lambda ir: ir.l3intfs),
+    ("static_route", lambda ir: ir.static_routes),
     ("ospf_intf", lambda ir: ir.ospf_intfs),
     ("client", lambda ir: ir.clients),
     ("dhcp_scope", lambda ir: ir.dhcp_scopes),
     ("wlan", lambda ir: ir.wlans),
     ("bgp_peer", lambda ir: ir.bgp_peers),
-    ("static_route", lambda ir: ir.static_routes),
     ("vrf_instance", lambda ir: ir.vrf_instances),
     ("nacrule", lambda ir: ir.nacrules),
 ]

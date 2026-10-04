@@ -156,7 +156,7 @@ class WlanClientImpactCheck:
                 unverified.append(
                     self._unverified(ctx, affected, reason="client_telemetry_unavailable")
                 )
-            else:
+            if ctx.client_observations_available:
                 unknown_ssid_clients: list[Client] = []
                 impacted_by_ssid: dict[str, list[Client]] = {ssid: [] for ssid in affected}
                 for client in _active_wireless_clients(ctx.baseline.ir):
@@ -181,12 +181,15 @@ class WlanClientImpactCheck:
                     )
 
         coverage = Coverage(
-            state=CoverageState.COMPLETE,
-            notes=(_CAVEAT,) if affected and not findings and not unverified else (),
+            state=CoverageState.PARTIAL if unverified else CoverageState.COMPLETE,
+            notes=tuple(dict.fromkeys(
+                (*ctx.baseline.ir.client_telemetry_gaps, *ctx.proposed.ir.client_telemetry_gaps)
+            )) if unverified else ((_CAVEAT,) if affected and not findings else ()),
         )
         if findings:
             return CheckResult(
-                self.id, Status.FAIL, tuple(findings), coverage, _HIGH, "coverage lost"
+                self.id, Status.FAIL, tuple((*findings, *unverified)), coverage, _HIGH,
+                "coverage lost",
             )
         if unverified:
             return CheckResult(

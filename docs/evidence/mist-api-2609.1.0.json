@@ -1,0 +1,1325 @@
+{
+  "purpose": "Read-only API availability evidence for a proposed design. Endpoint or schema availability is not an implementation or behavioral fidelity claim.",
+  "inspected_on": "2026-10-01",
+  "spec_path": "/Users/tmunzer/4_dev/API/mist_openapi/mist.openapi.json",
+  "spec_version": "2609.1.0",
+  "spec_sha256": "22f55432535ab38f6c0539392a729b8fd515a9ccae9df693fbd4ff23d40b8fac",
+  "spec_git_commit": "0613a22acd8d627c938a74dbf2f0f80167bdcb93",
+  "spec_path_count": 762,
+  "spec_schema_count": 2910,
+  "mistapi_installed_version": "0.62.0",
+  "live_mist_calls": 0,
+  "endpoints": [
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/sites",
+      "operation_id": "listOrgSites",
+      "sdk_callable": "mistapi.api.v1.orgs.sites.listOrgSites",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/SitesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/devices",
+      "operation_id": "listOrgDevices",
+      "sdk_callable": "mistapi.api.v1.orgs.devices.listOrgDevices",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/OrgDevices"
+      },
+      "notes": []
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/devices",
+      "operation_id": "listSiteDevices",
+      "sdk_callable": "mistapi.api.v1.sites.devices.listSiteDevices",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, type: str | None = None, name: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/DevicesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/deviceprofiles",
+      "operation_id": "listOrgDeviceProfiles",
+      "sdk_callable": "mistapi.api.v1.orgs.deviceprofiles.listOrgDeviceProfiles",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, type: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/DeviceprofilesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/deviceprofiles/derived",
+      "operation_id": "listSiteDeviceProfilesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.deviceprofiles.listSiteDeviceProfilesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/DeviceprofilesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/evpn_topologies",
+      "operation_id": "listOrgEvpnTopologies",
+      "sdk_callable": "mistapi.api.v1.orgs.evpn_topologies.listOrgEvpnTopologies",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, for_site: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/EvpnTopologiesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "inventory",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/evpn_topologies",
+      "operation_id": "listSiteEvpnTopologies",
+      "sdk_callable": "mistapi.api.v1.sites.evpn_topologies.listSiteEvpnTopologies",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/EvpnTopologiesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/setting",
+      "operation_id": "getSiteSetting",
+      "sdk_callable": "mistapi.api.v1.sites.setting.getSiteSetting",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/SiteSettings"
+      },
+      "notes": []
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/setting/derived",
+      "operation_id": "getSiteSettingDerived",
+      "sdk_callable": "mistapi.api.v1.sites.setting.getSiteSettingDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/SiteSettingsDerived"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/wlans/derived",
+      "operation_id": "listSiteWlansDerived",
+      "sdk_callable": "mistapi.api.v1.sites.wlans.listSiteWlansDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None, wlan_id: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WlansArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/networktemplates/derived",
+      "operation_id": "listSiteNetworkTemplatesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.networktemplates.listSiteNetworkTemplatesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/Networktemplate"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/gatewaytemplates/derived",
+      "operation_id": "listSiteGatewayTemplatesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.gatewaytemplates.listSiteGatewayTemplatesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/GatewaytemplatesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/sitetemplates/derived",
+      "operation_id": "listSiteSiteTemplatesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.sitetemplates.listSiteSiteTemplatesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/SiteTemplatesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/aptemplates/derived",
+      "operation_id": "listSiteApTemplatesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.aptemplates.listSiteApTemplatesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/AptemplatesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/rftemplates/derived",
+      "operation_id": "listSiteRfTemplatesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.rftemplates.listSiteRfTemplatesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/RftemplatesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "effective_config",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/devices/{device_id}/config_cmd",
+      "operation_id": "getSiteDeviceConfigCmd",
+      "sdk_callable": "mistapi.api.v1.sites.devices.getSiteDeviceConfigCmd",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, device_id: str, sort: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/DeviceConfigCmd"
+      },
+      "notes": [
+        "Generated configuration commands; not proof of applied running configuration or unmanaged brownfield configuration."
+      ]
+    },
+    {
+      "domain": "wireless",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/wlans",
+      "operation_id": "listOrgWlans",
+      "sdk_callable": "mistapi.api.v1.orgs.wlans.listOrgWlans",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WlansArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wireless",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/templates",
+      "operation_id": "listOrgTemplates",
+      "sdk_callable": "mistapi.api.v1.orgs.templates.listOrgTemplates",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/TemplatesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wireless",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/stats/clients",
+      "operation_id": "listSiteWirelessClientsStats",
+      "sdk_callable": "mistapi.api.v1.sites.stats.listSiteWirelessClientsStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, wired: bool | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/ClientStatsArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wireless",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/wxrules/derived",
+      "operation_id": "ListSiteWxRulesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.wxrules.ListSiteWxRulesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WxruleArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/networktemplates",
+      "operation_id": "listOrgNetworkTemplates",
+      "sdk_callable": "mistapi.api.v1.orgs.networktemplates.listOrgNetworkTemplates",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/NetworktemplatesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/devices",
+      "operation_id": "listOrgDevicesStats",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.listOrgDevicesStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, type: str | None = None, status: str | None = None, site_id: str | None = None, mac: str | None = None, evpntopo_id: str | None = None, evpn_unused: str | None = None, fields: str | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/DevicesArrayStatsOrg"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/ports/search",
+      "operation_id": "searchOrgSwOrGwPorts",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.searchOrgSwOrGwPorts",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, device_type: str | None = None, auth_state: str | None = None, full_duplex: bool | None = None, lte_imsi: str | None = None, lte_iccid: str | None = None, lte_imei: str | None = None, mac: str | None = None, neighbor_mac: str | None = None, neighbor_port_desc: str | None = None, neighbor_system_name: str | None = None, poe_disabled: bool | None = None, poe_mode: str | None = None, poe_on: bool | None = None, poe_priority: str | None = None, port_id: str | None = None, port_mac: str | None = None, speed: int | None = None, stp_state: str | None = None, stp_role: str | None = None, up: bool | None = None, xcvr_part_number: str | None = None, limit: int | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/PortStatsSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/stats/ports/search",
+      "operation_id": "searchSiteSwOrGwPorts",
+      "sdk_callable": "mistapi.api.v1.sites.stats.searchSiteSwOrGwPorts",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, device_type: str | None = None, auth_state: str | None = None, full_duplex: bool | None = None, lte_imsi: str | None = None, lte_iccid: str | None = None, lte_imei: str | None = None, mac: str | None = None, neighbor_mac: str | None = None, neighbor_port_desc: str | None = None, neighbor_system_name: str | None = None, poe_disabled: bool | None = None, poe_mode: str | None = None, poe_on: bool | None = None, poe_priority: str | None = None, port_id: str | None = None, port_mac: str | None = None, speed: int | None = None, stp_state: str | None = None, stp_role: str | None = None, up: bool | None = None, xcvr_part_number: str | None = None, limit: int | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/SwitchPortsSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/wired_clients/search",
+      "operation_id": "searchSiteWiredClients",
+      "sdk_callable": "mistapi.api.v1.sites.wired_clients.searchSiteWiredClients",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, device_mac: str | None = None, mac: str | None = None, ip: str | None = None, port_id: str | None = None, source: str | None = None, vlan: str | None = None, manufacture: str | None = None, text: str | None = None, nacrule_id: str | None = None, dhcp_hostname: str | None = None, dhcp_fqdn: str | None = None, dhcp_client_identifier: str | None = None, dhcp_vendor_class_identifier: str | None = None, dhcp_request_params: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WiredClientsSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/stats/ospf_peers/search",
+      "operation_id": "searchSiteOspfStats",
+      "sdk_callable": "mistapi.api.v1.sites.stats.searchSiteOspfStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, mac: str | None = None, vrf_name: str | None = None, peer_ip: str | None = None, start: str | None = None, end: str | None = None, limit: int | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/OspfPeersStatsSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wired",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/stats/bgp_peers/search",
+      "operation_id": "searchSiteBgpStats",
+      "sdk_callable": "mistapi.api.v1.sites.stats.searchSiteBgpStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, mac: str | None = None, neighbor_mac: str | None = None, vrf_name: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/BgpStatsArraySearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/gatewaytemplates",
+      "operation_id": "listOrgGatewayTemplates",
+      "sdk_callable": "mistapi.api.v1.orgs.gatewaytemplates.listOrgGatewayTemplates",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/GatewaytemplatesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/networks",
+      "operation_id": "listOrgNetworks",
+      "sdk_callable": "mistapi.api.v1.orgs.networks.listOrgNetworks",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/NetworksArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/services",
+      "operation_id": "listOrgServices",
+      "sdk_callable": "mistapi.api.v1.orgs.services.listOrgServices",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/ServicesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/vpns",
+      "operation_id": "listOrgVpns",
+      "sdk_callable": "mistapi.api.v1.orgs.vpns.listOrgVpns",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/VpnsArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/networks/derived",
+      "operation_id": "listSiteNetworksDerived",
+      "sdk_callable": "mistapi.api.v1.sites.networks.listSiteNetworksDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/NetworksArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/services/derived",
+      "operation_id": "listSiteServicesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.services.listSiteServicesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/ServicesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/vpns/derived",
+      "operation_id": "listSiteVpnsDerived",
+      "sdk_callable": "mistapi.api.v1.sites.vpns.listSiteVpnsDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/VpnsArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/sites/{site_id}/servicepolicies/derived",
+      "operation_id": "listSiteServicePoliciesDerived",
+      "sdk_callable": "mistapi.api.v1.sites.servicepolicies.listSiteServicePoliciesDerived",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, resolve: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/ServicePoliciesArray"
+      },
+      "notes": [
+        "Baseline effective configuration oracle; cannot derive a hypothetical change without a local compiler or applying a live change."
+      ]
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/vpn_peers/search",
+      "operation_id": "searchOrgPeerPathStats",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.searchOrgPeerPathStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, mac: str | None = None, site_id: str | None = None, type: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/VpnPeersStats"
+      },
+      "notes": []
+    },
+    {
+      "domain": "wan",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/tunnels/search",
+      "operation_id": "searchOrgTunnelsStats",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.searchOrgTunnelsStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, mxcluster_id: str | None = None, site_id: str | None = None, wxtunnel_id: str | None = None, ap: str | None = None, mac: str | None = None, node: str | None = None, peer_ip: str | None = None, peer_host: str | None = None, ip: str | None = None, tunnel_name: str | None = None, protocol: str | None = None, auth_algo: str | None = None, encrypt_algo: str | None = None, ike_version: str | None = None, up: str | None = None, type: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/TunnelsSearch"
+      },
+      "notes": [
+        "Default tunnel type is wxtunnel; request type=wan explicitly for WAN tunnel statistics. Do not infer complete SSR session behavior from these records."
+      ]
+    },
+    {
+      "domain": "wan",
+      "method": "POST",
+      "path": "/api/v1/sites/{site_id}/devices/{device_id}/show_route",
+      "operation_id": "showSiteSsrAndSrxRoutes",
+      "sdk_callable": "mistapi.api.v1.sites.devices.showSiteSsrAndSrxRoutes",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, site_id: str, device_id: str, body: dict | list) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WebsocketSession"
+      },
+      "notes": [
+        "Diagnostic POST: triggers route readout delivered through a WebSocket session. Not a passive GET; not invoked during this study."
+      ]
+    },
+    {
+      "domain": "nac",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/nacrules",
+      "operation_id": "listOrgNacRules",
+      "sdk_callable": "mistapi.api.v1.orgs.nacrules.listOrgNacRules",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/NacRulesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "nac",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/nactags",
+      "operation_id": "listOrgNacTags",
+      "sdk_callable": "mistapi.api.v1.orgs.nactags.listOrgNacTags",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, type: str | None = None, name: str | None = None, match: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/NacTagsArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "nac",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/nac_clients/search",
+      "operation_id": "searchOrgNacClients",
+      "sdk_callable": "mistapi.api.v1.orgs.nac_clients.searchOrgNacClients",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, ap: str | None = None, auth_type: str | None = None, cert_expiry_duration: str | None = None, edr_managed: bool | None = None, edr_provider: str | None = None, edr_status: str | None = None, family: str | None = None, hostname: str | None = None, idp_id: str | None = None, mac: str | None = None, mdm_compliance: str | None = None, mdm_provider: str | None = None, mdm_managed: bool | None = None, mfg: str | None = None, model: str | None = None, nacrule_name: str | None = None, nacrule_id: str | None = None, nacrule_matched: bool | None = None, nas_vendor: str | None = None, nas_ip: str | None = None, ingress_vlan: str | None = None, os: str | None = None, ssid: str | None = None, status: str | None = None, text: str | None = None, timestamp: float | None = None, type: str | None = None, usermac_label: list | None = None, username: str | None = None, vlan: str | None = None, site_id: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/ClientNacSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "nac",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/nac_clients/events/search",
+      "operation_id": "searchOrgNacClientEvents",
+      "sdk_callable": "mistapi.api.v1.orgs.nac_clients.searchOrgNacClientEvents",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, type: str | None = None, nacrule_id: str | None = None, nacrule_matched: bool | None = None, dryrun_nacrule_id: str | None = None, dryrun_nacrule_matched: bool | None = None, auth_type: str | None = None, vlan: int | None = None, nas_vendor: str | None = None, bssid: str | None = None, idp_id: str | None = None, idp_role: str | None = None, idp_username: str | None = None, resp_attrs: list | None = None, ssid: str | None = None, username: str | None = None, site_id: str | None = None, ap: str | None = None, random_mac: bool | None = None, mac: str | None = None, timestamp: float | None = None, usermac_label: str | None = None, text: str | None = None, nas_ip: str | None = None, ingress_vlan: str | None = None, limit: int | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, sort: str | None = None, search_after: str | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/EventsNacClientSearch"
+      },
+      "notes": []
+    },
+    {
+      "domain": "nac",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/setting",
+      "operation_id": "getOrgSettings",
+      "sdk_callable": "mistapi.api.v1.orgs.setting.getOrgSettings",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/OrgSetting"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/mxclusters",
+      "operation_id": "listOrgMxEdgeClusters",
+      "sdk_callable": "mistapi.api.v1.orgs.mxclusters.listOrgMxEdgeClusters",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/MxclustersArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/mxtunnels",
+      "operation_id": "listOrgMxTunnels",
+      "sdk_callable": "mistapi.api.v1.orgs.mxtunnels.listOrgMxTunnels",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/MxtunnelsArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/mxedges",
+      "operation_id": "listOrgMxEdges",
+      "sdk_callable": "mistapi.api.v1.orgs.mxedges.listOrgMxEdges",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, for_site: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/MxedgesArray"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/mxedges",
+      "operation_id": "listOrgMxEdgesStats",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.listOrgMxEdgesStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, for_site: str | None = None, start: str | None = None, end: str | None = None, duration: str | None = None, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/MxedgesArrayStats"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/stats/mxedges/{mxedge_id}",
+      "operation_id": "getOrgMxEdgeStats",
+      "sdk_callable": "mistapi.api.v1.orgs.stats.getOrgMxEdgeStats",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, mxedge_id: str, for_site: bool | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/MxedgeStats"
+      },
+      "notes": []
+    },
+    {
+      "domain": "mist_edge",
+      "method": "GET",
+      "path": "/api/v1/orgs/{org_id}/wxtunnels",
+      "operation_id": "listOrgWxTunnels",
+      "sdk_callable": "mistapi.api.v1.orgs.wxtunnels.listOrgWxTunnels",
+      "installed_sdk_signature": "(mist_session: mistapi.__api_session.APISession, org_id: str, limit: int | None = None, page: int | None = None) -> mistapi.__api_response.APIResponse",
+      "success_response": {
+        "$ref": "#/components/responses/WxtunnelArray"
+      },
+      "notes": []
+    }
+  ],
+  "unresolved_requested_operation_ids": [],
+  "component_root_fields": {
+    "wlan": {
+      "properties": [
+        "acct_immediate_update",
+        "acct_interim_interval",
+        "acct_servers",
+        "airwatch",
+        "allow_ipv6_ndp",
+        "allow_mdns",
+        "allow_ssdp",
+        "ap_ids",
+        "app_limit",
+        "app_qos",
+        "apply_to",
+        "arp_filter",
+        "auth",
+        "auth_server_selection",
+        "auth_servers",
+        "auth_servers_nas_id",
+        "auth_servers_nas_ip",
+        "auth_servers_retries",
+        "auth_servers_timeout",
+        "band",
+        "band_steer",
+        "band_steer_force_band5",
+        "bands",
+        "block_blacklist_clients",
+        "bonjour",
+        "cisco_cwa",
+        "client_limit_down",
+        "client_limit_down_enabled",
+        "client_limit_up",
+        "client_limit_up_enabled",
+        "coa_servers",
+        "created_time",
+        "disable_11ax",
+        "disable_11be",
+        "disable_ht_vht_rates",
+        "disable_message_authenticator_check",
+        "disable_uapsd",
+        "disable_v1_roam_notify",
+        "disable_v2_roam_notify",
+        "disable_when_gateway_unreachable",
+        "disable_when_mxtunnel_down",
+        "disable_wmm",
+        "dns_server_rewrite",
+        "dtim",
+        "dynamic_psk",
+        "dynamic_vlan",
+        "enable_ftm",
+        "enable_local_keycaching",
+        "enable_wireless_bridging",
+        "enable_wireless_bridging_dhcp_tracking",
+        "enabled",
+        "fast_dot1x_timers",
+        "for_site",
+        "hide_ssid",
+        "hostname_ie",
+        "hotspot20",
+        "id",
+        "inject_dhcp_option_82",
+        "interface",
+        "isolation",
+        "l2_isolation",
+        "legacy_overds",
+        "limit_bcast",
+        "limit_probe_response",
+        "max_idletime",
+        "max_num_clients",
+        "mist_nac",
+        "modified_time",
+        "msp_id",
+        "mxtunnel_id",
+        "mxtunnel_ids",
+        "mxtunnel_name",
+        "no_static_dns",
+        "no_static_ip",
+        "org_id",
+        "portal",
+        "portal_allowed_hostnames",
+        "portal_allowed_subnets",
+        "portal_api_secret",
+        "portal_denied_hostnames",
+        "portal_image",
+        "portal_sso_url",
+        "portal_template_url",
+        "qos",
+        "radsec",
+        "rateset",
+        "reconnect_clients_when_roaming_mxcluster",
+        "roam_mode",
+        "schedule",
+        "site_id",
+        "sle_excluded",
+        "ssid",
+        "template_id",
+        "thumbnail",
+        "use_eapol_v1",
+        "vlan_enabled",
+        "vlan_id",
+        "vlan_ids",
+        "vlan_pooling",
+        "wlan_limit_down",
+        "wlan_limit_down_enabled",
+        "wlan_limit_up",
+        "wlan_limit_up_enabled",
+        "wxtag_ids",
+        "wxtunnel_id",
+        "wxtunnel_remote_id"
+      ],
+      "enum": []
+    },
+    "wlan_auth": {
+      "properties": [
+        "anticlog_threshold",
+        "eap_reauth",
+        "enable_beacon_protection",
+        "enable_gcmp256",
+        "enable_mac_auth",
+        "key_idx",
+        "keys",
+        "multi_psk_only",
+        "owe",
+        "pairwise",
+        "private_wlan",
+        "psk",
+        "type",
+        "wep_as_secondary_auth"
+      ],
+      "enum": []
+    },
+    "wlan_dynamic_vlan": {
+      "properties": [
+        "default_vlan_id",
+        "default_vlan_ids",
+        "enabled",
+        "local_vlan_ids",
+        "type",
+        "vlans"
+      ],
+      "enum": []
+    },
+    "radsec": {
+      "properties": [
+        "coa_enabled",
+        "enabled",
+        "idle_timeout",
+        "mxcluster_ids",
+        "proxy_hosts",
+        "server_name",
+        "servers",
+        "use_mxedge",
+        "use_site_mxedge"
+      ],
+      "enum": []
+    },
+    "nac_rule": {
+      "properties": [
+        "action",
+        "apply_tags",
+        "created_time",
+        "dry_run",
+        "enabled",
+        "guest_auth_state",
+        "id",
+        "matching",
+        "modified_time",
+        "name",
+        "not_matching",
+        "order",
+        "org_id"
+      ],
+      "enum": []
+    },
+    "nac_rule_matching": {
+      "properties": [
+        "auth_type",
+        "family",
+        "mfg",
+        "model",
+        "nactags",
+        "os_type",
+        "port_types",
+        "site_ids",
+        "sitegroup_ids",
+        "vendor"
+      ],
+      "enum": []
+    },
+    "nac_tag": {
+      "properties": [
+        "allow_usermac_override",
+        "created_time",
+        "egress_vlan_names",
+        "gbp_tag",
+        "id",
+        "match",
+        "match_all",
+        "modified_time",
+        "nacportal_id",
+        "name",
+        "org_id",
+        "radius_attrs",
+        "radius_group",
+        "radius_vendor_attrs",
+        "session_timeout",
+        "type",
+        "username_attr",
+        "values",
+        "vlan"
+      ],
+      "enum": []
+    },
+    "nac_tag_type": {
+      "properties": [],
+      "enum": [
+        "egress_vlan_names",
+        "gbp_tag",
+        "match",
+        "radius_attrs",
+        "radius_group",
+        "radius_vendor_attrs",
+        "redirect_nacportal_id",
+        "session_timeout",
+        "username_attr",
+        "vlan"
+      ]
+    },
+    "device_switch": {
+      "properties": [
+        "acl_policies",
+        "acl_tags",
+        "additional_config_cmds",
+        "aggregate_routes",
+        "aggregate_routes6",
+        "bgp_config",
+        "created_time",
+        "default_port_usage",
+        "deviceprofile_id",
+        "dhcp_snooping",
+        "dhcpd_config",
+        "disable_auto_config",
+        "dns_servers",
+        "dns_suffix",
+        "evpn_config",
+        "extra_routes",
+        "extra_routes6",
+        "id",
+        "image1_url",
+        "image2_url",
+        "image3_url",
+        "iot_config",
+        "ip_config",
+        "local_port_config",
+        "mac",
+        "managed",
+        "map_id",
+        "mist_configured",
+        "mist_nac",
+        "model",
+        "modified_time",
+        "name",
+        "networks",
+        "notes",
+        "ntp_servers",
+        "oob_ip_config",
+        "org_id",
+        "ospf_areas",
+        "ospf_config",
+        "other_ip_configs",
+        "port_config",
+        "port_config_overwrite",
+        "port_mirroring",
+        "port_usages",
+        "radius_config",
+        "remote_syslog",
+        "role",
+        "router_id",
+        "routing_policies",
+        "serial",
+        "site_id",
+        "snmp_config",
+        "stp_config",
+        "switch_mgmt",
+        "type",
+        "use_router_id_as_source_ip",
+        "vars",
+        "virtual_chassis",
+        "vrf_config",
+        "vrf_instances",
+        "vrrp_config",
+        "x",
+        "y"
+      ],
+      "enum": []
+    },
+    "device_gateway": {
+      "properties": [
+        "additional_config_cmds",
+        "bgp_config",
+        "created_time",
+        "deviceprofile_id",
+        "dhcpd_config",
+        "dns_servers",
+        "dns_suffix",
+        "extra_routes",
+        "extra_routes6",
+        "for_site",
+        "gateway_mgmt",
+        "id",
+        "idp_profiles",
+        "image1_url",
+        "image2_url",
+        "image3_url",
+        "ip_configs",
+        "mac",
+        "managed",
+        "map_id",
+        "mist_configured",
+        "mnha_config",
+        "model",
+        "modified_time",
+        "msp_id",
+        "name",
+        "networks",
+        "notes",
+        "ntp_servers",
+        "oob_ip_config",
+        "org_id",
+        "path_preferences",
+        "port_config",
+        "port_mirroring",
+        "router_id",
+        "routing_policies",
+        "serial",
+        "service_policies",
+        "site_id",
+        "tunnel_configs",
+        "tunnel_provider_options",
+        "type",
+        "url_filtering_deny_msg",
+        "vars",
+        "vrf_config",
+        "vrf_instances",
+        "x",
+        "y"
+      ],
+      "enum": []
+    },
+    "gateway_template": {
+      "properties": [
+        "additional_config_cmds",
+        "bgp_config",
+        "created_time",
+        "dhcpd_config",
+        "dnsOverride",
+        "dns_servers",
+        "dns_suffix",
+        "extra_routes",
+        "extra_routes6",
+        "gateway_matching",
+        "gateway_mgmt",
+        "id",
+        "idp_profiles",
+        "ip_configs",
+        "mnha_config",
+        "modified_time",
+        "name",
+        "networks",
+        "ntpOverride",
+        "ntp_servers",
+        "oob_ip_config",
+        "org_id",
+        "path_preferences",
+        "port_config",
+        "router_id",
+        "routing_policies",
+        "service_policies",
+        "tunnel_configs",
+        "tunnel_provider_options",
+        "type",
+        "url_filtering_deny_msg",
+        "vrf_config",
+        "vrf_instances"
+      ],
+      "enum": []
+    },
+    "service_policy": {
+      "properties": [
+        "action",
+        "antivirus",
+        "appqoe",
+        "ewf",
+        "idp",
+        "local_routing",
+        "name",
+        "path_preference",
+        "secintel",
+        "servicepolicy_id",
+        "services",
+        "skyatp",
+        "ssl_proxy",
+        "syslog",
+        "tenants"
+      ],
+      "enum": []
+    },
+    "gateway_path_preferences": {
+      "properties": [
+        "paths",
+        "strategy"
+      ],
+      "enum": []
+    },
+    "network": {
+      "properties": [
+        "created_time",
+        "disallow_mist_services",
+        "gateway",
+        "gateway6",
+        "id",
+        "internal_access",
+        "internet_access",
+        "isolation",
+        "modified_time",
+        "multicast",
+        "name",
+        "org_id",
+        "routed_for_networks",
+        "subnet",
+        "subnet6",
+        "tenants",
+        "vlan_id",
+        "vpn_access",
+        "zone_id"
+      ],
+      "enum": []
+    },
+    "service": {
+      "properties": [
+        "addresses",
+        "app_categories",
+        "app_subcategories",
+        "apps",
+        "client_limit_down",
+        "client_limit_up",
+        "created_time",
+        "description",
+        "dscp",
+        "failover_policy",
+        "hostnames",
+        "id",
+        "max_jitter",
+        "max_latency",
+        "max_loss",
+        "modified_time",
+        "name",
+        "org_id",
+        "service_limit_down",
+        "service_limit_up",
+        "sle_enabled",
+        "specs",
+        "ssr_relaxed_tcp_state_enforcement",
+        "traffic_class",
+        "traffic_type",
+        "type",
+        "urls"
+      ],
+      "enum": []
+    },
+    "vpn": {
+      "properties": [
+        "created_time",
+        "id",
+        "modified_time",
+        "name",
+        "org_id",
+        "path_selection",
+        "paths",
+        "type"
+      ],
+      "enum": []
+    },
+    "mxedge": {
+      "properties": [
+        "created_time",
+        "for_site",
+        "id",
+        "mac",
+        "magic",
+        "model",
+        "modified_time",
+        "mxagent_registered",
+        "mxcluster_id",
+        "mxedge_mgmt",
+        "name",
+        "notes",
+        "ntp_servers",
+        "oob_ip_config",
+        "org_id",
+        "proxy",
+        "services",
+        "site_id",
+        "tunterm_dhcpd_config",
+        "tunterm_extra_routes",
+        "tunterm_igmp_snooping_config",
+        "tunterm_ip_config",
+        "tunterm_monitoring",
+        "tunterm_multicast_config",
+        "tunterm_other_ip_configs",
+        "tunterm_port_config",
+        "tunterm_registered",
+        "tunterm_switch_config",
+        "versions"
+      ],
+      "enum": []
+    },
+    "mxcluster": {
+      "properties": [
+        "created_time",
+        "for_site",
+        "id",
+        "mist_das",
+        "mist_nac",
+        "mist_nacedge",
+        "modified_time",
+        "mxedge_mgmt",
+        "name",
+        "org_id",
+        "proxy",
+        "radsec",
+        "radsec_tls",
+        "site_id",
+        "tunterm_ap_subnets",
+        "tunterm_dhcpd_config",
+        "tunterm_extra_routes",
+        "tunterm_hosts",
+        "tunterm_hosts_order",
+        "tunterm_hosts_selection",
+        "tunterm_monitoring",
+        "tunterm_monitoring_disabled"
+      ],
+      "enum": []
+    },
+    "mxtunnel": {
+      "properties": [
+        "anchor_mxtunnel_ids",
+        "auto_preemption",
+        "created_time",
+        "for_site",
+        "hello_interval",
+        "hello_retries",
+        "id",
+        "ipsec",
+        "modified_time",
+        "mtu",
+        "mxcluster_ids",
+        "name",
+        "org_id",
+        "protocol",
+        "site_id",
+        "vlan_ids"
+      ],
+      "enum": []
+    },
+    "mxcluster_nacedge": {
+      "properties": [
+        "auth_ttl",
+        "caching_site_ids",
+        "default_dot1x_vlan",
+        "default_vlan",
+        "enabled",
+        "nac_edge_hosts"
+      ],
+      "enum": []
+    },
+    "site_setting": {
+      "properties": [
+        "acl_policies",
+        "acl_tags",
+        "additional_config_cmds",
+        "allow_mist",
+        "analytic",
+        "ap_matching",
+        "ap_port_config",
+        "ap_synthetic_test",
+        "ap_updown_threshold",
+        "auto_placement",
+        "auto_upgrade",
+        "auto_upgrade_esl",
+        "auto_upgrade_linecard",
+        "bgp_neighbor_updown_threshold",
+        "blacklist_url",
+        "ble_config",
+        "config_auto_revert",
+        "config_push_policy",
+        "created_time",
+        "critical_url_monitoring",
+        "device_updown_threshold",
+        "dhcp_snooping",
+        "disabled_system_defined_port_usages",
+        "dns_servers",
+        "dns_suffix",
+        "enable_unii_4",
+        "engagement",
+        "evpn_options",
+        "extra_routes",
+        "extra_routes6",
+        "flags",
+        "for_site",
+        "gateway",
+        "gateway_additional_config_cmds",
+        "gateway_mgmt",
+        "gateway_tunnel_updown_threshold",
+        "gateway_updown_threshold",
+        "id",
+        "iotproxy",
+        "juniper_srx",
+        "led",
+        "marvis",
+        "mist_nac",
+        "modified_time",
+        "mxedge",
+        "mxedge_mgmt",
+        "mxtunnel",
+        "networks",
+        "ntp_servers",
+        "occupancy",
+        "org_id",
+        "ospf_areas",
+        "paloalto_networks",
+        "persist_config_on_device",
+        "port_mirroring",
+        "port_usages",
+        "proxy",
+        "radio_config",
+        "radius_config",
+        "remote_syslog",
+        "remove_existing_configs",
+        "report_gatt",
+        "rogue",
+        "routing_policies",
+        "rtsa",
+        "simple_alert",
+        "site_id",
+        "skyatp",
+        "sle_thresholds",
+        "snmp_config",
+        "srx_app",
+        "ssh_keys",
+        "ssr",
+        "status_portal",
+        "switch",
+        "switch_matching",
+        "switch_mgmt",
+        "switch_updown_threshold",
+        "synthetic_test",
+        "track_anonymous_devices",
+        "tunterm_monitoring",
+        "tunterm_monitoring_disabled",
+        "tunterm_multicast_config",
+        "uplink_port_config",
+        "uses_description_from_port_usage",
+        "uwb_config",
+        "vars",
+        "vars_annotations",
+        "vna",
+        "vpn_path_updown_threshold",
+        "vpn_peer_updown_threshold",
+        "vrf_config",
+        "vrf_instances",
+        "vrrp_groups",
+        "vs_instance",
+        "wan_vna",
+        "watched_station_url",
+        "whitelist_url",
+        "wids",
+        "wifi",
+        "wired_vna",
+        "zone_occupancy_alert"
+      ],
+      "enum": []
+    }
+  },
+  "limitations": [
+    "No live organization responses inspected.",
+    "The source working tree has unrelated workdir changes; the digest pins the actual root JSON inspected.",
+    "SDK symbols were inspected without creating an authenticated session. Null SDK callable means unresolved by this lookup, not proof that the SDK lacks the endpoint.",
+    "Committed project schema extracts are older and locally patched; this study did not refresh them."
+  ]
+}

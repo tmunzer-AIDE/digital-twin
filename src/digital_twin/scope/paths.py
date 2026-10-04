@@ -42,7 +42,9 @@ class LeafDelta:
 
 
 def leaf_changes(
-    current: Mapping[str, Any], new: Mapping[str, Any], ignore_top: tuple[str, ...] = (),
+    current: Mapping[str, Any],
+    new: Mapping[str, Any],
+    ignore_top: tuple[str, ...] = (),
 ) -> tuple[LeafDelta, ...]:
     """Every LEAF that differs between two mappings, WITH its raw before/after.
     Same traversal/semantics as changed_leaf_paths (null==absent, descended
@@ -53,7 +55,9 @@ def leaf_changes(
 
 
 def changed_leaf_paths(
-    current: Mapping[str, Any], new: Mapping[str, Any], ignore_top: tuple[str, ...] = (),
+    current: Mapping[str, Any],
+    new: Mapping[str, Any],
+    ignore_top: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Dot-paths of every leaf that differs — now derived from leaf_changes so the
     field gate and the config diff share ONE definition of 'what changed'."""
@@ -70,11 +74,21 @@ def _walk(cur: Any, new: Any, path: str, out: list[LeafDelta], ignore_top: tuple
             # null == absent (Mist PUT semantics, same canon as compile equivalence)
             if cv is _MISSING and nv is None or nv is _MISSING and cv is None:
                 continue
-            # descend into an added/removed SUBTREE so its leaves surface individually
+            # An object can activate defaults or reset a domain even when it
+            # contains no non-null scalar leaves. Retain structural presence.
             if cv is _MISSING and isinstance(nv, dict):
-                cv = {}
+                start = len(out)
+                _walk({}, nv, sub, out, ignore_top)
+                if len(out) == start:
+                    out.append(LeafDelta(sub, "added", None, nv))
+                continue
             if nv is _MISSING and isinstance(cv, dict):
-                nv = {}
+                start = len(out)
+                _walk(cv, {}, sub, out, ignore_top)
+                if len(out) == start:
+                    out.append(LeafDelta(sub, "removed", cv, None))
+                continue
+            # descend into an added/removed SUBTREE so its leaves surface individually
             if cv is _MISSING:
                 out.append(LeafDelta(sub, "added", None, nv))  # scalar/list added
             elif nv is _MISSING:
@@ -90,10 +104,19 @@ def _normalized(value: Any) -> Any:
     """null==absent must hold DEEPLY: lists compare atomically, so None-valued
     dict keys inside list elements are stripped before comparison."""
     if isinstance(value, dict):
-        return {k: _normalized(v) for k, v in value.items() if v is not None}
+        return (
+            "object",
+            tuple((k, _normalized(v)) for k, v in sorted(value.items()) if v is not None),
+        )
     if isinstance(value, list):
-        return [_normalized(v) for v in value]
-    return value
+        return ("array", tuple(_normalized(v) for v in value))
+    # Python equality conflates bool and int (True == 1), including inside
+    # atomic lists. JSON types must survive the comparison and L0 validation.
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, (int, float)):
+        return ("number", value)
+    return (type(value).__name__, value)
 
 
 def _matches_segs(entry_segs: list[str], path_segs: list[str]) -> bool:
@@ -108,7 +131,7 @@ def _matches_segs(entry_segs: list[str], path_segs: list[str]) -> bool:
                 return False  # '**' requires at least one segment
             ei += 1
             for consume in range(1, len(path_segs) - pi + 1):
-                if _matches_segs(entry_segs[ei:], path_segs[pi + consume:]):
+                if _matches_segs(entry_segs[ei:], path_segs[pi + consume :]):
                     return True
             return False
         if pi >= len(path_segs):

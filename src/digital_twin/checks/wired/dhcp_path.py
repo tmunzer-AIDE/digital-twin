@@ -15,8 +15,9 @@ Honesty rails (the review-series lessons, applied from birth):
   claim caps at MEDIUM (-> WARNING/REVIEW) and coverage notes it — the cap
   must live on the FINDING (verdict precedence reads findings before
   coverage);
-- clients unfetched (no CLIENTS_ACTIVE) -> the blast radius is UNKNOWN:
-  severity stays WARNING and coverage degrades — never a silent downgrade.
+- clients unfetched -> the blast radius is UNKNOWN: severity stays WARNING
+  and coverage degrades; partial successful telemetry can still prove that
+  observed clients are affected, while leaving total impact unverified.
 """
 
 from __future__ import annotations
@@ -60,8 +61,8 @@ class DhcpPathCheck:
 
     def run(self, ctx: CheckContext) -> CheckResult:
         base_ir, prop_ir = ctx.baseline.ir, ctx.proposed.ir
-        # the client count is BASELINE-derived: both sides must have earned
-        # the capability or stale baseline rows could mint a confident ERROR
+        # Complete counts require both capabilities. Valid observations from
+        # partial successful telemetry still establish a lower bound on impact.
         clients_known = (
             IRCapability.CLIENTS_ACTIVE in base_ir.capabilities
             and IRCapability.CLIENTS_ACTIVE in prop_ir.capabilities
@@ -89,17 +90,21 @@ class DhcpPathCheck:
                 confidence = min_confidence(confidence, _BLIND_GATEWAY)
             high = confidence.level is ConfidenceLevel.HIGH
             severity = (
-                Severity.ERROR if (clients_known and n_clients and high) else Severity.WARNING
+                Severity.ERROR
+                if (ctx.client_observations_available and n_clients and high)
+                else Severity.WARNING
             )
             if not clients_known:
                 notes.append(
                     f"vlan {vid}: client data unavailable — the blast radius of the "
                     "removed DHCP path is unknown"
                 )
+                notes.extend(base_ir.client_telemetry_gaps)
             who = (
                 f"{n_clients} observed client(s)"
                 if clients_known
-                else "an unknown number of clients"
+                else (f"at least {n_clients} observed client(s)"
+                      if ctx.client_observations_available else "an unknown number of clients")
             )
             findings.append(
                 Finding(
@@ -118,7 +123,9 @@ class DhcpPathCheck:
                     evidence={
                         "vlan": vid,
                         "removed_sources": list(base_vlan.dhcp_sources),
-                        "observed_clients": n_clients if clients_known else None,
+                        "observed_clients": (
+                            n_clients if ctx.client_observations_available else None
+                        ),
                     },
                     caused_by=tuple(
                         dict.fromkeys(

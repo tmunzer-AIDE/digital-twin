@@ -43,6 +43,8 @@ _IDENTITY_FIELDS = (
 
 
 class ClientImpactCheck:
+    # Report known impacts while the registry marks the result PARTIAL.
+    supports_partial_clients = True
     id = "wired.client.impact"
     title = "Active-client impact"
     domain = "wired.client"

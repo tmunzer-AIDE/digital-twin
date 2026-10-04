@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from digital_twin.providers.base import FetchError, OrgScope, RawSiteState
 from digital_twin.providers.mist_api import MistApiProvider, _group_by_site
 
@@ -119,6 +121,22 @@ def test_group_by_site_is_silent_when_every_row_has_a_site_id(caplog):
         grouped = _group_by_site([{"site_id": "a"}], "org_port_stats")
     assert sorted(grouped) == ["a"]
     assert not caplog.records  # no drops -> no noise
+
+
+@pytest.mark.parametrize("site_id", [None, "", "   ", ["s1"], 123])
+def test_unattributed_org_clients_are_recorded_as_incomplete_for_each_site(site_id):
+    p = FakeProvider(
+        sites=_sites("s1", "s2"), ports=[],
+        wired=[{"site_id": "s1", "mac": "known"}, {"mac": "unattributed", "site_id": site_id}],
+    )
+    results = p.fetch_sites(OrgScope("o1"), ["s1", "s2"])
+    for raw in results.values():
+        assert isinstance(raw, RawSiteState)
+        assert "wired_clients" not in raw.meta.fetched
+        assert any(
+            f.object == "wired_clients" and "population incomplete" in f.error
+            for f in raw.meta.failures
+        )
 
 
 def test_fetch_sites_partitions_org_rows_by_site():

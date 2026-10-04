@@ -81,6 +81,8 @@ class IR:
     bgp_telemetry_unparsed_count: int = 0
     static_routes: tuple[StaticRoute, ...] = ()
     vrf_instances: tuple[VrfInstance, ...] = ()
+    # Observation rows that could not be attached; never interpreted as zero clients.
+    client_telemetry_gaps: tuple[str, ...] = ()
 
     def device(self, did: str) -> Device:
         return self.devices[did]
@@ -101,15 +103,16 @@ class IRBuilder:
         self._vlans: dict[int, Vlan] = {}
         self._l3intfs: list[L3Intf] = []
         self._l3intf_ids: set[str] = set()
+        self._static_routes: dict[str, StaticRoute] = {}
         self._ospf_intfs: list[OspfIntf] = []
         self._ospf_intf_ids: set[str] = set()
         self._bgp_peers: list[BgpPeer] = []
         self._bgp_peer_ids: set[str] = set()
         self._bgp_neighbors: list[BgpNeighbor] = []
         self._bgp_unparsed = 0
-        self._static_routes: dict[str, StaticRoute] = {}
         self._vrf_instances: dict[str, VrfInstance] = {}
         self._clients: list[Client] = []
+        self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
         self._capabilities: set[Capability] = set()
@@ -154,6 +157,12 @@ class IRBuilder:
             raise IRValidationError(f"duplicate l3intf id {intf.id}")
         self._l3intf_ids.add(intf.id)
         self._l3intfs.append(intf)
+        return self
+
+    def add_static_route(self, route: StaticRoute) -> IRBuilder:
+        if route.id in self._static_routes:
+            raise IRValidationError(f"duplicate static route id {route.id}")
+        self._static_routes[route.id] = route
         return self
 
     def add_ospf_intf(self, intf: OspfIntf) -> IRBuilder:
@@ -203,12 +212,6 @@ class IRBuilder:
         self._dhcp_scopes[scope.id] = scope
         return self
 
-    def add_static_route(self, route: StaticRoute) -> IRBuilder:
-        if route.id in self._static_routes:
-            raise IRValidationError(f"duplicate static route id {route.id}")
-        self._static_routes[route.id] = route
-        return self
-
     def add_vrf_instance(self, vrf: VrfInstance) -> IRBuilder:
         if vrf.id in self._vrf_instances:
             raise IRValidationError(f"duplicate vrf instance id {vrf.id}")
@@ -234,6 +237,10 @@ class IRBuilder:
         (not merging) keeps 'broken enrichment == no enrichment': a partial map is never
         observed."""
         self._client_enrichment = dict(enrichment)
+        return self
+
+    def mark_client_telemetry_gap(self, reason: str) -> IRBuilder:
+        self._client_telemetry_gaps.append(reason)
         return self
 
     def set_ospf_neighbors(
@@ -468,4 +475,5 @@ class IRBuilder:
             bgp_telemetry_unparsed_count=self._bgp_unparsed,
             static_routes=tuple(sorted(self._static_routes.values(), key=lambda r: r.id)),
             vrf_instances=tuple(sorted(self._vrf_instances.values(), key=lambda v: v.id)),
+            client_telemetry_gaps=tuple(self._client_telemetry_gaps),
         )

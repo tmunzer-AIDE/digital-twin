@@ -178,3 +178,27 @@ def test_changed_leaf_paths_parity_with_leaf_changes():
     new = {"a": 9, "b": {"x": 2, "y": 3}, "c": [1, 2]}
     assert changed_leaf_paths(cur, new) == tuple(d.path for d in leaf_changes(cur, new))
     assert changed_leaf_paths(cur, new) == ("a", "b.y", "c")  # sorted, unchanged behavior
+
+
+def test_added_and_removed_empty_objects_are_visible_to_the_gate():
+    assert changed_leaf_paths({}, {"routing_policies": {}}) == ("routing_policies",)
+    assert changed_leaf_paths({"evpn_options": {}}, {}) == ("evpn_options",)
+    assert changed_leaf_paths({}, {"matching": {"future_filter": {}}}) \
+        == ("matching.future_filter",)
+    assert changed_leaf_paths({"routing_policies": {}}, {"routing_policies": {}}) == ()
+
+
+def test_json_boolean_number_changes_are_not_lost_inside_atomic_lists():
+    assert changed_leaf_paths({"enabled": True}, {"enabled": 1}) == ("enabled",)
+    assert changed_leaf_paths({"rules": [{"enabled": False}]},
+                              {"rules": [{"enabled": 0}]}) == ("rules",)
+    assert changed_leaf_paths({"metric": 1}, {"metric": 1.0}) == ()
+
+
+def test_new_or_removed_null_only_object_retains_structural_presence():
+    assert changed_leaf_paths({}, {"routing_policies": {"option": None}}) == (
+        "routing_policies",
+    )
+    assert changed_leaf_paths({"routing_policies": {"option": None}}, {}) == (
+        "routing_policies",
+    )

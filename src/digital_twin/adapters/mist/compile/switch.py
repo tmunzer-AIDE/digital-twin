@@ -51,6 +51,11 @@ _DEVICE_OWN_FIELDS = (
     "ospf_config",
     "ospf_areas",
     "bgp_config",
+    "radius_config",
+    "mist_nac",
+    "extra_routes",
+    "extra_routes6",
+    "vrf_instances",
 )
 
 

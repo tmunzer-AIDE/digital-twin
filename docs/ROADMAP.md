@@ -1,5 +1,21 @@
 # Roadmap / backlog
 
+The [full stack architecture proposal](full-stack-twin-design.md) describes a
+semantic engine for composed NAC, WLAN, wired, WAN, and Mist Edge behavior. It is
+backed by an offline experiment and the new [behavioral foundation](behavioral-engine.md).
+The importable snapshot/batch/coverage/symbolic core and bounded EX/SRX/SSR primitives
+are implemented. Production Mist-to-behavior compilation and full-stack state models
+remain open; the implementation backlog below describes the current check engine.
+
+The [coverage audit and validation gates](full-stack-twin-audit.md) identify
+remaining architectural blind spots and the required protocol/fabric test
+matrix. Compiler coverage receipts are the first implementation gate.
+
+The [Juniper device semantics study](juniper-device-semantics-research.md) adds
+source-backed EX, SRX, and SSR model requirements, Mist input mappings, and
+proposed vendor validation cases. The bounded primitive subset now has offline
+regression coverage; independent device calibration and the broader matrix remain open.
+
 The single place for "what's next." Status: ✅ done · 🔵 in scope, not started ·
 🟡 needs a decision · 🔴 open debt. M1 (one site, switch L2, Wi-Fi-aware client
 impact) is **done**; everything below is post-M1. Ordered by leverage, grouped
@@ -203,9 +219,10 @@ assignment simulation and NAC/role-profile interactions.
   seven-day WLAN-session query escalates a recently used WLAN to ERROR/UNSAFE;
   a clean unused downgrade is WARNING/REVIEW, and missing usage telemetry is
   partial-coverage REVIEW. `wireless.wlan.open_guest` remains the stronger
-  independent finding when isolation is absent. Other auth transitions remain
-  conservative until their companion semantics and authenticator dependencies
-  are modeled.
+  independent finding when isolation is absent. Other auth transitions are
+  usage-gated by `wireless.wlan.change_usage`: REVIEW after sessions in the
+  preceding seven days, while clients are connected right now, or when usage
+  telemetry is incomplete.
 
 - ✅ **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`)
   — done 2026-09-20. On a switch's effective config, if **at least one ASSIGNED port profile

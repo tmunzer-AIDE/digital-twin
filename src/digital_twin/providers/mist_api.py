@@ -34,6 +34,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
+from urllib.parse import urljoin
 
 import mistapi
 
@@ -60,6 +61,8 @@ from .base import (
     StateProvider,
     WlanUsageContext,
 )
+from .fetch_limits import DEFAULT_LIMITS, FetchLimits, remaining, with_fetch_budget
+from .mist_transport import BoundedMistSession
 
 _Json = dict[str, Any]
 
@@ -115,24 +118,31 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _group_by_site(rows: list[_Json], endpoint: str = "org rows") -> dict[str, list[_Json]]:
+def _group_by_site(
+    rows: list[_Json], endpoint: str = "org rows", *, require_site_id: bool = False,
+) -> dict[str, list[_Json]]:
     """Index org-wide rows by their `site_id`.
 
     A row lacking `site_id` cannot be attributed to any site, so it is dropped —
     but the drop is SURFACED as a module-level warning (endpoint + count) rather
-    than being silent, so an operator can see the data loss. Deliberately a log,
-    not a StateMeta failure: a per-site FetchFailure would mark every site of the
-    batch incomplete for what is usually a handful of unassigned-device rows,
-    and this signal must never floor or otherwise change a verdict."""
+    than being silent, so an operator can see the data loss. Inventory may
+    legitimately contain unassigned devices. Client telemetry instead requires
+    site identity: dropped clients must not masquerade as a complete population."""
     grouped: dict[str, list[_Json]] = {}
     dropped = 0
     for row in rows:
         sid = row.get("site_id")
-        if sid is not None:
+        if require_site_id and (not isinstance(sid, str) or not sid.strip()):
+            dropped += 1
+        elif sid is not None:
             grouped.setdefault(str(sid), []).append(row)
         else:
             dropped += 1
     if dropped:
+        if require_site_id:
+            raise MistApiError(
+                f"{endpoint}: {dropped} row(s) missing site_id; population incomplete"
+            )
         _log.warning(
             "%s: dropped %d org row(s) without site_id — not attributable to any site",
             endpoint,
@@ -213,13 +223,19 @@ def _slice_thunk(index: Callable[[str], list[_Json]], sid: str) -> Callable[[], 
 
 
 class MistApiProvider(StateProvider):
-    def __init__(self, host: str | None = None, apitoken: str | None = None) -> None:
+    def __init__(
+        self, host: str | None = None, apitoken: str | None = None,
+        *, fetch_limits: FetchLimits = DEFAULT_LIMITS,
+    ) -> None:
         self._host = host or os.environ["MIST_HOST"]
-        self._session = mistapi.APISession(
-            host=self._host, apitoken=apitoken or os.environ["MIST_APITOKEN"]
+        self._fetch_limits = fetch_limits
+        self._session = BoundedMistSession(
+            host=self._host, apitoken=apitoken or os.environ["MIST_APITOKEN"],
+            limits=fetch_limits,
         )
 
     # -- public seam -----------------------------------------------------------
+    @with_fetch_budget
     def fetch_site(
         self, scope: SiteScope, *, include_derived: bool = False
     ) -> RawSiteState | FetchError:
@@ -233,6 +249,7 @@ class MistApiProvider(StateProvider):
             include_derived=include_derived,
         )
 
+    @with_fetch_budget
     def fetch_sites(
         self,
         scope: OrgScope,
@@ -247,7 +264,9 @@ class MistApiProvider(StateProvider):
             sites = {}
         targets = [str(s) for s in site_ids] if site_ids is not None else list(sites)
         port_slice = self._org_slice(lambda: self._org_port_stats(scope), "org_port_stats")
-        wired_slice = self._org_slice(lambda: self._org_wired_clients(scope), "org_wired_clients")
+        wired_slice = self._org_slice(
+            lambda: self._org_wired_clients(scope), "org_wired_clients", require_site_id=True,
+        )
         device_slice = self._org_slice(lambda: self._org_device_stats(scope), "org_device_stats")
         nt_cache: dict[str, _Json | None] = {}
         out: dict[str, RawSiteState | FetchError] = {}
@@ -263,6 +282,7 @@ class MistApiProvider(StateProvider):
             )
         return out
 
+    @with_fetch_budget
     def resolve_org_template(
         self, scope: OrgScope, template_id: str, object_type: str
     ) -> OrgTemplateContext | FetchError:
@@ -302,6 +322,7 @@ class MistApiProvider(StateProvider):
         )
         return OrgTemplateContext(template=dict(template), assigned_site_ids=assigned)
 
+    @with_fetch_budget
     def resolve_org_wlan(self, scope: OrgScope, wlan_id: str) -> OrgWlanContext | FetchError:
         try:
             wlan = self._org_wlan(scope, wlan_id)
@@ -343,6 +364,7 @@ class MistApiProvider(StateProvider):
             )
         return OrgWlanContext(wlan=dict(wlan), derived_rows_by_site=by_site)
 
+    @with_fetch_budget
     def resolve_org_wlan_template(
         self, scope: OrgScope, template_id: str
     ) -> OrgWlanTemplateContext | FetchError:
@@ -647,6 +669,7 @@ class MistApiProvider(StateProvider):
             window_days=window_days,
         )
 
+    @with_fetch_budget
     def resolve_org_nac(self, scope: OrgScope) -> NacFetch | FetchError:
         # _pages (not .data): the raw read took only the FIRST page, and a failed
         # call yielded data={} -> rules=() accepted as a successful empty ruleset
@@ -938,13 +961,15 @@ class MistApiProvider(StateProvider):
         return result
 
     def _org_slice(
-        self, fetch: Callable[[], list[_Json]], endpoint: str = "org rows"
+        self, fetch: Callable[[], list[_Json]], endpoint: str = "org rows",
+        *, require_site_id: bool = False,
     ) -> Callable[[str], list[_Json]]:
         """Fetch an org-wide list ONCE and index by site_id. On fetch failure the
         returned indexer RAISES, so each site records the gap in its own meta.
-        Rows without a site_id are dropped with a warning (see _group_by_site)."""
+        Unassigned inventory rows are dropped with a warning. Client populations
+        require site IDs, so unresolved rows fail closed (see _group_by_site)."""
         try:
-            grouped = _group_by_site(fetch(), endpoint)
+            grouped = _group_by_site(fetch(), endpoint, require_site_id=require_site_id)
         except Exception as e:  # noqa: BLE001 — replayed per site via the indexer
 
             def _raise(_sid: str, _e: Exception = e) -> list[_Json]:
@@ -958,14 +983,30 @@ class MistApiProvider(StateProvider):
         silently truncates instead: a failed later page has data={} and
         next=None, which just ends its loop (and an error BODY would splice
         garbage rows in). Here any bad page raises MistApiError."""
+        limits = getattr(self, "_fetch_limits", DEFAULT_LIMITS)
+        remaining(limits)
         resp = _checked(resp)
         rows = _page_rows(resp.data, resp.url)
+        seen = {resp.url}
+        pages = 1
+        if len(rows) > limits.max_rows:
+            raise MistApiError("Mist pagination row limit exceeded")
         while resp.next:
+            remaining(limits)
+            next_url = urljoin(resp.url, resp.next)
+            if next_url in seen:
+                raise MistApiError("Mist pagination cycle detected")
+            if pages >= limits.max_pages:
+                raise MistApiError("Mist pagination page limit exceeded")
+            seen.add(next_url)
             nxt = mistapi.get_next(self._session, resp)
-            if nxt is None:  # pragma: no cover — get_next contract: next was falsy
-                break
+            if nxt is None:
+                raise MistApiError("Mist pagination ended before the next page was fetched")
             resp = _checked(nxt)
             rows += _page_rows(resp.data, resp.url)
+            pages += 1
+            if len(rows) > limits.max_rows:
+                raise MistApiError("Mist pagination row limit exceeded")
         return rows
 
     # -- one private helper per endpoint (probe-validated names) ---------------

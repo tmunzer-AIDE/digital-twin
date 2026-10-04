@@ -228,18 +228,25 @@ class OspfWithdrawalCheck:
             affected_set = set(affected)
             egress_owned_pairs.update((did, v) for v in affected)
             n_clients = (
-                sum(1 for c in base_ir.clients if c.vlan in affected_set) if clients_known else 0
+                sum(1 for c in base_ir.clients if c.vlan in affected_set)
+                if ctx.client_observations_available
+                else 0
             )
-            severity = Severity.ERROR if (clients_known and n_clients) else Severity.WARNING
+            severity = (
+                Severity.ERROR
+                if (ctx.client_observations_available and n_clients) else Severity.WARNING
+            )
             if not clients_known:
                 notes.append(
                     f"device {did}: client data unavailable — the egress-loss blast "
                     "radius is unknown"
                 )
+                notes.extend(base_ir.client_telemetry_gaps)
             who = (
                 f"{n_clients} observed client(s)"
                 if clients_known
-                else "an unknown number of clients"
+                else (f"at least {n_clients} observed client(s)"
+                      if ctx.client_observations_available else "an unknown number of clients")
             )
             findings.append(
                 Finding(
@@ -258,7 +265,9 @@ class OspfWithdrawalCheck:
                     evidence={
                         "device": did,
                         "affected_vlans": affected,
-                        "observed_clients": n_clients if clients_known else None,
+                        "observed_clients": (
+                            n_clients if ctx.client_observations_available else None
+                        ),
                     },
                     caused_by=ctx.delta_index.causes(
                         "ospf_intf",

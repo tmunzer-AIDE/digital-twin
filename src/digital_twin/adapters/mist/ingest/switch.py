@@ -33,7 +33,6 @@ from digital_twin.ir import (
     OspfIntf,
     Port,
     PortMode,
-    StaticRoute,
     Vlan,
     VrfInstance,
     device_id,
@@ -44,6 +43,7 @@ from digital_twin.ir import (
 from digital_twin.ir.entities import PortAuth, PortMisc, StpPolicy
 from digital_twin.ir.provenance import CONFIG_META, FactMeta, Provenance, fact_meta
 
+from .auth_routing import authenticator_state, static_routes
 from .base import IngestContext
 from .dynamic_usage import classify_dynamic_port
 from .ports import (
@@ -87,59 +87,17 @@ def _literal_subnet(value: Any) -> str | None:
     return str(value)
 
 
-def _route_destination(value: Any) -> str | None:
-    try:
-        return str(ipaddress.ip_network(str(value), strict=False))
-    except ValueError:
-        return None
-
-
-def _route_next_hops(entry: Any) -> tuple[tuple[str, ...], bool, bool]:
-    """Return (literal next hops, discard, unresolved)."""
-    if not isinstance(entry, Mapping):
-        return (), False, True
-    discard = entry.get("discard") is True
-    values: list[Any] = []
-    if entry.get("via") not in (None, ""):
-        via = entry["via"]
-        values.extend(via if isinstance(via, list) else [via])
-    qualified = entry.get("next_qualified")
-    if isinstance(qualified, Mapping):
-        values.extend(qualified)
-    elif qualified not in (None, {}):
-        return (), discard, True
-    hops: list[str] = []
-    unresolved = False
-    for value in values:
-        try:
-            hops.append(str(ipaddress.ip_address(str(value))))
-        except ValueError:
-            unresolved = True
-    if not discard and not values:
-        unresolved = True
-    return tuple(sorted(set(hops))), discard, unresolved
-
-
 def _mint_routing(ctx: IngestContext, device_id_: str, effective: Mapping[str, Any]) -> None:
-    def routes(table: Any, vrf: str) -> None:
-        if not isinstance(table, Mapping):
-            return
-        for raw_destination, entry in table.items():
-            destination = _route_destination(raw_destination)
-            hops, discard, unresolved = _route_next_hops(entry)
-            ctx.builder.add_static_route(StaticRoute(
-                device_id=device_id_,
-                destination=destination or str(raw_destination),
-                vrf=vrf,
-                next_hops=hops,
-                discard=discard,
-                unresolved=unresolved or destination is None,
-            ))
-
-    routes(effective.get("extra_routes"), "default")
-    routes(effective.get("extra_routes6"), "default")
-    vrfs = effective.get("vrf_instances") or {}
+    for route in static_routes(effective, device_id_):
+        ctx.builder.add_static_route(route)
+    vrfs = effective.get("vrf_instances")
+    if vrfs is None:
+        return
     if not isinstance(vrfs, Mapping):
+        # A malformed VRF table is unknown routing intent, never "no VRFs".
+        ctx.builder.add_vrf_instance(
+            VrfInstance(device_id=device_id_, name="unresolved:vrf_instances", unresolved=True)
+        )
         return
     for name, raw in vrfs.items():
         row = raw if isinstance(raw, Mapping) else {}
@@ -153,8 +111,8 @@ def _mint_routing(ctx: IngestContext, device_id_: str, effective: Mapping[str, A
             networks=tuple(sorted(set(networks))) if valid_networks else (),
             unresolved=not isinstance(raw, Mapping) or not valid_networks,
         ))
-        routes(row.get("extra_routes"), str(name))
-        routes(row.get("extra_routes6"), str(name))
+        for route in static_routes(row, device_id_, vrf=str(name)):
+            ctx.builder.add_static_route(route)
 
 
 # ---------------------------------------------------------------------------
@@ -204,37 +162,6 @@ def _bgp_exports(config: Mapping[str, Any]) -> tuple[tuple[str, ...], str | None
         except ValueError:
             return (), str(raw)
     return tuple(sorted(set(prefixes))), None
-
-
-def _authenticator_state(effective: Mapping[str, Any]) -> tuple[int | None, bool]:
-    """Return proven backend count plus whether any backend fact is unresolved."""
-    count = 0
-    unresolved = False
-    radius = effective.get("radius_config") or {}
-    if not isinstance(radius, Mapping):
-        unresolved = True
-    else:
-        servers = radius.get("auth_servers")
-        if servers is not None:
-            if not isinstance(servers, list):
-                unresolved = True
-            else:
-                for server in servers:
-                    host = server.get("host") if isinstance(server, Mapping) else None
-                    if isinstance(host, str) and host.strip() and "{{" not in host:
-                        count += 1
-                    else:
-                        unresolved = True
-    mist_nac = effective.get("mist_nac") or {}
-    if not isinstance(mist_nac, Mapping):
-        unresolved = True
-    else:
-        enabled = mist_nac.get("enabled")
-        if enabled is True:
-            count += 1
-        elif enabled not in (None, False):
-            unresolved = True
-    return count, unresolved
 
 
 def _is_literal_ip(s: str) -> bool:
@@ -607,8 +534,12 @@ def _storm_digest(sc: Any) -> str | None:
     None when absent OR all-default (so unset == explicit-default). Unknown keys
     are kept (conservative)."""
     if not isinstance(sc, dict):
-        return None
-    nondefault = {k: v for k, v in sc.items() if _STORM_DEFAULTS.get(k, _SENTINEL) != v}
+        return None if sc is None else f"unresolved:{sc!r}"
+    nondefault = {
+        k: v for k, v in sc.items()
+        if type(_STORM_DEFAULTS.get(k, _SENTINEL)) is not type(v)
+        or _STORM_DEFAULTS.get(k, _SENTINEL) != v
+    }
     if not nondefault:
         return None
     return ";".join(f"{k}={nondefault[k]}" for k in sorted(nondefault))
@@ -773,8 +704,9 @@ class SwitchIngester:
             stp_priority: int | None = None
             stp_invalid = False
             dhcp_snooping: tuple[str, ...] | None = None
-            authenticator_count: int | None = 0
-            authenticator_unresolved = False
+            auth_count: int | None = None
+            auth_unresolved = False
+            auth_config: str | None = None
             if role is DeviceRole.SWITCH:
                 eff = ctx.device_effective.get(did) or ctx.site_effective
                 cfg = eff.get("stp_config")
@@ -784,7 +716,14 @@ class SwitchIngester:
                     stp_priority is None and (cfg or {}).get("bridge_priority") is not None
                 )
                 dhcp_snooping = _snooping(eff)
-                authenticator_count, authenticator_unresolved = _authenticator_state(eff)
+                auth_count, auth_unresolved, auth_config = authenticator_state(eff)
+                # A missing inherited layer is not evidence that no backend
+                # exists. Live providers fail closed; offline/custom providers
+                # can supply a partial snapshot, so keep this distinction in IR.
+                auth_unresolved |= "setting" not in ctx.raw.meta.fetched or any(
+                    ctx.raw.site.get(f"{layer}_id") and layer not in ctx.raw.meta.fetched
+                    for layer in ("networktemplate", "sitetemplate")
+                )
             ctx.builder.add_device(
                 Device(
                     id=did,
@@ -795,8 +734,9 @@ class SwitchIngester:
                     stp_priority=stp_priority,
                     stp_priority_invalid=stp_invalid,
                     dhcp_snooping=dhcp_snooping,
-                    authenticator_count=authenticator_count,
-                    authenticator_unresolved=authenticator_unresolved,
+                    authenticator_count=auth_count,
+                    authenticator_unresolved=auth_unresolved,
+                    authenticator_config=auth_config,
                     # gateway namespace unfetched -> its L3 model is UNKNOWN
                     l3_unmodeled=(
                         role is DeviceRole.GATEWAY

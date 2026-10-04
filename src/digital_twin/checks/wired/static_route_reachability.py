@@ -1,20 +1,49 @@
-"""routing.static_route_reachability — structural static-route hazards."""
+"""Static-route change warnings without simulating a live routing table."""
 
 from __future__ import annotations
 
 import ipaddress
 
-from digital_twin.checks.base import (
-    CheckContext,
-    CheckResult,
-    Coverage,
-    CoverageState,
-    status_from_findings,
-)
+from digital_twin.checks.base import CheckContext, CheckResult, Coverage, CoverageState, Status
+from digital_twin.checks.wired.config_lint import touched_ids
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
-from digital_twin.ir import IR, Capability, Confidence, ConfidenceLevel, IRDiff, StaticRoute
+from digital_twin.ir import (
+    IR,
+    Capability,
+    Confidence,
+    ConfidenceLevel,
+    IRCapability,
+    IRDiff,
+    StaticRoute,
+)
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
+
+
+def changed_l3_devices(ctx: CheckContext) -> set[str]:
+    ids = touched_ids(ctx.diff, "l3intf")
+    return {
+        i.device_id for ir in (ctx.baseline.ir, ctx.proposed.ir) for i in ir.l3intfs if i.id in ids
+    }
+
+
+def _connected(ir: IR, did: str, hop: str) -> bool:
+    ip = ipaddress.ip_address(hop)
+    for intf in ir.l3intfs:
+        if intf.device_id != did:
+            continue
+        subnet = intf.subnet
+        if not subnet and intf.addressing == "static" and intf.ip and intf.netmask:
+            subnet = f"{intf.ip}/{intf.netmask}"
+        if not subnet:
+            continue
+        try:
+            net = ipaddress.ip_network(subnet, strict=False)
+        except ValueError:
+            continue
+        if ip.version == net.version and ip in net:
+            return True
+    return False
 
 
 def _network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
@@ -24,22 +53,28 @@ def _network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None
         return None
 
 
-def _reachable(ir: IR, route: StaticRoute) -> bool:
-    for hop in route.next_hops:
-        ip = ipaddress.ip_address(hop)
-        for intf in ir.l3intfs:
-            net = _network(intf.subnet or "")
-            if (
-                intf.device_id == route.device_id
-                and net
-                and ip.version == net.version
-                and ip in net
-            ):
-                return True
+def _covering_blackhole(route: StaticRoute, baseline: IR) -> bool:
+    """A discard route inside a less-specific forwarding route of the same table."""
+    net = _network(route.destination)
+    if net is None:
+        return False
+    for other in baseline.static_routes:
+        wider = _network(other.destination)
+        if (
+            not other.discard
+            and other.device_id == route.device_id
+            and other.vrf == route.vrf
+            and wider is not None
+            and wider.version == net.version
+            and wider != net
+            and net.subnet_of(wider)  # type: ignore[arg-type]
+        ):
+            return True
     return False
 
 
 def _recursive_loop(route: StaticRoute, routes: tuple[StaticRoute, ...]) -> bool:
+    """A next hop resolved by a route whose own next hop falls back inside this one."""
     destination = _network(route.destination)
     if destination is None:
         return False
@@ -51,6 +86,7 @@ def _recursive_loop(route: StaticRoute, routes: tuple[StaticRoute, ...]) -> bool
                 candidate.id == route.id
                 or candidate.device_id != route.device_id
                 or candidate.vrf != route.vrf
+                or candidate.unresolved
                 or candidate_net is None
                 or hop.version != candidate_net.version
                 or hop not in candidate_net
@@ -64,107 +100,112 @@ def _recursive_loop(route: StaticRoute, routes: tuple[StaticRoute, ...]) -> bool
 
 
 class StaticRouteReachabilityCheck:
-    id = "routing.static_route_reachability"
-    title = "Static route reachability"
-    domain = "routing.static"
+    id = "wired.l3.static_route_reachability"
+    title = "Static route forwarding requires verification"
+    domain = "wired.l3"
     default_severity = Severity.WARNING
 
     def requires(self) -> frozenset[Capability]:
-        return frozenset()
+        return frozenset({IRCapability.L3_EXITS})
 
     def applies_to(self, diff: IRDiff) -> bool:
-        return diff.touches("static_route")
+        return diff.touches("static_route") or diff.touches("l3intf")
 
     def run(self, ctx: CheckContext) -> CheckResult:
+        touched = touched_ids(ctx.diff, "static_route")
+        l3_devices = changed_l3_devices(ctx)
         base = {r.id: r for r in ctx.baseline.ir.static_routes}
         prop = {r.id: r for r in ctx.proposed.ir.static_routes}
-        findings: list[Finding] = []
-        touched = {
-            ref.id
-            for ref in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
-            if ref.kind == "static_route"
-        }
-        for rid in sorted(touched):
-            before, after = base.get(rid), prop.get(rid)
-            route = after or before
+        findings = []
+        for rid in sorted(base.keys() | prop.keys()):
+            route = prop.get(rid, base.get(rid))
             assert route is not None
-            suffix: str | None = None
-            message = ""
-            if after is None:
-                assert before is not None
-                alternatives = [
-                    r
-                    for r in prop.values()
-                    if r.device_id == before.device_id
-                    and r.vrf == before.vrf
-                    and r.destination == before.destination
-                ]
-                if not alternatives:
-                    suffix = "sole_route_removed"
-                    message = f"sole modeled static route to {before.destination} is removed"
-            elif after.unresolved:
-                suffix = "unresolved"
-                message = (
-                    f"static route {after.destination} has an unreadable destination or next hop"
-                )
-            elif after.discard:
-                net = _network(after.destination)
-                covering = [
-                    r.destination
-                    for r in base.values()
-                    if not r.discard
-                    and r.device_id == after.device_id
-                    and r.vrf == after.vrf
-                    and (other := _network(r.destination)) is not None
-                    and net is not None
-                    and net.version == other.version
-                    and int(other.network_address) <= int(net.network_address)
-                    and int(net.broadcast_address) <= int(other.broadcast_address)
-                    and net != other
-                ]
-                if covering:
-                    suffix = "more_specific_blackhole"
-                    message = f"discard route {after.destination} blackholes a more-specific prefix"
-            elif _recursive_loop(after, ctx.proposed.ir.static_routes):
-                suffix = "recursive_loop"
-                message = f"static route {after.destination} participates in a recursive loop"
-            elif not _reachable(ctx.proposed.ir, after):
-                suffix = "next_hop_unreachable"
-                message = (
-                    f"static route {after.destination} has no next hop on a modeled "
-                    "connected subnet"
-                )
-            if suffix is None:
+            if rid not in touched and route.device_id not in l3_devices:
                 continue
+            if rid not in prop:
+                sole = not any(
+                    r.device_id == route.device_id
+                    and r.vrf == route.vrf
+                    and r.destination == route.destination
+                    for r in prop.values()
+                )
+                code, detail = (
+                    ("sole_route_removed", "the only configured route to this prefix is removed")
+                    if sole
+                    else ("removed", "configured static route removed")
+                )
+            elif route.unresolved:
+                code, detail = (
+                    "unresolved",
+                    "destination or next-hop configuration cannot be resolved",
+                )
+            elif route.discard:
+                code, detail = (
+                    (
+                        "more_specific_blackhole",
+                        "discard route blackholes part of a wider forwarding route",
+                    )
+                    if _covering_blackhole(route, ctx.baseline.ir)
+                    else ("discard", "configured discard route may drop matching traffic")
+                )
+            elif _recursive_loop(route, ctx.proposed.ir.static_routes):
+                code, detail = (
+                    "recursive_loop",
+                    "next hops resolve through a route that points back into this prefix",
+                )
+            elif not all(_connected(ctx.proposed.ir, route.device_id, h) for h in route.next_hops):
+                code, detail = (
+                    "recursive_resolution",
+                    "next hops require resolution beyond modeled connected subnets",
+                )
+            else:
+                code, detail = (
+                    "forwarding_unverified",
+                    "static-route forwarding requires live verification",
+                )
+            l3_ids = sorted(
+                i.id
+                for ir in (ctx.baseline.ir, ctx.proposed.ir)
+                for i in ir.l3intfs
+                if i.device_id == route.device_id
+            )
             findings.append(
                 Finding(
                     source=FindingSource.CHECK,
                     category=FindingCategory.NETWORK,
-                    code=f"{self.id}.{suffix}",
+                    code=f"{self.id}.{code}",
                     severity=Severity.WARNING,
                     confidence=_HIGH,
-                    message=message,
+                    message=f"{route.device_id} {route.destination} ({route.vrf}): {detail}",
                     subject=ObjectRef("device", route.device_id),
-                    affected_entities=(route.destination,),
+                    affected_entities=(route.device_id,),
                     evidence={
-                        "device": route.device_id,
+                        "route": rid,
                         "destination": route.destination,
                         "next_hops": list(route.next_hops),
+                        "discard": route.discard,
                         "vrf": route.vrf,
                     },
-                    caused_by=ctx.delta_index.causes("static_route", [rid]),
+                    caused_by=tuple(
+                        dict.fromkeys(
+                            (
+                                *ctx.delta_index.causes("static_route", [rid]),
+                                *ctx.delta_index.causes("l3intf", l3_ids),
+                            )
+                        )
+                    ),
                 )
             )
         return CheckResult(
             check_id=self.id,
-            status=status_from_findings(findings),
+            status=Status.WARN if findings else Status.PASS,
             findings=tuple(findings),
+            confidence=_HIGH,
             coverage=Coverage(
                 CoverageState.PARTIAL if findings else CoverageState.COMPLETE,
-                ("live RIB and recursive-resolution telemetry are unavailable",)
+                ("live RIB/FIB, recursive resolution and competing routes are not modeled",)
                 if findings
                 else (),
             ),
-            confidence=_HIGH,
-            reasoning="checked changed static routes against modeled connected subnets",
+            reasoning="compared configured routes and local L3 dependencies; forwarding unverified",
         )

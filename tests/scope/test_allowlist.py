@@ -31,10 +31,8 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
     assert "port_config_overwrite.*.port_network" in device
     assert "port_config_overwrite.*.speed" in device  # SP2: resolver-honored + modeled
     assert "port_config_overwrite.*.mac_limit" in device  # SP4: resolver-honored + modeled
-    # Spec 1: poe_keep_state_when_reboot is now allowed here as a BENIGN leaf
-    # (IR-ignored, kept out of the device-profile modeled surface) rather than
-    # unmodeled-denied — see _BENIGN_DEVICE_PORT_LEAVES.
-    assert "port_config_overwrite.*.poe_keep_state_when_reboot" in device
+    # Reboot-time power behavior has no validated model and stays denied.
+    assert "port_config_overwrite.*.poe_keep_state_when_reboot" not in device
 
 
 def test_l1_attrs_in_scope():
@@ -189,33 +187,32 @@ def test_mac_limit_in_scope_usage_local_overwrite_not_port_config():
 
 def test_misc_knobs_in_scope_usage_local_not_port_config():
     dev = set(RAW_ALLOWLIST["device"])
-    for a in ("inter_switch_link", "storm_control", "enable_qos"):
+    for a in ("inter_switch_link", "storm_control"):
         assert f"port_usages.*.{a}" in dev and f"local_port_config.*.{a}" in dev
         assert f"port_config.*.{a}" not in dev
         assert f"port_config_overwrite.*.{a}" not in dev
 
 
-def test_spec1_benign_leaves_are_raw_and_effective_but_not_device_profile():
+def test_only_ui_leaf_is_benign_and_operational_effects_remain_denied():
     from digital_twin.scope.allowlist import (
         DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE,
         EFFECTIVE_ALLOWLIST,
         RAW_ALLOWLIST,
     )
 
-    benign = (
-        "port_usages.*.ui_evpntopo_id",
+    benign = ("port_usages.*.ui_evpntopo_id",)
+    operational = (
         "port_usages.*.enable_qos",
         "port_usages.*.poe_keep_state_when_reboot",
         "port_usages.*.server_fail_retry_interval",
     )
-    # the two benign DEVICE-map leaves ride the same contract as the usage ones
-    benign_device = (
+    operational_device = (
         "local_port_config.*.enable_qos",
         "port_config_overwrite.*.poe_keep_state_when_reboot",
     )
     for leaf in benign:
         assert leaf in RAW_ALLOWLIST["site_setting"], leaf
-    for leaf in (*benign, *benign_device):
+    for leaf in benign:
         assert leaf in RAW_ALLOWLIST["device"], leaf
         assert leaf in EFFECTIVE_ALLOWLIST, leaf
         # benign = ignored by IR; a device-profile overriding it changes nothing,
@@ -223,6 +220,11 @@ def test_spec1_benign_leaves_are_raw_and_effective_but_not_device_profile():
         # the local/overwrite benign leaves must not leak in through
         # _DEVICE_PORT_LEAVES either)
         assert leaf not in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"], leaf
+    for leaf in operational:
+        assert leaf not in RAW_ALLOWLIST["site_setting"]
+    for leaf in (*operational, *operational_device):
+        assert leaf not in RAW_ALLOWLIST["device"]
+        assert leaf not in EFFECTIVE_ALLOWLIST
 
 
 def test_spec1_reviewed_leaves_are_in_all_three_gates():
@@ -255,3 +257,17 @@ def test_spec1_usage_only_leaves_are_not_dead_allowed_on_local():
     for attr in ("bypass_auth_when_server_down_for_voip", "poe_priority",
                  "community_vlan_id", "inter_isolation_network_link", "stp_required"):
         assert f"local_port_config.*.{attr}" not in RAW_ALLOWLIST["device"], attr
+
+
+def test_every_device_allowlist_root_reaches_the_compiled_effective():
+    """An admitted device leaf the compiler drops never reaches the IR, so the
+    change would diff to nothing and resolve SAFE without being simulated."""
+    from digital_twin.adapters.mist.compile import switch as compile_switch
+
+    compiled = {
+        *compile_switch._DEVICE_DICT_MERGE_FIELDS,
+        *compile_switch._DEVICE_OWN_FIELDS,
+    }
+    inert = {"name", "notes"}
+    roots = {path.split(".", 1)[0] for path in RAW_ALLOWLIST["device"]}
+    assert roots - inert <= compiled

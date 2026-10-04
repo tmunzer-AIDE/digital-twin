@@ -77,7 +77,7 @@ def test_unreachable_static_next_hop_requires_review():
         StaticRouteReachabilityCheck(), build("192.0.2.1"), build("198.51.100.1")
     )
     assert result.status is Status.WARN
-    assert result.findings[0].code.endswith("next_hop_unreachable")
+    assert result.findings[0].code.endswith("recursive_resolution")
 
 
 def test_recursive_static_routes_require_review():
@@ -180,4 +180,4 @@ def test_storm_shutdown_on_uplink_requires_review():
         StormControlPolicyCheck(), build(None), build("disable_port=True;percentage=50")
     )
     assert result.status is Status.WARN
-    assert result.findings[0].code.endswith("shutdown_on_critical_port")
+    assert result.findings[0].code.endswith("uplink_shutdown")

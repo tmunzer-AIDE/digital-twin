@@ -50,6 +50,7 @@ from digital_twin.providers.base import (
     StateProvider,
     WlanUsageContext,
 )
+from digital_twin.providers.fetch_limits import DEFAULT_LIMITS, FetchLimits
 from digital_twin.scope.allowlist import NAC_OBJECT_TYPES, ORG_OBJECT_TYPES
 from digital_twin.verdict.decision import Decision
 
@@ -63,6 +64,10 @@ class _RecordingProvider:
     def __init__(self, inner: StateProvider) -> None:
         self._inner = inner
         self.recorded: RawSiteState | None = None
+
+    @property
+    def _fetch_limits(self) -> FetchLimits:
+        return getattr(self._inner, "_fetch_limits", DEFAULT_LIMITS)
 
     def fetch_site(
         self, scope: SiteScope, *, include_derived: bool = False

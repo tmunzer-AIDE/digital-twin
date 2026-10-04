@@ -105,11 +105,13 @@ class Device:
     # SWITCH dhcp_snooping intent (GS25): None = disabled, ("*",) =
     # all_networks, else the enabled network names (site-network namespace)
     dhcp_snooping: tuple[str, ...] | None = None
-    # Effective switch authentication backends. ``None`` means the configured
-    # server/NAC state could not be parsed; zero is a proven absence.
-    authenticator_count: int | None = 0
-    authenticator_unresolved: bool = False
     meta: FactMeta = CONFIG_META
+    # None = not collected; zero = collected and no configured authenticator.
+    authenticator_count: int | None = None
+    authenticator_unresolved: bool = False
+    # Opaque change token: backend edits (including credentials) must be detected
+    # without publishing secrets in the IR or findings. No reachability claim.
+    authenticator_config: str | None = None
 
 
 @dataclass(frozen=True)
@@ -379,19 +381,22 @@ class DhcpScope:
 
 @dataclass(frozen=True)
 class StaticRoute:
-    """Normalized configured static route (global table or named VRF)."""
+    """Configured static intent (global table or named VRF), never proof of an
+    installed forwarding route."""
 
     device_id: str
     destination: str
-    vrf: str = "default"
     next_hops: tuple[str, ...] = ()
     discard: bool = False
     unresolved: bool = False
+    # Retains malformed/templated edits so two unresolved values still diff.
+    unresolved_token: str | None = None
+    vrf: str = "default"
     meta: FactMeta = CONFIG_META
 
     @property
     def id(self) -> str:
-        return f"{self.device_id}:{self.vrf}:{self.destination}"
+        return f"{self.device_id}:route:{self.vrf}:{self.destination}"
 
 
 @dataclass(frozen=True)

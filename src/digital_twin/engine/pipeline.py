@@ -78,6 +78,7 @@ from digital_twin.providers.base import (
     StateProvider,
     WlanUsageContext,
 )
+from digital_twin.providers.fetch_limits import with_fetch_budget
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
 from digital_twin.scope.derived_gate import check_derived_gaps
 from digital_twin.scope.device_profile_gate import device_profile_gaps
@@ -103,7 +104,36 @@ _EMPTY_DIFF = IRDiff((), (), ())
 # here would false-UNKNOWN those edits). For gatewaytemplate edits the FULL
 # effective is screened (full=True) to catch networks changes owned by the
 # gateway namespace that never appear in site_effective.
-GATEWAY_SCREENED_ROOTS: tuple[str, ...] = ("port_config", "ip_configs", "dhcpd_config", "vars")
+GATEWAY_SCREENED_ROOTS: tuple[str, ...] = (
+    "port_config", "ip_configs", "dhcpd_config", "vars",
+    # Newly recognized switch roots also survive the generic gateway fold.
+    # Until gateway semantics are modeled, changes here must remain UNKNOWN.
+    "radius_config", "mist_nac", "extra_routes", "extra_routes6",
+)
+
+
+def _connected_wlan_clients(
+    raw: RawSiteState, wlan_id: str, wlan: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], ...]:
+    """Wireless clients connected right now to this WLAN (by id, else SSID).
+
+    Session history is not proof of absence: a client that is still connected
+    may not have a session record yet. Matching on the SSID too over-counts
+    duplicate SSIDs, which can only move a decision towards REVIEW.
+    """
+    ssid = wlan.get("ssid")
+    return tuple(
+        client
+        for client in raw.wireless_clients
+        if isinstance(client, Mapping)
+        and (client.get("wlan_id") == wlan_id or (ssid and client.get("ssid") == ssid))
+    )
+
+
+def _on_band(client: Mapping[str, Any], band: str | None) -> bool:
+    # Mist reports the client radio as "24" | "5" | "6"; an unknown band counts.
+    observed = client.get("band")
+    return band is None or observed is None or str(observed) == band.split("-", 1)[0]
 
 
 def _wlan_delete_usage_result(
@@ -190,6 +220,8 @@ def _wlan_auth_transition_result(
     wlan_id: str,
     current: Mapping[str, Any],
     proposed: Mapping[str, Any],
+    *,
+    connected_clients: tuple[Mapping[str, Any], ...] = (),
 ) -> CheckResult | None:
     """Assess the security downgrade from a secured WLAN to an open WLAN."""
     current_auth = current.get("auth")
@@ -217,8 +249,9 @@ def _wlan_auth_transition_result(
         "before_auth_type": str(before),
         "after_auth_type": "open",
         "window_days": 7,
+        "connected_clients": len(connected_clients),
     }
-    if isinstance(context, FetchError):
+    if isinstance(context, FetchError) and not connected_clients:
         reason = (
             "WLAN authentication changes from secured to open, and client usage "
             "during the last 7 days could not be verified"
@@ -243,19 +276,27 @@ def _wlan_auth_transition_result(
             reasoning=reason,
         )
 
-    assert isinstance(context, WlanUsageContext)
-    evidence.update({
-        "window_days": context.window_days,
-        "checked_site_ids": list(context.checked_site_ids),
-        "active_site_ids": list(context.active_site_ids),
-    })
-    recently_used = bool(context.active_site_ids)
+    window_days = 7
+    active_site_ids: tuple[str, ...] = ()
+    if isinstance(context, WlanUsageContext):
+        window_days = context.window_days
+        active_site_ids = context.active_site_ids
+        evidence.update({
+            "window_days": context.window_days,
+            "checked_site_ids": list(context.checked_site_ids),
+            "active_site_ids": list(context.active_site_ids),
+        })
+    else:
+        evidence["fetch_failures"] = [failure.error for failure in context.failures]
+    recently_used = bool(active_site_ids) or bool(connected_clients)
     reason = (
         f"WLAN authentication changes from {before} to open"
         + (
-            f" after client sessions were observed during the last {context.window_days} days"
+            f" while {len(connected_clients)} client(s) are connected"
+            if connected_clients
+            else f" after client sessions were observed during the last {window_days} days"
             if recently_used
-            else f"; no client sessions were observed during the last {context.window_days} days"
+            else f"; no client sessions were observed during the last {window_days} days"
         )
     )
     finding = Finding(
@@ -288,8 +329,11 @@ def _wlan_changed_usage_result(
     changed_fields: tuple[str, ...],
     *,
     band: str | None = None,
+    connected_clients: tuple[Mapping[str, Any], ...] = (),
 ) -> CheckResult:
-    """Gate a client-affecting WLAN update on seven-day session history."""
+    """Gate a client-affecting WLAN update on seven-day session history and on
+    the clients connected right now."""
+    connected = tuple(c for c in connected_clients if _on_band(c, band))
     resolver = getattr(provider, "resolve_wlan_usage", None)
     if resolver is None:
         context: WlanUsageContext | FetchError = FetchError(
@@ -326,8 +370,10 @@ def _wlan_changed_usage_result(
     }
     if band is not None:
         evidence["band"] = band
+    if connected:
+        evidence["connected_clients"] = len(connected)
 
-    if isinstance(context, FetchError):
+    if isinstance(context, FetchError) and not connected:
         reason = f"WLAN usage{qualifier} during the last 7 days could not be verified"
         evidence["fetch_failures"] = [failure.error for failure in context.failures]
         finding = Finding(
@@ -349,21 +395,28 @@ def _wlan_changed_usage_result(
             reasoning=reason,
         )
 
-    assert isinstance(context, WlanUsageContext)
-    evidence.update({
-        "window_days": context.window_days,
-        "checked_site_ids": list(context.checked_site_ids),
-        "active_site_ids": list(context.active_site_ids),
-    })
-    if context.failures:
-        evidence["fetch_failures"] = [failure.error for failure in context.failures]
-    recently_used = bool(context.active_site_ids)
-    incomplete = bool(context.failures)
+    window_days = 7
+    active_site_ids: tuple[str, ...] = ()
+    failures = context.failures
+    if isinstance(context, WlanUsageContext):
+        window_days = context.window_days
+        active_site_ids = context.active_site_ids
+        evidence.update({
+            "window_days": context.window_days,
+            "checked_site_ids": list(context.checked_site_ids),
+            "active_site_ids": list(context.active_site_ids),
+        })
+    if failures:
+        evidence["fetch_failures"] = [failure.error for failure in failures]
+    recently_used = bool(active_site_ids) or bool(connected)
+    incomplete = bool(failures)
     if recently_used or incomplete:
-        if recently_used:
+        if connected:
+            reason = f"{len(connected)} client(s) are connected to the WLAN{qualifier}"
+        elif recently_used:
             reason = (
                 f"WLAN had client sessions{qualifier} during the last "
-                f"{context.window_days} days"
+                f"{window_days} days"
             )
         else:
             reason = f"WLAN usage{qualifier} was only partially verified"
@@ -392,7 +445,7 @@ def _wlan_changed_usage_result(
             reasoning=reason,
         )
 
-    reason = f"WLAN had no client sessions{qualifier} during the last {context.window_days} days"
+    reason = f"WLAN had no client sessions{qualifier} during the last {window_days} days"
     return CheckResult(
         check_id="wireless.wlan.change_usage",
         status=Status.PASS,
@@ -437,6 +490,8 @@ def _wlan_band_change_results(
     wlan_id: str,
     current: Mapping[str, Any],
     proposed: Mapping[str, Any],
+    *,
+    connected_clients: tuple[Mapping[str, Any], ...] = (),
 ) -> tuple[CheckResult, ...]:
     """Evaluate exact Mist band removals and 6-GHz security transitions."""
     delta = classify_wlan_delta(current, proposed)
@@ -450,7 +505,7 @@ def _wlan_band_change_results(
     # whole-WLAN seven-day gate instead of fabricating a safe band delta.
     if "band" in delta.bands or before is None or after is None:
         return (_wlan_changed_usage_result(
-            provider, scope, wlan_id, delta.bands
+            provider, scope, wlan_id, delta.bands, connected_clients=connected_clients
         ),)
 
     results: list[CheckResult] = []
@@ -496,7 +551,8 @@ def _wlan_band_change_results(
     # All 6-GHz removals are explicitly safe.
     for band in sorted(relevant_removals):
         results.append(_wlan_changed_usage_result(
-            provider, scope, wlan_id, ("bands",), band=band
+            provider, scope, wlan_id, ("bands",), band=band,
+            connected_clients=connected_clients,
         ))
 
     if not results:
@@ -982,6 +1038,7 @@ def _simulate_site_state(
         )
 
 
+@with_fetch_budget
 def simulate(
     plan_data: Mapping[str, Any],
     *,
@@ -1173,6 +1230,7 @@ def simulate(
                 )
             effective = effective_update(current, op.payload)
             if op.object_type == "wlan":
+                connected = _connected_wlan_clients(raw, op.object_id, current or {})
                 usage_paths = usage_gated_paths_for_update(current, effective)
                 if usage_paths:
                     wlan_usage_results.append(_wlan_changed_usage_result(
@@ -1180,6 +1238,7 @@ def simulate(
                         SiteScope(plan.scope.org_id, plan.scope.site_id),
                         op.object_id,
                         usage_paths,
+                        connected_clients=connected,
                     ))
                 wlan_usage_results.extend(_wlan_band_change_results(
                     provider,
@@ -1187,6 +1246,7 @@ def simulate(
                     op.object_id,
                     current,
                     effective,
+                    connected_clients=connected,
                 ))
                 auth_transition = _wlan_auth_transition_result(
                     provider,
@@ -1194,6 +1254,7 @@ def simulate(
                     op.object_id,
                     current,
                     effective,
+                    connected_clients=connected,
                 )
                 if auth_transition is not None:
                     wlan_usage_results.append(auth_transition)
@@ -1287,6 +1348,7 @@ def simulate(
     return replace(verdict, config_diffs=tuple(site_diffs))
 
 
+@with_fetch_budget
 def simulate_org_plan(
     plan_data: Mapping[str, Any],
     *,
@@ -1654,6 +1716,7 @@ def _org_nac_unknown(
                          (rej,) if rej else (), tuple(config_diffs))
 
 
+@with_fetch_budget
 def simulate_org_nac(
     plan_data: Mapping[str, Any],
     *,

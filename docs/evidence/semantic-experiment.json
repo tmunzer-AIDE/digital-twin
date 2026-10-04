@@ -1,0 +1,1632 @@
+{
+  "scope": "Synthetic concrete transfer model; not a live Mist simulation",
+  "scenarios": [
+    {
+      "scenario": "baseline",
+      "results": {
+        "a:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "nac_vlan_change_only",
+      "results": {
+        "a:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "wired_change_only",
+      "results": {
+        "a:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "batch_repairs_site_a_but_breaks_unchanged_site_b",
+      "results": {
+        "a:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "complete_batch_preserves_both_sites",
+      "results": {
+        "a:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  20
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "shared_firewall_blocks_both_sites",
+      "results": {
+        "a:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a",
+                "router:a",
+                "hub-firewall"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "application policy denied",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "application policy denied",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "application policy denied",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "known_incompatible_wireless_client",
+      "results": {
+        "a:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  false
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  false
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  false
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "missing_wireless_client_capability",
+      "results": {
+        "a:wifi": {
+          "result": "unknown",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  null
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": [
+                "wlan:a: missing or mistyped fact in rule 0"
+              ]
+            },
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  null
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": [
+                "wlan:a: missing or mistyped fact in rule 0"
+              ]
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  null
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "unknown",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  null
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": [
+                "wlan:b: missing or mistyped fact in rule 0"
+              ]
+            },
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  null
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": [
+                "wlan:b: missing or mistyped fact in rule 0"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "tunneled_wlan_bypasses_local_client_vlan",
+      "results": {
+        "a:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "underlay:a",
+                "mist-edge",
+                "edge-egress",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "edge"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "inner_vlan",
+                  10
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "switch:b",
+                "router:b",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "local"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "shared_edge_egress_breaks_remote_wifi",
+      "results": {
+        "a:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:a",
+                "shared-nac",
+                "attachment",
+                "ap:a",
+                "underlay:a",
+                "mist-edge",
+                "edge-egress"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "edge"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "inner_vlan",
+                  10
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        },
+        "a:wired": {
+          "result": "satisfied",
+          "traces": [
+            {
+              "disposition": "reached",
+              "path": [
+                "shared-nac",
+                "attachment",
+                "switch:a",
+                "router:a",
+                "hub-firewall",
+                "payroll"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wired"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "a"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "service reached",
+              "uncertainties": []
+            }
+          ]
+        },
+        "b:wifi": {
+          "result": "violated",
+          "traces": [
+            {
+              "disposition": "dropped",
+              "path": [
+                "wlan:b",
+                "shared-nac",
+                "attachment",
+                "ap:b",
+                "underlay:b",
+                "mist-edge",
+                "edge-egress"
+              ],
+              "packet": [
+                [
+                  "attachment",
+                  "wifi"
+                ],
+                [
+                  "forwarding",
+                  "edge"
+                ],
+                [
+                  "identity",
+                  "employee"
+                ],
+                [
+                  "inner_vlan",
+                  10
+                ],
+                [
+                  "role",
+                  "employee"
+                ],
+                [
+                  "service",
+                  "payroll"
+                ],
+                [
+                  "site",
+                  "b"
+                ],
+                [
+                  "supports_auth",
+                  true
+                ],
+                [
+                  "vlan",
+                  10
+                ]
+              ],
+              "reason": "no matching rule",
+              "uncertainties": []
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

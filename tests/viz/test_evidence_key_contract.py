@@ -47,6 +47,11 @@ _INLINE_PAINTED = {"vlan", "affected_vlans", "impacts"}
 # One comment per entry. If your new key lands here, say WHY it should not
 # paint (scalar/count/non-entity string), or add it to a visual_map allowlist.
 _NOT_VISUALIZED = {
+    # --- auth/routing/storm detail: device/port subjects already paint;
+    # counts, addresses, service names and threshold values are not graph ids ---
+    "configured_backends", "configured_backends_before", "configured_backends_after",
+    "route", "destination", "next_hops", "discard", "lost_configured_defaults",
+    "services_to_verify", "disable_port", "percentage_before", "percentage_after",
     # --- registry crash note ---
     "error",                # exception text from a crashed check; not an entity
     # --- pairwise mismatch checks (l1/mtu/native): the "link" key already
@@ -108,7 +113,7 @@ _NOT_VISUALIZED = {
     "disabled",             # admin_disable boolean; "port" already paints
     "knobs",                # unmodeled_change knob names (strings)
     # --- auth/WAN policy scalar evidence; path arrays are painted as ports ---
-    "authenticator_count", "health_evidence",
+    "health_evidence",
     # --- stp_policy.blocking_risk: entities already paint via "port"/
     #     affected_entities; these are classification/explanatory scalars ---
     "knob",                 # the single changed knob name (stp_required), a string
@@ -135,13 +140,9 @@ _NOT_VISUALIZED = {
     # --- P1 routing/capacity/LAG/storm checks: scalar policy evidence; the
     #     device/port subject and affected_entities already paint topology ---
     "capacity", "headroom", "previous_capacity",
-    "destination", "next_hops",
     "network", "baseline_vrfs", "proposed_vrfs",
     "bundle", "baseline_members", "proposed_members",
     "observed_forwarding_member", "lacp_modes", "lag_unresolved",
-    "baseline_routes", "proposed_routes", "services",
-    "changed_dependencies",
-    "baseline_storm_control", "proposed_storm_control", "traffic_telemetry",
 }
 
 

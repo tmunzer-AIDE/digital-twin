@@ -75,6 +75,7 @@ def screen_op_split(
         for p in changed
         if not allowed(p, allowlist)
         and not _wlan_secure_to_open_companion_delete(object_type, p, changed, current, payload)
+        and not _known_empty_nac_match(object_type, p, current, payload)
     ]
     if object_type == "device":
         # no_local_overwrite is in scope, but flipping it activates/deactivates the
@@ -113,6 +114,17 @@ def _wlan_secure_to_open_companion_delete(
         and current_auth.get("type") not in (None, "open")
         and proposed_auth.get("type") == "open"
     )
+
+
+def _known_empty_nac_match(
+    object_type: str, path: str, current: Mapping[str, Any], proposed: Mapping[str, Any]
+) -> bool:
+    """An explicit empty NAC match is a supported unconstrained rule. Only
+    exactly empty objects qualify; unknown children and null-only trees do not."""
+    if object_type != "nacrule" or path not in ("matching", "not_matching"):
+        return False
+    before, after = current.get(path), proposed.get(path)
+    return (before is None or before == {}) and (after is None or after == {})
 
 
 def screen_op(
