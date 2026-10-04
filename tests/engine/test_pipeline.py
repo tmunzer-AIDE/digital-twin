@@ -67,9 +67,11 @@ def _raw() -> RawSiteState:
 
 
 class FakeProvider:
-    def __init__(self, raw=None, wlan_usage=None):
+    def __init__(self, raw=None, wlan_usage=None, wlan_usage_by_band=None):
         self._raw = raw if raw is not None else _raw()
         self._wlan_usage = wlan_usage or WlanUsageContext((), (SITE,), (), 7)
+        self._wlan_usage_by_band = wlan_usage_by_band or {}
+        self.wlan_usage_calls = []
 
     def fetch_site(self, scope, *, include_derived=False):
         return self._raw
@@ -77,7 +79,12 @@ class FakeProvider:
     def fetch_sites(self, scope, site_ids=None, *, include_derived=False):
         return {SITE: self._raw}
 
-    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7, band=None):
+        self.wlan_usage_calls.append((wlan_id, window_days, band))
+        if band is not None:
+            return self._wlan_usage_by_band.get(
+                band, WlanUsageContext((), (SITE,), (), window_days)
+            )
         return self._wlan_usage
 
 
@@ -712,6 +719,192 @@ def test_site_wlan_display_name_only_update_is_safe():
 
     assert v.decision is Decision.SAFE, v.decision_reasons
     assert v.check_results[0].check_id == "config.name_change"
+
+
+def test_band_steering_and_performance_policy_updates_are_safe_without_usage_lookup():
+    raw = _raw_wlan({
+        **_wlan("w1"),
+        "band_steer": False,
+        "app_limit": {"enabled": False},
+    })
+    provider = FakeProvider(
+        raw=raw,
+        wlan_usage=WlanUsageContext((SITE,), (SITE,), (), 7),
+    )
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={
+                "band_steer": True,
+                "app_limit": {"enabled": True, "apps": {"netflix": 60}},
+            },
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert provider.wlan_usage_calls == []
+
+
+def test_client_affecting_update_is_review_when_wlan_was_recently_used():
+    raw = _raw_wlan({**_wlan("w1"), "hide_ssid": False})
+    provider = FakeProvider(
+        raw=raw,
+        wlan_usage=WlanUsageContext((SITE,), (SITE,), (), 7),
+    )
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan", object_id="w1", payload={"hide_ssid": True}
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    finding = next(
+        f for f in verdict.findings if f.code == "wireless.wlan.change.recent_usage"
+    )
+    assert finding.evidence["changed_fields"] == ["hide_ssid"]
+
+
+def test_client_affecting_update_is_safe_when_wlan_was_not_recently_used():
+    raw = _raw_wlan({**_wlan("w1"), "hide_ssid": False})
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan", object_id="w1", payload={"hide_ssid": True}
+        )]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert any(r.check_id == "wireless.wlan.change_usage" for r in verdict.check_results)
+
+
+def test_removing_24_band_with_recent_24_clients_requires_review():
+    raw = _raw_wlan({**_wlan("w1"), "bands": ["24", "5"]})
+    provider = FakeProvider(
+        raw=raw,
+        wlan_usage_by_band={"24": WlanUsageContext((SITE,), (SITE,), (), 7)},
+    )
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan", object_id="w1", payload={"bands": ["5"]}
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert provider.wlan_usage_calls == [("w1", 7, "24")]
+
+
+def test_removing_5_band_is_safe_when_24_remains_enabled():
+    raw = _raw_wlan({**_wlan("w1"), "bands": ["24", "5"]})
+    provider = FakeProvider(
+        raw=raw,
+        wlan_usage_by_band={"5": WlanUsageContext((SITE,), (SITE,), (), 7)},
+    )
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan", object_id="w1", payload={"bands": ["24"]}
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert provider.wlan_usage_calls == []
+
+
+def test_switching_5_band_variant_without_24_checks_removed_variant_usage():
+    raw = _raw_wlan({**_wlan("w1"), "bands": ["5"]})
+    provider = FakeProvider(
+        raw=raw,
+        wlan_usage_by_band={"5": WlanUsageContext((SITE,), (SITE,), (), 7)},
+    )
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={"bands": ["5-dedicated"]},
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert provider.wlan_usage_calls == [("w1", 7, "5")]
+
+
+def test_removing_6_band_is_safe_without_usage_lookup():
+    raw = _raw_wlan({
+        **_wlan("w1"),
+        "bands": ["5", "6"],
+        "auth": {"type": "psk", "pairwise": ["wpa3"]},
+    })
+    provider = FakeProvider(raw=raw)
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan", object_id="w1", payload={"bands": ["5"]}
+        )]),
+        provider=provider,
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert provider.wlan_usage_calls == []
+
+
+def test_enabling_6_band_from_wpa2_requires_security_transition_review():
+    raw = _raw_wlan({
+        **_wlan("w1"),
+        "bands": ["24", "5"],
+        "auth": {"type": "psk", "pairwise": ["wpa2-ccmp"], "psk": "secret123"},
+    })
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={
+                "bands": ["24", "5", "6"],
+                "auth": {
+                    "type": "psk",
+                    "pairwise": ["wpa2-ccmp", "wpa3"],
+                    "psk": "secret123",
+                },
+            },
+        )]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert any(
+        f.code == "wireless.wlan.band_change.security_transition"
+        for f in verdict.findings
+    )
+
+
+def test_enabling_6_band_on_existing_wpa3_wlan_is_safe():
+    raw = _raw_wlan({
+        **_wlan("w1"),
+        "bands": ["24", "5"],
+        "auth": {"type": "psk", "pairwise": ["wpa3"], "psk": "secret123"},
+    })
+    verdict = simulate(
+        _plan([_op(
+            object_type="wlan",
+            object_id="w1",
+            payload={"bands": ["24", "5", "6"]},
+        )]),
+        provider=FakeProvider(raw=raw),
+        registry=_wlan_registry(),
+    )
+
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
 
 
 def test_site_wlan_delete_with_site_scope_survivor_is_safe_and_carries_config_diff():

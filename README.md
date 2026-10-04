@@ -114,6 +114,14 @@ Additional configuration-policy coverage:
 - organization info and alarm-template changes are `SAFE`;
 - org WLAN changes use the WLAN simulator across every site where the derived
   WLAN row is present;
+- WLAN band steering, application/QoS policy, and client/WLAN bandwidth-limit
+  changes are `SAFE`; other client-affecting WLAN updates require `REVIEW` when
+  the WLAN had sessions in the preceding seven days (or usage is unverifiable);
+- radio-band removals use exact per-band seven-day sessions: removing 2.4 GHz is
+  usage-gated, removing 5 GHz is usage-gated when 2.4 GHz will not remain, and
+  removing 6 GHz is `SAFE`; dedicated/selectable variants are distinct scopes;
+- adding 6 GHz is `SAFE` only when the WLAN already has a WPA3/OWE-compatible
+  security posture; a required security transition is `REVIEW`;
 - site-group create/update is `SAFE`; deletion is `REVIEW` when sites are
   assigned, and `SAFE` only after confirming that membership is empty;
 - org/site PSK create is `SAFE`; update/delete is `SAFE` only after a complete
@@ -194,9 +202,9 @@ ChangePlan ─▶ 1 envelope + object gate     (shape, M1 whitelist, single site
 
 ### Check inventory
 
-The twin emits **53 distinct check IDs**. Its simulation engine ships **39 checks**:
+The twin emits **55 distinct check IDs**. Its simulation engine ships **39 checks**:
 **37 wired/wireless checks** over the IR and **2 NAC checks** for org policy. The remaining
-**14 targeted policy checks** make explicit decisions for objects whose
+**16 targeted policy checks** make explicit decisions for objects whose
 impact does not require the topology IR, or whose safety depends on a targeted
 API observation such as site-group membership, recent PSK/WLAN sessions, or
 effective-layer precedence.
@@ -262,6 +270,8 @@ produce `SAFE`.
 | P12 | Configuration policy | `config.batch_integrity` | rejects duplicate mutations and reports dangling or final-plan-resolved references across related object changes |
 | P13 | Security policy | `security.service_policy_semantics` | detects broad permits, conflicting or shadowed rules, and effective policy-order changes; referenced policies retain a compilation review floor |
 | P14 | Wireless / RF | `wireless.rf_coverage_regression` | assigned RF-template band, width, power, and minimum-rate changes require review when AP placement or client radio evidence is incomplete |
+| P15 | Wireless / WLAN | `wireless.wlan.change_usage` | client-affecting WLAN updates are `REVIEW` after sessions in the preceding seven days or incomplete telemetry, otherwise `SAFE`; performance-policy and operationally inert controls bypass this gate |
+| P16 | Wireless / WLAN | `wireless.wlan.band_change` | exact band and dedicated/selectable scope removals use per-band seven-day sessions; 6-GHz removal is `SAFE`, while enabling 6 GHz from a non-WPA3/OWE posture requires compatibility review |
 
 Org WLAN changes do not add another check ID: they fan out to every site where
 the derived WLAN is present and run the applicable wired/wireless checks above,

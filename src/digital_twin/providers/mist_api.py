@@ -567,10 +567,16 @@ class MistApiProvider(StateProvider):
         )
 
     def resolve_wlan_usage(
-        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+        self,
+        scope: OrgScope | SiteScope,
+        wlan_id: str,
+        *,
+        window_days: int = 7,
+        band: str | None = None,
     ) -> WlanUsageContext | FetchError:
         duration = f"{window_days}d"
         try:
+            filters = {"band": band} if band is not None else {}
             if isinstance(scope, SiteScope):
                 response = mistapi.api.v1.sites.clients.searchSiteWirelessClientSessions(
                     self._session,
@@ -579,6 +585,7 @@ class MistApiProvider(StateProvider):
                     duration=duration,
                     limit=1,
                     sort="-timestamp",
+                    **filters,
                 )
                 checked_site_ids = (scope.site_id,)
             else:
@@ -589,6 +596,7 @@ class MistApiProvider(StateProvider):
                     duration=duration,
                     limit=1,
                     sort="-timestamp",
+                    **filters,
                 )
                 checked_site_ids = ("*",)
             response = _checked(response)

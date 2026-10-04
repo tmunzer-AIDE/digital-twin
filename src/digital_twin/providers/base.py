@@ -295,9 +295,18 @@ class StateProvider(Protocol):
         ...
 
     def resolve_wlan_usage(
-        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+        self,
+        scope: OrgScope | SiteScope,
+        wlan_id: str,
+        *,
+        window_days: int = 7,
+        band: str | None = None,
     ) -> WlanUsageContext | FetchError:
-        """Find sites with client sessions on ``wlan_id`` in the lookback window."""
+        """Find sites with client sessions on ``wlan_id`` in the lookback window.
+
+        When ``band`` is provided, only sessions observed on that exact Mist
+        band selector are included.
+        """
         ...
 
     def resolve_nacrule_usage(

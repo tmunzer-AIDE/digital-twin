@@ -122,9 +122,9 @@ def test_non_object_payload_is_fatal():
 
 
 def test_wlan_schema_validates_not_fatal():
-    ok = validate_payload("wlan", {"isolation": True})       # modeled leaf
+    ok = validate_payload("wlan", {"ssid": "corp", "isolation": True})
     assert ok.fatal is False and ok.findings == ()
-    bad = validate_payload("wlan", {"enabled": "yes"})       # wrong type
+    bad = validate_payload("wlan", {"ssid": "corp", "enabled": "yes"})
     assert bad.fatal is False and any("enabled" in f.evidence.get("path", "") or
                                       "enabled" in f.message for f in bad.findings)
 
@@ -198,9 +198,13 @@ def test_unknown_attribute_flagged_on_device_port_config():
     assert hits[0].evidence["path"] == "port_config.ge-0/0/10.disabled"
 
 
-def test_unknown_attribute_skipped_for_thin_schema():
-    res = validate_payload("wlan", {"isolation": True, "totally_made_up": 1})
-    assert not any(f.code == "l0.schema.unknown_attribute" for f in res.findings)
+def test_unknown_attribute_flagged_for_full_wlan_schema():
+    res = validate_payload(
+        "wlan", {"ssid": "corp", "isolation": True, "totally_made_up": 1}
+    )
+    hits = [f for f in res.findings if f.code == "l0.schema.unknown_attribute"]
+    assert len(hits) == 1
+    assert hits[0].evidence["path"] == "totally_made_up"
 
 
 def test_unknown_attribute_respects_unknown_scope_roots():

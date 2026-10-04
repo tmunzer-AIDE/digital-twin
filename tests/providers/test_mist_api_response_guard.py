@@ -286,6 +286,28 @@ def test_wlan_usage_queries_wlan_sessions_for_seven_days(
     assert calls == [("o1", "w1", "7d", 1)]
 
 
+def test_wlan_usage_can_filter_an_exact_radio_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mistapi
+
+    calls: list[tuple[str, str, str]] = []
+
+    def sessions(session, site_id, *, wlan_id, band, duration, limit, sort):
+        calls.append((site_id, wlan_id, band))
+        return FakeResp(data={"results": [{"site_id": site_id}]})
+
+    monkeypatch.setattr(
+        mistapi.api.v1.sites.clients, "searchSiteWirelessClientSessions", sessions
+    )
+    result = _provider().resolve_wlan_usage(
+        SiteScope("o1", "s1"), "w1", window_days=7, band="5-dedicated"
+    )
+    assert isinstance(result, WlanUsageContext)
+    assert result.active_site_ids == ("s1",)
+    assert calls == [("s1", "w1", "5-dedicated")]
+
+
 def test_nacrule_usage_queries_nac_clients_for_seven_days(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

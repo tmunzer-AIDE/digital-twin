@@ -236,12 +236,12 @@ class FakeProvider:
     def fetch_site(self, scope: Any, *, include_derived: bool = False) -> RawSiteState:
         raise NotImplementedError  # org path never calls the single-site fetch
 
-    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7, band=None):
         return WlanUsageContext((), ("*",), (), window_days)
 
 
 class RecentWlanUsageProvider(FakeProvider):
-    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7):
+    def resolve_wlan_usage(self, scope, wlan_id, *, window_days=7, band=None):
         return WlanUsageContext(("s1",), ("s1",), (), window_days)
 
 
@@ -534,6 +534,48 @@ def test_org_wlan_secure_to_open_with_recent_sessions_is_unsafe():
     assert ov.decision is Decision.UNSAFE, ov.decision_reasons
     assert any(
         finding.code == "wireless.wlan.auth_transition.recent_usage"
+        for finding in ov.template_findings
+    )
+
+
+def test_org_wlan_client_affecting_update_with_recent_sessions_is_review():
+    row = {**_wlan_row(), "hide_ssid": False}
+    provider = RecentWlanUsageProvider(
+        {"s1": _wlan_site("s1", wlans=(row,))},
+        {},
+        org_wlans={"w1": row},
+        wlan_membership={"w1": {"s1": row}},
+    )
+
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", {"hide_ssid": True})),
+        provider=provider,
+    )
+
+    assert ov.decision is Decision.REVIEW, ov.decision_reasons
+    assert any(
+        finding.code == "wireless.wlan.change.recent_usage"
+        for finding in ov.template_findings
+    )
+
+
+def test_org_wlan_removing_used_24_band_is_review():
+    row = {**_wlan_row(), "bands": ["24", "5"]}
+    provider = RecentWlanUsageProvider(
+        {"s1": _wlan_site("s1", wlans=(row,))},
+        {},
+        org_wlans={"w1": row},
+        wlan_membership={"w1": {"s1": row}},
+    )
+
+    ov = simulate_org_plan(
+        _plan(_upd("wlan", "w1", {"bands": ["5"]})),
+        provider=provider,
+    )
+
+    assert ov.decision is Decision.REVIEW, ov.decision_reasons
+    assert any(
+        finding.evidence.get("band") == "24"
         for finding in ov.template_findings
     )
 

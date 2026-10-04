@@ -156,9 +156,15 @@ def test_secret_path_suppressed():
 
 
 def test_skip_listed_object_type_returns_empty():
-    assert "wlan" in OAS_UNKNOWN_KEY_SKIP
-    out = unknown_attribute_findings(CLOSED, {"b": 1}, object_type="wlan", scope_roots=None)
+    assert "nacrule" in OAS_UNKNOWN_KEY_SKIP
+    out = unknown_attribute_findings(
+        CLOSED, {"b": 1}, object_type="nacrule", scope_roots=None
+    )
     assert out == ()
+
+
+def test_full_wlan_schema_participates_in_unknown_key_enforcement():
+    assert "wlan" not in OAS_UNKNOWN_KEY_SKIP
 
 
 def test_cap_limits_findings():

@@ -84,6 +84,10 @@ from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op, screen_op_split
 from digital_twin.scope.object_gate import check_objects
+from digital_twin.scope.wlan_policy import (
+    classify_wlan_delta,
+    usage_gated_paths_for_update,
+)
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
@@ -275,6 +279,237 @@ def _wlan_auth_transition_result(
         confidence=Confidence(level=ConfidenceLevel.HIGH),
         reasoning=reason,
     )
+
+
+def _wlan_changed_usage_result(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    changed_fields: tuple[str, ...],
+    *,
+    band: str | None = None,
+) -> CheckResult:
+    """Gate a client-affecting WLAN update on seven-day session history."""
+    resolver = getattr(provider, "resolve_wlan_usage", None)
+    if resolver is None:
+        context: WlanUsageContext | FetchError = FetchError(
+            scope=scope,
+            failures=(FetchFailure(
+                object="wlan_sessions",
+                error="provider does not expose historical WLAN usage",
+            ),),
+            acquired_at=datetime.now(UTC),
+            host="provider",
+        )
+    else:
+        try:
+            context = (
+                resolver(scope, wlan_id, window_days=7)
+                if band is None
+                else resolver(scope, wlan_id, window_days=7, band=band)
+            )
+        except TypeError as exc:
+            # Older/custom providers may implement only whole-WLAN usage.  They
+            # remain usable for generic changes, while an unsupported per-band
+            # query fails closed to REVIEW rather than crashing the simulation.
+            context = FetchError(
+                scope=scope,
+                failures=(FetchFailure(object="wlan_sessions", error=str(exc)),),
+                acquired_at=datetime.now(UTC),
+                host="provider",
+            )
+
+    qualifier = f" on band {band}" if band is not None else ""
+    evidence: dict[str, Any] = {
+        "window_days": 7,
+        "changed_fields": list(changed_fields),
+    }
+    if band is not None:
+        evidence["band"] = band
+
+    if isinstance(context, FetchError):
+        reason = f"WLAN usage{qualifier} during the last 7 days could not be verified"
+        evidence["fetch_failures"] = [failure.error for failure in context.failures]
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code="wireless.wlan.change.unverified",
+            severity=Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=f"{reason}; client-affecting changes require review",
+            affected_entities=(wlan_id,),
+            evidence=evidence,
+        )
+        return CheckResult(
+            check_id="wireless.wlan.change_usage",
+            status=Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(CoverageState.PARTIAL, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        )
+
+    assert isinstance(context, WlanUsageContext)
+    evidence.update({
+        "window_days": context.window_days,
+        "checked_site_ids": list(context.checked_site_ids),
+        "active_site_ids": list(context.active_site_ids),
+    })
+    if context.failures:
+        evidence["fetch_failures"] = [failure.error for failure in context.failures]
+    recently_used = bool(context.active_site_ids)
+    incomplete = bool(context.failures)
+    if recently_used or incomplete:
+        if recently_used:
+            reason = (
+                f"WLAN had client sessions{qualifier} during the last "
+                f"{context.window_days} days"
+            )
+        else:
+            reason = f"WLAN usage{qualifier} was only partially verified"
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code=(
+                "wireless.wlan.change.recent_usage"
+                if recently_used else "wireless.wlan.change.unverified"
+            ),
+            severity=Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=f"{reason}; client-affecting changes require review",
+            affected_entities=(wlan_id,),
+            evidence=evidence,
+        )
+        return CheckResult(
+            check_id="wireless.wlan.change_usage",
+            status=Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(
+                CoverageState.PARTIAL if incomplete else CoverageState.COMPLETE,
+                (reason,),
+            ),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        )
+
+    reason = f"WLAN had no client sessions{qualifier} during the last {context.window_days} days"
+    return CheckResult(
+        check_id="wireless.wlan.change_usage",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        reasoning=reason,
+    )
+
+
+_FIVE_GHZ_BANDS = frozenset({"5", "5-dedicated", "5-selectable"})
+_SIX_GHZ_BANDS = frozenset({"6", "6-dedicated", "6-selectable"})
+
+
+def _configured_bands(wlan: Mapping[str, Any]) -> frozenset[str] | None:
+    bands = wlan.get("bands")
+    if isinstance(bands, list) and all(isinstance(value, str) for value in bands):
+        return frozenset(bands)
+    return None
+
+
+def _six_ghz_security_ready(wlan: Mapping[str, Any]) -> bool:
+    auth = wlan.get("auth")
+    if not isinstance(auth, Mapping):
+        return False
+    auth_type = auth.get("type")
+    if auth_type == "open":
+        return auth.get("owe") in {"enabled", "required"}
+    if auth_type == "eap192":
+        return True
+    pairwise = auth.get("pairwise")
+    return (
+        auth_type in {"eap", "psk", "psk-tkip", "psk-wpa2-tkip"}
+        and isinstance(pairwise, list)
+        and "wpa3" in pairwise
+    )
+
+
+def _wlan_band_change_results(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    current: Mapping[str, Any],
+    proposed: Mapping[str, Any],
+) -> tuple[CheckResult, ...]:
+    """Evaluate exact Mist band removals and 6-GHz security transitions."""
+    delta = classify_wlan_delta(current, proposed)
+    if not delta.bands:
+        return ()
+
+    before = _configured_bands(current)
+    after = _configured_bands(proposed)
+    # The deprecated free-form `band` field, or a missing/invalid `bands`
+    # baseline, cannot be mapped honestly to exact RF scopes.  Fall back to the
+    # whole-WLAN seven-day gate instead of fabricating a safe band delta.
+    if "band" in delta.bands or before is None or after is None:
+        return (_wlan_changed_usage_result(
+            provider, scope, wlan_id, delta.bands
+        ),)
+
+    results: list[CheckResult] = []
+    added = after - before
+    removed = before - after
+
+    # Enabling 6 GHz is safe only when the WLAN was already using a compatible
+    # WPA3/OWE security posture.  If enabling it also requires a security
+    # transition, that combined change is reviewable even with no recent use.
+    if added & _SIX_GHZ_BANDS and not _six_ghz_security_ready(current):
+        reason = (
+            "enabling 6 GHz requires introducing WPA3 or OWE/transition security "
+            "to a WLAN that was not already 6-GHz compatible"
+        )
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code="wireless.wlan.band_change.security_transition",
+            severity=Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=f"{reason}; review client compatibility",
+            affected_entities=(wlan_id,),
+            evidence={
+                "added_bands": sorted(added & _SIX_GHZ_BANDS),
+                "before_bands": sorted(before),
+                "after_bands": sorted(after),
+            },
+        )
+        results.append(CheckResult(
+            check_id="wireless.wlan.band_change",
+            status=Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        ))
+
+    relevant_removals = set(removed & {"24"})
+    # A 5-GHz removal is usage-gated only when 2.4 GHz will not remain as the
+    # fallback.  Variant changes are real remove+add operations by policy.
+    if "24" not in after:
+        relevant_removals.update(removed & _FIVE_GHZ_BANDS)
+    # All 6-GHz removals are explicitly safe.
+    for band in sorted(relevant_removals):
+        results.append(_wlan_changed_usage_result(
+            provider, scope, wlan_id, ("bands",), band=band
+        ))
+
+    if not results:
+        reason = "band change only adds service or removes 6 GHz without client risk"
+        results.append(CheckResult(
+            check_id="wireless.wlan.band_change",
+            status=Status.PASS,
+            findings=(),
+            coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        ))
+    return tuple(results)
 
 
 def _nacrule_access_impact_result(
@@ -938,6 +1173,21 @@ def simulate(
                 )
             effective = effective_update(current, op.payload)
             if op.object_type == "wlan":
+                usage_paths = usage_gated_paths_for_update(current, effective)
+                if usage_paths:
+                    wlan_usage_results.append(_wlan_changed_usage_result(
+                        provider,
+                        SiteScope(plan.scope.org_id, plan.scope.site_id),
+                        op.object_id,
+                        usage_paths,
+                    ))
+                wlan_usage_results.extend(_wlan_band_change_results(
+                    provider,
+                    SiteScope(plan.scope.org_id, plan.scope.site_id),
+                    op.object_id,
+                    current,
+                    effective,
+                ))
                 auth_transition = _wlan_auth_transition_result(
                     provider,
                     SiteScope(plan.scope.org_id, plan.scope.site_id),
@@ -1180,6 +1430,16 @@ def simulate_org_plan(
                     name=name, action=op.action, before=snapshot, after=None))
             else:
                 proposed_wlan = effective_update(snapshot, op.payload)
+                usage_paths = usage_gated_paths_for_update(snapshot, proposed_wlan)
+                if usage_paths:
+                    usage = _wlan_changed_usage_result(
+                        provider, org_scope, op.object_id, usage_paths
+                    )
+                    template_findings.extend(usage.findings)
+                for band_result in _wlan_band_change_results(
+                    provider, org_scope, op.object_id, snapshot, proposed_wlan
+                ):
+                    template_findings.extend(band_result.findings)
                 auth_transition = _wlan_auth_transition_result(
                     provider, org_scope, op.object_id, snapshot, proposed_wlan
                 )

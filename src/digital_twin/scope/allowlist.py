@@ -421,28 +421,13 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Modeled WLAN leaves (exactly what _mint_wlan consumes). ap_ids/wxtag_ids are
-# atomic list leaves (NOT ap_ids.* — the path flattener treats lists atomically).
-_WLAN_LEAVES: tuple[str, ...] = (
-    "ssid",
-    "enabled",
-    "auth.type",
-    "isolation",
-    "l2_isolation",
-    "apply_to",
-    "ap_ids",
-    "wxtag_ids",
-    # Locally bridged WLANs require these VLANs on every targeted AP uplink.
-    # They are consumed by ingest.wlan_vlans and therefore belong inside the
-    # honest-decision boundary (not merely in the OAS validator).
-    "vlan_enabled",
-    "vlan_id",
-    "vlan_ids",
-    "interface",
-    "dynamic_vlan.default_vlan_id",
-    "dynamic_vlan.vlans.*",
-)
-RAW_ALLOWLIST["wlan"] = _WLAN_LEAVES
+# The WLAN boundary is wider than the topology IR: every admitted leaf is owned
+# either by an existing WLAN/topology check, the explicit benign policy, the
+# band-transition policy, or the seven-day usage gate.  Keeping the ownership
+# table in one module prevents a newly-safe leaf from bypassing its decision rule.
+from digital_twin.scope.wlan_policy import WLAN_POLICY_ALLOWLIST  # noqa: E402
+
+RAW_ALLOWLIST["wlan"] = WLAN_POLICY_ALLOWLIST
 
 # nacrule leaves — exact, leaf-tightened (no matching.* subtree). List values are
 # atomic leaves (the path flattener treats lists atomically, as with ap_ids).

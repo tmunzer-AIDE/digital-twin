@@ -209,9 +209,16 @@ class ProposedStateProvider:
         )
 
     def resolve_wlan_usage(
-        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+        self,
+        scope: OrgScope | SiteScope,
+        wlan_id: str,
+        *,
+        window_days: int = 7,
+        band: str | None = None,
     ) -> WlanUsageContext | FetchError:
-        return self._inner.resolve_wlan_usage(scope, wlan_id, window_days=window_days)
+        return self._inner.resolve_wlan_usage(
+            scope, wlan_id, window_days=window_days, band=band
+        )
 
     def resolve_nacrule_usage(
         self, scope: OrgScope, nacrule_id: str, *, window_days: int = 7

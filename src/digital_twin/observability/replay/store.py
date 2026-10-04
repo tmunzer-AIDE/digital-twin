@@ -533,14 +533,26 @@ class FixtureProvider:
         )
 
     def resolve_wlan_usage(
-        self, scope: OrgScope | SiteScope, wlan_id: str, *, window_days: int = 7
+        self,
+        scope: OrgScope | SiteScope,
+        wlan_id: str,
+        *,
+        window_days: int = 7,
+        band: str | None = None,
     ) -> WlanUsageContext | FetchError:
         usage = self._data.get("wlan_usage") or {}
         row = usage.get(wlan_id) if isinstance(usage, dict) else None
+        if isinstance(row, dict) and band is not None:
+            bands = row.get("bands")
+            row = bands.get(band) if isinstance(bands, dict) else None
         if not isinstance(row, dict):
             return FetchError(
                 scope=scope,
-                failures=(FetchFailure("wlan_sessions", "WLAN usage not captured in fixture"),),
+                failures=(FetchFailure(
+                    "wlan_sessions",
+                    "WLAN usage not captured in fixture"
+                    + (f" for band {band}" if band is not None else ""),
+                ),),
                 acquired_at=self._acquired_at,
                 host=self._host,
             )
