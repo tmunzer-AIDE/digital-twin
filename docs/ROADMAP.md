@@ -221,8 +221,9 @@ assignment simulation and NAC/role-profile interactions.
   partial-coverage REVIEW. `wireless.wlan.open_guest` remains the stronger
   independent finding when isolation is absent. Other auth transitions are
   usage-gated by `wireless.wlan.change_usage`: REVIEW after sessions in the
-  preceding seven days, while clients are connected right now, or when usage
-  telemetry is incomplete.
+  preceding seven days, while clients are connected right now, or when session
+  history or current client associations are incomplete or unattributable. Site
+  and org WLAN gates read the same per-site association evidence.
 
 - ✅ **Switch 802.1X/MAB without an authenticator → REVIEW** (`wired.auth.radius_missing`)
   — done 2026-09-20. On a switch's effective config, if **at least one ASSIGNED port profile

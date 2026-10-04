@@ -195,13 +195,13 @@ produce `SAFE`.
 | P6 | Configuration policy | `config.psk.recent_usage` | org/site PSK create is `SAFE`; update/delete is `REVIEW` after recent use or incomplete telemetry, otherwise `SAFE` after a complete seven-day query |
 | P7 | Configuration policy | `config.webhook.review` | org/site webhook changes, always `REVIEW` because delivery impact is external to the twin |
 | P8 | Effective configuration | `scope.effective_noop` | lower-layer edits masked on every device or only some devices; both cases are `REVIEW` and identify exact paths and devices |
-| P9 | Wireless / WLAN | `wireless.wlan.auth_transition` | secured-to-open WLAN transitions are `UNSAFE` after client use in the preceding seven days and otherwise `REVIEW`; incomplete usage telemetry also requires review |
+| P9 | Wireless / WLAN | `wireless.wlan.auth_transition` | secured-to-open WLAN transitions are `UNSAFE` after client use in the preceding seven days or while clients are connected, and otherwise `REVIEW`; incomplete session or current-client evidence is partial-coverage review |
 | P10 | NAC policy | `nac.rule.access_impact` | changed/deleted rules are joined to seven-day match evidence; removing a recently used allow decision is `UNSAFE`, other used-rule changes are `REVIEW` |
 | P11 | Configuration policy | `config.referenced_update_impact` | expands exact dependent references for profile/service/policy/VPN/RF/security updates; absent dependent recompilation is explicit partial coverage |
 | P12 | Configuration policy | `config.batch_integrity` | rejects duplicate mutations and reports dangling or final-plan-resolved references across related object changes |
 | P13 | Security policy | `security.service_policy_semantics` | detects broad permits, conflicting or shadowed rules, and effective policy-order changes; referenced policies retain a compilation review floor |
 | P14 | Wireless / RF | `wireless.rf_coverage_regression` | assigned RF-template band, width, power, and minimum-rate changes require review when AP placement or client radio evidence is incomplete |
-| P15 | Wireless / WLAN | `wireless.wlan.change_usage` | client-affecting WLAN updates are `REVIEW` after sessions in the preceding seven days or incomplete telemetry, otherwise `SAFE`; performance-policy and operationally inert controls bypass this gate |
+| P15 | Wireless / WLAN | `wireless.wlan.change_usage` | client-affecting WLAN updates (site and org) are `REVIEW` after sessions in the preceding seven days, while clients are connected, or when session history or current associations are incomplete, unidentified, or shared by a same-SSID WLAN; `SAFE` only on complete clean evidence; performance-policy and operationally inert controls bypass this gate |
 | P16 | Wireless / WLAN | `wireless.wlan.band_change` | exact band and dedicated/selectable scope removals use per-band seven-day sessions; 6-GHz removal is `SAFE`, while enabling 6 GHz from a non-WPA3/OWE posture requires compatibility review |
 
 Org WLAN changes do not add another check ID: they fan out to every site where
@@ -339,7 +339,8 @@ Additional configuration-policy coverage:
   WLAN row is present;
 - WLAN band steering, application/QoS policy, and client/WLAN bandwidth-limit
   changes are `SAFE`; other client-affecting WLAN updates require `REVIEW` when
-  the WLAN had sessions in the preceding seven days (or usage is unverifiable);
+  the WLAN had sessions in the preceding seven days, has clients connected right
+  now, or either kind of usage evidence is unavailable or unattributable;
 - radio-band removals use exact per-band seven-day sessions: removing 2.4 GHz is
   usage-gated, removing 5 GHz is usage-gated when 2.4 GHz will not remain, and
   removing 6 GHz is `SAFE`; dedicated/selectable variants are distinct scopes;
