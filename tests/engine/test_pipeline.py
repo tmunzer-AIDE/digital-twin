@@ -908,7 +908,10 @@ def test_enabling_6_band_on_existing_wpa3_wlan_is_safe():
 
 
 def test_site_wlan_delete_with_site_scope_survivor_is_safe_and_carries_config_diff():
-    raw = _raw_wlan(_wlan("w1"), _wlan("w2"), clients=(_wireless_client(),))
+    # The client's wlan_id proves it is on the survivor; an SSID-only client
+    # would be REVIEW (tests/engine/test_wlan_connected_clients.py).
+    client = {**_wireless_client(), "wlan_id": "w2"}
+    raw = _raw_wlan(_wlan("w1"), _wlan("w2"), clients=(client,))
     v = simulate(
         _plan([_delete_op("wlan", "w1")]),
         provider=FakeProvider(raw=raw),

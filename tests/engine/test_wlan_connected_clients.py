@@ -192,12 +192,36 @@ def test_disabled_same_ssid_wlan_does_not_make_the_client_ambiguous():
     assert v.decision is Decision.UNSAFE, v.decision_reasons
 
 
-def test_delete_leaves_shared_ssid_clients_to_the_coverage_check_visibly():
-    op = {"action": "delete", "order": 0, "object_type": "wlan", "object_id": "w1",
-          "payload": {}}
-    v = simulate(_plan([op]), provider=FakeProvider(_shared_ssid_raw(_connected(ssid="corp"))))
+_DELETE_W1 = {"action": "delete", "order": 0, "object_type": "wlan", "object_id": "w1",
+              "payload": {}}
+_SURVIVOR_AUTHS = [
+    pytest.param({"type": "eap"}, id="eap-survivor"),
+    pytest.param({"type": "psk", "psk": "different"}, id="other-psk-survivor"),
+    pytest.param(dict(PSK), id="identical-survivor"),
+]
+
+
+def _survivor_raw(survivor_auth: dict[str, Any], *clients: dict[str, Any]):
+    deleted = _wlan("w1") | {"auth": dict(PSK)}
+    survivor = _wlan("w2") | {"auth": dict(survivor_auth)}
+    return _raw_wlan(deleted, survivor, clients=clients)
+
+
+@pytest.mark.parametrize("survivor_auth", _SURVIVOR_AUTHS)
+def test_delete_with_shared_ssid_client_is_review_whatever_the_survivor(survivor_auth):
+    # A surviving SSID proves neither admission nor forwarding for the client.
+    raw = _survivor_raw(survivor_auth, _connected(ssid="corp"))
+    v = simulate(_plan([_DELETE_W1]), provider=FakeProvider(raw))
+    assert v.decision is Decision.REVIEW, v.decision_reasons
     gate = next(r for r in v.check_results if r.check_id == "wireless.wlan.recent_usage")
-    assert gate.status.value == "pass"
+    assert gate.findings[0].code == "wireless.wlan.recent_usage.unverified"
+    assert gate.findings[0].evidence["shared_ssid_clients"] == 1
+    assert "no connected client" not in gate.reasoning
+
+
+def test_delete_with_client_proven_on_the_survivor_is_safe():
+    raw = _survivor_raw({"type": "eap"}, _connected(ssid="corp", wlan_id="w2"))
+    v = simulate(_plan([_DELETE_W1]), provider=FakeProvider(raw))
     assert v.decision is Decision.SAFE, v.decision_reasons
 
 
@@ -207,3 +231,27 @@ def test_delete_with_failed_client_telemetry_is_review():
     v = simulate(_plan([op]), provider=FakeProvider(_site_raw(wireless="failed")))
     assert v.decision is Decision.REVIEW, v.decision_reasons
     assert "wireless.wlan.recent_usage.unverified" in _codes(v)
+
+
+def _org_survivor_provider(survivor_auth: dict[str, Any], client: dict[str, Any]):
+    deleted = {**org._wlan_row("w1"), "auth": dict(PSK)}
+    survivor = {**org._wlan_row("w2"), "auth": dict(survivor_auth)}
+    site = org._wlan_site("s1", wlans=(deleted, survivor), clients=(client,))
+    return org.FakeProvider(
+        {"s1": site}, {}, org_wlans={"w1": deleted}, wlan_membership={"w1": {"s1": deleted}}
+    )
+
+
+@pytest.mark.parametrize("survivor_auth", _SURVIVOR_AUTHS)
+def test_org_delete_with_shared_ssid_client_is_review_whatever_the_survivor(survivor_auth):
+    provider = _org_survivor_provider(survivor_auth, org._client())
+    v = simulate_org_plan(org._plan(org._del("wlan", "w1")), provider=provider)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert "wireless.wlan.recent_usage.unverified" in _org_codes(v)
+
+
+def test_org_delete_with_client_proven_on_the_survivor_is_safe():
+    client = {**org._client(), "wlan_id": "w2"}
+    provider = _org_survivor_provider({"type": "eap"}, client)
+    v = simulate_org_plan(org._plan(org._del("wlan", "w1")), provider=provider)
+    assert v.decision is Decision.SAFE, v.decision_reasons

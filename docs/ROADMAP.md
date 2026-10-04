@@ -185,7 +185,10 @@ state on its own. Cheap: the data is already fetched and in the IR.
   reduction reports active wireless clients on the affected SSID as UNSAFE when
   no same-SSID survivor provably covers their AP; missing/unknown client SSID
   telemetry floors to REVIEW, and provable survivors/zero clients reach SAFE.
-  [done 2026-06-28]
+  [done 2026-06-28] A survivor proves SSID coverage only, not admission or
+  forwarding: the `wireless.wlan.recent_usage` gate keeps an SSID-only client on
+  a shared SSID at REVIEW; SAFE needs the client's `wlan_id` on the survivor.
+  [2026-10-04]
 - ✅ **Org WLAN coverage-loss fan-out** (SP2) —
   no-site `wlan` update/delete plans resolve the org WLAN snapshot, derive the
   affected site set from each site's effective WLAN rows, then reuse the SP1

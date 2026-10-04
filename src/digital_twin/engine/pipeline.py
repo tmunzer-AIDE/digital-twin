@@ -121,7 +121,8 @@ class WlanAssociations:
     ``unidentified`` clients (no WLAN id, no comparable SSID) and telemetry
     ``gaps`` are uncertainty, never evidence that nobody uses the WLAN.
     ``shared_ssid`` clients carry only an SSID that another enabled WLAN at the
-    same site also serves, so they may or may not be on this WLAN.
+    same site also serves, so they may or may not be on this WLAN; a surviving
+    SSID proves neither admission nor forwarding, so they are uncertainty too.
     """
 
     connected: tuple[Mapping[str, Any], ...] = ()
@@ -137,14 +138,15 @@ class WlanAssociations:
             tuple(c for c in self.shared_ssid if _on_band(c, band)),
         )
 
-    def unverified_reasons(self, *, shared_ssid_is_uncertain: bool) -> tuple[str, ...]:
+    @property
+    def unverified_reasons(self) -> tuple[str, ...]:
         reasons = list(self.gaps)
         if self.unidentified:
             reasons.append(
                 f"{len(self.unidentified)} connected client(s) could not be associated "
                 "with a WLAN"
             )
-        if shared_ssid_is_uncertain and self.shared_ssid:
+        if self.shared_ssid:
             reasons.append(
                 f"{len(self.shared_ssid)} connected client(s) use an SSID that another "
                 "WLAN at the same site also serves"
@@ -277,15 +279,12 @@ def _assess_wlan_usage(
     associations: WlanAssociations,
     *,
     band: str | None = None,
-    shared_ssid_is_uncertain: bool = True,
 ) -> _UsageAssessment:
     """Combine session history with current associations. Only complete, clean
     evidence on BOTH sides can establish that nobody uses the WLAN."""
     qualifier = f" on band {band}" if band is not None else ""
     observed = associations.on_band(band)
-    unverified = list(
-        observed.unverified_reasons(shared_ssid_is_uncertain=shared_ssid_is_uncertain)
-    )
+    unverified = list(observed.unverified_reasons)
     window_days = 7
     evidence: dict[str, Any] = {
         "window_days": window_days,
@@ -321,7 +320,7 @@ def _assess_wlan_usage(
     else:
         reason = (
             f"WLAN had no client sessions{qualifier} during the last {window_days} days "
-            "and no clients are connected"
+            "and no connected client can be on it"
         )
     return _UsageAssessment(
         used=bool(observed.connected) or bool(active_site_ids),
@@ -382,12 +381,8 @@ def _wlan_delete_usage_result(
     *,
     associations: WlanAssociations,
 ) -> CheckResult:
-    # Shared-SSID clients may stay on a surviving WLAN with the same SSID;
-    # wireless.wlan.client_impact proves or refutes that coverage per AP.
     assessment = _assess_wlan_usage(
-        _resolve_wlan_usage(provider, scope, wlan_id),
-        associations,
-        shared_ssid_is_uncertain=False,
+        _resolve_wlan_usage(provider, scope, wlan_id), associations
     )
     return _usage_gate_result(
         "wireless.wlan.recent_usage",

@@ -594,10 +594,12 @@ def test_org_wlan_noop_update_equal_to_snapshot_is_safe():
     assert not _has_wlan_coverage_loss(ov.per_site["s1"])
 
 
-def test_org_wlan_delete_with_survivor_same_ssid_is_safe():
+def test_org_wlan_delete_with_client_proven_on_survivor_same_ssid_is_safe():
+    # The client's wlan_id proves it is on the survivor; an SSID-only client
+    # would be REVIEW (tests/engine/test_wlan_connected_clients.py).
     w1 = _wlan_row("w1")
     w2 = _wlan_row("w2")
-    site = _wlan_site("s1", wlans=(w1, w2), clients=(_client(),))
+    site = _wlan_site("s1", wlans=(w1, w2), clients=({**_client(), "wlan_id": "w2"},))
     ov = simulate_org_plan(
         _plan(_del("wlan", "w1")),
         provider=_org_wlan_provider(site_row=w1, site=site),
