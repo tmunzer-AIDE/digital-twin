@@ -16,6 +16,8 @@ from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
 
 from .builders import (
+    CAPTURED_CLIENT_PORT,
+    CAPTURED_CLIENT_SWITCH,
     DP_GW_MAC,
     EDGE,
     EDGE_ACCESS_PORT,
@@ -114,8 +116,8 @@ def test_gs2_redundant_vlan_removal_is_safe(tmp_path):
 
 
 def _with_unplaceable_captured_client(doc):
-    """Make the captured client telemetry genuinely partial: one row (live search
-    shape) whose current attachment is a switch the site does not have."""
+    """Add one captured row (live search shape) seen on a switch the site does
+    not have: an "unknown port attachment" gap on top of the recording's own."""
     doc["wired_clients"] = [*doc["wired_clients"], {
         "mac": "0000aa0000ff", "device_mac": ["ffffffffffff"], "port_id": ["ge-0/0/1"],
         "vlan": [1], "last_device_mac": "ffffffffffff", "last_port_id": "ge-0/0/1",
@@ -124,10 +126,11 @@ def _with_unplaceable_captured_client(doc):
     return doc
 
 
-def test_redundant_vlan_removal_with_complete_captured_clients_is_safe(tmp_path):
-    # the recording's 3809 wired-client rows use the live search shape (history
-    # lists + last_device_mac/last_port_id/last_vlan); all of them now attach, so
-    # client telemetry is complete and the redundant removal stays SAFE
+def test_captured_macs_seen_only_on_inter_switch_links_keep_client_telemetry_partial(tmp_path):
+    # the recording's wired-client search rows (live shape: per-sighting
+    # device_mac_port + newest-sighting last_*) include MACs learned only on
+    # inter-switch trunks: their edge port is unobserved, so client telemetry is
+    # partial and even the redundant removal cannot be SAFE
     doc = augmented_doc(
         parallel_carries_gs=True, with_wireless_client=False,
         retain_captured_client_history=True,
@@ -136,9 +139,25 @@ def test_redundant_vlan_removal_with_complete_captured_clients_is_safe(tmp_path)
         doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
     )
     verdict = _simulate(doc, plan, tmp_path)
-    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
     impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
-    assert impact.coverage.state is CoverageState.COMPLETE, impact.coverage.notes
+    assert impact.coverage.state is CoverageState.PARTIAL
+    assert any("inter-switch" in note for note in impact.coverage.notes)
+
+
+def test_disabling_a_captured_clients_edge_port_disconnects_that_client(tmp_path):
+    # the raw recording, unaugmented: the client sits on its edge port, not on the
+    # inter-switch trunk that happened to see it last (which made this SAFE)
+    doc = fixture_doc()
+    doc["setting"]["port_usages"]["gs_disabled"] = {"mode": "access", "disabled": True}
+    plan = plan_for(doc, [device_op(
+        doc, CAPTURED_CLIENT_SWITCH, **{CAPTURED_CLIENT_PORT.replace("/", "__"): "gs_disabled"},
+    )])
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is not Decision.SAFE
+    edge_port = f"{CAPTURED_CLIENT_SWITCH}:{CAPTURED_CLIENT_PORT}"
+    (cut,) = (f for f in verdict.findings if f.code == "wired.port.admin_disable.impact")
+    assert cut.affected_entities == (edge_port,) and "1 active wired client" in cut.message
 
 
 def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
