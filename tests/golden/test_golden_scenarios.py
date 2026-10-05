@@ -113,11 +113,39 @@ def test_gs2_redundant_vlan_removal_is_safe(tmp_path):
     assert v.decision is Decision.SAFE, v.decision_reasons
 
 
-def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
+def _with_unplaceable_captured_client(doc):
+    """Make the captured client telemetry genuinely partial: one row (live search
+    shape) whose current attachment is a switch the site does not have."""
+    doc["wired_clients"] = [*doc["wired_clients"], {
+        "mac": "0000aa0000ff", "device_mac": ["ffffffffffff"], "port_id": ["ge-0/0/1"],
+        "vlan": [1], "last_device_mac": "ffffffffffff", "last_port_id": "ge-0/0/1",
+        "last_vlan": 1,
+    }]
+    return doc
+
+
+def test_redundant_vlan_removal_with_complete_captured_clients_is_safe(tmp_path):
+    # the recording's 3809 wired-client rows use the live search shape (history
+    # lists + last_device_mac/last_port_id/last_vlan); all of them now attach, so
+    # client telemetry is complete and the redundant removal stays SAFE
     doc = augmented_doc(
         parallel_carries_gs=True, with_wireless_client=False,
         retain_captured_client_history=True,
     )
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
+    )
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+    impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
+    assert impact.coverage.state is CoverageState.COMPLETE, impact.coverage.notes
+
+
+def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
+    doc = _with_unplaceable_captured_client(augmented_doc(
+        parallel_carries_gs=True, with_wireless_client=False,
+        retain_captured_client_history=True,
+    ))
     plan = plan_for(
         doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
     )
@@ -129,10 +157,10 @@ def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp
 
 
 def test_known_breakage_survives_partial_captured_client_telemetry(tmp_path):
-    doc = augmented_doc(
+    doc = _with_unplaceable_captured_client(augmented_doc(
         parallel_carries_gs=False, with_wireless_client=False,
         retain_captured_client_history=True,
-    )
+    ))
     plan = plan_for(
         doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
     )
