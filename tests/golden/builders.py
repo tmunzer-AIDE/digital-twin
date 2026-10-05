@@ -35,6 +35,11 @@ HUB_PAR_PORT = "mge-0/0/98"
 EDGE_ACCESS_PORT = "ge-0/0/97"  # augmented member access port on EDGE
 WIRED_CLIENT_MAC = "ddccbbaa0001"
 WIRELESS_CLIENT_MAC = "ddccbbaa0002"
+# recorded wired client 004263c999d3: its only edge sighting is CAPTURED_CLIENT_SWITCH:
+# CAPTURED_CLIENT_PORT; its newest sighting (last_*) is the inter-switch trunk
+# 36d1f43e2ebe:ge-0/0/47
+CAPTURED_CLIENT_SWITCH = "889c85171f8d"
+CAPTURED_CLIENT_PORT = "ge-0/0/26"
 
 
 def fixture_doc() -> dict[str, Any]:

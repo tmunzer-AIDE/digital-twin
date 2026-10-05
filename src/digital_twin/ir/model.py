@@ -277,6 +277,17 @@ class IRBuilder:
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]
 
+    def get_device(self, did: str) -> Device:
+        return self._devices[did]
+
+    def link_peers(self, pid: str) -> tuple[str, ...]:
+        """Far-end port ids of the links added so far that end on `pid`."""
+        return tuple(
+            link.b_port if link.a_port == pid else link.a_port
+            for link in self._links
+            if pid in (link.a_port, link.b_port)
+        )
+
     def replace_port(self, port: Port) -> IRBuilder:
         """Replace an already-added port (same id) — used by ingesters to enrich
         config-built ports with observed live facts (e.g. STP state)."""
