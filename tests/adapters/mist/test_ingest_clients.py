@@ -82,3 +82,64 @@ def test_zero_clients_with_successful_fetches_still_earns_capability():
 
 def test_produces_capability():
     assert IRCapability.CLIENTS_ACTIVE in ClientsIngester().produces()
+
+
+# Mist's wired-client SEARCH (searchSiteWiredClients / searchOrgWiredClients)
+# returns device_mac / port_id / vlan as the LIST of every switch and port the MAC
+# was learned on (uplinks included); last_device_mac / last_port_id / last_vlan
+# carry the current attachment. Shape taken from a live response.
+def _search_row(**over):
+    row = {
+        "mac": "dca6321e2f86",
+        "device_mac": ["aa0000000001", "bb0000000009"],
+        "port_id": ["ge-0/0/1", "xe-0/1/3"],
+        "vlan": [10, 30],
+        "last_device_mac": "aa0000000001",
+        "last_port_id": "ge-0/0/0",
+        "last_vlan": 10,
+    }
+    row.update(over)
+    return {k: v for k, v in row.items() if v is not None}
+
+
+def _ingest_caps(wired):
+    ctx = IngestContext(
+        raw=raw_site(wired_clients=tuple(wired)),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": {**SITE_EFFECTIVE, **SWITCH_A}},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    caps = ClientsIngester().ingest(ctx)
+    return ctx.builder.build(), caps
+
+
+def test_wired_search_row_attaches_to_its_last_port_and_earns_the_capability():
+    ir, caps = _ingest_caps([_search_row()])
+    (c,) = ir.clients
+    assert c.attach_kind is AttachKind.PORT and c.attach_id == "aa0000000001:ge-0/0/0"
+    assert c.vlan == 10
+    assert IRCapability.CLIENTS_ACTIVE in caps
+
+
+def test_wired_search_row_with_one_entry_lists_is_unambiguous():
+    row = _search_row(device_mac=["aa0000000001"], port_id=["ge-0/0/1"], vlan=[30],
+                      last_device_mac=None, last_port_id=None, last_vlan=None)
+    ir, caps = _ingest_caps([row])
+    (c,) = ir.clients
+    assert c.attach_id == "aa0000000001:ge-0/0/1" and c.vlan == 30
+    assert IRCapability.CLIENTS_ACTIVE in caps
+
+
+def test_wired_search_history_without_a_current_attachment_stays_a_gap():
+    # several switches/ports and no last_*: which one is current is unknown
+    row = _search_row(last_device_mac=None, last_port_id=None, last_vlan=None)
+    ir, caps = _ingest_caps([row])
+    assert ir.clients == ()
+    assert IRCapability.CLIENTS_ACTIVE not in caps
+
+
+def test_wired_search_row_whose_last_port_is_unknown_stays_a_gap():
+    ir, caps = _ingest_caps([_search_row(last_device_mac="ffffffffffff")])
+    assert ir.clients == ()
+    assert IRCapability.CLIENTS_ACTIVE not in caps

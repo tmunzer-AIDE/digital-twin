@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from digital_twin.ir import (
@@ -32,6 +33,26 @@ def _ssid(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _single(value: Any) -> Any:
+    """One value from a field Mist's wired-client SEARCH returns as the full
+    history list: a one-element list is unambiguous, a longer one is not (None)."""
+    if isinstance(value, list):
+        return value[0] if len(value) == 1 else None
+    return value
+
+
+def _wired_attachment(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """(device_mac, port_id, vlan) of the client's CURRENT attachment. The wired-
+    client search returns device_mac / port_id / vlan as every switch and port the
+    MAC was learned on (uplinks included) and the current one as last_device_mac /
+    last_port_id / last_vlan. Rows without last_* fall back to the plain fields
+    when those are single values; an ambiguous history yields no attachment."""
+    if row.get("last_device_mac") and row.get("last_port_id"):
+        vlan = row["last_vlan"] if "last_vlan" in row else _single(row.get("vlan"))
+        return row["last_device_mac"], row["last_port_id"], vlan
+    return _single(row.get("device_mac")), _single(row.get("port_id")), _single(row.get("vlan"))
 
 
 class ClientsIngester:
@@ -72,16 +93,16 @@ class ClientsIngester:
                 )
             )
         for index, w in enumerate(ctx.raw.wired_clients):
-            if not w.get("mac") or not w.get("device_mac") or not w.get("port_id"):
+            attached_mac, attached_port, vlan = _wired_attachment(w)
+            if not w.get("mac") or not attached_mac or not attached_port:
                 gap("wired client telemetry: missing mac, device_mac or port_id", index)
                 continue
-            pid = port_id(device_id(str(w["device_mac"])), str(w["port_id"]))
+            pid = port_id(device_id(str(attached_mac)), str(attached_port))
             if not ctx.builder.has_port(pid):
                 gap("wired client telemetry: unknown port attachment", index)
                 continue
             if ctx.builder.has_client(str(w["mac"])):
                 continue
-            vlan = w.get("vlan")
             ctx.builder.add_client(
                 Client(
                     mac=client_id(str(w["mac"])),
