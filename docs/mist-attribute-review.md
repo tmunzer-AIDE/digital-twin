@@ -1,6 +1,6 @@
 # Mist attribute and identification review
 
-Reviewed October 5, 2026 against commit `6840ace` and the pinned Mist **2609.1.0** specification, then reconciled with `main` at `20c1da9`. Changes were simulated offline. No Mist configuration or live organization was modified.
+Reviewed October 5, 2026 against commit `6840ace` and the pinned Mist **2609.1.0** specification, then reconciled with `main` through `7a678f6`. Changes were simulated offline. No Mist configuration or live organization was modified.
 
 The existing engine has useful issue detectors, but an allowlisted attribute does not establish a complete network simulation. This review adds narrow cosmetic permissions and closes reproduced identification/scope gaps. Full-stack completeness remains an implementation requirement, described below and in the [earlier audit](full-stack-twin-audit.md).
 
@@ -91,4 +91,4 @@ uv run --frozen mypy src
 
 CodeRabbit CLI 0.8.2 is installed, but its authentication status reports re-authentication required, so the external review was unavailable. The findings and corrections above come from local source review and offline regressions. Live tests remain unexecuted; the changes do not establish vendor/cloud equivalence or universal safety.
 
-Final offline verification after merging `main` at `20c1da9`: **2,672 tests passed, 2 live tests deselected**; Ruff, strict MyPy (179 source files) and `git diff --check` passed.
+Final offline verification after merging `main` through `7a678f6`: **2,681 tests passed, 2 live tests deselected**; Ruff, strict MyPy (179 source files) and `git diff --check` passed.
