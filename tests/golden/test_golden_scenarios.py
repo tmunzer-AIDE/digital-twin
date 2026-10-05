@@ -2106,3 +2106,36 @@ def test_gs_disabling_a_two_sided_ap_uplink_is_unsafe(tmp_path):
     disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
     assert disable.severity is Severity.ERROR
     assert disable.subject is not None and disable.subject.id == ap_mac
+
+
+def test_gs_virtual_chassis_chassis_mac_is_the_vc_not_a_wired_client(tmp_path):
+    # VC 889c85171f8d advertises its chassis MAC 405d0ff2c0f4 (a VC member MAC)
+    # over LLDP, so 036020c81198's uplink row names an UNMANAGED neighbor_mac
+    # beside the VC's own system name, and the VC's row claims that port back.
+    # That neighbour used to become a phantom edge-device client on the
+    # inter-switch uplink, and disabling the uplink reported "1 active wired
+    # client(s) disconnect" instead of an inter-switch link going down.
+    doc = fixture_doc()
+    vc, chassis, sw, sw_port, vc_port = (
+        "889c85171f8d", "405d0ff2c0f4", "036020c81198", "ge-0/0/11", "ge-1/0/43",
+    )
+    vc_dev = next(d for d in doc["devices"] if d["mac"] == vc)
+    # fixture preconditions: the chassis MAC is the VC's own, and both ends agree
+    assert chassis in {m["mac"] for m in vc_dev["virtual_chassis"]["members"]}
+    assert not any(d["mac"] == chassis for d in doc["devices"])
+    assert any(
+        r["mac"] == sw and r["port_id"] == sw_port and r.get("neighbor_mac") == chassis
+        and r.get("neighbor_system_name") == vc_dev["name"]
+        and r.get("neighbor_port_desc") == vc_port
+        for r in doc["port_stats"]
+    )
+    assert any(
+        r["mac"] == vc and r["port_id"] == vc_port and r.get("neighbor_mac") == sw
+        and r.get("neighbor_port_desc") == sw_port
+        for r in doc["port_stats"]
+    )
+    plan = plan_for(doc, [device_op(doc, sw, **{sw_port.replace("/", "__"): "disabled"})])
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
+    assert "inter-switch / gateway link goes down" in disable.message, disable.message
