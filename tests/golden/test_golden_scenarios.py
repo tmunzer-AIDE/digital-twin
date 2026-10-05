@@ -2159,3 +2159,44 @@ def test_gs_virtual_chassis_chassis_mac_is_the_vc_not_a_wired_client(tmp_path):
     assert v.decision is Decision.REVIEW, v.decision_reasons
     disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
     assert "inter-switch / gateway link goes down" in disable.message, disable.message
+
+
+def test_gs_virtual_chassis_cabled_to_itself_is_a_self_loop(tmp_path):
+    # A VC cabled to itself sees its CHASSIS MAC over LLDP, not its Mist device
+    # MAC: VC 889c85171f8d declares 405d0ff2c0f4 on every port-stat row, in
+    # device_stats and in its member list. Two of its ports wired together
+    # therefore report neighbor_mac 405d0ff2c0f4, which the self-loop rule (own
+    # MAC only) missed: the pair became an edge-device client instead, and
+    # disabling STP on it went through without the self-loop guard.
+    doc = fixture_doc()
+    vc, chassis, port_a, port_b = "889c85171f8d", "405d0ff2c0f4", "ge-0/0/12", "ge-1/0/12"
+    vc_dev = next(d for d in doc["devices"] if d["mac"] == vc)
+    vc_stat = next(s for s in doc["device_stats"] if s["mac"] == vc)
+    # fixture preconditions: the chassis MAC is the VC's own and nobody else's
+    assert vc_stat["chassis_mac"] == chassis
+    assert chassis in {m["mac"] for m in vc_dev["virtual_chassis"]["members"]}
+    assert not any(d["mac"] == chassis for d in doc["devices"])
+    assert not any(
+        s.get("chassis_mac") == chassis for s in doc["device_stats"] if s["mac"] != vc
+    )
+    rows = {r["port_id"]: r for r in doc["port_stats"] if r["mac"] == vc}
+    for here, there, state, role in (
+        (port_a, port_b, "forwarding", "designated"),
+        (port_b, port_a, "blocking", "backup"),
+    ):
+        assert rows[here]["chassis_mac"] == chassis and not rows[here]["up"]  # spare ports
+        rows[here].update(
+            up=True, neighbor_mac=chassis, neighbor_system_name=vc_stat["hostname"],
+            neighbor_port_desc=there, stp_state=state, stp_role=role,
+        )
+    usages = doc["setting"]["port_usages"]
+    usages["gs_loop"] = {"mode": "access", "port_network": "vlan10"}
+    usages["gs_loop_nostp"] = {**usages["gs_loop"], "stp_disable": True}
+    vc_dev["port_config"].update({port_a: {"usage": "gs_loop"}, port_b: {"usage": "gs_loop"}})
+    plan = plan_for(doc, [device_op(doc, vc, **{port_a.replace("/", "__"): "gs_loop_nostp"})])
+    v = _simulate(doc, plan, tmp_path)
+    loop = [f for f in v.findings if f.code == "wired.l2.loop.self_loop"]
+    assert loop, (v.decision, v.decision_reasons, sorted({f.code for f in v.findings}))
+    assert loop[0].severity is Severity.ERROR, loop[0]
+    assert set(loop[0].evidence["ports"]) == {f"{vc}:{port_a}", f"{vc}:{port_b}"}
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
