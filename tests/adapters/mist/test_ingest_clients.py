@@ -191,6 +191,34 @@ def test_wired_duplicates_cannot_erase_a_wireless_association(wired):
     (client,) = ir.clients
     assert client.kind is ClientKind.WIRELESS
     assert client.attach_id == AP_1["mac"] and client.ssid == "corp" and client.vlan == 30
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert ir.client_telemetry_gaps
+
+
+def test_wireless_client_learned_on_its_ap_uplink_remains_complete():
+    ir = _ingest_caps(wired=[_search_row()], wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": AP_1["mac"], "ssid": "corp", "vlan_id": 30,
+    }], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": AP_1["mac"],
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRELESS
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+    assert not ir.client_telemetry_gaps
+
+
+def test_direct_lldp_sighting_cannot_silently_lose_to_a_wireless_association():
+    ir = _ingest_caps(wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": AP_1["mac"], "ssid": "corp",
+    }], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": "112233445566",
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRELESS
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert any(
+        "conflicting wired and wireless attachment" in gap for gap in ir.client_telemetry_gaps
+    )
 
 
 def test_unattachable_wireless_row_cannot_erase_a_wired_attachment():

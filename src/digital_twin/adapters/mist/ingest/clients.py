@@ -7,6 +7,8 @@
 - Wired search includes wireless and LLDP neighbor addresses learned on transit
   ports. Prefer direct AP/edge observations; transit learning and ambiguous
   search history cannot contradict those attachments or prove a direct client.
+- A direct wired attachment competing with an AP association creates a coverage
+  gap. Retain the wireless proof, but do not claim a complete client population.
 - clients.active is EARNED only if BOTH client fetches succeeded and every
   observation is consistent and attachable: an empty site
   with successful fetches legitimately knows "no clients"; a failed fetch must
@@ -92,6 +94,27 @@ class ClientsIngester:
             if key in disputed:
                 gap(f"{domain} client telemetry: conflicting duplicate identity", index)
                 return
+            other_kind = (
+                ClientKind.WIRELESS if client.kind is ClientKind.WIRED else ClientKind.WIRED
+            )
+            other = candidates.get((other_kind, client.mac))
+            if other is None and ctx.builder.has_client(client.mac):
+                previous = ctx.builder.get_client(client.mac)
+                if previous.kind is other_kind:
+                    other = previous
+            if other is not None:
+                wired = client if client.kind is ClientKind.WIRED else other
+                if (
+                    wired.attach_id not in linked_ports
+                    and ctx.builder.get_port(wired.attach_id).is_uplink is not True
+                ):
+                    # A normal access-port sighting is a competing attachment,
+                    # not incidental learning behind an AP. Preserve wireless
+                    # outage evidence while revoking complete client coverage.
+                    gap(
+                        f"{domain} client telemetry: conflicting wired and wireless attachment",
+                        index,
+                    )
             existing = candidates.get(key)
             if existing is None and ctx.builder.has_client(client.mac):
                 previous = ctx.builder.get_client(client.mac)

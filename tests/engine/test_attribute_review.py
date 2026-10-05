@@ -252,6 +252,39 @@ def test_identical_client_observations_remain_complete():
     assert len(outcome.ir.clients) == 1
 
 
+@pytest.mark.parametrize("change", ["port_shutdown", "wlan_disable"])
+@pytest.mark.parametrize("search_shape", ["scalar", "latest"])
+def test_direct_wired_wireless_overlap_caps_port_safety_but_keeps_wlan_proof(change, search_shape):
+    wireless = {**_wireless_client(), "vlan_id": 30}
+    wired = {"mac": "112233445566", "device_mac": "aa0000000001",
+             "port_id": "ge-0/0/0", "vlan": 10}
+    if search_shape == "latest":
+        wired = {"mac": wired["mac"], "device_mac": [wired["device_mac"]],
+                 "port_id": [wired["port_id"]], "vlan": [wired["vlan"]],
+                 "last_device_mac": wired["device_mac"], "last_port_id": wired["port_id"],
+                 "last_vlan": wired["vlan"]}
+    raw = _raw_wlan(_wlan(), clients=(wireless,))
+    raw = replace(raw, wired_clients=(wired,), meta=replace(raw.meta, fetched=(
+        "devices", "port_stats", "device_stats", "wireless_clients", "wired_clients", "wlans",
+    )))
+    op = (
+        _op("device", "dev-a", {"port_config_overwrite": {"ge-0/0/0": {"disabled": True}}})
+        if change == "port_shutdown" else _op("wlan", "w1", {"enabled": False})
+    )
+    verdict = simulate(_plan([op]), provider=FakeProvider(raw))
+    assert any(
+        "conflicting wired and wireless attachment" in note
+        for result in verdict.check_results for note in result.coverage.notes
+    )
+    if change == "port_shutdown":
+        assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    else:
+        assert verdict.decision is Decision.UNSAFE, verdict.decision_reasons
+        proof = next(f for f in verdict.findings
+                     if f.code == "wireless.wlan.client_impact.coverage_lost")
+        assert proof.affected_entities == ("112233445566",)
+
+
 def test_a_conflicting_second_port_observation_cannot_certify_port_shutdown():
     raw = _metadata_raw()
     rows = tuple({"mac": "112233445566", "device_mac": raw.devices[0]["mac"],
