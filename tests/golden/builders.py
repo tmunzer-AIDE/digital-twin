@@ -6,8 +6,9 @@ that need specific preconditions use a documented AUGMENTED variant of the
 fixture: an isolated vlan-999 world (network + usages + IRB + a parallel link
 on synthetic spare ports + one wired and one wireless client) layered onto the
 real topology. These variants stage a known client population: the captured
-wired search rows aggregate historical device/port lists and cannot certify
-current attachments. Reliability scenarios explicitly retain those rows.
+wired search rows include historical lists and latest learning on transit ports;
+these cannot certify a complete direct client population. Reliability scenarios
+explicitly retain those rows.
 The pipeline, gates and checks run UNMODIFIED on it — only the baseline data is
 staged. GS5/GS8 run on the untouched fixture.
 """

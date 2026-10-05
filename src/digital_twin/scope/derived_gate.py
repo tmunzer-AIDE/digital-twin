@@ -19,8 +19,10 @@ from typing import Any
 
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
+from digital_twin.scope.atomic_lists import atomic_list_issues
+from digital_twin.scope.dependency_gate import dependency_paths
 from digital_twin.scope.dhcp_screen import dhcp_row_rejection, is_empty_scope_map
-from digital_twin.scope.paths import allowed, changed_leaf_paths
+from digital_twin.scope.paths import allowed_tokens, changed_leaf_paths, leaf_changes
 
 _STAGE = "derived_gate"
 
@@ -46,12 +48,14 @@ def check_derived_gaps(
     allowlist: tuple[str, ...] = EFFECTIVE_ALLOWLIST,
 ) -> tuple[DerivedGap, ...]:
     gaps: list[DerivedGap] = []
-    offending = [
-        path
-        for path in changed_effective_paths(baseline, proposed)
-        if not allowed(path, allowlist)
-        and not is_empty_scope_map(path, baseline, proposed)
-    ]
+    changes = leaf_changes(baseline, proposed)
+    offending_tokens = {
+        delta.tokens
+        for delta in changes
+        if not allowed_tokens(delta.tokens, allowlist)
+        and not is_empty_scope_map(delta.tokens, baseline, proposed)
+    }
+    offending = tuple(".".join(tokens) for tokens in sorted(offending_tokens))
     if offending:
         gaps.append(
             DerivedGap(
@@ -66,6 +70,22 @@ def check_derived_gaps(
                 paths=tuple(offending),
             )
         )
+    dependent = set(dependency_paths(baseline, proposed, allowlist=allowlist, changes=changes))
+    for delta in changes:
+        if allowed_tokens(delta.tokens, allowlist):
+            for value in (delta.before, delta.after):
+                dependent.update(atomic_list_issues(delta.tokens, value))
+    dependent -= offending_tokens
+    if dependent:
+        paths = tuple(".".join(path) for path in sorted(dependent))
+        gaps.append(DerivedGap(
+            rejection=Rejection(stage=_STAGE, reasons=tuple(
+                f"{path}: unsupported dependency in {artifact} config "
+                "(an allowed edit requires semantics beyond the modeled projection)"
+                for path in paths
+            )),
+            paths=paths,
+        ))
     b_dhcp = baseline.get("dhcpd_config") or {}
     p_dhcp = proposed.get("dhcpd_config") or {}
     for name in sorted(set(b_dhcp) | set(p_dhcp)):

@@ -1,22 +1,21 @@
 """The M1 allowlist DATA (spec: 'Supported delta types — the honest-decision boundary').
 
-Default-deny everywhere, LEAF-TIGHTENED (spec wording): only the exact leaves the
-IR actually models are in scope — networks carry 7 OAS leaves but the IR models
-only vlan_id; port_usages carry 42 but the IR consumes only the four VLAN-
-semantics attributes. Allowing a whole subtree would let an unmodeled change
-(networks.*.isolation) simulate as falsely "in scope". Entry syntax is
-scope.paths.matches: '*' = exactly one key segment, '**' = one or more segments
-(only for dict keys that contain literal dots, e.g. BGP neighbor IPs), trailing
-'.*' = whole subtree, bare = exact leaf.
+Default-deny everywhere, LEAF-TIGHTENED: only explicit modeled/checked leaves
+and reviewed cosmetic exceptions enter scope. An admitted operational leaf
+still needs the raw, structural, dependency and behavior checks. Whole-tree
+permission would hide unmodeled behavior such as networks.*.isolation.
+Production authorization uses scope.paths.allowed_tokens: '*' and legacy '**'
+each consume one original JSON key (including literal dots/IPs), trailing '.*'
+explicitly admits a subtree, and bare entries admit an exact leaf.
 """
 
 from __future__ import annotations
 
 SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 
-# Org-level object types simulated by fan-out (NOT single-site). networktemplate
-# carries the SAME modeled config layer as a site_setting, so its raw field gate
-# reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
+# Org-level object types simulated by fan-out (NOT single-site). Networktemplate
+# shares modeled switch/site leaves, adds its display name, and excludes
+# site-only variable annotations. switch_matching stays out of the raw allowlist.
 # wlantemplate is delete-only in SP3; updates are rejected in the org pipeline
 # because Mist's generic Template body is open-ended.
 ORG_OBJECT_TYPES: tuple[str, ...] = (
@@ -164,13 +163,17 @@ _USAGE_ONLY_REVIEWED_ATTRS: tuple[str, ...] = (
 # are not modeled and can affect experience and failure/rollout scenarios.
 _BENIGN_PROFILE_USAGE_ATTRS: tuple[str, ...] = (
     "ui_evpntopo_id",
+    "description",
 )
 _BENIGN_USAGE_LEAVES: tuple[str, ...] = tuple(
     f"port_usages.*.{a}" for a in _BENIGN_PROFILE_USAGE_ATTRS
 )
-# No device inline operational leaves currently qualify as benign. Keep this
-# separate from the modeled device-profile surface for future audited UI fields.
-_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = ()
+# Administrative notes do not alter the port's operational configuration.
+_BENIGN_DEVICE_PORT_LEAVES: tuple[str, ...] = ("local_port_config.*.note",)
+_VARIABLE_ANNOTATION_LEAVES: tuple[str, ...] = (
+    "vars_annotations.*.note", "vars_annotations.*.type",
+)
+_DEVICE_IMAGE_LEAVES: tuple[str, ...] = ("image1_url", "image2_url", "image3_url")
 # Dynamic-profile machinery the runtime-usage resolver consumes
 # (ingest.dynamic_usage): `rules` evaluated against observed LLDP (lists diff
 # atomically, so it is a single leaf) and `reset_default_when` (down-port
@@ -259,8 +262,7 @@ _GATEWAY_PORT_LEAVES: tuple[str, ...] = (
     "port_config.*.disabled",
 )
 
-# Presence-only switch authentication facts. Shared secrets stay inside the
-# atomic auth_servers value and are redacted by the config-diff layer.
+# Gateway interface mode, address and mask consumed by the L3 projection.
 _GATEWAY_L3_LEAVES: tuple[str, ...] = (
     "ip_configs.*.type",
     "ip_configs.*.ip",
@@ -344,9 +346,9 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # port_config_overwrite is honored for port_network + poe_disabled ONLY.
 # `description` is a cosmetic per-port label on every inline port map — it has no
 # modeled forwarding/security effect, so it is in scope (decidable, no findings)
-# rather than gated to UNKNOWN. `critical` is an inert Mist-side alarm label,
-# likewise simulated with no findings. `no_local_overwrite` IS modeled
-# (resolve_effective_ports/_overridable gate whether local_port_config applies),
+# rather than gated to UNKNOWN. `critical` changes port alarm generation and
+# stays denied until those operational effects are evaluated. `no_local_overwrite` IS modeled
+# (resolve_effective_ports/overridable gate whether local_port_config applies),
 # but a lone flip activates or deactivates the member's local entry wholesale —
 # including any local leaf the gates cannot otherwise see. So it is in scope,
 # AND field_gate re-screens the affected member's local leaves on a flip
@@ -354,19 +356,10 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # (The Spec-1 STP knobs use_vstp/stp_p2p/stp_no_root_port are now REVIEWED via
 # PortMisc — they were the motivating pre-Spec-1 unmodeled example, but the
 # ripple remains as the backstop for the still-unmodeled remainder of the
-# OAS local_port_config map, e.g. `note`.)
+# OAS local_port_config map.)
 _PORT_CONFIG_ATTRS: tuple[str, ...] = (
-    "usage",
-    "dynamic_usage",
-    "port_network",
-    "networks",
-    "poe_disabled",
-    "mtu",
-    "speed",
-    "duplex",
-    "disable_autoneg",
-    "description",
-    "critical",
+    "usage", "dynamic_usage", "port_network", "networks", "poe_disabled", "mtu",
+    "speed", "duplex", "disable_autoneg", "description",
     "no_local_overwrite",
     "aggregated", "ae_idx", "ae_disable_lacp", "ae_lacp_passive", "ae_lacp_slow",
 )
@@ -405,6 +398,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_OSPF_LEAVES,
         *_BGP_LEAVES,
         *_STATIC_ROUTE_LEAVES,
+        *_VARIABLE_ANNOTATION_LEAVES,
         *_VRF_LEAVES,
         *_AUTH_BACKEND_LEAVES,
         "port_config.*.aggregated",
@@ -426,6 +420,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_OSPF_LEAVES,
         *_BGP_DEVICE_LEAVES,
         *_STATIC_ROUTE_LEAVES,
+        *_DEVICE_IMAGE_LEAVES,
         *_VRF_LEAVES,
         *_AUTH_BACKEND_LEAVES,
         "name",
@@ -454,24 +449,33 @@ RAW_ALLOWLIST["nacrule"] = (
     *(f"not_matching.{d}" for d in _NAC_MATCH_DIMS),
 )
 
-RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
+RAW_ALLOWLIST["networktemplate"] = tuple(
+    p for p in RAW_ALLOWLIST["site_setting"] if p not in _VARIABLE_ANNOTATION_LEAVES
+) + ("name",)
 # vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate
 # vars edit passes the RAW field gate and the derived gate evaluates its ripple.
-RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*")
+RAW_ALLOWLIST["gatewaytemplate"] = (
+    *_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*", "name", "port_config.*.description",
+)
 # sitetemplate sits in BOTH stacks -> union of switch/site leaves + gateway leaves.
 # Verified against the committed sitetemplate OAS in a later task (narrow only if
 # the schema proves a leaf cannot appear).
-RAW_ALLOWLIST["sitetemplate"] = (*RAW_ALLOWLIST["site_setting"], *_GATEWAY_LEAVES, "vars.*")
+RAW_ALLOWLIST["sitetemplate"] = (
+    *RAW_ALLOWLIST["networktemplate"], *_GATEWAY_LEAVES, "vars.*",
+    "port_config.*.description",
+)
 
-# Server-managed fields excluded from the raw diff: a PUT payload never carries
-# them, and their absence is not a user change. Two groups: identity/audit
-# metadata, and GET-only device STATUS fields (live state, not config intent).
+# Common server identity/audit fields. Device-only exclusions must never hide a
+# real field on another resource (e.g. gatewaytemplate.type selects a platform).
 IGNORED_RAW_FIELDS: tuple[str, ...] = (
     "id",
     "org_id",
     "site_id",
     "created_time",
     "modified_time",
+)
+IGNORED_DEVICE_RAW_FIELDS: tuple[str, ...] = (
+    *IGNORED_RAW_FIELDS,
     "mac",
     "serial",
     "model",
@@ -484,9 +488,12 @@ IGNORED_RAW_FIELDS: tuple[str, ...] = (
     "mist_configured",
     "magic",
     "sku",
-    "image1_url",
     "simplifiedName",
 )
+
+
+def ignored_raw_fields(object_type: str) -> tuple[str, ...]:
+    return IGNORED_DEVICE_RAW_FIELDS if object_type == "device" else IGNORED_RAW_FIELDS
 
 # Effective-config LEAVES the IR consumes (post-compile derived gate): any other
 # effective leaf differing between baseline and proposed -> UNKNOWN. vars is the
@@ -505,6 +512,8 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_OSPF_LEAVES,
     *_BGP_LEAVES,
     *_STATIC_ROUTE_LEAVES,
+    *_VARIABLE_ANNOTATION_LEAVES,
+    "name",  # template display label; device names are separately screened for rule selection
     *_VRF_LEAVES,
     *_AUTH_BACKEND_LEAVES,
     "vars.*",
@@ -514,8 +523,26 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
 # + vars.* (the vars root survives _resolve; the derived gate catches its ripple,
 # so the vars.* leaf itself must be allowed).
 GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
-    *_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*",
+    *_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*", "name", "port_config.*.description",
 )
+
+# Cosmetic facts are never modeled profile overrides. Keep the existing inline
+# descriptions out too, so a profile cannot manufacture a forwarding blind spot
+# for a label-only edit. A device name is deliberately absent: it selects rules.
+COSMETIC_RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    "device": (
+        "notes", *_DEVICE_IMAGE_LEAVES, *_BENIGN_USAGE_LEAVES,
+        *_BENIGN_DEVICE_PORT_LEAVES,
+        "port_config.*.description", "local_port_config.*.description",
+        "port_config_overwrite.*.description",
+    ),
+    "site_setting": (*_BENIGN_USAGE_LEAVES, *_VARIABLE_ANNOTATION_LEAVES),
+    "networktemplate": (*_BENIGN_USAGE_LEAVES, "name"),
+    "gatewaytemplate": ("name", "port_config.*.description"),
+    "sitetemplate": (*_BENIGN_USAGE_LEAVES, "name", "port_config.*.description"),
+    "wlan": (),
+    "nacrule": ("name",),
+}
 
 # Modeled leaves a device-profile (higher precedence, unmodeled layer) can
 # override, per role. EXACTLY the leaves the IR consumes for that role (so the
@@ -523,25 +550,18 @@ GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
 # switch = the modeled switch leaves.
 DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
     "gateway": (*_GATEWAY_LEAVES,),
-    # The FULL modeled switch surface (= EFFECTIVE_ALLOWLIST minus vars.*). The
+    # All modeled operational switch leaves, excluding cosmetic permissions. The
     # device-profile is an UNMODELED layer that wins over the template/site layers,
     # so it could override ANY modeled leaf — under-listing one (stp_config /
     # dhcp_snooping / ospf / other_ip_configs, which device profiles DO carry per the
     # device_switch OAS) is a false-SAFE: a below-profile edit to it on a profiled
     # switch would resolve SAFE/REVIEW instead of UNKNOWN. Fail-safe = list every
     # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
-    "switch": (
-        *_NETWORK_LEAVES,
-        *_USAGE_LEAVES,
-        *_DEVICE_PORT_LEAVES,
-        *_STP_CONFIG_LEAVES,
-        *_IRB_LEAVES,
-        *_DHCP_LEAVES,
-        *_SNOOPING_LEAVES,
-        *_OSPF_LEAVES,
-        *_BGP_LEAVES,
-        *_STATIC_ROUTE_LEAVES,
-        *_VRF_LEAVES,
-        *_AUTH_BACKEND_LEAVES,
+    "switch": tuple(
+        path for path in (
+            *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
+            *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
+            *_AUTH_BACKEND_LEAVES, *_STATIC_ROUTE_LEAVES, *_VRF_LEAVES,
+        ) if path not in COSMETIC_RAW_ALLOWLIST["device"]
     ),
 }

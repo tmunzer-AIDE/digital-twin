@@ -10,6 +10,8 @@ the twin never guesses a runtime profile.
 
 from __future__ import annotations
 
+import pytest
+
 from digital_twin.adapters.mist.ingest.dynamic_usage import (
     RuleOutcome,
     evaluate_rules,
@@ -76,6 +78,12 @@ def test_missing_expression_compares_the_whole_value():
 def test_malformed_rule_is_unevaluable_not_a_crash():
     rules = [{"src": "lldp_system_name", "usage": "ap"}]  # no equals
     assert evaluate_rules(rules, {"lldp_system_name": "x"}).kind == "inconclusive"
+
+
+@pytest.mark.parametrize("value", [123, True, ["123"], {"name": "123"}])
+def test_nonstring_observation_is_not_coerced_into_a_matching_name(value):
+    rule = {"src": "lldp_system_name", "equals": "123", "usage": "ap"}
+    assert evaluate_rules([rule], {"lldp_system_name": value}).kind == "inconclusive"
 
 
 # -- the honesty gate: flag only UNRESOLVED dynamic ports on definition changes --

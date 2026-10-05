@@ -9,14 +9,14 @@ from digital_twin.checks.base import CheckResult, Coverage, CoverageState, Statu
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, ObjectRef, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
-from digital_twin.scope.paths import allowed, changed_leaf_paths
+from digital_twin.scope.paths import allowed_tokens, leaf_changes
 
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 
 
-def _overlaps(path: str, other: str) -> bool:
+def _overlaps(path: tuple[str, ...], other: tuple[str, ...]) -> bool:
     # A scalar/object replacement may diff at a parent rather than its old leaf.
-    return path == other or path.startswith(other + ".") or other.startswith(path + ".")
+    return path[:len(other)] == other or other[:len(path)] == path
 
 
 def effective_override_result(
@@ -28,21 +28,24 @@ def effective_override_result(
     proposed_devices: Mapping[str, Mapping[str, Any]],
 ) -> CheckResult | None:
     lower_changed = [
-        p
-        for p in changed_leaf_paths(baseline_lower, proposed_lower)
-        if allowed(p, EFFECTIVE_ALLOWLIST) and p != "vars" and not p.startswith("vars.")
+        delta
+        for delta in leaf_changes(baseline_lower, proposed_lower)
+        if allowed_tokens(delta.tokens, EFFECTIVE_ALLOWLIST) and delta.tokens[0] != "vars"
     ]
     devices = sorted(baseline_devices.keys() & proposed_devices.keys())
     if not lower_changed or not devices:
         return None
     changes = {
-        did: changed_leaf_paths(baseline_devices[did], proposed_devices[did]) for did in devices
+        did: leaf_changes(baseline_devices[did], proposed_devices[did]) for did in devices
     }
     fully: dict[str, list[str]] = {}
     partially: dict[str, list[str]] = {}
     applied: dict[str, list[str]] = {}
-    for path in lower_changed:
-        masked = [did for did in devices if not any(_overlaps(path, p) for p in changes[did])]
+    for delta in lower_changed:
+        path = delta.path
+        masked = [did for did in devices if not any(
+            _overlaps(delta.tokens, p.tokens) for p in changes[did]
+        )]
         if not masked:
             continue
         if len(masked) == len(devices):

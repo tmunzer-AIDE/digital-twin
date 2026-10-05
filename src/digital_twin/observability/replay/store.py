@@ -116,6 +116,8 @@ def load_fixture_doc(data: dict[str, Any]) -> RawSiteState:
         nac_clients=tuple(data.get("nac_clients", ())),  # .get: pre-enrichment fixtures
         ospf_neighbors=tuple(data.get("ospf_neighbors", ())),  # .get: pre-GS27 fixtures
         bgp_neighbors=tuple(data.get("bgp_neighbors", ())),  # .get: pre-GS28 fixtures
+        observation_devices=(tuple(data["observation_devices"])
+                             if data.get("observation_devices") is not None else None),
         meta=StateMeta(
             acquired_at=datetime.fromisoformat(meta["acquired_at"]).astimezone(UTC),
             host=meta["host"],

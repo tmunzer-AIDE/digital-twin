@@ -30,7 +30,7 @@ class _Provider:
         return OrgNetworksContext(())
 
 
-def test_mcp_driver_fetches_and_reviews_a_rule_flipping_switch_rename(monkeypatch):
+def test_mcp_driver_fetches_and_rejects_an_uncompiled_rule_flip(monkeypatch):
     import digital_twin.drivers.mcp_server as srv
 
     provider = _Provider(_raw())
@@ -38,11 +38,11 @@ def test_mcp_driver_fetches_and_reviews_a_rule_flipping_switch_rename(monkeypatc
 
     out = srv.simulate_change(_rename("sw-1", "core-01"))
 
-    assert out["decision"] == "review"
+    assert out["decision"] == "unknown"
     assert provider.fetches >= 1
 
 
-def test_cli_driver_fetches_and_reviews_a_rule_flipping_switch_rename(
+def test_cli_driver_fetches_and_rejects_an_uncompiled_rule_flip(
     monkeypatch, tmp_path, capsys
 ):
     import digital_twin.drivers.cli as cli
@@ -54,12 +54,12 @@ def test_cli_driver_fetches_and_reviews_a_rule_flipping_switch_rename(
 
     code = cli.main(["--plan", str(plan), "--json", "--replay-fixture", "unused"])
 
-    assert code == cli.EXIT_CODES[cli.Decision.REVIEW]
-    assert json.loads(capsys.readouterr().out)["decision"] == "review"
+    assert code == cli.EXIT_CODES[cli.Decision.UNKNOWN]
+    assert json.loads(capsys.readouterr().out)["decision"] == "unknown"
     assert provider.fetches >= 1
 
 
-def test_composite_site_segment_reviews_a_rule_flipping_switch_rename():
+def test_composite_site_segment_rejects_an_uncompiled_rule_flip():
     plan = _rename("sw-1", "core-01")
     plan["ops"][0]["scope"] = "site"
     plan["ops"].append({
@@ -69,12 +69,12 @@ def test_composite_site_segment_reviews_a_rule_flipping_switch_rename():
 
     out = simulate_composite(plan, provider=_Provider(_raw()))
 
-    assert out["decision"] == "review"
+    assert out["decision"] == "unknown"
     device = next(a for a in out["change_assessments"] if a["object_id"] == "sw-1")
-    assert device["decision"] == "review"
+    assert device["decision"] == "unknown"
     # the original -> composed batch pass reaches the same floor on its own
     batch = next(s for s in out["segments"] if s["route"] == "batch")
-    assert batch["verdict"]["decision"] == "review"
+    assert batch["verdict"]["decision"] == "unknown"
 
 
 def test_composite_org_scoped_device_rename_is_review():

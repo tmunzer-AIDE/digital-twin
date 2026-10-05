@@ -2,11 +2,15 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
+from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.ingest.base import IngestContext
+from digital_twin.adapters.mist.ingest.client_enrichment import ClientEnrichmentIngester
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
-from digital_twin.ir import AttachKind, IRBuilder, IRCapability
+from digital_twin.ir import AttachKind, ClientKind, IRBuilder, IRCapability
 from tests.adapters.mist.fixtures import AP_1, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 
@@ -87,6 +91,198 @@ def test_zero_clients_with_successful_fetches_still_earns_capability():
 
 def test_produces_capability():
     assert IRCapability.CLIENTS_ACTIVE in ClientsIngester().produces()
+
+
+@pytest.mark.parametrize("field,first,second", [("vlan_id", 10, 20), ("ssid", "corp", "guest")])
+def test_missing_initial_identity_does_not_hide_later_conflicting_values(field, first, second):
+    row = {"mac": "112233445566", "ap_mac": "cc0000000001"}
+    ir = _ingest(wireless=[row, {**row, field: first}, {**row, field: second}])
+    assert not ir.clients
+    assert any("conflicting duplicate identity" in reason for reason in ir.client_telemetry_gaps)
+
+
+@pytest.mark.parametrize("port", ["ge-0/0/0", "ge-0/0/1"])
+def test_telemetry_conflict_with_an_lldp_client_withdraws_the_initial_sighting(port):
+    row = {"mac": "112233445566", "device_mac": SWITCH_A["mac"], "port_id": port, "vlan": 10}
+    other_port = "ge-0/0/1" if port == "ge-0/0/0" else "ge-0/0/0"
+    ctx = IngestContext(
+        raw=raw_site(port_stats=({
+            "mac": SWITCH_A["mac"], "port_id": other_port, "neighbor_mac": row["mac"],
+        },), wired_clients=(row,)),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": {**SITE_EFFECTIVE, **SWITCH_A}},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    LldpIngester().ingest(ctx)
+    assert ctx.builder.has_client(row["mac"])
+    assert not ClientsIngester().ingest(ctx)
+    assert not ctx.builder.has_client(row["mac"])
+    assert not ctx.builder.build().clients
+
+
+def _search_row(**over):
+    row = {
+        "mac": "112233445566",
+        "device_mac": [SWITCH_A["mac"], "bb0000000009"],
+        "port_id": ["ge-0/0/1", "xe-0/1/3"],
+        "vlan": [10, 30],
+        "ip": ["192.0.2.2", "192.0.2.3"],
+        "last_device_mac": SWITCH_A["mac"],
+        "last_port_id": "ge-0/0/0",
+        "last_vlan": 10,
+        "last_ip": "192.0.2.3",
+    }
+    row.update(over)
+    if row.get("last_device_mac") is not None or row.get("last_port_id") is not None:
+        # A paired current sighting is authoritative; aggregated history and
+        # last_* alone cannot establish which observed port is an edge port.
+        row["device_mac_port"] = [{
+            "device_mac": row.get("last_device_mac"),
+            "port_id": row.get("last_port_id"), "vlan": row.get("last_vlan"),
+        }]
+    return {k: v for k, v in row.items() if v is not None}
+
+
+def _ingest_caps(*, wired=(), wireless=(), port_stats=()):
+    outcome = MistAdapter().ingest(raw_site(
+        wired_clients=tuple(wired), wireless_clients=tuple(wireless), port_stats=tuple(port_stats),
+    ))
+    assert outcome.ir is not None, outcome.report
+    return outcome.ir
+
+
+def test_wired_search_uses_paired_current_attachment_and_latest_ip():
+    ir = _ingest_caps(wired=[_search_row()])
+    (client,) = ir.clients
+    assert client.attach_id == f"{SWITCH_A['mac']}:ge-0/0/0"
+    assert client.vlan == 10 and client.ip == "192.0.2.3"
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+
+
+def test_wired_search_singleton_history_is_unambiguous():
+    row = _search_row(device_mac=[SWITCH_A["mac"]], port_id=["ge-0/0/1"], vlan=[30],
+                      last_device_mac=None, last_port_id=None, last_vlan=None)
+    ir = _ingest_caps(wired=[row])
+    (client,) = ir.clients
+    assert client.attach_id == f"{SWITCH_A['mac']}:ge-0/0/1" and client.vlan == 30
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+
+
+@pytest.mark.parametrize("row", [
+    _search_row(last_device_mac=None, last_port_id=None, last_vlan=None),
+    _search_row(last_device_mac="ffffffffffff"),
+    _search_row(device_mac=[SWITCH_A["mac"]], port_id=["ge-0/0/1"], last_port_id=None),
+])
+def test_wired_search_unknown_or_incomplete_current_attachment_stays_a_gap(row):
+    ir = _ingest_caps(wired=[row])
+    assert not ir.clients
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert ir.client_telemetry_gaps
+
+
+@pytest.mark.parametrize("last_port", ["ge-0/0/0", "ge-0/0/1"])
+def test_wired_search_same_kind_conflicts_still_withdraw_the_client(last_port):
+    other = "ge-0/0/1" if last_port == "ge-0/0/0" else "ge-0/0/0"
+    ir = _ingest_caps(wired=[_search_row(last_port_id=last_port), _search_row(last_port_id=other)])
+    assert not ir.clients
+    assert any("conflicting duplicate identity" in gap for gap in ir.client_telemetry_gaps)
+
+
+@pytest.mark.parametrize("wired", [
+    [_search_row()],
+    [_search_row(last_device_mac="ffffffffffff")],
+    [{"mac": "112233445566"}],
+    [_search_row(), _search_row(last_port_id="ge-0/0/1")],
+])
+def test_wired_duplicates_cannot_erase_a_wireless_association(wired):
+    ir = _ingest_caps(wired=wired, wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": AP_1["mac"], "ssid": "corp", "vlan_id": 30,
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRELESS
+    assert client.attach_id == AP_1["mac"] and client.ssid == "corp" and client.vlan == 30
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert ir.client_telemetry_gaps
+
+
+def test_wireless_client_learned_on_its_ap_uplink_remains_complete():
+    ir = _ingest_caps(wired=[_search_row()], wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": AP_1["mac"], "ssid": "corp", "vlan_id": 30,
+    }], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": AP_1["mac"],
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRELESS
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+    assert not ir.client_telemetry_gaps
+
+
+def test_direct_lldp_sighting_cannot_silently_lose_to_a_wireless_association():
+    ir = _ingest_caps(wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": AP_1["mac"], "ssid": "corp",
+    }], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": "112233445566",
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRELESS
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert any(
+        "conflicting wired and wireless attachment" in gap for gap in ir.client_telemetry_gaps
+    )
+
+
+def test_unattachable_wireless_row_cannot_erase_a_wired_attachment():
+    ir = _ingest_caps(wired=[_search_row()], wireless=[{
+        "mac": "11:22:33:44:55:66", "ap_mac": "ffffffffffff",
+    }])
+    (client,) = ir.clients
+    assert client.kind is ClientKind.WIRED
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_transit_learning_and_direct_wired_attachment_are_consistent_in_either_order(reverse):
+    rows = [_search_row(last_port_id="ge-0/0/0"), _search_row(last_port_id="ge-0/0/1")]
+    ir = _ingest_caps(wired=rows[::-1] if reverse else rows, port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": AP_1["mac"],
+    }])
+    (client,) = ir.clients
+    assert client.attach_id == f"{SWITCH_A['mac']}:ge-0/0/1"
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+    assert not ir.client_telemetry_gaps
+
+
+def test_inter_switch_transit_learning_alone_cannot_prove_a_direct_client():
+    ir = _ingest_caps(wired=[_search_row()], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "uplink": True,
+    }])
+    assert not ir.clients
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert any("transit port without direct attachment" in gap for gap in ir.client_telemetry_gaps)
+
+
+def test_ap_facing_learning_alone_does_not_invent_a_wired_client():
+    ir = _ingest_caps(wired=[_search_row()], port_stats=[{
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": AP_1["mac"],
+    }])
+    assert not ir.clients
+    assert IRCapability.CLIENTS_ACTIVE in ir.capabilities
+    assert not ir.client_telemetry_gaps
+
+
+def test_coalescing_an_lldp_client_preserves_enrichment_even_when_it_runs_first():
+    row = _search_row(last_hostname="edge-host")
+    raw = raw_site(wired_clients=(row,), port_stats=({
+        "mac": SWITCH_A["mac"], "port_id": "ge-0/0/0", "neighbor_mac": row["mac"],
+    },))
+    outcome = MistAdapter(ingesters=[
+        SwitchIngester(), LldpIngester(), ClientEnrichmentIngester(), ClientsIngester(),
+    ]).ingest(raw)
+    assert outcome.ir is not None
+    (client,) = outcome.ir.clients
+    assert client.vlan == 10
+    assert outcome.ir.client_enrichment[client.mac].hostname == "edge-host"
 
 
 # Mist's wired-client SEARCH (searchSiteWiredClients / searchOrgWiredClients)
@@ -301,7 +497,7 @@ def test_live_row_ip_list_becomes_one_ip_or_none():
 
 # Rows without per-sighting records (hand-written / older shapes): plain values
 # are one sighting; several devices or ports cannot be paired, so cannot be placed.
-def _ingest_caps(wired):
+def _ingest_history_caps(wired):
     ctx = IngestContext(
         raw=raw_site(wired_clients=tuple(wired)),
         site_effective=dict(SITE_EFFECTIVE),
@@ -321,7 +517,7 @@ def _list_row(**over):
 
 
 def test_one_entry_lists_are_one_sighting():
-    ir, caps = _ingest_caps([_list_row()])
+    ir, caps = _ingest_history_caps([_list_row()])
     (c,) = ir.clients
     assert c.attach_id == "aa0000000001:ge-0/0/1" and c.vlan == 30
     assert IRCapability.CLIENTS_ACTIVE in caps
@@ -332,19 +528,19 @@ def test_unpaired_multi_port_lists_stay_a_gap_even_with_last_fields():
     row = _list_row(device_mac=["aa0000000001", "bb0000000009"], port_id=["ge-0/0/1", "xe-0/1/3"],
                     vlan=[10, 30], last_device_mac="aa0000000001", last_port_id="ge-0/0/0",
                     last_vlan=10)
-    ir, caps = _ingest_caps([row])
+    ir, caps = _ingest_history_caps([row])
     assert ir.clients == ()
     assert IRCapability.CLIENTS_ACTIVE not in caps
 
 
 def test_one_port_with_several_vlans_is_a_conflicting_gap():
-    ir, caps = _ingest_caps([_list_row(vlan=[10, 30])])
+    ir, caps = _ingest_history_caps([_list_row(vlan=[10, 30])])
     assert ir.clients == ()
     assert IRCapability.CLIENTS_ACTIVE not in caps
 
 
 def test_sighting_on_an_unknown_switch_stays_a_gap():
-    ir, caps = _ingest_caps([_list_row(device_mac=["ffffffffffff"])])
+    ir, caps = _ingest_history_caps([_list_row(device_mac=["ffffffffffff"])])
     assert ir.clients == ()
     assert IRCapability.CLIENTS_ACTIVE not in caps
     assert any("unknown port attachment" in gap for gap in ir.client_telemetry_gaps)

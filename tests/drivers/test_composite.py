@@ -379,7 +379,14 @@ def test_later_site_change_sees_wlan_template_unassignment():
 
     verdict = simulate_composite(plan, provider=provider)
 
-    assert verdict["decision"] == "safe", verdict["decision_reasons"]
+    # Removing the old WLAN still needs review for future/disconnected users;
+    # the later create must nevertheless see the unassignment and avoid a
+    # duplicate-SSID finding against the removed template row.
+    assert verdict["decision"] == "review", verdict["decision_reasons"]
+    assert not any(f["code"] == "wireless.wlan.duplicate_ssid.introduced"
+                   for f in verdict["findings"])
+    created = next(a for a in verdict["change_assessments"] if a["order"] == 1)
+    assert created["decision"] == "safe"
 
 
 def test_wlan_template_unassignment_blocks_active_client_disconnect():

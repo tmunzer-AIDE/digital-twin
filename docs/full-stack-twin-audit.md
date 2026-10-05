@@ -2,6 +2,8 @@
 
 Reviewed on October 1, 2026. The semantic-model architecture is still the right direction, but **changed-field allowlists and passing detectors cannot certify a full stack simulation**. The main missing safeguard is a proof that every mechanism relevant to a property was represented, including unchanged configuration, generated configuration, external inputs, and deployment state.
 
+The [October 5 attribute and identification review](mist-attribute-review.md) adds a current per-occurrence disposition ledger, closes further selector/path/client-identity gaps, and expands the narrowly reviewed cosmetic allowlist. Counts and classifications below describe the original October 1 inventory state.
+
 This review found reproducible bypasses, corrected several in the existing engine, inventoried the available specification, and tightened the proposed architecture. It did not implement or validate a production OSPF, BGP, EVPN, firewall, SSR, or onboarding simulator. No live Mist API requests or configuration changes were made.
 
 ## Specification scope and evidence

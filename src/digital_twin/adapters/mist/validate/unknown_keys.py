@@ -30,7 +30,7 @@ from typing import Any
 from digital_twin.contracts import Finding, FindingCategory, FindingSource, Severity
 from digital_twin.ir import Confidence, ConfidenceLevel
 from digital_twin.redaction import STRIP_KEY_PARTS
-from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS
+from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, ignored_raw_fields
 
 # Object types NOT enforced (their committed OAS is too thin, or they are deferred
 # pending OAS/allowlist reconciliation). The single SCOPE LEVER — for device-only
@@ -53,7 +53,7 @@ _DEVICE_GET_ONLY_ROOTS: frozenset[str] = frozenset({
     "tag_id", "tag_uuid", "uses_description_from_port_usage", "x_m", "y_m",
 })
 _SERVER_MANAGED_ROOTS_BY_TYPE: dict[str, frozenset[str]] = {
-    "device": frozenset(IGNORED_RAW_FIELDS) | _DEVICE_GET_ONLY_ROOTS,
+    "device": frozenset(ignored_raw_fields("device")) | _DEVICE_GET_ONLY_ROOTS,
 }
 
 _MAX_FINDINGS = 50  # same cap as schema.py L0 violations — don't flood the verdict

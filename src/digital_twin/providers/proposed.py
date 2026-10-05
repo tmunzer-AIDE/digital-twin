@@ -291,7 +291,7 @@ class ProposedStateProvider:
             if op.action == "create":
                 rows.append({**dict(op.payload), "id": op.object_id})
             elif op.action == "update" and index is not None:
-                rows[index] = effective_update(rows[index], op.payload)
+                rows[index] = effective_update(rows[index], op.payload, object_type=op.object_type)
             elif op.action == "delete" and index is not None:
                 rows.pop(index)
         self._org_networks = rows
@@ -311,7 +311,7 @@ class ProposedStateProvider:
             if not isinstance(context, OrgWlanTemplateContext):
                 continue
 
-            template = effective_update(context.template, op.payload)
+            template = effective_update(context.template, op.payload, object_type=op.object_type)
             site_ids = template.get("site_ids", [])
             sitegroup_ids = template.get("sitegroup_ids", [])
             if (
@@ -404,9 +404,11 @@ class ProposedStateProvider:
                     proposed_org = None
                     proposed_by_site = {sid: None for sid in baseline_by_site}
                 else:
-                    proposed_org = effective_update(wlan_context.wlan, op.payload)
+                    proposed_org = effective_update(
+                        wlan_context.wlan, op.payload, object_type=op.object_type,
+                    )
                     proposed_by_site = {
-                        sid: effective_update(row, op.payload)
+                        sid: effective_update(row, op.payload, object_type=op.object_type)
                         for sid, row in baseline_by_site.items()
                     }
                 overlays.append(OrgOverlay(

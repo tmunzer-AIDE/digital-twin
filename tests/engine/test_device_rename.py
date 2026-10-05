@@ -5,7 +5,8 @@ Mist selects device configuration by device NAME in three places:
 and dynamic port profiles that match a neighbor's `lldp_system_name`. A rename
 that flips one of them swaps the matched rule wholesale (port_config, ip_config,
 stp_config, ...), so a device rename is SAFE only when the twin proves no such
-matcher changes outcome; anything it cannot prove floors to REVIEW.
+matcher changes outcome. Policy uncertainty floors to REVIEW; a reproduced
+projection or observation gap takes precedence as UNKNOWN.
 
 The switch rule mirrors the TM-LAB "DNT-NTR" network template rule
 "ex4100-f-12p" (`match_model[0:6]` + `match_name[3:9]`). Both rules below carry
@@ -153,7 +154,7 @@ def _codes(verdict):
     "layer",
     ["networktemplate", "site_setting", "site_setting.switch"],
 )
-def test_switch_rename_that_flips_a_match_name_rule_is_review(layer):
+def test_switch_rename_that_flips_uncompiled_rule_settings_is_unknown(layer):
     # "sw-ex4100-01"[3:9] == "ex4100" matches rule ex4100-f-12p (ip_config infra);
     # "core-01"[3:9] == "e-01" falls through to `default` (ip_config mgt).
     if layer == "networktemplate":
@@ -171,7 +172,10 @@ def test_switch_rename_that_flips_a_match_name_rule_is_review(layer):
 
     v = simulate(_rename("sw-1", "core-01"), provider=_Provider(state))
 
-    assert v.decision is Decision.REVIEW, v.decision_reasons
+    # The selected management-network change is outside the compiler. The
+    # bounded projection gate takes precedence over the policy REVIEW floor.
+    expected = Decision.REVIEW if layer == "site_setting.switch" else Decision.UNKNOWN
+    assert v.decision is expected, v.decision_reasons
     finding = next(f for f in v.findings if f.code == "config.name_change.matcher")
     assert finding.subject is not None and finding.subject.id == "sw-1"
     assert "ex4100-f-12p" in finding.message
@@ -213,17 +217,18 @@ def test_switch_rename_without_name_rules_is_safe():
     ],
     ids=["case-folding", "template-var", "value-slice-reading", "unknown-criterion"],
 )
-def test_unprovable_name_criteria_floor_to_review(rule):
+def test_unprovable_name_criteria_respect_projection_gaps(rule):
     state = _raw(networktemplate={"id": "nt1", "switch_matching": _switch_matching(rule)})
     v = simulate(_rename("sw-1", "xx-ex4100-01"), provider=_Provider(state))
-    assert v.decision is Decision.REVIEW, v.decision_reasons
+    expected = Decision.UNKNOWN if "match_hostname" in rule else Decision.REVIEW
+    assert v.decision is expected, v.decision_reasons
 
 
-def test_unreadable_switch_matching_rules_are_review():
+def test_unreadable_switch_matching_rules_are_unknown():
     state = _raw(networktemplate={"id": "nt1", "switch_matching": {"enable": True,
                                                                   "rules": "oops"}})
     v = simulate(_rename("sw-1", "sw-ex4100-02"), provider=_Provider(state))
-    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
     assert "config.name_change.unverified" in _codes(v)
 
 
@@ -298,7 +303,7 @@ def test_bridge_style_device_type_is_held_to_the_same_proof():
     v = simulate(
         _rename("sw-1", "core-01", object_type="site_devices"), provider=_Provider(_raw())
     )
-    assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
 
 
 # --- gateways: gateway_matching -----------------------------------------------

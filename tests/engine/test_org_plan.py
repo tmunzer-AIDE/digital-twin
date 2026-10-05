@@ -1120,11 +1120,11 @@ def test_org_apply_template_reject_keeps_earlier_op_diff(monkeypatch):
     real = pl.apply_template
     calls = {"n": 0}
 
-    def fake(snapshot, payload):
+    def fake(snapshot, payload, *, object_type="networktemplate"):
         calls["n"] += 1
         if calls["n"] >= 2:
             return Rejection(stage="apply", reasons=("forced apply_template fail",))
-        return real(snapshot, payload)
+        return real(snapshot, payload, object_type=object_type)
 
     monkeypatch.setattr(pl, "apply_template", fake)
     trunkB_drop = {"port_usages": {"trunkB": {"mode": "trunk", "networks": []}}}

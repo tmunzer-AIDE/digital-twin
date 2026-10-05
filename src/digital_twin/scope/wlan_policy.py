@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from digital_twin.scope.paths import changed_leaf_paths, matches
+from digital_twin.scope.paths import allowed_tokens, leaf_changes
 
 # Band steering is an explicit product-policy SAFE operation.  The notification
 # and SLE toggles do not alter forwarding or client admission.  Performance
@@ -152,18 +152,18 @@ class WlanPolicyDelta:
     usage_gated: tuple[str, ...]
 
 
-def _owned(path: str, patterns: tuple[str, ...]) -> bool:
-    return any(matches(path, pattern) for pattern in patterns)
+def _owned(tokens: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+    return allowed_tokens(tokens, patterns)
 
 
 def classify_wlan_delta(
     current: Mapping[str, Any], proposed: Mapping[str, Any]
 ) -> WlanPolicyDelta:
-    changed = changed_leaf_paths(current, proposed)
+    changed = leaf_changes(current, proposed)
     return WlanPolicyDelta(
-        always_safe=tuple(path for path in changed if _owned(path, WLAN_ALWAYS_SAFE_PATHS)),
-        bands=tuple(path for path in changed if _owned(path, WLAN_BAND_PATHS)),
-        usage_gated=tuple(path for path in changed if _owned(path, WLAN_USAGE_GATED_PATHS)),
+        always_safe=tuple(d.path for d in changed if _owned(d.tokens, WLAN_ALWAYS_SAFE_PATHS)),
+        bands=tuple(d.path for d in changed if _owned(d.tokens, WLAN_BAND_PATHS)),
+        usage_gated=tuple(d.path for d in changed if _owned(d.tokens, WLAN_USAGE_GATED_PATHS)),
     )
 
 
@@ -184,7 +184,9 @@ def usage_gated_paths_for_update(
     assessment.  Removing their ``auth`` leaves here avoids a duplicate telemetry
     query/finding, while a mixed update still gates every other risky leaf.
     """
-    paths = classify_wlan_delta(current, proposed).usage_gated
-    if secure_to_open(current, proposed):
-        paths = tuple(path for path in paths if not matches(path, "auth.*"))
-    return paths
+    transition = secure_to_open(current, proposed)
+    return tuple(
+        d.path for d in leaf_changes(current, proposed)
+        if _owned(d.tokens, WLAN_USAGE_GATED_PATHS)
+        and not (transition and _owned(d.tokens, ("auth.*",)))
+    )

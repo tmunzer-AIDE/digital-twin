@@ -1,28 +1,28 @@
 """Clients-domain ingester: observed wired + wireless clients (active now).
 
 - Unattachable observations are recorded as coverage gaps without failing ingest.
-  Valid rows remain available, but incomplete telemetry cannot earn clients.active.
-- A MAC already present (e.g. added by LldpIngester as an unmanaged edge device)
-  is skipped — first writer wins, no duplicate-id crash.
+  Unambiguous rows remain available; incomplete telemetry cannot earn clients.active.
+- Consistent duplicate observations of the same kind are coalesced. Conflicting
+  attachment, VLAN or SSID identities invalidate evidence of that kind only.
+- Wired search includes wireless and LLDP neighbor addresses learned on transit
+  ports. Prefer direct AP/edge observations; transit learning and ambiguous
+  search history cannot contradict those attachments or prove a direct client.
+- Place wired clients using their current per-port sightings, excluding old
+  history, LAG bundles, managed infrastructure and transit learning. The newest
+  last_* observation alone is not a proof of the endpoint's edge attachment.
+- A direct wired attachment competing with an AP association creates a coverage
+  gap. Retain the wireless proof, but do not claim a complete client population.
 - clients.active is EARNED only if BOTH client fetches succeeded and every
-  non-duplicate observation could be attached: an empty site
+  observation is consistent and attachable: an empty site
   with successful fetches legitimately knows "no clients"; a failed fetch must
   not masquerade as that knowledge.
-- A wired row is the MAC's MAC-table history (see _sightings). A MAC is learned on
-  every switch along its path, so its attachment is its ONE current edge port:
-  sightings on inter-device links, Mist-flagged uplinks and LAG bundles are
-  transit. Several edge ports or VLANs are a conflicting identity and stay a gap,
-  never collapsed onto one; so does a MAC seen only in transit (its edge port is
-  unobserved). A MAC seen only through an AP is wireless — the wireless stats are
-  its authority — and a managed device's own MAC is infrastructure: neither is a
-  wired client nor a gap.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -59,8 +59,7 @@ def _ssid(value: Any) -> str | None:
 
 
 def _single(value: Any) -> Any:
-    """One value from a field Mist's wired-client SEARCH returns as the full
-    history list: a one-element list is unambiguous, a longer one is not (None)."""
+    """Accept scalar or singleton history; never guess from multiple values."""
     if isinstance(value, list):
         return value[0] if len(value) == 1 else None
     return value
@@ -95,6 +94,10 @@ def _sightings(row: Mapping[str, Any]) -> list[_Sighting] | None:
             else (None, None, None, None)
             for r in records
         ]
+    if (row.get("last_device_mac") or row.get("last_port_id")) and not (
+        row.get("last_device_mac") and row.get("last_port_id")
+    ):
+        return [(row.get("last_device_mac"), row.get("last_port_id"), row.get("last_vlan"), None)]
     devices, ports = _as_list(row.get("device_mac")), _as_list(row.get("port_id"))
     if len(devices) > 1 or len(ports) > 1:
         return None
@@ -154,22 +157,84 @@ class ClientsIngester:
         if "wireless_clients" not in fetched or "wired_clients" not in fetched:
             return frozenset()  # failed fetch -> no claim (zero clients != unknown)
         gaps: dict[str, list[int]] = {}
+        candidates: dict[tuple[ClientKind, str], Client] = {}
+        disputed: set[tuple[ClientKind, str]] = set()
+        unattachable: set[tuple[ClientKind, str]] = set()
+        linked_ports = ctx.builder.linked_port_ids()
+        transit_rows: list[tuple[str, int]] = []
 
         def gap(reason: str, index: int) -> None:
             gaps.setdefault(reason, []).append(index)
 
+        def admit(client: Client, index: int, domain: str) -> None:
+            key = (client.kind, client.mac)
+            if key in disputed:
+                gap(f"{domain} client telemetry: conflicting duplicate identity", index)
+                return
+            other_kind = (
+                ClientKind.WIRELESS if client.kind is ClientKind.WIRED else ClientKind.WIRED
+            )
+            other = candidates.get((other_kind, client.mac))
+            if other is None and ctx.builder.has_client(client.mac):
+                previous = ctx.builder.get_client(client.mac)
+                if previous.kind is other_kind:
+                    other = previous
+            if other is not None:
+                wired = client if client.kind is ClientKind.WIRED else other
+                if (
+                    wired.attach_id not in linked_ports
+                    and ctx.builder.get_port(wired.attach_id).is_uplink is not True
+                    and not _AGGREGATE.fullmatch(ctx.builder.get_port(wired.attach_id).name)
+                ):
+                    # A normal access-port sighting is a competing attachment,
+                    # not incidental learning behind an AP. Preserve wireless
+                    # outage evidence while revoking complete client coverage.
+                    gap(
+                        f"{domain} client telemetry: conflicting wired and wireless attachment",
+                        index,
+                    )
+            existing = candidates.get(key)
+            if existing is None and ctx.builder.has_client(client.mac):
+                previous = ctx.builder.get_client(client.mac)
+                if previous.kind is client.kind:
+                    existing = previous
+            if existing is not None:
+                conflict = (
+                    (existing.kind, existing.attach_kind, existing.attach_id)
+                    != (client.kind, client.attach_kind, client.attach_id)
+                    or existing.vlan is not None and client.vlan is not None
+                    and existing.vlan != client.vlan
+                    or existing.ssid is not None and client.ssid is not None
+                    and existing.ssid != client.ssid
+                )
+                if conflict:
+                    candidates.pop(key, None)
+                    disputed.add(key)
+                    gap(f"{domain} client telemetry: conflicting duplicate identity", index)
+                else:
+                    # Retain known identity fields across compatible rows so a
+                    # later contradictory value cannot hide behind an initial
+                    # missing SSID/VLAN (including an LLDP-created client).
+                    candidates[key] = replace(
+                        existing, vlan=existing.vlan if existing.vlan is not None else client.vlan,
+                        ssid=existing.ssid or client.ssid, ip=existing.ip or client.ip,
+                    )
+                return
+            candidates[key] = client
+
         for index, w in enumerate(ctx.raw.wireless_clients):
             if not w.get("mac") or not w.get("ap_mac"):
                 gap("wireless client telemetry: missing mac or ap_mac", index)
+                if w.get("mac"):
+                    unattachable.add((ClientKind.WIRELESS, client_id(str(w["mac"]))))
                 continue
             ap = device_id(str(w["ap_mac"]))
             if not ctx.builder.has_device(ap):
                 gap("wireless client telemetry: unknown AP attachment", index)
+                unattachable.add((ClientKind.WIRELESS, client_id(str(w["mac"]))))
                 continue
-            if ctx.builder.has_client(str(w["mac"])):
-                continue  # already represented (e.g. by LLDP)
             vlan = w.get("vlan_id")
-            ctx.builder.add_client(
+            admit(
                 Client(
                     mac=client_id(str(w["mac"])),
                     kind=ClientKind.WIRELESS,
@@ -178,35 +243,73 @@ class ClientsIngester:
                     vlan=int(vlan) if vlan is not None else None,
                     ip=w.get("ip"),
                     ssid=_ssid(w.get("ssid")),
-                )
+                ), index, "wireless",
             )
         for index, w in enumerate(ctx.raw.wired_clients):
-            mac = w.get("mac")
-            if mac and ctx.builder.has_device(device_id(str(mac))):
-                continue  # a managed device's own MAC: infrastructure, not a client
+            raw_mac = w.get("mac")
+            if raw_mac and ctx.builder.has_device(device_id(str(raw_mac))):
+                continue  # managed infrastructure is not a client
             sightings = _sightings(w)
-            if not mac or sightings == []:
+            if not raw_mac or sightings == []:
                 gap("wired client telemetry: missing mac, device_mac or port_id", index)
+                if raw_mac:
+                    unattachable.add((ClientKind.WIRED, client_id(str(raw_mac))))
                 continue
+            mac = client_id(str(raw_mac))
             if sightings is None:
+                # An unpaired history is incomplete population evidence, not a
+                # competing current attachment of an independently located MAC.
                 gap("wired client telemetry: unpaired multi-port history", index)
                 continue
             placed = _place(ctx.builder, sightings)
             if placed.gap is not None:
-                gap(f"wired client telemetry: {placed.gap}", index)
+                if placed.gap.startswith("learned only"):
+                    transit_rows.append((mac, index))
+                else:
+                    gap(f"wired client telemetry: {placed.gap}", index)
+                    unattachable.add((ClientKind.WIRED, mac))
                 continue
-            if placed.port is None or ctx.builder.has_client(str(mac)):
-                continue
-            ctx.builder.add_client(
+            if placed.port is None:
+                continue  # AP-facing learning: wireless stats are authoritative
+            admit(
                 Client(
-                    mac=client_id(str(mac)),
+                    mac=mac,
                     kind=ClientKind.WIRED,
                     attach_kind=AttachKind.PORT,
                     attach_id=placed.port,
                     vlan=int(placed.vlan) if placed.vlan is not None else None,
-                    ip=_single(w.get("ip")),
-                )
+                    ip=_single(w.get("last_ip", w.get("ip"))),
+                ), index, "wired",
             )
+        excluded = disputed | unattachable
+        selected: dict[str, Client] = {}
+        for key, client in candidates.items():
+            if key not in excluded:
+                # An AP association locates a wireless endpoint more directly
+                # than switch MAC learning. The IR has one entity per MAC.
+                if client.mac not in selected or client.kind is ClientKind.WIRELESS:
+                    selected[client.mac] = client
+        # Resolve transit coverage after all direct rows, so input order cannot
+        # decide whether a learned MAC is already located by another source.
+        for mac, index in transit_rows:
+            previous = ctx.builder.get_client(mac) if ctx.builder.has_client(mac) else None
+            if mac not in selected and (
+                previous is None or (previous.kind, mac) in excluded
+            ):
+                gap("wired client telemetry: transit port without direct attachment "
+                    "(learned only on inter-switch links; edge port not observed)", index)
+        # Withdraw only disputed evidence of the same kind. A bad wired search
+        # row cannot erase a valid wireless association (or vice versa).
+        ctx.builder.discard_clients(
+            mac for kind, mac in excluded
+            if mac not in selected and ctx.builder.has_client(mac)
+            and ctx.builder.get_client(mac).kind is kind
+        )
+        for mac, client in selected.items():
+            if ctx.builder.has_client(mac):
+                ctx.builder.replace_client(client)
+            else:
+                ctx.builder.add_client(client)
         for reason, indexes in gaps.items():
             ctx.builder.mark_client_telemetry_gap(
                 f"{reason} ({len(indexes)} row(s); sample indexes: {indexes[:3]})"

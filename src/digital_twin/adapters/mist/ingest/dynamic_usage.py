@@ -31,6 +31,7 @@ from digital_twin.contracts import (
     Severity,
 )
 from digital_twin.ir import Confidence, ConfidenceLevel, device_id
+from digital_twin.scope.atomic_lists import dynamic_rule_valid
 
 # expression grammar (per the OAS): an optional `split(<delim>)` followed by
 # any chain of `[n]` (index) / `[a:b]` (slice) operations — e.g. "[0:3]",
@@ -54,14 +55,14 @@ class _NoValue(Exception):
     """The expression conclusively yields nothing (e.g. split index OOR)."""
 
 
-def _apply_expression(value: str, expression: Any) -> str:
+def _apply_expression(value: str, expression: str | None) -> str:
     """The transform of `value` the rule compares (OAS grammar: optional
     split(<delim>), then [n] index / [a:b] slice chains). Raises _Unparseable
     for unknown grammar (-> inconclusive) and _NoValue when the expression
     conclusively selects nothing (e.g. out-of-range split index -> miss)."""
-    if expression in (None, ""):
+    if expression is None or expression == "":
         return value
-    expr = str(expression)
+    expr = expression
     pos = 0
     current: str | list[str] = value
     for m in _EXPR_TOKEN.finditer(expr):
@@ -92,27 +93,29 @@ def _apply_expression(value: str, expression: Any) -> str:
 
 def evaluate_rules(
     rules: Sequence[Mapping[str, Any]],
-    sources: Mapping[str, str | None],
+    sources: Mapping[str, object],
 ) -> RuleOutcome:
     for index, rule in enumerate(rules):
-        src, usage = rule.get("src"), rule.get("usage")
-        equals, equals_any = rule.get("equals"), rule.get("equals_any")
-        wanted = [str(equals)] if equals is not None else [str(x) for x in equals_any or ()]
-        if not src or not wanted or not usage:
-            return RuleOutcome(kind="inconclusive")  # malformed = unevaluable
-        if str(src) not in sources:
+        if not dynamic_rule_valid(rule):
+            return RuleOutcome(kind="inconclusive")
+        src, usage = rule["src"], rule["usage"]
+        equals = rule.get("equals")
+        wanted = [equals] if equals is not None else rule["equals_any"]
+        if src not in sources:
             return RuleOutcome(kind="inconclusive")  # unobservable source
-        value = sources[str(src)]
+        value = sources[src]
         if value is None:
             continue  # known absent -> conclusive miss
+        if not isinstance(value, str):
+            return RuleOutcome(kind="inconclusive")  # malformed observation
         try:
-            transformed = _apply_expression(str(value), rule.get("expression"))
+            transformed = _apply_expression(value, rule.get("expression"))
         except _Unparseable:
             return RuleOutcome(kind="inconclusive")  # unknown grammar
         except _NoValue:
             continue  # the expression conclusively selects nothing -> miss
         if transformed in wanted:
-            return RuleOutcome(kind="matched", usage=str(usage), rule_index=index)
+            return RuleOutcome(kind="matched", usage=usage, rule_index=index)
     return RuleOutcome(kind="static")
 
 
@@ -172,8 +175,14 @@ def classify_dynamic_port(
     rules = spec.get("rules")
     if not isinstance(rules, list):
         return "unresolved", f"dynamic profile {profile!r} has no rules in the modeled config"
+    if not all(dynamic_rule_valid(rule) for rule in rules):
+        return "unresolved", f"dynamic profile {profile!r} has unsupported rule content"
     if row is None:
         return "unresolved", "no port stats for the dynamically-profiled port"
+    if row.get("_twin_dynamic_observation_stale") and any(
+        rule.get("src") == "lldp_system_name" for rule in rules
+    ):
+        return "unresolved", "peer rename invalidates the observed LLDP dynamic-profile result"
     if not row.get("up"):
         if spec.get("reset_default_when") == "none":
             return "unresolved", (

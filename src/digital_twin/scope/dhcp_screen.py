@@ -25,7 +25,7 @@ _EMPTY_NOOP_ROW_MAPS = ("fixed_bindings", "options")
 
 
 def is_empty_scope_map(
-    path: str, before: Mapping[str, Any], after: Mapping[str, Any]
+    path: str | tuple[str, ...], before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> bool:
     """`dhcpd_config.<scope>.fixed_bindings` / `.options` holding nothing on either
     side (absent, null or `{}`) reserves nothing and sends no option, so it is not
@@ -34,7 +34,7 @@ def is_empty_scope_map(
     row that carries another setting on each side where it exists: a row holding
     nothing else could switch a scope on with defaults, and only this path would
     show it."""
-    segments = path.split(".")
+    segments = tuple(path.split(".")) if isinstance(path, str) else path
     if len(segments) != 3 or segments[0] != "dhcpd_config":
         return False
     key = segments[2]

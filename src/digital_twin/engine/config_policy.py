@@ -562,7 +562,7 @@ def _rf_coverage_change(op: ChangeOp, provider: StateProvider, org_id: str) -> _
     context = _relationship_context(op, provider, org_id)
     if context is None or isinstance(context, FetchError):
         return _relationship_change(op, provider, org_id, resolved=context)
-    proposed = effective_update(context.target, op.payload)
+    proposed = effective_update(context.target, op.payload, object_type=op.object_type)
     before = context.target.get("radio_config") or context.target.get("radios") or {}
     after = proposed.get("radio_config") or proposed.get("radios") or {}
     sensitive: list[str] = []
@@ -708,7 +708,7 @@ def _service_policy_semantics(op: ChangeOp, provider: StateProvider, org_id: str
     context = _relationship_context(op, provider, org_id)
     if context is None or isinstance(context, FetchError):
         return _relationship_change(op, provider, org_id, resolved=context)
-    proposed = effective_update(context.target, op.payload)
+    proposed = effective_update(context.target, op.payload, object_type=op.object_type)
     before, after = _policy_rules(context.target), _policy_rules(proposed)
     baseline_hazards = _policy_hazards(before)
     baseline_signatures = {_hazard_signature(hazard) for hazard in baseline_hazards}
@@ -956,7 +956,7 @@ def _network_change(
         return _relationship_change(op, provider, org_id, resolved=context)
     if op.action == "update":
         others = [row for row in existing if str(row.get("id") or "") != op.object_id]
-        proposed = effective_update(context.target, op.payload)
+        proposed = effective_update(context.target, op.payload, object_type=op.object_type)
         validation = _network_create(replace(op, action="create", payload=proposed), others)
         if validation.review:
             return validation
@@ -1278,7 +1278,9 @@ def simulate_configuration_policy(
                         proposed_networks.append(created_network)
                     elif op.action == "update":
                         if current_network is not None:
-                            updated_network = effective_update(current_network, op.payload)
+                            updated_network = effective_update(
+                                current_network, op.payload, object_type=op.object_type,
+                            )
                             config_diffs.append(
                                 object_config_diff(
                                     object_type=op.object_type,
@@ -1293,7 +1295,7 @@ def simulate_configuration_policy(
                             )
                         proposed_networks = [
                             (
-                                effective_update(row, op.payload)
+                                effective_update(row, op.payload, object_type=op.object_type)
                                 if str(row.get("id") or "") == op.object_id
                                 else row
                             )

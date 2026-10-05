@@ -3,53 +3,56 @@ from digital_twin.scope.allowlist import (
     GATEWAY_EFFECTIVE_ALLOWLIST,
     RAW_ALLOWLIST,
 )
-from digital_twin.scope.paths import allowed, changed_leaf_paths, leaf_changes, matches
+from digital_twin.scope.paths import allowed_tokens, changed_leaf_paths, leaf_changes
 
 
 def test_single_star_matches_exactly_one_segment():
     # '*' matches exactly one segment — it must NOT cross nesting levels.
-    assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
-    assert not matches("networks.corp.isolation", "networks.*.vlan_id")
+    assert allowed_tokens(("networks", "corp", "vlan_id"), ("networks.*.vlan_id",))
+    assert not allowed_tokens(("networks", "corp", "isolation"), ("networks.*.vlan_id",))
     # C1 regression: '*' must NOT over-match deeper-nested paths.
     # 'dhcpd_config.*.type' must only match one level of nesting under dhcpd_config,
     # NOT 'dhcpd_config.corp.options.43.type' (three levels deep).
-    assert not matches("networks.corp.sub.vlan_id", "networks.*.vlan_id")
+    assert not allowed_tokens(("networks", "corp", "sub", "vlan_id"), ("networks.*.vlan_id",))
 
 
-def test_double_star_matches_one_or_more_segments():
-    # '**' is the one-or-more wildcard, used ONLY at the BGP neighbor-IP position.
-    # IP-address keys contain literal dots: 'bgp_config.underlay.neighbors.10.0.0.2.neighbor_as'
-    # is assembled from the key '10.0.0.2' — '**' must consume 1+ segments.
-    assert matches(
-        "bgp_config.underlay.neighbors.10.0.0.2.neighbor_as",
-        "bgp_config.*.neighbors.**.neighbor_as",
+def test_double_star_matches_one_original_map_key():
+    # The legacy '**' spelling consumes one original JSON map key.
+    # A literal IP address remains one token, never multiple nesting levels.
+    assert allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "neighbor_as"),
+        ("bgp_config.*.neighbors.**.neighbor_as",),
     )
-    assert matches(
-        "bgp_config.underlay.neighbors.10.0.0.2.disabled",
-        "bgp_config.*.neighbors.**.disabled",
+    assert allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "disabled"),
+        ("bgp_config.*.neighbors.**.disabled",),
     )
-    # '**' must NOT match zero segments.
-    assert not matches(
-        "bgp_config.underlay.neighbors.neighbor_as",
-        "bgp_config.*.neighbors.**.neighbor_as",
+    # '**' must NOT match zero keys.
+    assert not allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "neighbor_as"),
+        ("bgp_config.*.neighbors.**.neighbor_as",),
     )
     # '**' must not allow unrelated trailing leaves.
-    assert not matches(
-        "bgp_config.underlay.neighbors.10.0.0.2.auth_key",
-        "bgp_config.*.neighbors.**.neighbor_as",
+    assert not allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "auth_key"),
+        ("bgp_config.*.neighbors.**.neighbor_as",),
+    )
+    assert not allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "nested", "neighbor_as"),
+        ("bgp_config.*.neighbors.**.neighbor_as",),
     )
 
 
 def test_trailing_star_matches_whole_subtree_including_root():
-    assert matches("vars", "vars.*")
-    assert matches("vars.x", "vars.*")
-    assert matches("vars.x.y", "vars.*")
-    assert not matches("varsx", "vars.*")
+    assert allowed_tokens(("vars",), ("vars.*",))
+    assert allowed_tokens(("vars", "x"), ("vars.*",))
+    assert allowed_tokens(("vars", "x", "y"), ("vars.*",))
+    assert not allowed_tokens(("varsx",), ("vars.*",))
 
 
 def test_bare_entry_matches_exactly():
-    assert matches("name", "name")
-    assert not matches("name.sub", "name")
+    assert allowed_tokens(("name",), ("name",))
+    assert not allowed_tokens(("name", "sub"), ("name",))
 
 
 def test_added_subtree_descends_to_leaves():
@@ -84,9 +87,9 @@ def test_null_absent_equivalence_applies_inside_lists():
 
 def test_allowed_checks_any_entry():
     allowlist = ("networks.*.vlan_id", "vars.*")
-    assert allowed("networks.corp.vlan_id", allowlist)
-    assert allowed("vars.dhcp_ip", allowlist)
-    assert not allowed("networks.corp.isolation", allowlist)
+    assert allowed_tokens(("networks", "corp", "vlan_id"), allowlist)
+    assert allowed_tokens(("vars", "dhcp_ip"), allowlist)
+    assert not allowed_tokens(("networks", "corp", "isolation"), allowlist)
 
 
 def test_c1_overmatch_regression_gatewaytemplate():
@@ -95,21 +98,26 @@ def test_c1_overmatch_regression_gatewaytemplate():
     'dhcpd_config.corp.options.43.type' (3 nesting levels); under '*' = exactly one
     segment it does not.  Same for vendor_encapsulated and port_config.*.disabled."""
     # dhcpd_config.<scope>.options.<n>.type — was wrongly SAFE, must be UNKNOWN
-    assert not allowed("dhcpd_config.corp.options.43.type", RAW_ALLOWLIST["gatewaytemplate"])
-    assert not allowed("dhcpd_config.corp.options.43.type", GATEWAY_EFFECTIVE_ALLOWLIST)
-    # dhcpd_config.<scope>.vendor_encapsulated.<n>.type — same shape
-    assert not allowed(
-        "dhcpd_config.corp.vendor_encapsulated.1.type", RAW_ALLOWLIST["gatewaytemplate"]
+    assert not allowed_tokens(
+        ("dhcpd_config", "corp", "options", "43", "type"), RAW_ALLOWLIST["gatewaytemplate"]
     )
-    assert not allowed(
-        "dhcpd_config.corp.vendor_encapsulated.1.type", GATEWAY_EFFECTIVE_ALLOWLIST
+    assert not allowed_tokens(
+        ("dhcpd_config", "corp", "options", "43", "type"), GATEWAY_EFFECTIVE_ALLOWLIST
+    )
+    # dhcpd_config.<scope>.vendor_encapsulated.<n>.type — same shape
+    assert not allowed_tokens(
+        ("dhcpd_config", "corp", "vendor_encapsulated", "1", "type"),
+        RAW_ALLOWLIST["gatewaytemplate"],
+    )
+    assert not allowed_tokens(
+        ("dhcpd_config", "corp", "vendor_encapsulated", "1", "type"), GATEWAY_EFFECTIVE_ALLOWLIST
     )
     # port_config.<port>.wan_source_nat.disabled — was wrongly SAFE, must be UNKNOWN
-    assert not allowed(
-        "port_config.ge-0/0/0.wan_source_nat.disabled", RAW_ALLOWLIST["gatewaytemplate"]
+    assert not allowed_tokens(
+        ("port_config", "ge-0/0/0", "wan_source_nat", "disabled"), RAW_ALLOWLIST["gatewaytemplate"]
     )
-    assert not allowed(
-        "port_config.ge-0/0/0.wan_source_nat.disabled", GATEWAY_EFFECTIVE_ALLOWLIST
+    assert not allowed_tokens(
+        ("port_config", "ge-0/0/0", "wan_source_nat", "disabled"), GATEWAY_EFFECTIVE_ALLOWLIST
     )
 
 
@@ -120,31 +128,35 @@ def test_bgp_denied_leaves_not_overmatched():
 
     # bgp_config.<vrf>.networks is NOT a modeled leaf (advertised-prefix list,
     # explicitly kept out of _BGP_LEAVES to avoid false-SAFE).
-    assert not allowed("bgp_config.underlay.networks", EFFECTIVE_ALLOWLIST)
+    assert not allowed_tokens(("bgp_config", "underlay", "networks"), EFFECTIVE_ALLOWLIST)
 
     # bgp_config.<vrf>.auth_key is a secret — explicitly denied
-    assert not allowed("bgp_config.underlay.auth_key", EFFECTIVE_ALLOWLIST)
+    assert not allowed_tokens(("bgp_config", "underlay", "auth_key"), EFFECTIVE_ALLOWLIST)
 
     # import_policy is not a modeled leaf — denied even though it sits under
     # the neighbors subtree that the allowed 'neighbors.**.neighbor_as' touches
-    assert not allowed(
-        "bgp_config.underlay.neighbors.10.0.0.2.import_policy", EFFECTIVE_ALLOWLIST
+    assert not allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "import_policy"), EFFECTIVE_ALLOWLIST
     )
 
     # auth_key on a neighbor is also denied (peer-level secret, not neighbor_as)
-    assert not allowed(
-        "bgp_config.underlay.neighbors.10.0.0.2.auth_key", EFFECTIVE_ALLOWLIST
+    assert not allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "auth_key"), EFFECTIVE_ALLOWLIST
     )
 
     # Positive cases: the modeled BGP leaves ARE allowed
-    assert allowed("bgp_config.underlay.neighbors.10.0.0.2.neighbor_as", EFFECTIVE_ALLOWLIST)
-    assert allowed("bgp_config.underlay.local_as", EFFECTIVE_ALLOWLIST)
-    assert allowed("bgp_config.underlay.type", EFFECTIVE_ALLOWLIST)
-    assert allowed("bgp_config.underlay.neighbors.10.0.0.2.disabled", EFFECTIVE_ALLOWLIST)
+    assert allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "neighbor_as"), EFFECTIVE_ALLOWLIST
+    )
+    assert allowed_tokens(("bgp_config", "underlay", "local_as"), EFFECTIVE_ALLOWLIST)
+    assert allowed_tokens(("bgp_config", "underlay", "type"), EFFECTIVE_ALLOWLIST)
+    assert allowed_tokens(
+        ("bgp_config", "underlay", "neighbors", "10.0.0.2", "disabled"), EFFECTIVE_ALLOWLIST
+    )
 
     # Dotless key baseline: simple one-segment key still works
-    assert matches("networks.corp.vlan_id", "networks.*.vlan_id")
-    assert not matches("networks.corp.isolation", "networks.*.vlan_id")
+    assert allowed_tokens(("networks", "corp", "vlan_id"), ("networks.*.vlan_id",))
+    assert not allowed_tokens(("networks", "corp", "isolation"), ("networks.*.vlan_id",))
 
 
 def test_leaf_changes_added_removed_changed():
@@ -168,8 +180,9 @@ def test_leaf_changes_null_equals_absent():
 
 
 def test_leaf_changes_ignore_top():
-    paths = [d.path for d in leaf_changes(
-        {"meta": 1, "a": 1}, {"meta": 2, "a": 2}, ignore_top=("meta",))]
+    paths = [
+        d.path for d in leaf_changes({"meta": 1, "a": 1}, {"meta": 2, "a": 2}, ignore_top=("meta",))
+    ]
     assert paths == ["a"]
 
 
@@ -183,22 +196,20 @@ def test_changed_leaf_paths_parity_with_leaf_changes():
 def test_added_and_removed_empty_objects_are_visible_to_the_gate():
     assert changed_leaf_paths({}, {"routing_policies": {}}) == ("routing_policies",)
     assert changed_leaf_paths({"evpn_options": {}}, {}) == ("evpn_options",)
-    assert changed_leaf_paths({}, {"matching": {"future_filter": {}}}) \
-        == ("matching.future_filter",)
+    assert changed_leaf_paths({}, {"matching": {"future_filter": {}}}) == (
+        "matching.future_filter",
+    )
     assert changed_leaf_paths({"routing_policies": {}}, {"routing_policies": {}}) == ()
 
 
 def test_json_boolean_number_changes_are_not_lost_inside_atomic_lists():
     assert changed_leaf_paths({"enabled": True}, {"enabled": 1}) == ("enabled",)
-    assert changed_leaf_paths({"rules": [{"enabled": False}]},
-                              {"rules": [{"enabled": 0}]}) == ("rules",)
+    assert changed_leaf_paths({"rules": [{"enabled": False}]}, {"rules": [{"enabled": 0}]}) == (
+        "rules",
+    )
     assert changed_leaf_paths({"metric": 1}, {"metric": 1.0}) == ()
 
 
 def test_new_or_removed_null_only_object_retains_structural_presence():
-    assert changed_leaf_paths({}, {"routing_policies": {"option": None}}) == (
-        "routing_policies",
-    )
-    assert changed_leaf_paths({"routing_policies": {"option": None}}, {}) == (
-        "routing_policies",
-    )
+    assert changed_leaf_paths({}, {"routing_policies": {"option": None}}) == ("routing_policies",)
+    assert changed_leaf_paths({"routing_policies": {"option": None}}, {}) == ("routing_policies",)

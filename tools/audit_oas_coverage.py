@@ -16,8 +16,8 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
-from digital_twin.scope.paths import allowed
+from digital_twin.scope.allowlist import RAW_ALLOWLIST, ignored_raw_fields
+from digital_twin.scope.paths import allowed_tokens
 
 # This is an inventory scope, not a support or exemption list. Operation bodies
 # below are inventoried independently, so an omitted component stays visible in
@@ -198,7 +198,7 @@ def legacy_disposition(component: str, tokens: list[str]) -> str:
     object_type = LEGACY_TYPES.get(component)
     if object_type is None:
         return "no_existing_simulation_path"
-    if tokens and tokens[0] in IGNORED_RAW_FIELDS:
+    if tokens and tokens[0] in ignored_raw_fields(object_type):
         return "legacy_ignored_not_semantic_proof"
     # The existing diff treats lists atomically. Admitting a list does not prove
     # that every union, element, or new child grammar in it is understood.
@@ -209,7 +209,7 @@ def legacy_disposition(component: str, tokens: list[str]) -> str:
         concrete.append("probe" if token in ("{key}", "{unknown}") else token)
     return (
         "legacy_admitted_not_semantic_proof"
-        if allowed(".".join(concrete), RAW_ALLOWLIST.get(object_type, ()))
+        if allowed_tokens(tuple(concrete), RAW_ALLOWLIST.get(object_type, ()))
         else "legacy_rejects"
     )
 

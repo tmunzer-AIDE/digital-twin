@@ -75,16 +75,20 @@ def test_apply_plan_rejects_unsupported_delete_without_crashing():
 def test_field_gate_admits_usage_gated_wlan_leaf_but_still_denies_output_only_leaf():
     # the engine passes the EFFECTIVE object (effective_update) to screen_op, not the
     # partial payload — a partial dict would read every other root as a deletion.
-    assert screen_op("wlan", _SITE, effective_update(_SITE, {"isolation": True})) is None
-    hidden = effective_update(_SITE, {"hide_ssid": True})
+    assert screen_op("wlan", _SITE, effective_update(
+        _SITE, {"isolation": True}, object_type="wlan",
+    )) is None
+    hidden = effective_update(_SITE, {"hide_ssid": True}, object_type="wlan")
     assert screen_op("wlan", _SITE, hidden) is None
     assert classify_wlan_delta(_SITE, hidden).usage_gated == ("hide_ssid",)
-    generated = effective_update(_SITE, {"portal_api_secret": "server-owned"})
+    generated = effective_update(_SITE, {"portal_api_secret": "server-owned"}, object_type="wlan")
     assert isinstance(screen_op("wlan", _SITE, generated), Rejection)
 
 
 def test_inherited_wlan_op_rejected_post_fetch():
-    r = screen_op("wlan", _INHERITED, effective_update(_INHERITED, {"isolation": True}))
+    r = screen_op("wlan", _INHERITED, effective_update(
+        _INHERITED, {"isolation": True}, object_type="wlan",
+    ))
     assert isinstance(r, Rejection) and any("inherited" in x for x in r.reasons)
 
 
@@ -92,7 +96,7 @@ def test_org_wlan_screening_bypasses_site_ownership_check():
     r = screen_op(
         "wlan",
         _INHERITED,
-        effective_update(_INHERITED, {"isolation": True}),
+        effective_update(_INHERITED, {"isolation": True}, object_type="wlan"),
         enforce_wlan_site_ownership=False,
     )
     assert r is None
@@ -102,7 +106,7 @@ def test_org_wlan_assignment_edit_remains_out_of_scope():
     r = screen_op(
         "wlan",
         _INHERITED,
-        effective_update(_INHERITED, {"site_ids": ["s2"]}),
+        effective_update(_INHERITED, {"site_ids": ["s2"]}, object_type="wlan"),
         enforce_wlan_site_ownership=False,
     )
     assert isinstance(r, Rejection)
@@ -114,13 +118,15 @@ def test_secure_to_open_auth_root_replace_ignores_removed_secret_companion():
     # drops its secret companion. The transition rule owns that consequence.
     psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
            "isolation": False, "auth": {"type": "psk", "psk": "secret"}}
-    r = screen_op("wlan", psk, effective_update(psk, {"auth": {"type": "open"}}))
+    r = screen_op("wlan", psk, effective_update(
+        psk, {"auth": {"type": "open"}}, object_type="wlan",
+    ))
     assert r is None
 
 
 def test_auth_secret_change_is_admitted_but_owned_by_usage_gate():
     psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
            "isolation": False, "auth": {"type": "psk", "psk": "old"}}
-    proposed = effective_update(psk, {"auth": {"type": "psk", "psk": "new"}})
+    proposed = effective_update(psk, {"auth": {"type": "psk", "psk": "new"}}, object_type="wlan")
     assert screen_op("wlan", psk, proposed) is None
     assert usage_gated_paths_for_update(psk, proposed) == ("auth.psk",)

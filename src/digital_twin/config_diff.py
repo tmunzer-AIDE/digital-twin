@@ -9,7 +9,7 @@ from typing import Any
 
 from digital_twin.contracts import FieldChange, ObjectConfigDiff
 from digital_twin.redaction import redact_leaf
-from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS
+from digital_twin.scope.allowlist import ignored_raw_fields
 from digital_twin.scope.paths import leaf_changes
 
 
@@ -22,7 +22,7 @@ def object_config_diff(
     before: Mapping[str, Any] | None,
     after: Mapping[str, Any] | None,
 ) -> ObjectConfigDiff:
-    deltas = leaf_changes(before or {}, after or {}, ignore_top=IGNORED_RAW_FIELDS)
+    deltas = leaf_changes(before or {}, after or {}, ignore_top=ignored_raw_fields(object_type))
     changes = tuple(
         FieldChange(
             path=d.path,

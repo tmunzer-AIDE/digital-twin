@@ -112,6 +112,7 @@ class IRBuilder:
         self._bgp_unparsed = 0
         self._vrf_instances: dict[str, VrfInstance] = {}
         self._clients: list[Client] = []
+        self._clients_by_id: dict[str, Client] = {}
         self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
@@ -184,6 +185,7 @@ class IRBuilder:
             raise IRValidationError(f"duplicate client id {client.id}")
         self._client_ids.add(client.id)
         self._clients.append(client)
+        self._clients_by_id[client.id] = client
         return self
 
     def add_wlan(self, wlan: Wlan) -> IRBuilder:
@@ -274,8 +276,33 @@ class IRBuilder:
     def has_client(self, mac: str) -> bool:
         return client_id(mac) in self._client_ids
 
+    def get_client(self, mac: str) -> Client:
+        return self._clients_by_id[client_id(mac)]
+
+    def replace_client(self, client: Client) -> IRBuilder:
+        """Coalesce evidence for an existing MAC without erasing enrichment."""
+        if client.id not in self._client_ids:
+            raise IRValidationError(f"cannot replace unknown client {client.id}")
+        self._clients = [client if old.id == client.id else old for old in self._clients]
+        self._clients_by_id[client.id] = client
+        return self
+
+    def discard_clients(self, macs: Iterable[str]) -> IRBuilder:
+        """Withdraw disputed observations before publishing client outage evidence."""
+        ids = {client_id(mac) for mac in macs}
+        self._clients = [client for client in self._clients if client.id not in ids]
+        self._client_ids.difference_update(ids)
+        for cid in ids:
+            self._clients_by_id.pop(cid, None)
+            self._client_enrichment.pop(cid, None)
+        return self
+
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]
+
+    def linked_port_ids(self) -> frozenset[str]:
+        """Ports joining managed devices; learning here is transit evidence."""
+        return frozenset(pid for link in self._links for pid in (link.a_port, link.b_port))
 
     def get_device(self, did: str) -> Device:
         return self._devices[did]

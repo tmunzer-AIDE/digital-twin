@@ -172,7 +172,7 @@ def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp
     assert verdict.decision is Decision.REVIEW
     impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
     assert impact.coverage.state is CoverageState.PARTIAL
-    assert any("unknown port attachment" in note for note in impact.coverage.notes)
+    assert any("transit port without direct attachment" in note for note in impact.coverage.notes)
 
 
 def test_known_breakage_survives_partial_captured_client_telemetry(tmp_path):
@@ -227,12 +227,13 @@ def test_gs4_access_vlan_change_with_client_is_review(tmp_path):
     assert any(i["mac"] == WIRED_CLIENT_MAC and i["impact"] == "vlan_move" for i in impacts)
 
 
-def test_gs5_cosmetic_change_is_safe(tmp_path):
-    # UNTOUCHED real fixture: rename a switch -> full coverage, HIGH confidence,
-    # SAFE. Proves no false positives on a real production site.
+@pytest.mark.parametrize("field,expected", [("notes", Decision.SAFE), ("name", Decision.UNKNOWN)])
+def test_gs5_cosmetic_notes_and_name_dependent_dynamic_rename(tmp_path, field, expected):
+    # The real fixture contains an LLDP name rule depending on this switch.
+    # Notes remain inert; renaming expires the observed dynamic result.
     doc = fixture_doc()
     dev = next(d for d in doc["devices"] if d.get("type") == "switch" and d.get("port_config"))
-    payload = {**copy.deepcopy(dev), "name": "gs5-renamed"}
+    payload = {**copy.deepcopy(dev), field: "gs5-updated"}
     plan = plan_for(
         doc,
         [
@@ -249,7 +250,10 @@ def test_gs5_cosmetic_change_is_safe(tmp_path):
 
     plan["ops"][0]["payload"] = _drop_nones(plan["ops"][0]["payload"])
     v = _simulate(doc, plan, tmp_path)
-    assert v.decision is Decision.SAFE, v.decision_reasons
+    assert v.decision is expected, v.decision_reasons
+    if field == "name":
+        assert any("peer rename invalidates observed LLDP dynamic usage" in r
+                   for r in v.decision_reasons)
 
 
 def test_gs6_missing_client_data_is_review_not_silent(tmp_path):
@@ -897,7 +901,7 @@ def _gs25b_target(doc):
     return sw, str(row["port_id"])
 
 
-def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
+def test_gs25b_snooping_with_untrusted_uplink_and_unchanged_alarm_setting_is_review(tmp_path):
     # enable snooping for vlan2 on the gateway-facing switch AND explicitly
     # distrust the gateway-facing port (allow_dhcpd=false beats trunk):
     # the SRX is vlan 2's only modeled source -> offers drop -> REVIEW.
@@ -916,7 +920,9 @@ def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
         },
     }
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    # The unchanged alarm flag does not select or override forwarding behavior.
     assert v.decision is Decision.REVIEW, v.decision_reasons
+    assert not any("critical: unsupported dependency" in r for r in v.decision_reasons)
     f = next(f for f in v.findings if f.code == "wired.dhcp.snooping.untrusted_path")
     assert f.evidence["vlan"] == 2
 
@@ -1603,7 +1609,8 @@ def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     from .builders import DP_SITE
     per = ov.per_site[DP_SITE]
     assert per.decision is Decision.UNSAFE
-    gaps = [f for f in per.findings if f.code == "coverage.gap"]
+    gaps = [f for f in per.findings if f.code == "coverage.gap"
+            and f.evidence["stage"] == "device_profile_gate"]
     assert len(gaps) == 1
     assert gaps[0].evidence["stage"] == "device_profile_gate"
     assert gaps[0].evidence["paths"] == ["ip_configs.dp_net.ip"]
@@ -1611,6 +1618,8 @@ def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     assert gaps[0].subject.id == DP_GW_MAC
     assert gaps[0].affected_entities == (DP_GW_MAC,)
     assert "ip_configs.dp_net.ip" in gaps[0].message
+    assert any(f.code == "coverage.gap" and f.evidence["stage"] == "derived_gate"
+               and "ip_configs.dp_net.netmask" in f.evidence["paths"] for f in per.findings)
 
 
 def test_dp_c_benign_dhcp_domain_edit_on_profiled_gw_is_not_unknown(tmp_path):

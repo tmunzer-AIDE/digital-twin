@@ -45,6 +45,7 @@ from digital_twin.ir import (
 )
 
 from .base import IngestContext
+from .identity import ambiguous_lldp_names, unique_name_index
 
 _Json = Mapping[str, Any]
 
@@ -75,7 +76,8 @@ class LldpIngester:
             # masquerade as an authoritative empty graph. AP stats are only
             # required when the site actually contains APs; switch-only sites
             # derive their complete observed topology from port stats alone.
-            earned.add(IRCapability.L2_TOPOLOGY)
+            if not ambiguous_lldp_names(ctx.raw):
+                earned.add(IRCapability.L2_TOPOLOGY)
         if stp_seen:
             earned.add(IRCapability.STP_STATE)
         return frozenset(earned)
@@ -150,11 +152,8 @@ class LldpIngester:
         `_vouched_peer`). A row naming its own declared chassis MAC names its
         own device: a self-loop, whose fact lives on the ports.
         """
-        by_name = {
-            str(d["name"]): device_id(str(d["mac"]))
-            for d in ctx.raw.devices
-            if d.get("name") and d.get("mac")
-        }
+        observed = ctx.raw.observation_devices
+        by_name, _ = unique_name_index(observed if observed is not None else ctx.raw.devices)
         hostnames = self._running_hostnames(ctx)
         rows = {
             port_id(device_id(str(r["mac"])), str(r["port_id"])): r
@@ -228,7 +227,11 @@ class LldpIngester:
         managed switch port. APs have no port-stat rows, so this is the AP's side
         of every AP<->switch tie."""
         switches = [d for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")]
-        switch_by_name = {str(d.get("name")): device_id(str(d["mac"])) for d in switches}
+        observed = ctx.raw.observation_devices
+        observed_switches = switches if observed is None else [
+            d for d in observed if d.get("type") == "switch" and d.get("mac")
+        ]
+        switch_by_name, _ = unique_name_index(observed_switches)
         switch_macs = {device_id(str(d["mac"])) for d in switches}
         out: list[tuple[str, str, str]] = []
         for stat in ctx.raw.device_stats:

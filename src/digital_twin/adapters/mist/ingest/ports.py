@@ -129,7 +129,7 @@ def expand_port_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _overridable(pc_member: dict[str, Any] | None) -> bool:
+def overridable(pc_member: dict[str, Any] | None) -> bool:
     """local_port_config applies to a member ONLY when there is no port_config
     entry to protect, or that entry explicitly allows it. `no_local_overwrite`
     defaults to true (OAS) -> local is DISCARDED by default."""
@@ -149,7 +149,7 @@ def resolve_port_bases(eff: dict[str, Any]) -> dict[str, dict[str, Any]]:
     pc = expand_port_map(eff.get("port_config") or {})
     out: dict[str, dict[str, Any]] = {m: dict(a) for m, a in pc.items()}
     for member, attrs in expand_port_map(eff.get("local_port_config") or {}).items():
-        if _overridable(pc.get(member)):
+        if overridable(pc.get(member)):
             out[member] = {**out.get(member, {}), **attrs}
     return out
 
@@ -184,7 +184,7 @@ def resolve_effective_ports(
         for key in _OVERWRITE_ATTRS:  # port_config_overwrite
             if key in overwrite.get(member, {}):
                 effective[key] = overwrite[member][key]
-        if _overridable(pc.get(member)):  # local_port_config (highest, gated)
+        if overridable(pc.get(member)):  # local_port_config (highest, gated)
             for key in _LOCAL_ATTRS:
                 if key in local.get(member, {}):
                     effective[key] = local[member][key]

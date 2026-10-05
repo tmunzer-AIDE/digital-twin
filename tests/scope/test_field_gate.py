@@ -4,7 +4,7 @@ from pathlib import Path
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import RAW_ALLOWLIST
 from digital_twin.scope.field_gate import changed_paths, screen_op
-from digital_twin.scope.paths import allowed
+from digital_twin.scope.paths import allowed_tokens
 
 _DEVICE_SWITCH_OAS_PATH = (
     Path(__file__).parents[2]
@@ -30,19 +30,21 @@ SWITCH_CUR = {
 
 def test_changed_paths_detects_leaf_edit():
     payload = {**CURRENT, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
-    assert changed_paths(CURRENT, payload) == ("networks.voice.vlan_id",)
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == (
+        "networks.voice.vlan_id",
+    )
 
 
 def test_changed_paths_descends_removed_subtree_to_leaves():
     # full-object replacement: a key present in current but absent from payload
     # IS a change — surfaced at LEAF granularity
     payload = {k: v for k, v in CURRENT.items() if k != "dhcpd_config"}
-    assert changed_paths(CURRENT, payload) == ("dhcpd_config.corp.ip",)
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == ("dhcpd_config.corp.ip",)
 
 
 def test_changed_paths_ignores_server_metadata():
     payload = {k: v for k, v in CURRENT.items() if k not in ("id", "modified_time")}
-    assert changed_paths(CURRENT, payload) == ()
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == ()
 
 
 def test_in_scope_change_passes():
@@ -117,13 +119,13 @@ def test_port_description_is_in_scope_on_every_inline_map():
         assert screen_op("device", SWITCH_CUR, payload) is None, key
 
 
-def test_port_config_critical_is_in_scope():
-    # `critical` is an inert metadata flag (no effect on the resolved port) — a
-    # change to it must pass the gate (decidable), not fall through to UNKNOWN.
+def test_port_config_critical_alarm_change_requires_operational_coverage():
     cur = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "office"}}}
     payload = {**SWITCH_CUR, "port_config": {
         "ge-0/0/0": {"usage": "office", "critical": True}}}
-    assert screen_op("device", cur, payload) is None
+    rejection = screen_op("device", cur, payload)
+    assert rejection is not None
+    assert "critical" in rejection.reasons[0]
 
 
 def test_no_local_overwrite_flip_passes_when_no_local_entry():
@@ -198,7 +200,7 @@ def test_no_local_overwrite_flip_over_an_unmodeled_local_leaf_still_gaps():
     device_allowlist = RAW_ALLOWLIST["device"]
     unmodeled = sorted(
         leaf for leaf in local_props
-        if not allowed(f"local_port_config.ge-0/0/0.{leaf}", device_allowlist)
+        if not allowed_tokens(("local_port_config", "ge-0/0/0", leaf), device_allowlist)
     )
     if not unmodeled:
         assert unmodeled == []
@@ -254,6 +256,13 @@ def test_deletion_rejections_are_named_as_deletions():
     assert isinstance(r, Rejection)
     reason = next(x for x in r.reasons if "dhcpd_config" in x)
     assert "deleted" in reason
+
+
+def test_null_deletion_rejection_is_named_as_a_deletion():
+    current = {**SWITCH_CUR, "remote_syslog": {"enabled": True}}
+    rejection = screen_op("device", current, {**current, "remote_syslog": None})
+    assert isinstance(rejection, Rejection)
+    assert any("out-of-scope raw path deleted: remote_syslog" in r for r in rejection.reasons)
 
 
 def test_non_switch_device_rejected_post_fetch():
