@@ -275,6 +275,27 @@ _GATEWAY_DHCP_LEAVES: tuple[str, ...] = (
     "dhcpd_config.*.dns_servers",
     "dhcpd_config.*.lease_time",
 )
+# Benign DHCP naming leaves: allowed by the raw + effective gates on gateway AND
+# switch (site_setting / networktemplate / sitetemplate) scope rows, NEVER read
+# by ingest, NEVER in the device-profile modeled surface (kept out of
+# _DHCP_LEAVES / _GATEWAY_LEAVES for that reason). They only set the DNS domain
+# clients use to expand short names: dns_suffix, option 15 (domain name) and
+# option 119 (domain search list). They never touch leases, addressing,
+# forwarding, DNS server choice, time, authentication or provisioning; a wrong
+# value can break short-name lookups, which this exemption accepts on request
+# (2026-10-05). Every other option code stays unmodeled: 1/3/26/28/33/121/249
+# (addressing, routing), 6/44-47 (name servers), 2/4/42/100/101 (time, which TLS
+# and 802.1X depend on), 43/60/66/67/120/138/150 and vendor_encapsulated
+# (AP/phone/PXE provisioning), 12/81 (client identity), 51/58/59 (lease timers),
+# 252 (proxy). OAS shapes are pinned by tests/adapters/mist/test_oas_dhcp_placement.py.
+# Device-level switch dhcpd_config stays unmodeled as a whole.
+_BENIGN_DHCP_LEAVES: tuple[str, ...] = (
+    "dhcpd_config.*.dns_suffix",
+    "dhcpd_config.*.options.15.type",
+    "dhcpd_config.*.options.15.value",
+    "dhcpd_config.*.options.119.type",
+    "dhcpd_config.*.options.119.value",
+)
 _GATEWAY_LEAVES: tuple[str, ...] = (
     *_GATEWAY_PORT_LEAVES,
     *_GATEWAY_L3_LEAVES,
@@ -379,6 +400,7 @@ RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
         *_BENIGN_USAGE_LEAVES,
         *_STP_CONFIG_LEAVES,
         *_DHCP_LEAVES,
+        *_BENIGN_DHCP_LEAVES,
         *_SNOOPING_LEAVES,
         *_OSPF_LEAVES,
         *_BGP_LEAVES,
@@ -435,7 +457,7 @@ RAW_ALLOWLIST["nacrule"] = (
 RAW_ALLOWLIST["networktemplate"] = RAW_ALLOWLIST["site_setting"]
 # vars.* is allowlisted (like site_setting/networktemplate) so a gatewaytemplate
 # vars edit passes the RAW field gate and the derived gate evaluates its ripple.
-RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES, "vars.*")
+RAW_ALLOWLIST["gatewaytemplate"] = (*_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*")
 # sitetemplate sits in BOTH stacks -> union of switch/site leaves + gateway leaves.
 # Verified against the committed sitetemplate OAS in a later task (narrow only if
 # the schema proves a leaf cannot appear).
@@ -478,6 +500,7 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_STP_CONFIG_LEAVES,
     *_IRB_LEAVES,
     *_DHCP_LEAVES,
+    *_BENIGN_DHCP_LEAVES,
     *_SNOOPING_LEAVES,
     *_OSPF_LEAVES,
     *_BGP_LEAVES,
@@ -490,7 +513,9 @@ EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
 # Gateway effective allowlist (role-keyed derived gate): the gateway modeled leaves
 # + vars.* (the vars root survives _resolve; the derived gate catches its ripple,
 # so the vars.* leaf itself must be allowed).
-GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (*_GATEWAY_LEAVES, "vars.*")
+GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
+    *_GATEWAY_LEAVES, *_BENIGN_DHCP_LEAVES, "vars.*",
+)
 
 # Modeled leaves a device-profile (higher precedence, unmodeled layer) can
 # override, per role. EXACTLY the leaves the IR consumes for that role (so the

@@ -271,3 +271,50 @@ def test_every_device_allowlist_root_reaches_the_compiled_effective():
     inert = {"name", "notes"}
     roots = {path.split(".", 1)[0] for path in RAW_ALLOWLIST["device"]}
     assert roots - inert <= compiled
+
+
+_BENIGN_DHCP_PATHS = (
+    "dhcpd_config.lan.dns_suffix",
+    "dhcpd_config.lan.options.15.type",
+    "dhcpd_config.lan.options.15.value",
+    "dhcpd_config.lan.options.119.type",
+    "dhcpd_config.lan.options.119.value",
+)
+
+
+def test_dhcp_naming_leaves_are_benign_on_gateway_and_switch_scope_rows():
+    from digital_twin.scope.allowlist import DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE
+    from digital_twin.scope.paths import allowed
+
+    for leaf in _BENIGN_DHCP_PATHS:
+        for object_type in ("gatewaytemplate", "site_setting", "networktemplate", "sitetemplate"):
+            assert allowed(leaf, RAW_ALLOWLIST[object_type]), (object_type, leaf)
+        assert allowed(leaf, GATEWAY_EFFECTIVE_ALLOWLIST), leaf
+        assert allowed(leaf, EFFECTIVE_ALLOWLIST), leaf
+        # benign = ignored by the IR: a device profile overriding it changes
+        # nothing, so it must not taint profiled devices to UNKNOWN
+        for role in ("gateway", "switch"):
+            assert not allowed(leaf, DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE[role]), (role, leaf)
+        # device-level switch dhcpd_config stays unmodeled as a whole
+        assert not allowed(leaf, RAW_ALLOWLIST["device"]), leaf
+
+
+def test_other_dhcp_options_stay_denied():
+    from digital_twin.scope.paths import allowed
+
+    for leaf in (
+        "dhcpd_config.lan.options",            # an option map: empty-map rule, not the allowlist
+        "dhcpd_config.lan.options.15",         # option 15 without type/value leaves
+        "dhcpd_config.lan.options.3.value",    # router
+        "dhcpd_config.lan.options.6.value",    # DNS servers
+        "dhcpd_config.lan.options.42.value",   # NTP servers
+        "dhcpd_config.lan.options.43.value",   # vendor-specific (AP/phone discovery)
+        "dhcpd_config.lan.options.66.value",   # TFTP server (phone/PXE provisioning)
+        "dhcpd_config.lan.options.101.value",  # timezone: clock-driven behaviour
+        "dhcpd_config.lan.options.121.value",  # classless static routes
+        "dhcpd_config.lan.options.252.value",  # WPAD proxy auto-config
+        "dhcpd_config.lan.vendor_encapsulated.1.value",
+    ):
+        for allowlist in (RAW_ALLOWLIST["gatewaytemplate"], RAW_ALLOWLIST["site_setting"],
+                          GATEWAY_EFFECTIVE_ALLOWLIST, EFFECTIVE_ALLOWLIST):
+            assert not allowed(leaf, allowlist), leaf

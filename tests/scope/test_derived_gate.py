@@ -185,3 +185,28 @@ def test_site_row_with_empty_fixed_bindings_over_template_reservations_still_rej
     rej = check_derived(base, prop)
     assert rej is not None
     assert any("fixed_bindings.aabbccddeeff.ip" in r for r in rej.reasons)
+
+
+def test_effective_dhcp_naming_leaves_pass_on_gateway_and_site():
+    prop = {"dhcpd_config": {"lan": {
+        **_SCOPE_ROW, "dns_suffix": ["example.test"],
+        "options": {"15": {"type": "string", "value": "example.test"},
+                    "119": {"type": "string", "value": "example.test"}}}}}
+    assert check_derived({}, prop, allowlist=GATEWAY_EFFECTIVE_ALLOWLIST) is None
+    assert check_derived({}, prop) is None
+
+
+def test_empty_effective_dhcp_options_map_passes():
+    prop = {"dhcpd_config": {"lan": {**_SCOPE_ROW, "options": {}}}}
+    assert check_derived({}, prop, allowlist=GATEWAY_EFFECTIVE_ALLOWLIST) is None
+    assert check_derived({}, prop) is None
+
+
+def test_site_row_with_empty_options_over_template_options_still_rejects():
+    # per-row merge: the site row's `options: {}` drops the template's option 43
+    template = {"dhcpd_config": {"lan": {
+        **_SCOPE_ROW, "options": {"43": {"type": "hex", "value": "f1"}}}}}
+    site = {"dhcpd_config": {"lan": {**_SCOPE_ROW, "options": {}}}}
+    rej = check_derived(merge_site_effective(template, {}), merge_site_effective(template, site))
+    assert rej is not None
+    assert any("options.43.value" in r for r in rej.reasons)

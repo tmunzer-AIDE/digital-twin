@@ -19,23 +19,32 @@ JsonObj = dict[str, Any]
 _SCOPE_FIELDS = ("ip_start", "ip_end", "gateway")
 
 
-def is_empty_fixed_bindings(
+# Scope-row maps whose EMPTY form is a no-op: no reservation, no option. Mist
+# writes `fixed_bindings: {}` on every scope and agents copy `options: {}`.
+_EMPTY_NOOP_ROW_MAPS = ("fixed_bindings", "options")
+
+
+def is_empty_scope_map(
     path: str, before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> bool:
-    """`dhcpd_config.<scope>.fixed_bindings` holding no reservation on either side
-    (absent, null or `{}` — Mist writes `{}` on every scope) reserves nothing, so it
-    is not an unmodeled change. Only exactly-empty maps qualify (adding or emptying
-    reservations surfaces as reservation leaves, which stay gaps), and only on a row
-    that carries another setting on each side where it exists: a row holding nothing
-    else could switch a scope on with defaults, and only this path would show it."""
+    """`dhcpd_config.<scope>.fixed_bindings` / `.options` holding nothing on either
+    side (absent, null or `{}`) reserves nothing and sends no option, so it is not
+    an unmodeled change. Only exactly-empty maps qualify (adding or dropping
+    entries surfaces as entry leaves, which the allowlist judges), and only on a
+    row that carries another setting on each side where it exists: a row holding
+    nothing else could switch a scope on with defaults, and only this path would
+    show it."""
     segments = path.split(".")
-    if len(segments) != 3 or segments[0] != "dhcpd_config" or segments[2] != "fixed_bindings":
+    if len(segments) != 3 or segments[0] != "dhcpd_config":
+        return False
+    key = segments[2]
+    if key not in _EMPTY_NOOP_ROW_MAPS:
         return False
     rows = [row for row in (_scope_row(before, segments[1]), _scope_row(after, segments[1]))
             if row is not None]
     return bool(rows) and all(
-        row.get("fixed_bindings") in (None, {})
-        and any(value is not None for key, value in row.items() if key != "fixed_bindings")
+        row.get(key) in (None, {})
+        and any(value is not None for name, value in row.items() if name != key)
         for row in rows
     )
 

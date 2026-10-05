@@ -46,6 +46,7 @@ from .builders import (
     device_op,
     disable_uplink_op,
     disabled_uplink_doc,
+    dp_gatewaytemplate_dhcp_edit_with_profiled_gw,
     dp_gatewaytemplate_edit_with_profiled_gw,
     dp_only_ap_profiled_not_tainted,
     dynamic_ap_wlan_doc,
@@ -809,6 +810,32 @@ def test_gs25a_variant_preexisting_overlap_stays_safe_info(tmp_path):
     assert f.severity.value == "info"
 
 
+def test_gs25a_variant_switch_scope_with_dhcp_naming_leaves_stays_safe(tmp_path):
+    # same SAFE delta as the variant above, on a switch-hosted (site) scope that
+    # also carries the DHCP naming leaves and Mist's empty option/binding maps
+    doc = _gs25_doc(stage_overlap_in_baseline=True)
+    doc["setting"]["networks"]["gs25_far"] = {"vlan_id": 994}
+    op = {
+        "action": "update", "order": 0, "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {
+            "dhcpd_config": {
+                **doc["setting"]["dhcpd_config"],
+                "gs25_far": {
+                    "type": "local",
+                    "ip_start": "198.51.200.10", "ip_end": "198.51.210.10",
+                    "dns_suffix": ["example.test"],
+                    "options": {"15": {"type": "string", "value": "example.test"},
+                                "119": {"type": "string", "value": "example.test"}},
+                    "fixed_bindings": {},
+                },
+            },
+        },
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+
+
 def _gs25b_target(doc):
     """(switch_device_dict, gw_facing_port) derived from the fixture itself —
     robust to redaction re-captures. Also clears the switch's pre-existing
@@ -1452,6 +1479,36 @@ def test_gt_f_variant_fixed_binding_reservation_is_unknown(tmp_path):
     assert any("fixed_bindings.aabbccddeeff.ip" in r for r in ov.decision_reasons)
 
 
+_DOMAIN_ROW = {"dns_suffix": ["example.test"],
+               "options": {"15": {"type": "string", "value": "example.test"},
+                           "119": {"type": "string", "value": "example.test"}}}
+
+
+def test_gt_g_dhcp_domain_name_and_suffix_leave_the_verdict_unchanged(tmp_path):
+    # option 15 (domain name) and dns_suffix are benign on gateway scopes: same
+    # verdict as the same scope without them, and no reason names them
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    assert control.decision is not Decision.UNKNOWN, control.decision_reasons
+    named = _simulate_org(*gt_add_dhcp_scope(**_DOMAIN_ROW), tmp_path)
+    assert named.decision is control.decision, named.decision_reasons
+    assert not any("dns_suffix" in r or "options" in r for r in named.decision_reasons)
+
+
+def test_gt_h_empty_option_and_binding_maps_leave_the_verdict_unchanged(tmp_path):
+    # the live shape: a copied scope carrying `options: {}` and `fixed_bindings: {}`
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    empty = _simulate_org(*gt_add_dhcp_scope(options={}, fixed_bindings={}), tmp_path)
+    assert empty.decision is control.decision, empty.decision_reasons
+    assert not any("options" in r or "fixed_bindings" in r for r in empty.decision_reasons)
+
+
+def test_gt_g_variant_other_dhcp_option_stays_unknown(tmp_path):
+    doc, plan = gt_add_dhcp_scope(options={"43": {"type": "hex", "value": "f1"}})
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("options.43.value" in r for r in ov.decision_reasons)
+
+
 def test_gt_e_fetch_fail_site_keeps_unsafe_site_headline(tmp_path):
     # Scenario 6: same IP change as GT-a but site B's fetch fails -> org
     # UNSAFE from site A with GT_SITE_B still listed in site_failures.
@@ -1507,6 +1564,15 @@ def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     assert gaps[0].subject.id == DP_GW_MAC
     assert gaps[0].affected_entities == (DP_GW_MAC,)
     assert "ip_configs.dp_net.ip" in gaps[0].message
+
+
+def test_dp_c_benign_dhcp_domain_edit_on_profiled_gw_is_not_unknown(tmp_path):
+    # benign leaves are outside the device-profile modeled surface: a profile
+    # overriding them changes nothing the IR reads, so no taint
+    doc, plan = dp_gatewaytemplate_dhcp_edit_with_profiled_gw(**_DOMAIN_ROW)
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is not Decision.UNKNOWN, ov.decision_reasons
+    assert not any("device_profile_gate" in r for r in ov.decision_reasons)
 
 
 def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
