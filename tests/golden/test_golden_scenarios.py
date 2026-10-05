@@ -1966,3 +1966,30 @@ def test_gs_l2_isolation_leaf_ports_only_severed(tmp_path):
         f"EDGE (access switch with live backbone uplink) must not be severed; "
         f"got {severed_nodes}"
     )
+
+
+def test_gs_disabling_a_two_sided_ap_uplink_is_unsafe(tmp_path):
+    # EDGE's port stats name the AP on ge-0/0/30 AND the AP's lldp_stat names
+    # EDGE:ge-0/0/30 back -> a two-sided (HIGH) tie. Disabling that port strands
+    # the AP -> UNSAFE. Found live 2026-10-05: the AP's side was ignored once the
+    # switch side had emitted the link, the tie stayed one-sided/LOW and the
+    # verdict capped at REVIEW.
+    doc = fixture_doc()
+    ap_mac, ap_port = "bdb15e1655a1", "ge-0/0/30"
+    # fixture precondition: both ends really name each other
+    assert any(
+        r["mac"] == EDGE and r["port_id"] == ap_port and r.get("neighbor_mac") == ap_mac
+        for r in doc["port_stats"]
+    )
+    assert any(
+        s.get("mac") == ap_mac
+        and (s.get("lldp_stat") or {}).get("chassis_id") == EDGE
+        and (s.get("lldp_stat") or {}).get("port_id") == ap_port
+        for s in doc["device_stats"]
+    )
+    plan = plan_for(doc, [device_op(doc, EDGE, **{ap_port.replace("/", "__"): "disabled"})])
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
+    assert disable.severity is Severity.ERROR
+    assert disable.subject is not None and disable.subject.id == ap_mac

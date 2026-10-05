@@ -1,3 +1,5 @@
+import pytest
+
 from digital_twin.adapters.mist.ingest.base import IngestContext
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
@@ -13,12 +15,13 @@ from digital_twin.ir import (
 from tests.adapters.mist.fixtures import AP_1, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 SWITCH_B = {**SWITCH_A, "mac": "bb0000000002", "id": "dev-b", "name": "sw-b"}
+AP_2 = {**AP_1, "mac": "cc0000000002", "id": "dev-ap2", "name": "ap-2"}
 
 
-def _ctx(port_stats, device_stats=()) -> IngestContext:
+def _ctx(port_stats, device_stats=(), extra_devices=()) -> IngestContext:
     ctx = IngestContext(
         raw=raw_site(
-            devices=(SWITCH_A, SWITCH_B, AP_1),
+            devices=(SWITCH_A, SWITCH_B, AP_1, *extra_devices),
             port_stats=tuple(port_stats),
             device_stats=tuple(device_stats),
         ),
@@ -287,6 +290,60 @@ def test_switch_reporting_ap_yields_one_link_not_duplicates():
     ir = _ctx(stats, device_stats).builder.build()
     ap_links = [link for link in ir.links if "cc0000000001" in link.id]
     assert len(ap_links) == 1
+
+
+_SWITCH_SEES_AP_1 = {
+    "mac": "aa0000000001",
+    "port_id": "ge-0/0/10",
+    "up": True,
+    "neighbor_mac": "cc0000000001",
+    "neighbor_port_desc": "eth0",
+}
+
+
+@pytest.mark.parametrize(
+    "lldp",
+    [
+        {"system_name": "sw-a", "port_id": "ge-0/0/10"},
+        {"chassis_id": "aa:00:00:00:00:01", "port_id": "ge-0/0/10"},
+    ],
+    ids=["by_system_name", "by_chassis_id"],
+)
+def test_switch_and_ap_naming_each_other_is_a_high_confidence_link(lldp):
+    # the switch port names the AP AND the AP's lldp_stat names that switch port
+    # back -> two-sided. Found live 2026-10-05: the switch-side claim emitted the
+    # link first and the AP's corroboration was skipped, so every AP uplink seen
+    # from both ends stayed LOW and disabling it capped at REVIEW, not UNSAFE.
+    device_stats = [{"mac": "cc0000000001", "type": "ap", "lldp_stat": lldp}]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats).builder.build()
+    ap_links = [link for link in ir.links if "cc0000000001" in link.id]
+    assert len(ap_links) == 1
+    assert ap_links[0].meta.confidence.level is ConfidenceLevel.HIGH
+    assert ap_links[0].meta.confidence.reasons == ()
+
+
+def test_ap_naming_another_switch_port_does_not_corroborate():
+    # the switch sees the AP on ge-0/0/10 but the AP reports ge-0/0/47 -> the
+    # ge-0/0/10 tie is still seen from one end only
+    device_stats = [
+        {"mac": "cc0000000001", "type": "ap",
+         "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/47"}}
+    ]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats).builder.build()
+    link = next(lk for lk in ir.links if lk.id == "aa0000000001:ge-0/0/10__cc0000000001:eth0")
+    assert link.meta.confidence.level is ConfidenceLevel.LOW
+
+
+def test_another_ap_claiming_the_switch_port_does_not_corroborate():
+    # the switch names ap-1 on ge-0/0/10; only ap-2 claims that port -> not the
+    # reverse of the switch's claim, the switch<->ap-1 tie stays LOW
+    device_stats = [
+        {"mac": "cc0000000002", "type": "ap",
+         "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/10"}}
+    ]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats, extra_devices=(AP_2,)).builder.build()
+    link = next(lk for lk in ir.links if lk.id == "aa0000000001:ge-0/0/10__cc0000000001:eth0")
+    assert link.meta.confidence.level is ConfidenceLevel.LOW
 
 
 def test_stp_capability_earned_only_when_stp_rows_seen():
