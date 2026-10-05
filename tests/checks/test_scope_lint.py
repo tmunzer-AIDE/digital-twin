@@ -236,6 +236,42 @@ def test_unparseable_present_values_abstain_with_note():
     assert r.coverage.state is CoverageState.PARTIAL
 
 
+def test_new_scope_with_valid_dns_and_lease_is_not_reviewed_for_options():
+    scope = DhcpScope(
+        provider="site",
+        network="guest",
+        dns_servers=("1.1.1.1", "8.8.8.8"),
+        lease_time=86400,
+    )
+    r = _run(_ir(), _ir(scope))
+    assert not [f for f in r.findings if f.code.endswith("client_options_changed")]
+
+
+def test_existing_scope_dns_or_lease_change_requires_review():
+    old = DhcpScope(
+        provider="site", network="guest", dns_servers=("1.1.1.1",), lease_time=3600
+    )
+    new = DhcpScope(
+        provider="site", network="guest", dns_servers=("8.8.8.8",), lease_time=86400
+    )
+    r = _run(_ir(old), _ir(new))
+    f = next(x for x in r.findings if x.code.endswith("client_options_changed"))
+    assert f.severity is Severity.WARNING
+    assert f.evidence["changed_options"] == ["DNS servers", "lease time"]
+
+
+def test_touched_scope_with_unresolved_dns_is_partial():
+    scope = DhcpScope(
+        provider="site",
+        network="guest",
+        dns_servers=("{{dns_1}}",),
+        dns_servers_unresolved=True,
+    )
+    r = _run(_ir(), _ir(scope))
+    assert r.coverage.state is CoverageState.PARTIAL
+    assert any("DNS" in note for note in r.coverage.notes)
+
+
 # --- caused_by attribution tests ---
 
 

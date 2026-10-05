@@ -5,12 +5,17 @@
 - Neighbor is NOT a Mist device      -> NO Link; the neighbor becomes a wired
   edge-device Client on the local port (user decision: printers/unmanaged
   routers stay in the impact surface — VLAN continuity, DHCP, routing, FW).
+  Except a Virtual Chassis' chassis MAC: a system name that is ONE device's
+  running hostname, whose device claims the port back, resolves to that device
+  (`_vouched_peer`).
 - aggregated/lag_name                -> LinkKind.LAG with bundle_id.
 - stp_state on a port                -> Port.stp_state + stp_meta (OBSERVED);
   stp.state capability is EARNED only if >=1 such row was applied.
 - AP lldp_stat names switch + port   -> AP uplink link; two-sided only when the
-  switch's own claims name THAT AP back (not just any neighbor). A shared
-  emitted-set prevents the same physical link being added twice.
+  switch's own claims name THAT AP back (not just any neighbor). Symmetrically,
+  a switch claim naming an AP is two-sided only when THAT AP's lldp_stat names
+  the claiming port (APs have no port-stat rows). A shared emitted-set prevents
+  the same physical link being added twice.
 
 Ports referenced by stats but absent from config are added as minimal OBSERVED
 trunk ports (cannot invent VLANs). Stat shapes pinned by tools/probe_fetch.py.
@@ -54,12 +59,13 @@ class LldpIngester:
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
         self._ensure_stat_ports(ctx)
         claims = self._claims(ctx)
+        ap_claims = self._ap_claims(ctx)
         stp_seen = self._apply_stp(ctx)
         self._apply_port_uplink(ctx)
         self._apply_self_loops(ctx)
         emitted: set[str] = set()
-        self._emit_links(ctx, claims, emitted)
-        self._emit_ap_uplinks(ctx, claims, emitted)
+        self._emit_links(ctx, claims, ap_claims, emitted)
+        self._emit_ap_uplinks(ctx, claims, ap_claims, emitted)
         earned: set[str] = set()
         fetched = set(ctx.raw.meta.fetched)
         needs_device_stats = any(d.get("type") == "ap" for d in ctx.raw.devices)
@@ -95,15 +101,27 @@ class LldpIngester:
         its system name against the site's managed device names — same rule the
         AP-uplink path already uses. A macless row whose name matches nothing
         is SKIPPED (no stable identity to attach a link or edge-client to).
+
+        A row whose neighbor_mac is not a managed device may still name one: a
+        Virtual Chassis advertises its chassis MAC, not its Mist device MAC (see
+        `_vouched_peer`).
         """
         observed = ctx.raw.observation_devices
         by_name, _ = unique_name_index(observed if observed is not None else ctx.raw.devices)
+        hostnames = self._running_hostnames(ctx)
+        rows = {
+            port_id(device_id(str(r["mac"])), str(r["port_id"])): r
+            for r in ctx.raw.port_stats
+            if r.get("port_id") and r.get("mac")
+        }
         out: dict[tuple[str, str], _Json] = {}
         for row in ctx.raw.port_stats:
             if not row.get("port_id"):
                 continue
             if row.get("neighbor_mac"):
                 neighbor = device_id(str(row["neighbor_mac"]))
+                if not ctx.builder.has_device(neighbor):
+                    neighbor = self._vouched_peer(ctx, row, hostnames, rows) or neighbor
             else:
                 named = by_name.get(str(row.get("neighbor_system_name")))
                 if named is None:
@@ -113,6 +131,78 @@ class LldpIngester:
             # Mist port stats name the neighbor's port via `neighbor_port_desc`.
             dst = port_id(neighbor, str(row.get("neighbor_port_desc") or "?"))
             out[(src, dst)] = row
+        return out
+
+    def _running_hostnames(self, ctx: IngestContext) -> dict[str, str]:
+        """hostname -> device id, for hostnames run by exactly ONE device.
+
+        LLDP advertises the hostname a device RUNS, reported in its device stats.
+        The configured name is not it: a plan renaming a device edits `devices`,
+        while the recorded LLDP rows and stats keep the running hostname.
+        """
+        owners: dict[str, set[str]] = {}
+        for s in ctx.raw.device_stats:
+            if s.get("hostname") and s.get("mac"):
+                owners.setdefault(str(s["hostname"]), set()).add(device_id(str(s["mac"])))
+        return {name: next(iter(ids)) for name, ids in owners.items() if len(ids) == 1}
+
+    def _vouched_peer(
+        self, ctx: IngestContext, row: _Json, hostnames: dict[str, str], rows: dict[str, _Json]
+    ) -> str | None:
+        """The managed device behind an unmanaged neighbor_mac, or None.
+
+        A Virtual Chassis advertises its chassis MAC over LLDP, not its Mist
+        device MAC (found in the real-org recording), so its neighbours' rows
+        carry an unknown MAC next to the VC's hostname. The name alone proves
+        nothing (a non-Mist box can share a hostname), so it resolves only when
+        exactly one device runs that hostname, that device is not the reporter,
+        and its row on the named port claims this exact port back. Otherwise
+        None: the neighbour stays an edge-device client, as before.
+        """
+        reporter = device_id(str(row["mac"]))
+        peer = hostnames.get(str(row.get("neighbor_system_name") or ""))
+        if peer is None or peer == reporter:
+            return None
+        back = rows.get(port_id(peer, str(row.get("neighbor_port_desc") or "?")))
+        if back is None or str(back.get("neighbor_port_desc")) != str(row["port_id"]):
+            return None
+        back_mac = back.get("neighbor_mac")
+        named: str | None
+        if back_mac and ctx.builder.has_device(device_id(str(back_mac))):
+            named = device_id(str(back_mac))
+        else:  # macless, or itself a chassis MAC (VC <-> VC): its name must match
+            named = hostnames.get(str(back.get("neighbor_system_name") or ""))
+        return peer if named == reporter else None
+
+    def _ap_claims(self, ctx: IngestContext) -> list[tuple[str, str, str]]:
+        """(ap_id, switch_id, switch_port_name) per AP whose lldp_stat names a
+        managed switch port. APs have no port-stat rows, so this is the AP's side
+        of every AP<->switch tie."""
+        switches = [d for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")]
+        observed = ctx.raw.observation_devices
+        observed_switches = switches if observed is None else [
+            d for d in observed if d.get("type") == "switch" and d.get("mac")
+        ]
+        switch_by_name, _ = unique_name_index(observed_switches)
+        switch_macs = {device_id(str(d["mac"])) for d in switches}
+        out: list[tuple[str, str, str]] = []
+        for stat in ctx.raw.device_stats:
+            if stat.get("type") != "ap" or not stat.get("mac"):
+                continue
+            lldp = stat.get("lldp_stat") or {}
+            # Prefer chassis_id (switch base MAC) — robust; fall back to system_name
+            # (the switch hostname), which catches Virtual Chassis whose chassis_id
+            # is a member FPC MAC rather than the Mist device MAC.
+            chassis = device_id(str(lldp["chassis_id"])) if lldp.get("chassis_id") else None
+            sw_id = (
+                chassis
+                if chassis in switch_macs
+                else switch_by_name.get(str(lldp.get("system_name")))
+            )
+            sw_port_name = lldp.get("port_id") or lldp.get("port_desc")
+            if not sw_id or not sw_port_name:
+                continue
+            out.append((device_id(str(stat["mac"])), sw_id, str(sw_port_name)))
         return out
 
     # -- STP ------------------------------------------------------------------
@@ -182,8 +272,14 @@ class LldpIngester:
 
     # -- links ----------------------------------------------------------------
     def _emit_links(
-        self, ctx: IngestContext, claims: dict[tuple[str, str], _Json], emitted: set[str]
+        self,
+        ctx: IngestContext,
+        claims: dict[tuple[str, str], _Json],
+        ap_claims: list[tuple[str, str, str]],
+        emitted: set[str],
     ) -> None:
+        # an AP's side of the tie is its lldp_stat, not a port-stat claim
+        ap_backed = {(port_id(sw_id, name), ap_id) for ap_id, sw_id, name in ap_claims}
         for (src, dst), row in claims.items():
             neighbor_dev = dst.partition(":")[0]
             if neighbor_dev == src.partition(":")[0]:
@@ -195,7 +291,7 @@ class LldpIngester:
             if lid in emitted:
                 continue
             emitted.add(lid)
-            two_sided = (dst, src) in claims
+            two_sided = (dst, src) in claims or (src, neighbor_dev) in ap_backed
             prov = Provenance.LLDP_TWO_SIDED if two_sided else Provenance.LLDP_ONE_SIDED
             reasons = () if two_sided else (f"link {lid} seen from {src} only",)
             kind, bundle = self._kind(row, claims.get((dst, src)))
@@ -236,34 +332,15 @@ class LldpIngester:
         return LinkKind.PHYSICAL, None
 
     def _emit_ap_uplinks(
-        self, ctx: IngestContext, claims: dict[tuple[str, str], _Json], emitted: set[str]
+        self,
+        ctx: IngestContext,
+        claims: dict[tuple[str, str], _Json],
+        ap_claims: list[tuple[str, str, str]],
+        emitted: set[str],
     ) -> None:
-        switches = [d for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")]
-        observed = ctx.raw.observation_devices
-        observed_switches = switches if observed is None else [
-            d for d in observed if d.get("type") == "switch" and d.get("mac")
-        ]
-        switch_by_name, _ = unique_name_index(observed_switches)
-        switch_macs = {device_id(str(d["mac"])) for d in switches}
-        for stat in ctx.raw.device_stats:
-            if stat.get("type") != "ap" or not stat.get("mac"):
-                continue
-            lldp = stat.get("lldp_stat") or {}
-            # Prefer chassis_id (switch base MAC) — robust; fall back to system_name
-            # (the switch hostname), which catches Virtual Chassis whose chassis_id
-            # is a member FPC MAC rather than the Mist device MAC.
-            chassis = device_id(str(lldp["chassis_id"])) if lldp.get("chassis_id") else None
-            sw_id = (
-                chassis
-                if chassis in switch_macs
-                else switch_by_name.get(str(lldp.get("system_name")))
-            )
-            sw_port_name = lldp.get("port_id") or lldp.get("port_desc")
-            if not sw_id or not sw_port_name:
-                continue
-            ap_id = device_id(str(stat["mac"]))
+        for ap_id, sw_id, sw_port_name in ap_claims:
             ap_port = port_id(ap_id, "eth0")
-            sw_port = port_id(sw_id, str(sw_port_name))
+            sw_port = port_id(sw_id, sw_port_name)
             lid = link_id(ap_port, sw_port)
             if lid in emitted or any(  # switch-side claim already produced this link
                 link_id(src, dst) == lid for (src, dst) in claims if src == sw_port
@@ -275,7 +352,7 @@ class LldpIngester:
                 src == sw_port and dst.partition(":")[0] == ap_id for (src, dst) in claims
             )
             prov = Provenance.LLDP_TWO_SIDED if corroborated else Provenance.LLDP_ONE_SIDED
-            for pid, did, name in ((ap_port, ap_id, "eth0"), (sw_port, sw_id, str(sw_port_name))):
+            for pid, did, name in ((ap_port, ap_id, "eth0"), (sw_port, sw_id, sw_port_name)):
                 self._ensure_port(ctx, pid, did, name)
             ctx.builder.add_link(
                 Link(

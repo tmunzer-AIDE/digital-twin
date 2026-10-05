@@ -41,6 +41,7 @@ from digital_twin.ir import (
     IRDiff,
     min_confidence,
     same_ip,
+    same_subnet,
 )
 from digital_twin.ir.entities import L3Intf
 from digital_twin.ir.model import IR
@@ -95,17 +96,17 @@ class GatewayGapCheck:
         )
         findings: list[Finding] = []
         subnet_abstain_notes: list[str] = []
+        interface_subnet_abstain_notes: list[str] = []
         # hoist relevance sets so both the existence loop and .gateway_unowned
         # loop can use them
         changed_vlan_ids = {
-            r.id for r in (*ctx.diff.added, *ctx.diff.removed,
-                           *(m.ref for m in ctx.diff.modified))
+            r.id
+            for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
             if r.kind == "vlan"
         }
         l3_touched_vlans = {
             r.id.rsplit(":", 1)[-1]
-            for r in (*ctx.diff.added, *ctx.diff.removed,
-                      *(m.ref for m in ctx.diff.modified))
+            for r in (*ctx.diff.added, *ctx.diff.removed, *(m.ref for m in ctx.diff.modified))
             if r.kind == "l3intf"
         }
         for vid, vlan in sorted(prop_ir.vlans.items()):
@@ -169,11 +170,76 @@ class GatewayGapCheck:
                     caused_by=(
                         ctx.delta_index.causes("l3intf", [i.id for i in base_intfs])
                         if code == "removed"
-                        else ctx.delta_index.causes("vlan", (str(vid),)) if code == "unserved"
+                        else ctx.delta_index.causes("vlan", (str(vid),))
+                        if code == "unserved"
                         else ()
                     ),
                 )
             )
+        # An explicit static interface must belong to the network it serves.
+        # This validates ip_configs.ip + netmask against the referenced org
+        # network instead of treating those fields as inert configuration.
+        base_intfs_by_id = {i.id: i for i in base_ir.l3intfs}
+        changed_l3_ids = {
+            r.id
+            for r in (*ctx.diff.added, *(m.ref for m in ctx.diff.modified))
+            if r.kind == "l3intf"
+        }
+        for vid, vlan in sorted(prop_ir.vlans.items()):
+            for intf in prop_l3.get(vid, []):
+                relevant = str(vid) in changed_vlan_ids or intf.id in changed_l3_ids
+                if intf.subnet_unresolved:
+                    if relevant:
+                        interface_subnet_abstain_notes.append(
+                            f"interface {intf.id}: static IP or netmask is unresolved — "
+                            "network membership cannot be verified"
+                        )
+                    continue
+                verdict = same_subnet(intf.subnet, vlan.subnet)
+                if verdict is not False:
+                    continue
+                old = base_intfs_by_id.get(intf.id)
+                old_vlan = base_ir.vlans.get(vid)
+                preexisting = (
+                    old is not None
+                    and old_vlan is not None
+                    and old.subnet == intf.subnet
+                    and old_vlan.subnet == vlan.subnet
+                    and same_subnet(old.subnet, old_vlan.subnet) is False
+                )
+                findings.append(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.interface_subnet_mismatch",
+                        severity=Severity.INFO if preexisting else Severity.WARNING,
+                        confidence=intf.meta.confidence,
+                        message=(
+                            f"interface {intf.id} uses subnet {intf.subnet}, which does "
+                            f"not match vlan {vid}'s declared subnet {vlan.subnet}"
+                            + (" (pre-existing, unchanged)" if preexisting else "")
+                        ),
+                        affected_entities=(str(vid), intf.id),
+                        subject=ObjectRef("l3intf", intf.id),
+                        evidence={
+                            "vlan": vid,
+                            "interface_subnet": intf.subnet,
+                            "network_subnet": vlan.subnet,
+                        },
+                        caused_by=(
+                            tuple(
+                                dict.fromkeys(
+                                    (
+                                        *ctx.delta_index.causes("l3intf", (intf.id,)),
+                                        *ctx.delta_index.causes("vlan", (str(vid),)),
+                                    )
+                                )
+                            )
+                            if not preexisting
+                            else ()
+                        ),
+                    )
+                )
         # --- .gateway_unowned: interfaces EXIST but none owns the declared
         # gateway (strict precedence: the no-interface cases belong to the
         # existence codes above; never double-fire)
@@ -208,10 +274,7 @@ class GatewayGapCheck:
             base_vlan = base_ir.vlans.get(vid)
             base_g = base_vlan.gateway if base_vlan is not None else None
             base_intfs = base_l3.get(vid, [])
-            owners = [
-                i for i in base_intfs
-                if base_g is not None and same_ip(i.ip, base_g) is True
-            ]
+            owners = [i for i in base_intfs if base_g is not None and same_ip(i.ip, base_g) is True]
             if owners:
                 # known owner broken (G moved, or the owner changed/left)
                 severity, code = Severity.ERROR, "gateway_unowned"
@@ -243,8 +306,7 @@ class GatewayGapCheck:
                 severity, code = Severity.WARNING, "gateway_unowned"
                 confidence = _UNMODELED
                 message = (
-                    f"vlan {vid}: declared default gateway {g} is owned by no "
-                    "modeled L3 interface"
+                    f"vlan {vid}: declared default gateway {g} is owned by no modeled L3 interface"
                 )
             high = confidence.level is ConfidenceLevel.HIGH
             if severity is Severity.ERROR and not high:
@@ -259,12 +321,19 @@ class GatewayGapCheck:
                     message=message,
                     affected_entities=(str(vid),),
                     subject=ObjectRef("vlan", str(vid)),
-                    evidence={"vlan": vid, "gateway": g,
-                              "l3_interfaces": [i.id for i in intfs]},
-                    caused_by=tuple(dict.fromkeys((
-                        *((c,) if (c := ctx.delta_index.cause("vlan", str(vid))) else ()),
-                        *ctx.delta_index.causes("l3intf", [i.id for i in (*owners, *intfs)]),
-                    ))) if code == "gateway_unowned" and severity is not Severity.INFO else (),
+                    evidence={"vlan": vid, "gateway": g, "l3_interfaces": [i.id for i in intfs]},
+                    caused_by=tuple(
+                        dict.fromkeys(
+                            (
+                                *((c,) if (c := ctx.delta_index.cause("vlan", str(vid))) else ()),
+                                *ctx.delta_index.causes(
+                                    "l3intf", [i.id for i in (*owners, *intfs)]
+                                ),
+                            )
+                        )
+                    )
+                    if code == "gateway_unowned" and severity is not Severity.INFO
+                    else (),
                 )
             )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]
@@ -276,6 +345,7 @@ class GatewayGapCheck:
             (blind_notes if conclusions else ())
             + tuple(abstain_notes)
             + tuple(subnet_abstain_notes)
+            + tuple(interface_subnet_abstain_notes)
         )
         return CheckResult(
             check_id=self.id,

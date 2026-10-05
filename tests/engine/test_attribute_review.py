@@ -137,7 +137,7 @@ def test_switch_rename_cannot_activate_an_uncompiled_matching_rule_setting(setti
     assert any("switch_matching.selected." + setting in r for r in verdict.decision_reasons)
 
 
-def test_switch_rename_with_only_known_port_rules_retains_normal_simulation():
+def test_switch_rename_with_only_known_port_rules_retains_matcher_review():
     raw = replace(_metadata_raw(), networktemplate={"switch_matching": {"enable": True, "rules": [
         {"match_name": "sw-a", "port_config": {}},
         {"match_name": "sw-b", "port_config": {}},
@@ -145,7 +145,10 @@ def test_switch_rename_with_only_known_port_rules_retains_normal_simulation():
     verdict = simulate(
         _plan([_op("device", "dev-a", {"name": "sw-b"})]), provider=FakeProvider(raw)
     )
-    assert verdict.decision is Decision.SAFE
+    # Main's name-change policy conservatively reviews a criterion flip even
+    # when the two rules currently carry identical modeled port settings.
+    assert verdict.decision is Decision.REVIEW
+    assert any(f.code == "config.name_change.matcher" for f in verdict.findings)
 
 
 def test_switch_rename_with_unsupported_selector_cannot_assume_the_rule_misses():

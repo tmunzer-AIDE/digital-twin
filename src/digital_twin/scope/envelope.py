@@ -79,7 +79,7 @@ def _parse_op(op: Any, index: int, reasons: list[str]) -> ChangeOp | None:
     if not isinstance(op, Mapping):
         reasons.append(f"ops[{index}] must be an object")
         return None
-    action, order = op.get("action"), op.get("order")
+    action, order, operation_scope = op.get("action"), op.get("order"), op.get("scope")
     object_type, object_id, payload = (
         op.get("object_type"),
         op.get("object_id"),
@@ -95,6 +95,7 @@ def _parse_op(op: Any, index: int, reasons: list[str]) -> ChangeOp | None:
         and isinstance(object_id, str)
         and object_id
         and isinstance(payload, Mapping)
+        and operation_scope in (None, "org", "site")
     ):
         return ChangeOp(
             action=action,
@@ -102,6 +103,7 @@ def _parse_op(op: Any, index: int, reasons: list[str]) -> ChangeOp | None:
             object_type=object_type,
             object_id=object_id,
             payload=dict(payload),
+            scope=operation_scope,
         )
     problems = [
         name
@@ -111,6 +113,7 @@ def _parse_op(op: Any, index: int, reasons: list[str]) -> ChangeOp | None:
             ("object_type", isinstance(object_type, str) and bool(object_type)),
             ("object_id", isinstance(object_id, str) and bool(object_id)),
             ("payload (object)", isinstance(payload, Mapping)),
+            ("scope ('org' or 'site')", operation_scope in (None, "org", "site")),
         )
         if not ok
     ]

@@ -44,6 +44,16 @@ def same_static_gateway_subnet(before: Any, after: Any) -> bool:
     return previous is not None and proposed is not None and previous.network == proposed.network
 
 
+def valid_static_gateway_addition(before: Any, after: Any) -> bool:
+    """A new explicit static interface has no old endpoint or prefix to move.
+
+    The gateway projection and network checks model additions. Other fields in
+    the row still pass through the dependency gate independently.
+    """
+    return (before is None and isinstance(after, Mapping)
+            and _static_interface(after) is not None)
+
+
 def gateway_address_change_findings(
     baseline: Mapping[str, dict[str, Any]], proposed: Mapping[str, dict[str, Any]],
 ) -> tuple[Finding, ...]:

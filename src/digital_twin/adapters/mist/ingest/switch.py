@@ -34,6 +34,7 @@ from digital_twin.ir import (
     Port,
     PortMode,
     Vlan,
+    VrfInstance,
     device_id,
     port_id,
     same_ip,
@@ -86,6 +87,34 @@ def _literal_subnet(value: Any) -> str | None:
     return str(value)
 
 
+def _mint_routing(ctx: IngestContext, device_id_: str, effective: Mapping[str, Any]) -> None:
+    for route in static_routes(effective, device_id_):
+        ctx.builder.add_static_route(route)
+    vrfs = effective.get("vrf_instances")
+    if vrfs is None:
+        return
+    if not isinstance(vrfs, Mapping):
+        # A malformed VRF table is unknown routing intent, never "no VRFs".
+        ctx.builder.add_vrf_instance(
+            VrfInstance(device_id=device_id_, name="unresolved:vrf_instances", unresolved=True)
+        )
+        return
+    for name, raw in vrfs.items():
+        row = raw if isinstance(raw, Mapping) else {}
+        networks = row.get("networks", ())
+        valid_networks = isinstance(networks, list) and all(
+            isinstance(item, str) and item for item in networks
+        )
+        ctx.builder.add_vrf_instance(VrfInstance(
+            device_id=device_id_,
+            name=str(name),
+            networks=tuple(sorted(set(networks))) if valid_networks else (),
+            unresolved=not isinstance(raw, Mapping) or not valid_networks,
+        ))
+        for route in static_routes(row, device_id_, vrf=str(name)):
+            ctx.builder.add_static_route(route)
+
+
 # ---------------------------------------------------------------------------
 # GS28: BGP peer helpers
 # ---------------------------------------------------------------------------
@@ -119,6 +148,22 @@ def _bgp_disabled(v: Any) -> tuple[bool, str | None]:
     return False, str(v)                  # templated/non-bool -> unresolved token
 
 
+def _bgp_exports(config: Mapping[str, Any]) -> tuple[tuple[str, ...], str | None]:
+    """Parse only explicit literal CIDRs; named policies remain opaque."""
+    raw = config.get("export")
+    policy = config.get("export_policy")
+    if raw in (None, ""):
+        return (), f"policy:{policy}" if policy not in (None, "") else None
+    values = raw if isinstance(raw, list) else str(raw).replace(",", " ").split()
+    prefixes: list[str] = []
+    for value in values:
+        try:
+            prefixes.append(str(ipaddress.ip_network(str(value), strict=False)))
+        except ValueError:
+            return (), str(raw)
+    return tuple(sorted(set(prefixes))), None
+
+
 def _is_literal_ip(s: str) -> bool:
     try:
         ipaddress.ip_address(s)
@@ -136,6 +181,7 @@ def _bgp_attrs(p: BgpPeer) -> tuple[Any, ...]:
         p.session_type, p.session_type_unresolved,
         p.via, p.via_unresolved,
         p.disabled, p.disabled_unresolved,
+        p.advertised_prefixes, p.export_unresolved,
     )
 
 
@@ -197,6 +243,44 @@ def _literal_ip(value: Any) -> str | None:
     if not value or "{{" in str(value):
         return None
     return str(value)
+
+
+def _interface_addressing(
+    ipc: Mapping[str, Any],
+) -> tuple[str | None, str | None, str | None, bool]:
+    """Return (type, mask, normalized subnet, unresolved)."""
+    raw_type = ipc.get("type")
+    addressing = str(raw_type) if raw_type is not None else "static"
+    raw_mask = ipc.get("netmask")
+    netmask = str(raw_mask) if raw_mask is not None else None
+    if addressing == "dhcp":
+        return addressing, netmask, None, False
+    ip = _literal_ip(ipc.get("ip"))
+    if ip is None or netmask is None or "{{" in netmask:
+        return addressing, netmask, None, True
+    try:
+        subnet = str(ipaddress.ip_interface(f"{ip}/{netmask.lstrip('/')}").network)
+    except ValueError:
+        return addressing, netmask, None, True
+    return addressing, netmask, subnet, False
+
+
+def _dhcp_client_options(
+    entry: Mapping[str, Any],
+) -> tuple[tuple[str, ...], bool, int | None, str | None]:
+    raw_dns = entry.get("dns_servers") or []
+    dns = tuple(str(value) for value in raw_dns)
+    dns_unresolved = any(not value or "{{" in str(value) for value in raw_dns)
+    raw_lease = entry.get("lease_time")
+    if raw_lease is None:
+        return dns, dns_unresolved, None, None
+    try:
+        if isinstance(raw_lease, bool):
+            raise ValueError
+        lease = int(raw_lease)
+    except (TypeError, ValueError):
+        return dns, dns_unresolved, None, str(raw_lease)
+    return dns, dns_unresolved, lease, None
 
 
 def _winning_literal(
@@ -399,6 +483,27 @@ def _l1_config(usage: dict[str, Any]) -> tuple[str | None, str | None, bool]:
     return _norm(usage.get("speed")), _norm(usage.get("duplex")), bool(usage.get("disable_autoneg"))
 
 
+def _lag_config(usage: Mapping[str, Any]) -> tuple[str | None, str | None, bool]:
+    aggregated = usage.get("aggregated")
+    if aggregated in (None, False):
+        return None, None, False
+    if aggregated is not True:
+        return None, None, True
+    raw_idx = usage.get("ae_idx")
+    try:
+        idx = int(str(raw_idx)) if raw_idx is not None and not isinstance(raw_idx, bool) else None
+    except (TypeError, ValueError):
+        idx = None
+    bundle = f"ae{idx}" if idx is not None else None
+    if usage.get("ae_disable_lacp") is True:
+        mode = "static"
+    else:
+        mode = "passive" if usage.get("ae_lacp_passive") is True else "active"
+        if usage.get("ae_lacp_slow") is True:
+            mode += "-slow"
+    return bundle, mode, bundle is None
+
+
 def _mac_limit(v: Any) -> int | str | None:
     """Concrete cap (int>0) / None (unlimited: 0/absent/empty/bool) / a stable
     `unresolved:` token (templated/object/unparseable — NEVER collapsed to None,
@@ -581,11 +686,11 @@ class SwitchIngester:
                 self._ospf(ctx, dev)
                 self._bgp(ctx, dev, DeviceRole.SWITCH)
                 did = device_id(str(dev["mac"]))
-                for route in static_routes(ctx.device_effective.get(did, ctx.site_effective), did):
-                    ctx.builder.add_static_route(route)
+                _mint_routing(ctx, did, ctx.device_effective.get(did) or ctx.site_effective)
             elif dev.get("type") == "gateway":
                 self._gateway_ports_and_l3(ctx, dev)
                 self._bgp(ctx, dev, DeviceRole.GATEWAY)
+                _mint_routing(ctx, device_id(str(dev["mac"])), dev)
         return frozenset({IRCapability.WIRED_L2, IRCapability.L3_EXITS})
 
     def _devices(self, ctx: IngestContext) -> None:
@@ -769,6 +874,7 @@ class SwitchIngester:
             if not _dhcp_serves_scope(entry):
                 continue
             entry = entry or {}
+            dns, dns_unresolved, lease, lease_unresolved = _dhcp_client_options(entry)
             net = site_nets.get(str(name)) or {}
             declared = net.get("subnet")
             ctx.builder.add_dhcp_scope(
@@ -779,6 +885,10 @@ class SwitchIngester:
                     ip_start=_literal_ip(entry.get("ip_start")),
                     ip_end=_literal_ip(entry.get("ip_end")),
                     gateway=_literal_ip(entry.get("gateway")),
+                    dns_servers=dns,
+                    dns_servers_unresolved=dns_unresolved,
+                    lease_time=lease,
+                    lease_time_unresolved=lease_unresolved,
                     subnet=_literal_subnet(declared),
                     subnet_unresolved=(
                         declared is not None and _literal_subnet(declared) is None
@@ -803,6 +913,7 @@ class SwitchIngester:
                 if not _dhcp_serves_scope(entry):
                     continue
                 entry = entry or {}
+                dns, dns_unresolved, lease, lease_unresolved = _dhcp_client_options(entry)
                 net_entry = org_nets.get(str(name)) if org_fetched else None
                 declared = (net_entry or {}).get("subnet")
                 declared_gw = (net_entry or {}).get("gateway")
@@ -818,6 +929,10 @@ class SwitchIngester:
                         ip_start=_literal_ip(entry.get("ip_start")),
                         ip_end=_literal_ip(entry.get("ip_end")),
                         gateway=_literal_ip(entry.get("gateway")),
+                        dns_servers=dns,
+                        dns_servers_unresolved=dns_unresolved,
+                        lease_time=lease,
+                        lease_time_unresolved=lease_unresolved,
                         subnet=_literal_subnet(declared),
                         # blind namespace OR name missing from the fetched one:
                         # intent UNKNOWABLE; present-but-templated: unreadable;
@@ -917,14 +1032,19 @@ class SwitchIngester:
         for net_name, ipc in (dev.get("ip_configs") or {}).items():
             vid = vlan_of(net_name)
             if vid is not None:
+                ipc = ipc or {}
+                addressing, netmask, subnet, subnet_unresolved = _interface_addressing(ipc)
                 l3_vlans.add(vid)
                 ctx.builder.add_l3intf(
                     L3Intf(
                         device_id=did,
                         role=L3Role.GATEWAY,
                         vlan_id=vid,
-                        ip=(ipc or {}).get("ip"),
-                        subnet=None,
+                        ip=_literal_ip(ipc.get("ip")),
+                        subnet=subnet,
+                        addressing=addressing,
+                        netmask=netmask,
+                        subnet_unresolved=subnet_unresolved,
                     )
                 )
         for name in sorted(lan_networks):
@@ -977,6 +1097,7 @@ class SwitchIngester:
             l1_speed, l1_duplex, l1_autoneg = _l1_config(usage)
             obs_speed, obs_duplex = _l1_observed(row)
             auth = _port_auth(usage)
+            lag_bundle, lacp_mode, lag_unresolved = _lag_config(usage)
             ctx.builder.add_port(
                 Port(
                     id=port_id(did, member),
@@ -987,6 +1108,9 @@ class SwitchIngester:
                     tagged_vlans=tagged,
                     voice_vlan=voice,
                     profile=usage_name,
+                    lag_bundle=lag_bundle,
+                    lacp_mode=lacp_mode,
+                    lag_unresolved=lag_unresolved,
                     speed=l1_speed,
                     duplex=l1_duplex,
                     autoneg_disabled=l1_autoneg,
@@ -1011,15 +1135,18 @@ class SwitchIngester:
         for net_name, ipc in (eff.get("other_ip_configs") or {}).items():
             vid = (networks.get(net_name) or {}).get("vlan_id")
             if vid is not None:
+                ipc = ipc or {}
+                addressing, netmask, subnet, subnet_unresolved = _interface_addressing(ipc)
                 ctx.builder.add_l3intf(
                     L3Intf(
                         device_id=did,
                         role=L3Role.IRB,
                         vlan_id=int(vid),
-                        ip=ipc.get("ip"),
-                        subnet=None,
-                        netmask=str(ipc["netmask"]) if ipc.get("netmask") is not None else None,
-                        addressing=str(ipc["type"]) if ipc.get("type") is not None else None,
+                        ip=_literal_ip(ipc.get("ip")),
+                        subnet=subnet,
+                        addressing=addressing,
+                        netmask=netmask,
+                        subnet_unresolved=subnet_unresolved,
                     )
                 )
 
@@ -1078,6 +1205,7 @@ class SwitchIngester:
             local_as, local_as_unresolved = _bgp_as_int(scfg.get("local_as"))
             stype, stype_unresolved = _bgp_enum(scfg.get("type"), _BGP_TYPES)
             via, via_unresolved = _bgp_enum(scfg.get("via"), _BGP_VIAS)
+            advertised_prefixes, export_unresolved = _bgp_exports(scfg)
             for nip, ncfg in (scfg.get("neighbors") or {}).items():
                 ncfg = ncfg or {}
                 nas, nas_unresolved = _bgp_as_int(ncfg.get("neighbor_as"))
@@ -1092,6 +1220,8 @@ class SwitchIngester:
                     session_type_unresolved=stype_unresolved,
                     via_unresolved=via_unresolved,
                     disabled_unresolved=disabled_unresolved,
+                    advertised_prefixes=advertised_prefixes,
+                    export_unresolved=export_unresolved,
                     unresolved=not _is_literal_ip(key),
                 )
                 if key in chosen and _bgp_attrs(chosen[key]) != _bgp_attrs(peer):

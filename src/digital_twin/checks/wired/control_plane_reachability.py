@@ -12,11 +12,34 @@ _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _FORWARDING_FIELDS = frozenset({"disabled", "mode", "native_vlan", "tagged_vlans"})
 
 
+def _adds_layer2_vlans_only(ctx: CheckContext, pid: str, changed: frozenset[str]) -> bool:
+    """The port's only forwarding change ADDS tagged VLANs (or reorders them) and
+    none of the added VLANs carries an L3 interface of the device, on either side.
+    The device's own routed traffic (management, DNS, NTP, AAA, syslog) leaves
+    through its L3 interfaces, so every path it can use is unchanged. Loop risk on
+    the new VLAN is wired.l2.loop's (per-VLAN cycles with STP evidence)."""
+    if _FORWARDING_FIELDS.intersection(changed) != {"tagged_vlans"}:
+        return False
+    before, after = ctx.baseline.ir.ports.get(pid), ctx.proposed.ir.ports.get(pid)
+    if before is None or after is None:
+        return False
+    if set(before.tagged_vlans) - set(after.tagged_vlans):
+        return False
+    routed = {
+        i.vlan_id
+        for ir in (ctx.baseline.ir, ctx.proposed.ir)
+        for i in ir.l3intfs
+        if i.device_id == after.device_id and i.vlan_id is not None
+    }
+    return not (set(after.tagged_vlans) - set(before.tagged_vlans)) & routed
+
+
 def _defaults(ir: IR, did: str) -> set[str]:
     return {
         r.destination
         for r in ir.static_routes
         if r.device_id == did
+        and r.vrf == "default"
         and r.destination in {"0.0.0.0/0", "::/0"}
         and not r.discard
         and not r.unresolved
@@ -36,6 +59,7 @@ class ControlPlaneReachabilityCheck:
         return (
             diff.touches("static_route")
             or diff.touches("l3intf")
+            or diff.touches("vrf_instance")
             or any(r.kind == "port" for r in (*diff.added, *diff.removed))
             or any(
                 m.ref.kind == "port" and _FORWARDING_FIELDS.intersection(m.changed_fields)
@@ -48,10 +72,15 @@ class ControlPlaneReachabilityCheck:
         routes = (*ctx.baseline.ir.static_routes, *ctx.proposed.ir.static_routes)
         devices = {r.device_id for r in routes if r.id in route_ids}
         devices |= changed_l3_devices(ctx) & {r.device_id for r in routes}
+        vrf_ids = touched_ids(ctx.diff, "vrf_instance")
+        vrfs = (*ctx.baseline.ir.vrf_instances, *ctx.proposed.ir.vrf_instances)
+        devices |= {v.device_id for v in vrfs if v.id in vrf_ids}
         ports = {
             m.ref.id
             for m in ctx.diff.modified
-            if m.ref.kind == "port" and _FORWARDING_FIELDS.intersection(m.changed_fields)
+            if m.ref.kind == "port"
+            and _FORWARDING_FIELDS.intersection(m.changed_fields)
+            and not _adds_layer2_vlans_only(ctx, m.ref.id, frozenset(m.changed_fields))
         } | {r.id for r in (*ctx.diff.added, *ctx.diff.removed) if r.kind == "port"}
         device_ports: dict[str, set[str]] = {}
         for ir in (ctx.baseline.ir, ctx.proposed.ir):
@@ -98,6 +127,10 @@ class ControlPlaneReachabilityCheck:
                                 *ctx.delta_index.causes(
                                     "static_route",
                                     sorted(r.id for r in routes if r.device_id == did),
+                                ),
+                                *ctx.delta_index.causes(
+                                    "vrf_instance",
+                                    sorted(v.id for v in vrfs if v.device_id == did),
                                 ),
                                 *ctx.delta_index.causes(
                                     "l3intf",

@@ -7,6 +7,9 @@
 - Wired search includes wireless and LLDP neighbor addresses learned on transit
   ports. Prefer direct AP/edge observations; transit learning and ambiguous
   search history cannot contradict those attachments or prove a direct client.
+- Place wired clients using their current per-port sightings, excluding old
+  history, LAG bundles, managed infrastructure and transit learning. The newest
+  last_* observation alone is not a proof of the endpoint's edge attachment.
 - A direct wired attachment competing with an AP association creates a coverage
   gap. Retain the wireless proof, but do not claim a complete client population.
 - clients.active is EARNED only if BOTH client fetches succeeded and every
@@ -17,14 +20,18 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from digital_twin.ir import (
     AttachKind,
     Client,
     ClientKind,
+    DeviceRole,
+    IRBuilder,
     IRCapability,
     client_id,
     device_id,
@@ -32,6 +39,16 @@ from digital_twin.ir import (
 )
 
 from .base import IngestContext
+
+# The switches' reports of one path land within one MAC-table report cycle of the
+# MAC's newest sighting (recorded: edge sightings <=5 min, transit <=15 min behind);
+# an older sighting is where the MAC used to be, not where it is.
+_CURRENT = timedelta(minutes=15)
+# Junos aggregated-Ethernet bundle: LLDP links sit on its member ports, so the
+# bundle itself carries no Link even when it is an inter-switch trunk.
+_AGGREGATE = re.compile(r"ae\d+")
+
+_Sighting = tuple[Any, Any, Any, datetime | None]  # (device_mac, port_id, vlan, when)
 
 
 def _ssid(value: Any) -> str | None:
@@ -48,25 +65,85 @@ def _single(value: Any) -> Any:
     return value
 
 
-def _wired_attachment(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
-    """Search history is list-shaped; last_* gives the latest learned port.
-
-    It still may be a transit port, rather than a direct client attachment.
-    A partially supplied last_* pair must not fall back to historical fields.
-    """
-    if row.get("last_device_mac") or row.get("last_port_id"):
-        vlan = row["last_vlan"] if "last_vlan" in row else row.get("vlan")
-        return (_single(row.get("last_device_mac")), _single(row.get("last_port_id")),
-                _single(vlan))
-    return (_single(row.get("device_mac")), _single(row.get("port_id")),
-            _single(row.get("vlan")))
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return [] if value is None else [value]
 
 
-def _ambiguous_wired_history(row: Mapping[str, Any]) -> bool:
-    return not (row.get("last_device_mac") or row.get("last_port_id")) and any(
-        isinstance(value := row.get(key), list) and len(value) > 1
-        for key in ("device_mac", "port_id")
-    )
+def _when(value: Any) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
+    return when.replace(tzinfo=UTC) if when is not None and when.tzinfo is None else when
+
+
+def _sightings(row: Mapping[str, Any]) -> list[_Sighting] | None:
+    """Every (device_mac, port_id, vlan, when) the row reports; None when its
+    devices and ports cannot be paired. Mist's wired-client search returns one row
+    per MAC: device_mac_port holds one record per sighting, device_mac / port_id /
+    vlan are de-duplicated lists that cannot be zipped, and last_* is merely the
+    newest sighting. A row without per-sighting records (older / hand-written
+    shape) is one sighting per vlan when it names a single device and port."""
+    records = row.get("device_mac_port")
+    if isinstance(records, list) and records:
+        return [
+            (r.get("device_mac"), r.get("port_id"), r.get("vlan"), _when(r.get("when")))
+            if isinstance(r, Mapping)
+            else (None, None, None, None)
+            for r in records
+        ]
+    if (row.get("last_device_mac") or row.get("last_port_id")) and not (
+        row.get("last_device_mac") and row.get("last_port_id")
+    ):
+        return [(row.get("last_device_mac"), row.get("last_port_id"), row.get("last_vlan"), None)]
+    devices, ports = _as_list(row.get("device_mac")), _as_list(row.get("port_id"))
+    if len(devices) > 1 or len(ports) > 1:
+        return None
+    seen: list[_Sighting] = []
+    if devices and ports:
+        seen = [(devices[0], ports[0], vlan, None) for vlan in _as_list(row.get("vlan")) or [None]]
+    if row.get("last_device_mac") and row.get("last_port_id"):
+        seen.append((row["last_device_mac"], row["last_port_id"], row.get("last_vlan"), None))
+    return seen
+
+
+@dataclass(frozen=True)
+class _Placement:
+    port: str | None = None  # the edge port the client attaches to
+    vlan: Any = None
+    gap: str | None = None  # why the row cannot be placed
+
+
+def _place(builder: IRBuilder, sightings: list[_Sighting]) -> _Placement:
+    """The row's attachment from its current sightings; a placement with neither
+    port nor gap means the MAC is not a wired client (reached through an AP)."""
+    newest = max((when for *_, when in sightings if when is not None), default=None)
+    edges: dict[str, set[Any]] = {}
+    via_ap = False
+    for device_mac, port, vlan, when in sightings:
+        if when is not None and newest is not None and newest - when > _CURRENT:
+            continue  # history: where the MAC used to be
+        pid = port_id(device_id(str(device_mac)), str(port)) if device_mac and port else None
+        if pid is None or not builder.has_port(pid):
+            return _Placement(gap="unknown port attachment")
+        peers = builder.link_peers(pid)
+        if any(
+            builder.has_device(d) and builder.get_device(d).role is DeviceRole.AP
+            for d in (peer.partition(":")[0] for peer in peers)
+        ):
+            via_ap = True
+        elif not (peers or builder.get_port(pid).is_uplink or _AGGREGATE.fullmatch(str(port))):
+            edges.setdefault(pid, set()).update(() if vlan is None else (vlan,))
+    if len(edges) > 1 or any(len(vlans) > 1 for vlans in edges.values()):
+        return _Placement(gap="conflicting attachments (several edge ports or VLANs)")
+    if edges:
+        ((pid, vlans),) = edges.items()
+        return _Placement(port=pid, vlan=next(iter(vlans), None))
+    if via_ap:
+        return _Placement()
+    return _Placement(gap="learned only on inter-switch links (edge port not observed)")
 
 
 class ClientsIngester:
@@ -107,6 +184,7 @@ class ClientsIngester:
                 if (
                     wired.attach_id not in linked_ports
                     and ctx.builder.get_port(wired.attach_id).is_uplink is not True
+                    and not _AGGREGATE.fullmatch(ctx.builder.get_port(wired.attach_id).name)
                 ):
                     # A normal access-port sighting is a competing attachment,
                     # not incidental learning behind an AP. Preserve wireless
@@ -168,33 +246,38 @@ class ClientsIngester:
                 ), index, "wireless",
             )
         for index, w in enumerate(ctx.raw.wired_clients):
-            attached_mac, attached_port, vlan = _wired_attachment(w)
-            if not w.get("mac") or not attached_mac or not attached_port:
+            raw_mac = w.get("mac")
+            if raw_mac and ctx.builder.has_device(device_id(str(raw_mac))):
+                continue  # managed infrastructure is not a client
+            sightings = _sightings(w)
+            if not raw_mac or sightings == []:
                 gap("wired client telemetry: missing mac, device_mac or port_id", index)
-                # A history set without a current port is a population gap,
-                # not a contradictory current sighting of an LLDP neighbor.
-                if w.get("mac") and not _ambiguous_wired_history(w):
-                    unattachable.add((ClientKind.WIRED, client_id(str(w["mac"]))))
+                if raw_mac:
+                    unattachable.add((ClientKind.WIRED, client_id(str(raw_mac))))
                 continue
-            mac = client_id(str(w["mac"]))
-            pid = port_id(device_id(str(attached_mac)), str(attached_port))
-            if not ctx.builder.has_port(pid):
-                gap("wired client telemetry: unknown port attachment", index)
-                unattachable.add((ClientKind.WIRED, mac))
+            mac = client_id(str(raw_mac))
+            if sightings is None:
+                # An unpaired history is incomplete population evidence, not a
+                # competing current attachment of an independently located MAC.
+                gap("wired client telemetry: unpaired multi-port history", index)
                 continue
-            if pid in linked_ports or ctx.builder.get_port(pid).is_uplink is True:
-                # MAC learning on a managed link (including an AP uplink) does
-                # not locate the endpoint. Keep independent direct evidence;
-                # otherwise report incomplete population coverage.
-                transit_rows.append((mac, index))
+            placed = _place(ctx.builder, sightings)
+            if placed.gap is not None:
+                if placed.gap.startswith("learned only"):
+                    transit_rows.append((mac, index))
+                else:
+                    gap(f"wired client telemetry: {placed.gap}", index)
+                    unattachable.add((ClientKind.WIRED, mac))
                 continue
+            if placed.port is None:
+                continue  # AP-facing learning: wireless stats are authoritative
             admit(
                 Client(
                     mac=mac,
                     kind=ClientKind.WIRED,
                     attach_kind=AttachKind.PORT,
-                    attach_id=pid,
-                    vlan=int(vlan) if vlan is not None else None,
+                    attach_id=placed.port,
+                    vlan=int(placed.vlan) if placed.vlan is not None else None,
                     ip=_single(w.get("last_ip", w.get("ip"))),
                 ), index, "wired",
             )
@@ -213,7 +296,8 @@ class ClientsIngester:
             if mac not in selected and (
                 previous is None or (previous.kind, mac) in excluded
             ):
-                gap("wired client telemetry: transit port without direct attachment", index)
+                gap("wired client telemetry: transit port without direct attachment "
+                    "(learned only on inter-switch links; edge port not observed)", index)
         # Withdraw only disputed evidence of the same kind. A bad wired search
         # row cannot erase a valid wireless association (or vice versa).
         ctx.builder.discard_clients(

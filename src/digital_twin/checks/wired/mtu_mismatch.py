@@ -167,12 +167,16 @@ class MtuMismatchCheck:
                         "b_mtu": mb,
                     },
                     caused_by=tuple(
-                        c for c in (
+                        c
+                        for c in (
                             ctx.delta_index.cause("port", lnk.a_port),
                             ctx.delta_index.cause("port", lnk.b_port),
                             ctx.delta_index.cause("link", lnk.id),
-                        ) if c is not None
-                    ) if severity is not Severity.INFO else (),
+                        )
+                        if c is not None
+                    )
+                    if severity is not Severity.INFO
+                    else (),
                 )
             )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]

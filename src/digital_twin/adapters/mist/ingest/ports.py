@@ -35,6 +35,11 @@ _USAGE_OVERRIDE_ATTRS = (
     "speed",
     "duplex",
     "disable_autoneg",
+    "aggregated",
+    "ae_idx",
+    "ae_disable_lacp",
+    "ae_lacp_passive",
+    "ae_lacp_slow",
 )
 # port_config_overwrite only carries usage-attribute tweaks (schema-confirmed);
 # port_network is the VLAN-relevant one, poe_disabled feeds Port.poe (the

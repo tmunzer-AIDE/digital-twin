@@ -110,10 +110,12 @@ def test_org_object_types_includes_all_fanout_types():
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
     gw = set(RAW_ALLOWLIST["gatewaytemplate"])
     assert "port_config.*.disabled" in gw and "ip_configs.*.ip" in gw
-    assert "vars.*" in gw  # a vars edit must pass the RAW field
+    assert {"ip_configs.*.type", "ip_configs.*.netmask"} <= gw
+    assert {"dhcpd_config.*.dns_servers", "dhcpd_config.*.lease_time"} <= gw
+    assert "vars.*" in gw                        # a vars edit must pass the RAW field
     # gate so the derived gate can evaluate the ripple (mirrors site_setting)
-    assert "port_config.*.usage" not in gw  # inert -> excluded
-    assert "networks.*.vlan_id" not in gw  # org-namespace -> excluded
+    assert "port_config.*.usage" in gw          # gateway WAN redundancy classifier
+    assert "networks.*.vlan_id" not in gw       # org-namespace -> excluded
 
 
 def test_sitetemplate_raw_allowlist_is_union():
@@ -125,6 +127,8 @@ def test_sitetemplate_raw_allowlist_is_union():
 def test_gateway_effective_allowlist_includes_disabled_ip_and_vars():
     gw = set(GATEWAY_EFFECTIVE_ALLOWLIST)
     assert {"port_config.*.disabled", "ip_configs.*.ip", "vars.*"} <= gw
+    assert {"ip_configs.*.type", "ip_configs.*.netmask"} <= gw
+    assert {"dhcpd_config.*.dns_servers", "dhcpd_config.*.lease_time"} <= gw
     assert "port_config.*.disabled" not in set(EFFECTIVE_ALLOWLIST)  # switch lacks it
 
 
@@ -276,3 +280,65 @@ def test_spec1_usage_only_leaves_are_not_dead_allowed_on_local():
         "stp_required",
     ):
         assert f"local_port_config.*.{attr}" not in RAW_ALLOWLIST["device"], attr
+
+
+def test_every_device_allowlist_root_reaches_the_compiled_effective():
+    """An admitted device leaf the compiler drops never reaches the IR, so the
+    change would diff to nothing and resolve SAFE without being simulated."""
+    from digital_twin.adapters.mist.compile import switch as compile_switch
+
+    compiled = {
+        *compile_switch._DEVICE_DICT_MERGE_FIELDS,
+        *compile_switch._DEVICE_OWN_FIELDS,
+    }
+    inert = {"name", "notes", "image1_url", "image2_url", "image3_url"}
+    roots = {path.split(".", 1)[0] for path in RAW_ALLOWLIST["device"]}
+    assert roots - inert <= compiled
+
+
+_BENIGN_DHCP_PATHS = (
+    "dhcpd_config.lan.dns_suffix",
+    "dhcpd_config.lan.options.15.type",
+    "dhcpd_config.lan.options.15.value",
+    "dhcpd_config.lan.options.119.type",
+    "dhcpd_config.lan.options.119.value",
+)
+
+
+def test_dhcp_naming_leaves_are_benign_on_gateway_and_switch_scope_rows():
+    from digital_twin.scope.allowlist import DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE
+
+    for leaf in _BENIGN_DHCP_PATHS:
+        tokens = tuple(leaf.split("."))
+        for object_type in ("gatewaytemplate", "site_setting", "networktemplate", "sitetemplate"):
+            assert allowed_tokens(tokens, RAW_ALLOWLIST[object_type]), (object_type, leaf)
+        assert allowed_tokens(tuple(leaf.split(".")), GATEWAY_EFFECTIVE_ALLOWLIST), leaf
+        assert allowed_tokens(tuple(leaf.split(".")), EFFECTIVE_ALLOWLIST), leaf
+        # benign = ignored by the IR: a device profile overriding it changes
+        # nothing, so it must not taint profiled devices to UNKNOWN
+        for role in ("gateway", "switch"):
+            assert not allowed_tokens(
+                tokens, DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE[role],
+            ), (role, leaf)
+        # device-level switch dhcpd_config stays unmodeled as a whole
+        assert not allowed_tokens(tuple(leaf.split(".")), RAW_ALLOWLIST["device"]), leaf
+
+
+def test_other_dhcp_options_stay_denied():
+
+    for leaf in (
+        "dhcpd_config.lan.options",            # an option map: empty-map rule, not the allowlist
+        "dhcpd_config.lan.options.15",         # option 15 without type/value leaves
+        "dhcpd_config.lan.options.3.value",    # router
+        "dhcpd_config.lan.options.6.value",    # DNS servers
+        "dhcpd_config.lan.options.42.value",   # NTP servers
+        "dhcpd_config.lan.options.43.value",   # vendor-specific (AP/phone discovery)
+        "dhcpd_config.lan.options.66.value",   # TFTP server (phone/PXE provisioning)
+        "dhcpd_config.lan.options.101.value",  # timezone: clock-driven behaviour
+        "dhcpd_config.lan.options.121.value",  # classless static routes
+        "dhcpd_config.lan.options.252.value",  # WPAD proxy auto-config
+        "dhcpd_config.lan.vendor_encapsulated.1.value",
+    ):
+        for allowlist in (RAW_ALLOWLIST["gatewaytemplate"], RAW_ALLOWLIST["site_setting"],
+                          GATEWAY_EFFECTIVE_ALLOWLIST, EFFECTIVE_ALLOWLIST):
+            assert not allowed_tokens(tuple(leaf.split(".")), allowlist), leaf

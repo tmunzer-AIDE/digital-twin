@@ -36,6 +36,11 @@ HUB_PAR_PORT = "mge-0/0/98"
 EDGE_ACCESS_PORT = "ge-0/0/97"  # augmented member access port on EDGE
 WIRED_CLIENT_MAC = "ddccbbaa0001"
 WIRELESS_CLIENT_MAC = "ddccbbaa0002"
+# recorded wired client 004263c999d3: its only edge sighting is CAPTURED_CLIENT_SWITCH:
+# CAPTURED_CLIENT_PORT; its newest sighting (last_*) is the inter-switch trunk
+# 36d1f43e2ebe:ge-0/0/47
+CAPTURED_CLIENT_SWITCH = "889c85171f8d"
+CAPTURED_CLIENT_PORT = "ge-0/0/26"
 
 
 def fixture_doc() -> dict[str, Any]:
@@ -993,6 +998,16 @@ def gt_cosmetic_edit() -> tuple[dict[str, Any], dict[str, Any]]:
     return doc, _gt_plan(payload)
 
 
+def gt_add_dhcp_scope(**row_extra: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-f: the template adds a local DHCP scope on gt_corp. `row_extra` adds
+    keys to the scope row, so a test can compare the same scope with and without
+    Mist's empty `fixed_bindings: {}` map."""
+    doc = gt_multisite_doc()
+    row = {"type": "local", "ip_start": "198.51.96.10", "ip_end": "198.51.96.90",
+           "gateway": GT_GW_IP, **row_extra}
+    return doc, _gt_plan({"dhcpd_config": {GT_NET: row}})
+
+
 def gt_fetch_fail_site() -> tuple[dict[str, Any], dict[str, Any]]:
     """GT-e: same IP change as GT-a but site B's fetch fails -> org UNKNOWN
     (site_failures contains GT_SITE_B)."""
@@ -1235,6 +1250,35 @@ def dp_gatewaytemplate_edit_with_profiled_gw() -> tuple[dict[str, Any], dict[str
             "action": "update", "order": 0, "object_type": "gatewaytemplate",
             "object_id": DP_GT_ID,
             "payload": {"ip_configs": {DP_NET: {"ip": "198.51.97.2"}}},
+        }],
+    }
+    return doc, plan
+
+
+def dp_gatewaytemplate_dhcp_edit_with_profiled_gw(
+    **row_extra: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """DP-c: the gatewaytemplate changes ONLY the `row_extra` keys of an existing
+    DHCP scope on a site whose gateway carries a deviceprofile_id. For benign
+    leaves (never read by the IR) a profile overriding them changes nothing, so
+    the device-profile gate must not fire."""
+    site_doc = _dp_site_doc(gw_profiled=True, ap_profiled=False)
+    template = _dp_gt_template()
+    row = {"type": "local", "ip_start": "198.51.97.10", "ip_end": "198.51.97.90",
+           "gateway": "198.51.97.1"}
+    template["dhcpd_config"] = {DP_NET: row}
+    doc = {
+        "templates": {"gatewaytemplate": {DP_GT_ID: template}},
+        "sites": {DP_SITE: site_doc},
+        "fetch_failures": [],
+    }
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": DP_ORG_ID},
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": DP_GT_ID,
+            "payload": {"dhcpd_config": {DP_NET: {**row, **row_extra}}},
         }],
     }
     return doc, plan

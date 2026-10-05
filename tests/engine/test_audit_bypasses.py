@@ -33,8 +33,19 @@ def test_empty_unmodeled_configuration_domain_cannot_disappear(root):
     assert any(root in reason for reason in verdict.decision_reasons)
 
 
-@pytest.mark.parametrize("old,new", [("eap", "psk"), ("eap", "open"), ("open", "eap")])
-def test_wlan_authentication_transition_is_unresolved_even_with_clients_and_isolation(old, new):
+@pytest.mark.parametrize(
+    "old,new,expected",
+    [
+        ("eap", "psk", Decision.REVIEW),
+        ("eap", "open", Decision.UNSAFE),
+        ("open", "eap", Decision.REVIEW),
+    ],
+)
+def test_wlan_authentication_transition_with_connected_clients_is_never_safe(
+    old, new, expected
+):
+    # The seven-day session history reports no use, but a client is connected
+    # right now: that is proof of use, so the transition can never be SAFE.
     wlan = _wlan() | {"auth": {"type": old}, "isolation": True}
     raw = _raw_wlan(wlan, clients=(_wireless_client(),))
     op = {
@@ -45,8 +56,12 @@ def test_wlan_authentication_transition_is_unresolved_even_with_clients_and_isol
         "payload": {"auth": {"type": new}},
     }
     verdict = simulate(_plan([op]), provider=FakeProvider(raw))
-    assert verdict.decision is Decision.UNKNOWN
-    assert any("auth.type" in reason for reason in verdict.decision_reasons)
+    assert verdict.decision is expected
+    assert any(
+        f.evidence.get("connected_clients") == 1
+        for f in verdict.findings
+        if f.code.startswith(("wireless.wlan.change", "wireless.wlan.auth_transition"))
+    )
 
 
 def test_unmodeled_empty_nac_filter_cannot_be_treated_as_a_catch_all():

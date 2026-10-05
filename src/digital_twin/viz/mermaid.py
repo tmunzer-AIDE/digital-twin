@@ -83,7 +83,15 @@ def _worst(*sevs: Severity | None) -> Severity | None:
     return max(present, key=lambda s: _SEV_RANK[s]) if present else None
 
 
-def _link_metadata_line(ir: IR, ids: _Ids, u: str, v: str, edge: L2Edge) -> str:
+def _link_metadata_line(
+    ir: IR,
+    ids: _Ids,
+    u: str,
+    v: str,
+    edge: L2Edge,
+    *,
+    status: str = "observed",
+) -> str:
     """Machine-readable endpoint metadata for richer UI rendering.
 
     Mermaid ignores ``%%`` comments; other renderers stay unchanged while the web UI
@@ -105,6 +113,8 @@ def _link_metadata_line(ir: IR, ids: _Ids, u: str, v: str, edge: L2Edge) -> str:
         "target": ids.get(v),
         "target_interfaces": _interfaces(v),
         "kind": edge.kind,
+        "vlans": sorted(edge.vlans),
+        "status": status,
     }
     return f"  %% mistmcp-link {json.dumps(payload, separators=(',', ':'))}"
 
@@ -199,21 +209,35 @@ def _entity_keys_on_chart(
     return result
 
 
+def _node_pair(u: str, v: str) -> frozenset[str]:
+    return frozenset((u, v))
+
+
 def _l2_diagram(
-    ir: IR,
+    baseline_ir: IR,
+    proposed_ir: IR,
     view_map: dict[str, VisualEntry],
     findings: tuple[Finding, ...],
 ) -> Diagram:
-    g = build_l2_graph(ir)
+    baseline = build_l2_graph(baseline_ir)
+    proposed = build_l2_graph(proposed_ir)
     ids = _Ids()
     lines = ["graph LR", *_CLASSDEFS]
-    for node in g.nodes:
-        dev = ir.devices.get(node)
+    for node in sorted(set(baseline.nodes) | set(proposed.nodes)):
+        dev = proposed_ir.devices.get(node) or baseline_ir.devices.get(node)
         label = _label(dev.name or node if dev else node, dev.role.value if dev else "?")
         lines.append(f'  {ids.get(node)}["{label}"]')
-    for u, v, data in g.edges(data=True):
-        edge = data["data"]
-        lines.append(_link_metadata_line(ir, ids, u, v, edge))
+    proposed_pairs = {_node_pair(u, v) for u, v in proposed.edges()}
+    edges = [
+        (proposed_ir, u, v, data["data"], "observed")
+        for u, v, data in proposed.edges(data=True)
+    ] + [
+        (baseline_ir, u, v, data["data"], "broken")
+        for u, v, data in baseline.edges(data=True)
+        if _node_pair(u, v) not in proposed_pairs
+    ]
+    for edge_ir, u, v, edge, status in edges:
+        lines.append(_link_metadata_line(edge_ir, ids, u, v, edge, status=status))
         lbl = _edge_label(edge)
         lines.append(f'  {ids.get(u)} ---|"{_safe(lbl)}"| {ids.get(v)}')
     # paint classes from view_map
@@ -233,35 +257,59 @@ def _l2_diagram(
 
 
 def _vlan_diagram(
-    ir: IR,
-    l2: nx.MultiGraph,
+    baseline_ir: IR,
+    proposed_ir: IR,
+    baseline_l2: nx.MultiGraph,
+    proposed_l2: nx.MultiGraph,
     vid: int,
     view_map: dict[str, VisualEntry],
     findings: tuple[Finding, ...],
 ) -> Diagram:
-    vc = vc_root_map(ir)
-    g = build_vlan_graph(ir, l2, vid)
+    vc = vc_root_map(proposed_ir)
+    baseline = build_vlan_graph(baseline_ir, baseline_l2, vid)
+    proposed = build_vlan_graph(proposed_ir, proposed_l2, vid)
     ids = _Ids()
     # resolve_exit covers IRB/SVI (is_exit) AND boundary-uplink GATEWAY nodes on a
     # carrying edge; union the owners of any l3intf for the vlan (incl GATEWAY-role
     # interfaces, which resolve_exit rule 1 — IRB/SVI only — does not see).
-    exit_nodes = set(resolve_exit(ir, vid, g).nodes)
-    for intf in ir.l3intfs:
+    exit_nodes = set(resolve_exit(proposed_ir, vid, proposed).nodes)
+    for intf in proposed_ir.l3intfs:
         if intf.vlan_id == vid:
             exit_nodes.add(node_for(vc, intf.device_id))
     lines = ["graph LR", *_CLASSDEFS]
-    for node in sorted(set(g.nodes) | exit_nodes):  # add exit devices absent from the subgraph
-        dev = ir.devices.get(node)
+    for node in sorted(set(baseline.nodes) | set(proposed.nodes) | exit_nodes):
+        dev = proposed_ir.devices.get(node) or baseline_ir.devices.get(node)
         name = (dev.name or node) if dev else node
         if node in exit_nodes:
-            role = f"{dev.role.value if dev else '?'} · exit"
+            exit_roles = sorted({
+                intf.role.value
+                for intf in proposed_ir.l3intfs
+                if intf.vlan_id == vid and node_for(vc, intf.device_id) == node
+            })
+            if exit_roles == ["gateway"]:
+                exit_label = "routed exit"
+            elif exit_roles:
+                exit_label = f"{'/'.join(role.upper() for role in exit_roles)} exit"
+            else:
+                exit_label = "exit"
+            role = f"{dev.role.value if dev else '?'} · {exit_label}"
             lines.append(f'  {ids.get(node)}["{_label(name, role)}"]')
         else:
             lines.append(f'  {ids.get(node)}["{_label(name, dev.role.value if dev else "?")}"]')
-    for u, v, data in sorted(g.edges(data=True), key=lambda e: (min(e[0], e[1]), max(e[0], e[1]))):
+    proposed_pairs = {_node_pair(u, v) for u, v in proposed.edges()}
+    edges = [
+        (proposed_ir, u, v, data["data"], "observed")
+        for u, v, data in proposed.edges(data=True)
+    ] + [
+        (baseline_ir, u, v, data["data"], "broken")
+        for u, v, data in baseline.edges(data=True)
+        if _node_pair(u, v) not in proposed_pairs
+    ]
+    for edge_ir, u, v, edge, status in sorted(
+        edges, key=lambda item: (min(item[1], item[2]), max(item[1], item[2]), item[4])
+    ):
         a, b = (u, v) if u <= v else (v, u)
-        edge = data["data"]
-        lines.append(_link_metadata_line(ir, ids, a, b, edge))
+        lines.append(_link_metadata_line(edge_ir, ids, a, b, edge, status=status))
         lines.append(f'  {ids.get(a)} ---|"{_safe(vid)}"| {ids.get(b)}')
     # paint device-level classes from view_map (VLAN-scoped: only this view's entries)
     cls_lines = _class_lines_from_map(ids, view_map)
@@ -272,7 +320,11 @@ def _vlan_diagram(
     # chart but its captions MUST still appear (the vlan IS the subject of the chart)
     entity_keys = _entity_keys_on_chart(ids, view_map, include_all_vlans=True)
     captions, causes = _captions_and_causes(view_map, findings, ids, entity_keys)
-    vname = ir.vlans[vid].name if vid in ir.vlans and ir.vlans[vid].name else None
+    vname = (
+        proposed_ir.vlans[vid].name
+        if vid in proposed_ir.vlans and proposed_ir.vlans[vid].name
+        else None
+    )
     title = f"VLAN {vid}" + (f' "{vname}"' if vname else "")
     sev = _worst(*(
         entry.severity for ekey, entry in view_map.items()
@@ -366,10 +418,16 @@ def build_diagrams(
             return replace(d, notes=d.notes + (f"{unlocalized} finding(s) not localized",))
         return d
 
-    l2 = build_l2_graph(proposed_ir)
-    out: list[Diagram] = [_with_unloc(_l2_diagram(proposed_ir, vmap.get("l2", {}), findings))]
+    baseline_l2 = build_l2_graph(baseline_ir)
+    proposed_l2 = build_l2_graph(proposed_ir)
+    out: list[Diagram] = [_with_unloc(_l2_diagram(
+        baseline_ir, proposed_ir, vmap.get("l2", {}), findings,
+    ))]
     vlan_diagrams = [
-        _with_unloc(_vlan_diagram(proposed_ir, l2, vid, vmap.get(f"vlan:{vid}", {}), findings))
+        _with_unloc(_vlan_diagram(
+            baseline_ir, proposed_ir, baseline_l2, proposed_l2,
+            vid, vmap.get(f"vlan:{vid}", {}), findings,
+        ))
         for vid in sorted(proposed_ir.vlans)
     ]
 

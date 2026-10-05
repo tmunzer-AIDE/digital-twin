@@ -83,14 +83,10 @@ def test_inter_switch_link_change_is_review():
     assert f.evidence["knobs"] == ["inter_switch_link"]
 
 
-def test_storm_control_change_is_review():
+def test_storm_control_graduated_to_dedicated_rule():
     r = _run(_ir(PortMisc(storm_control="pct:80")), _ir(PortMisc(storm_control="pct:50")))
-    assert r.status is Status.WARN
-    f = r.findings[0]
-    assert f.code == "wired.port.unmodeled_change.recognized"
-    assert f.severity is Severity.WARNING
-    assert f.confidence.level is ConfidenceLevel.MEDIUM
-    assert f.evidence["knobs"] == ["storm_control"]
+    assert r.status is Status.PASS
+    assert not r.findings
 
 
 def test_misc_object_flip_without_recognized_knob_is_silent():
@@ -131,7 +127,7 @@ def test_stp_policy_knobs_no_longer_wake_unmodeled_change():
 
 
 def test_remaining_misc_knobs_still_wake_unmodeled_change():
-    for knob, value in [("inter_switch_link", True), ("storm_control", "no_broadcast=True"),
+    for knob, value in [("inter_switch_link", True),
                         ("poe_priority", "high"), ("community_vlan_id", 811),
                         ("inter_isolation_network_link", True)]:
         result = _run_with_misc_flip(knob, value)

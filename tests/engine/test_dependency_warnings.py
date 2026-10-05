@@ -358,18 +358,24 @@ def test_duplicate_route_edits_are_explicitly_unsupported():
                 "198.51.100.0/24": {"next_qualified": {"10.0.10.254": {"preference": 20}}}
             }
         },
-        {
-            "vrf_instances": {
-                "guest": {
-                    "networks": ["corp"],
-                    "extra_routes": {"0.0.0.0/0": {"via": "10.0.10.254"}},
-                }
-            }
-        },
     ],
 )
 def test_unmodeled_route_attributes_remain_unknown(payload):
     assert _run(_raw(), _op(payload, kind="device", oid="dev-a")).decision is Decision.UNKNOWN
+
+
+def test_device_vrf_with_routes_is_modeled_and_requires_review():
+    payload = {
+        "vrf_instances": {
+            "guest": {
+                "networks": ["corp"],
+                "extra_routes": {"0.0.0.0/0": {"via": "10.0.10.254"}},
+            }
+        }
+    }
+    v = _run(_raw(), _op(payload, kind="device", oid="dev-a"))
+    assert v.decision is Decision.REVIEW
+    assert any(f.code.startswith("wired.l3.control_plane_reachability") for f in v.findings)
 
 
 def test_static_route_ids_are_device_scoped_validated_and_diffed():
@@ -511,13 +517,27 @@ def test_device_profile_gate_still_blocks_confident_override_conclusions():
     [
         {"radius_config": {"auth_servers": [_server()]}},
         {"mist_nac": {"enabled": True}},
-        {"extra_routes": {"0.0.0.0/0": {"via": "192.0.2.1"}}},
     ],
 )
 def test_switch_dependency_fields_cannot_silently_certify_gateway_operation(payload):
     gw = {"id": "gw-a", "mac": "dd0000000001", "type": "gateway"}
     v = _run(_raw(devices=(deepcopy(SWITCH_A), gw)), _op(payload))
     assert v.decision is Decision.UNKNOWN
+
+
+def test_gateway_static_routes_are_modeled_and_require_review():
+    gw = {"id": "gw-a", "mac": "dd0000000001", "type": "gateway"}
+    v = _run(
+        _raw(devices=(deepcopy(SWITCH_A), gw)),
+        _op({"extra_routes": {"0.0.0.0/0": {"via": "192.0.2.1"}}}),
+    )
+    assert v.decision is Decision.REVIEW
+    assert any(
+        f.code.startswith("wired.l3.static_route_reachability")
+        and f.subject is not None
+        and f.subject.id == "dd0000000001"
+        for f in v.findings
+    )
 
 
 def test_forwarding_port_edit_warns_about_unchanged_route_control_dependencies():
@@ -577,3 +597,28 @@ def test_empty_device_inventory_does_not_invent_effective_override():
     raw = replace(_raw(), devices=())
     v = _run(raw, _op({"radius_config": {"auth_servers": [_server()]}}))
     assert not any(f.code.startswith("scope.effective_noop") for f in v.findings)
+
+
+def _with_default(setting=None):
+    setting = deepcopy(SITE_EFFECTIVE) if setting is None else setting
+    return {**setting, "extra_routes": {"0.0.0.0/0": {"via": "10.0.10.254"}}}
+
+
+def test_adding_a_layer2_only_network_to_a_trunk_is_not_a_control_plane_change():
+    # the live DNT-NTR shape: a new network with no subnet, appended to a trunk
+    # profile. The switch's routed traffic (SVI on corp) keeps the same path.
+    setting = _with_default()
+    networks = {**setting["networks"], "test": {"vlan_id": 199}}
+    usages = deepcopy(setting["port_usages"])
+    usages["uplink"]["networks"] = ["voice", "test"]
+    v = _run(_raw(setting=setting), _op({"networks": networks, "port_usages": usages}))
+    assert not _result(v, CONTROL).findings, _result(v, CONTROL).findings
+
+
+def test_removing_a_network_from_a_trunk_still_warns_control_plane():
+    setting = _with_default()
+    usages = deepcopy(setting["port_usages"])
+    usages["uplink"]["networks"] = []
+    v = _run(_raw(setting=setting), _op({"port_usages": usages}))
+    f = next(f for f in _result(v, CONTROL).findings if f.code.endswith(".path_dependency_changed"))
+    assert f.evidence["ports"] == [f"{DID}:ge-0/0/47"]

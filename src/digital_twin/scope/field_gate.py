@@ -22,6 +22,7 @@ from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import RAW_ALLOWLIST, ignored_raw_fields
 from digital_twin.scope.atomic_lists import atomic_list_issues
+from digital_twin.scope.dhcp_screen import is_empty_scope_map
 from digital_twin.scope.paths import LeafDelta, allowed_tokens, leaf_changes
 
 _STAGE = "field_gate"
@@ -80,6 +81,10 @@ def screen_op_split(
         for delta in changes
         if not allowed_tokens(delta.tokens, allowlist)
         and not _known_empty_nac_match(object_type, delta.path, current, payload)
+        and not _wlan_secure_to_open_companion_delete(
+            object_type, delta.tokens, tuple(d.tokens for d in changes), current, payload
+        )
+        and not is_empty_scope_map(delta.tokens, current, payload)
     ]
     for delta in changes:
         if allowed_tokens(delta.tokens, allowlist):
@@ -98,6 +103,40 @@ def screen_op_split(
         reasons.extend(_local_overwrite_ripple(changes, current, payload, allowlist))
     gaps = (Rejection(stage=_STAGE, reasons=tuple(dict.fromkeys(reasons))),) if reasons else ()
     return None, gaps
+
+
+def _wlan_secure_to_open_companion_delete(
+    object_type: str,
+    tokens: tuple[str, ...],
+    changed: tuple[tuple[str, ...], ...],
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> bool:
+    """Ignore only auth companions removed by a secure -> open root replacement.
+
+    Mist replaces the whole ``auth`` root. The twin models ``auth.type`` but not
+    secret-bearing companions such as ``auth.psk``. Dropping those companions is
+    an inseparable consequence of the modeled transition, not an independent
+    unsupported change. Other auth edits remain denied by the normal allowlist.
+    """
+    if (
+        object_type != "wlan" or len(tokens) < 2
+        or tokens[0] != "auth" or tokens == ("auth", "type")
+    ):
+        return False
+    value: Any = payload
+    for key in tokens:
+        value = value.get(key) if isinstance(value, Mapping) else None
+    if ("auth", "type") not in changed or value is not None:
+        return False
+    current_auth = current.get("auth")
+    proposed_auth = payload.get("auth")
+    return (
+        isinstance(current_auth, Mapping)
+        and isinstance(proposed_auth, Mapping)
+        and current_auth.get("type") not in (None, "open")
+        and proposed_auth.get("type") == "open"
+    )
 
 
 def _known_empty_nac_match(

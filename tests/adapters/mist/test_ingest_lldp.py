@@ -1,3 +1,5 @@
+import pytest
+
 from digital_twin.adapters.mist.ingest.base import IngestContext
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
@@ -13,12 +15,13 @@ from digital_twin.ir import (
 from tests.adapters.mist.fixtures import AP_1, SITE_EFFECTIVE, SWITCH_A, raw_site
 
 SWITCH_B = {**SWITCH_A, "mac": "bb0000000002", "id": "dev-b", "name": "sw-b"}
+AP_2 = {**AP_1, "mac": "cc0000000002", "id": "dev-ap2", "name": "ap-2"}
 
 
-def _ctx(port_stats, device_stats=()) -> IngestContext:
+def _ctx(port_stats, device_stats=(), extra_devices=()) -> IngestContext:
     ctx = IngestContext(
         raw=raw_site(
-            devices=(SWITCH_A, SWITCH_B, AP_1),
+            devices=(SWITCH_A, SWITCH_B, AP_1, *extra_devices),
             port_stats=tuple(port_stats),
             device_stats=tuple(device_stats),
         ),
@@ -289,6 +292,60 @@ def test_switch_reporting_ap_yields_one_link_not_duplicates():
     assert len(ap_links) == 1
 
 
+_SWITCH_SEES_AP_1 = {
+    "mac": "aa0000000001",
+    "port_id": "ge-0/0/10",
+    "up": True,
+    "neighbor_mac": "cc0000000001",
+    "neighbor_port_desc": "eth0",
+}
+
+
+@pytest.mark.parametrize(
+    "lldp",
+    [
+        {"system_name": "sw-a", "port_id": "ge-0/0/10"},
+        {"chassis_id": "aa:00:00:00:00:01", "port_id": "ge-0/0/10"},
+    ],
+    ids=["by_system_name", "by_chassis_id"],
+)
+def test_switch_and_ap_naming_each_other_is_a_high_confidence_link(lldp):
+    # the switch port names the AP AND the AP's lldp_stat names that switch port
+    # back -> two-sided. Found live 2026-10-05: the switch-side claim emitted the
+    # link first and the AP's corroboration was skipped, so every AP uplink seen
+    # from both ends stayed LOW and disabling it capped at REVIEW, not UNSAFE.
+    device_stats = [{"mac": "cc0000000001", "type": "ap", "lldp_stat": lldp}]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats).builder.build()
+    ap_links = [link for link in ir.links if "cc0000000001" in link.id]
+    assert len(ap_links) == 1
+    assert ap_links[0].meta.confidence.level is ConfidenceLevel.HIGH
+    assert ap_links[0].meta.confidence.reasons == ()
+
+
+def test_ap_naming_another_switch_port_does_not_corroborate():
+    # the switch sees the AP on ge-0/0/10 but the AP reports ge-0/0/47 -> the
+    # ge-0/0/10 tie is still seen from one end only
+    device_stats = [
+        {"mac": "cc0000000001", "type": "ap",
+         "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/47"}}
+    ]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats).builder.build()
+    link = next(lk for lk in ir.links if lk.id == "aa0000000001:ge-0/0/10__cc0000000001:eth0")
+    assert link.meta.confidence.level is ConfidenceLevel.LOW
+
+
+def test_another_ap_claiming_the_switch_port_does_not_corroborate():
+    # the switch names ap-1 on ge-0/0/10; only ap-2 claims that port -> not the
+    # reverse of the switch's claim, the switch<->ap-1 tie stays LOW
+    device_stats = [
+        {"mac": "cc0000000002", "type": "ap",
+         "lldp_stat": {"system_name": "sw-a", "port_id": "ge-0/0/10"}}
+    ]
+    ir = _ctx([_SWITCH_SEES_AP_1], device_stats, extra_devices=(AP_2,)).builder.build()
+    link = next(lk for lk in ir.links if lk.id == "aa0000000001:ge-0/0/10__cc0000000001:eth0")
+    assert link.meta.confidence.level is ConfidenceLevel.LOW
+
+
 def test_stp_capability_earned_only_when_stp_rows_seen():
     from digital_twin.ir import IRCapability
 
@@ -464,3 +521,114 @@ def test_no_same_device_link_is_minted():
         link for link in ir.links
         if link.a_port.split(":")[0] == link.b_port.split(":")[0]
     ]
+
+
+# A Virtual Chassis advertises its chassis MAC over LLDP, not its Mist device MAC
+# (found in the real-org recording: VC 889c85171f8d is seen as 405d0ff2c0f4, one
+# of its member MACs). Its neighbours' rows carry an UNMANAGED neighbor_mac next
+# to the VC's own system name, and used to mint a phantom edge-device client on
+# the inter-switch uplink.
+B_CHASSIS = "bb00000000ff"
+_A_SEES_B_CHASSIS = {
+    "mac": "aa0000000001",
+    "port_id": "ge-0/0/47",
+    "up": True,
+    "neighbor_mac": B_CHASSIS,
+    "neighbor_system_name": SWITCH_B["name"],
+    "neighbor_port_desc": "ge-0/0/47",
+}
+_B_SEES_A = {
+    "mac": "bb0000000002",
+    "port_id": "ge-0/0/47",
+    "up": True,
+    "neighbor_mac": "aa0000000001",
+    "neighbor_port_desc": "ge-0/0/47",
+}
+
+
+# the hostnames the switches RUN (device stats): what LLDP advertises
+_RUNNING = (
+    {"mac": "aa0000000001", "type": "switch", "hostname": SWITCH_A["name"]},
+    {"mac": "bb0000000002", "type": "switch", "hostname": SWITCH_B["name"]},
+)
+
+
+def _edge_ports(ir, mac):
+    return [c.attach_id for c in ir.clients if c.mac == mac]
+
+
+def test_chassis_mac_neighbor_named_and_claimed_back_is_that_switch():
+    ir = _ctx([_A_SEES_B_CHASSIS, _B_SEES_A], _RUNNING).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == []  # no phantom client on the uplink
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
+    assert ir.links[0].meta.confidence.level is ConfidenceLevel.HIGH  # both ends agree
+
+
+def test_two_chassis_macs_naming_each_other_are_one_two_sided_link():
+    # VC <-> VC: each side reports the other's chassis MAC and name
+    b_sees_a_chassis = {
+        **_B_SEES_A, "neighbor_mac": "aa00000000ff", "neighbor_system_name": SWITCH_A["name"],
+    }
+    ir = _ctx([_A_SEES_B_CHASSIS, b_sees_a_chassis], _RUNNING).builder.build()
+    assert ir.clients == ()
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
+    assert ir.links[0].meta.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_chassis_mac_neighbor_without_reverse_claim_stays_an_edge_client():
+    # the name alone proves nothing: a non-Mist box can share a managed switch's
+    # hostname. Unconfirmed -> unchanged (edge client, the impact stays visible)
+    ir = _ctx([_A_SEES_B_CHASSIS], _RUNNING).builder.build()
+    assert ir.links == ()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+@pytest.mark.parametrize(
+    "reverse",
+    [
+        {**_B_SEES_A, "neighbor_port_desc": "ge-0/0/10"},
+        {**_B_SEES_A, "neighbor_mac": "cc0000000001"},
+        {**_B_SEES_A, "port_id": "ge-0/0/46"},
+    ],
+    ids=["names_another_port", "names_another_device", "from_another_port"],
+)
+def test_reverse_claim_must_name_the_reporting_port_back(reverse):
+    ir = _ctx([_A_SEES_B_CHASSIS, reverse], _RUNNING).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+def test_ambiguous_system_name_never_resolves_a_chassis_mac():
+    # two managed switches answer to "sw-b" and both claim the port back: any
+    # rule that picks one of them (first or last name wins) would resolve
+    twin = {**SWITCH_B, "mac": "bb0000000003", "id": "dev-b2"}
+    stats = [_A_SEES_B_CHASSIS, _B_SEES_A, {**_B_SEES_A, "mac": "bb0000000003"}]
+    running = (*_RUNNING, {"mac": "bb0000000003", "type": "switch", "hostname": "sw-b"})
+    ir = _ctx(stats, running, extra_devices=(twin,)).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+def test_chassis_mac_naming_the_reporting_switch_itself_stays_an_edge_client():
+    # a VC cabled to itself: both rows carry its chassis MAC and its own name.
+    # Resolving would erase the port's only neighbour fact (a same-device tie is
+    # never a Link, and the self-loop rule is MAC-only), so leave it as it was
+    a_chassis = "aa00000000ff"
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True, "neighbor_mac": a_chassis,
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True, "neighbor_mac": a_chassis,
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats, _RUNNING).builder.build()
+    assert _edge_ports(ir, a_chassis) == ["aa0000000001:ge-0/0/8"]
+
+
+def test_a_renamed_switch_still_resolves_by_the_hostname_it_runs():
+    # a plan renaming a switch edits its CONFIG name; the recorded LLDP rows and
+    # device stats still carry the hostname it runs. Matching config names made
+    # the proposed state re-mint the phantom, so a pure rename of the VC looked
+    # like a wired client appearing (golden GS5)
+    running = ({**_RUNNING[0]}, {**_RUNNING[1], "hostname": "sw-b-before-rename"})
+    stats = [{**_A_SEES_B_CHASSIS, "neighbor_system_name": "sw-b-before-rename"}, _B_SEES_A]
+    ir = _ctx(stats, running).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == []
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]

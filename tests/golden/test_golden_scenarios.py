@@ -16,6 +16,8 @@ from digital_twin.observability.replay.store import FixtureProvider
 from digital_twin.verdict.decision import Decision
 
 from .builders import (
+    CAPTURED_CLIENT_PORT,
+    CAPTURED_CLIENT_SWITCH,
     DP_GW_MAC,
     EDGE,
     EDGE_ACCESS_PORT,
@@ -46,10 +48,12 @@ from .builders import (
     device_op,
     disable_uplink_op,
     disabled_uplink_doc,
+    dp_gatewaytemplate_dhcp_edit_with_profiled_gw,
     dp_gatewaytemplate_edit_with_profiled_gw,
     dp_only_ap_profiled_not_tainted,
     dynamic_ap_wlan_doc,
     fixture_doc,
+    gt_add_dhcp_scope,
     gt_break_gateway_ip,
     gt_cosmetic_edit,
     gt_edit_networks,
@@ -111,11 +115,56 @@ def test_gs2_redundant_vlan_removal_is_safe(tmp_path):
     assert v.decision is Decision.SAFE, v.decision_reasons
 
 
-def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
+def _with_unplaceable_captured_client(doc):
+    """Add one captured row (live search shape) seen on a switch the site does
+    not have: an "unknown port attachment" gap on top of the recording's own."""
+    doc["wired_clients"] = [*doc["wired_clients"], {
+        "mac": "0000aa0000ff", "device_mac": ["ffffffffffff"], "port_id": ["ge-0/0/1"],
+        "vlan": [1], "last_device_mac": "ffffffffffff", "last_port_id": "ge-0/0/1",
+        "last_vlan": 1,
+    }]
+    return doc
+
+
+def test_captured_macs_seen_only_on_inter_switch_links_keep_client_telemetry_partial(tmp_path):
+    # the recording's wired-client search rows (live shape: per-sighting
+    # device_mac_port + newest-sighting last_*) include MACs learned only on
+    # inter-switch trunks: their edge port is unobserved, so client telemetry is
+    # partial and even the redundant removal cannot be SAFE
     doc = augmented_doc(
         parallel_carries_gs=True, with_wireless_client=False,
         retain_captured_client_history=True,
     )
+    plan = plan_for(
+        doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
+    )
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
+    assert impact.coverage.state is CoverageState.PARTIAL
+    assert any("inter-switch" in note for note in impact.coverage.notes)
+
+
+def test_disabling_a_captured_clients_edge_port_disconnects_that_client(tmp_path):
+    # the raw recording, unaugmented: the client sits on its edge port, not on the
+    # inter-switch trunk that happened to see it last (which made this SAFE)
+    doc = fixture_doc()
+    doc["setting"]["port_usages"]["gs_disabled"] = {"mode": "access", "disabled": True}
+    plan = plan_for(doc, [device_op(
+        doc, CAPTURED_CLIENT_SWITCH, **{CAPTURED_CLIENT_PORT.replace("/", "__"): "gs_disabled"},
+    )])
+    verdict = _simulate(doc, plan, tmp_path)
+    assert verdict.decision is not Decision.SAFE
+    edge_port = f"{CAPTURED_CLIENT_SWITCH}:{CAPTURED_CLIENT_PORT}"
+    (cut,) = (f for f in verdict.findings if f.code == "wired.port.admin_disable.impact")
+    assert cut.affected_entities == (edge_port,) and "1 active wired client" in cut.message
+
+
+def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp_path):
+    doc = _with_unplaceable_captured_client(augmented_doc(
+        parallel_carries_gs=True, with_wireless_client=False,
+        retain_captured_client_history=True,
+    ))
     plan = plan_for(
         doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
     )
@@ -127,10 +176,10 @@ def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp
 
 
 def test_known_breakage_survives_partial_captured_client_telemetry(tmp_path):
-    doc = augmented_doc(
+    doc = _with_unplaceable_captured_client(augmented_doc(
         parallel_carries_gs=False, with_wireless_client=False,
         retain_captured_client_history=True,
-    )
+    ))
     plan = plan_for(
         doc, [device_op(doc, EDGE, **{EDGE_UPLINK_PORT.replace("/", "__"): "gs_empty_trunk"})]
     )
@@ -812,6 +861,32 @@ def test_gs25a_variant_preexisting_overlap_stays_safe_info(tmp_path):
     assert f.severity.value == "info"
 
 
+def test_gs25a_variant_switch_scope_with_dhcp_naming_leaves_stays_safe(tmp_path):
+    # same SAFE delta as the variant above, on a switch-hosted (site) scope that
+    # also carries the DHCP naming leaves and Mist's empty option/binding maps
+    doc = _gs25_doc(stage_overlap_in_baseline=True)
+    doc["setting"]["networks"]["gs25_far"] = {"vlan_id": 994}
+    op = {
+        "action": "update", "order": 0, "object_type": "site_setting",
+        "object_id": doc["scope"]["site_id"],
+        "payload": {
+            "dhcpd_config": {
+                **doc["setting"]["dhcpd_config"],
+                "gs25_far": {
+                    "type": "local",
+                    "ip_start": "198.51.200.10", "ip_end": "198.51.210.10",
+                    "dns_suffix": ["example.test"],
+                    "options": {"15": {"type": "string", "value": "example.test"},
+                                "119": {"type": "string", "value": "example.test"}},
+                    "fixed_bindings": {},
+                },
+            },
+        },
+    }
+    v = _simulate(doc, plan_for(doc, [op]), tmp_path)
+    assert v.decision is Decision.SAFE, v.decision_reasons
+
+
 def _gs25b_target(doc):
     """(switch_device_dict, gw_facing_port) derived from the fixture itself —
     robust to redaction re-captures. Also clears the switch's pre-existing
@@ -1439,6 +1514,54 @@ def test_gt_d_cosmetic_edit_is_safe(tmp_path):
     assert ov.decision is Decision.SAFE, ov.decision_reasons
 
 
+def test_gt_f_empty_fixed_bindings_leave_the_verdict_unchanged(tmp_path):
+    # Mist writes `fixed_bindings: {}` on every DHCP scope. An empty reservation
+    # map reserves nothing, so it must not turn a modeled scope into UNKNOWN:
+    # same verdict as the scope without it (control), and no reason names it.
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    assert control.decision is not Decision.UNKNOWN, control.decision_reasons
+    empty = _simulate_org(*gt_add_dhcp_scope(fixed_bindings={}), tmp_path)
+    assert empty.decision is control.decision, empty.decision_reasons
+    assert not any("fixed_bindings" in r for r in empty.decision_reasons)
+
+
+def test_gt_f_variant_fixed_binding_reservation_is_unknown(tmp_path):
+    doc, plan = gt_add_dhcp_scope(fixed_bindings={"aabbccddeeff": {"ip": "198.51.96.50"}})
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("fixed_bindings.aabbccddeeff.ip" in r for r in ov.decision_reasons)
+
+
+_DOMAIN_ROW = {"dns_suffix": ["example.test"],
+               "options": {"15": {"type": "string", "value": "example.test"},
+                           "119": {"type": "string", "value": "example.test"}}}
+
+
+def test_gt_g_dhcp_domain_name_and_suffix_leave_the_verdict_unchanged(tmp_path):
+    # option 15 (domain name) and dns_suffix are benign on gateway scopes: same
+    # verdict as the same scope without them, and no reason names them
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    assert control.decision is not Decision.UNKNOWN, control.decision_reasons
+    named = _simulate_org(*gt_add_dhcp_scope(**_DOMAIN_ROW), tmp_path)
+    assert named.decision is control.decision, named.decision_reasons
+    assert not any("dns_suffix" in r or "options" in r for r in named.decision_reasons)
+
+
+def test_gt_h_empty_option_and_binding_maps_leave_the_verdict_unchanged(tmp_path):
+    # the live shape: a copied scope carrying `options: {}` and `fixed_bindings: {}`
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    empty = _simulate_org(*gt_add_dhcp_scope(options={}, fixed_bindings={}), tmp_path)
+    assert empty.decision is control.decision, empty.decision_reasons
+    assert not any("options" in r or "fixed_bindings" in r for r in empty.decision_reasons)
+
+
+def test_gt_g_variant_other_dhcp_option_stays_unknown(tmp_path):
+    doc, plan = gt_add_dhcp_scope(options={"43": {"type": "hex", "value": "f1"}})
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("options.43.value" in r for r in ov.decision_reasons)
+
+
 def test_gt_e_fetch_fail_site_keeps_unsafe_site_headline(tmp_path):
     # Scenario 6: same IP change as GT-a but site B's fetch fails -> org
     # UNSAFE from site A with GT_SITE_B still listed in site_failures.
@@ -1497,6 +1620,15 @@ def test_dp_a_profiled_gateway_device_taints_unknown(tmp_path):
     assert "ip_configs.dp_net.ip" in gaps[0].message
     assert any(f.code == "coverage.gap" and f.evidence["stage"] == "derived_gate"
                and "ip_configs.dp_net.netmask" in f.evidence["paths"] for f in per.findings)
+
+
+def test_dp_c_benign_dhcp_domain_edit_on_profiled_gw_is_not_unknown(tmp_path):
+    # benign leaves are outside the device-profile modeled surface: a profile
+    # overriding them changes nothing the IR reads, so no taint
+    doc, plan = dp_gatewaytemplate_dhcp_edit_with_profiled_gw(**_DOMAIN_ROW)
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is not Decision.UNKNOWN, ov.decision_reasons
+    assert not any("device_profile_gate" in r for r in ov.decision_reasons)
 
 
 def test_dp_b_only_ap_profiled_does_not_taint(tmp_path):
@@ -1975,3 +2107,64 @@ def test_gs_l2_isolation_leaf_ports_only_severed(tmp_path):
         f"EDGE (access switch with live backbone uplink) must not be severed; "
         f"got {severed_nodes}"
     )
+
+
+def test_gs_disabling_a_two_sided_ap_uplink_is_unsafe(tmp_path):
+    # EDGE's port stats name the AP on ge-0/0/30 AND the AP's lldp_stat names
+    # EDGE:ge-0/0/30 back -> a two-sided (HIGH) tie. Disabling that port strands
+    # the AP -> UNSAFE. Found live 2026-10-05: the AP's side was ignored once the
+    # switch side had emitted the link, the tie stayed one-sided/LOW and the
+    # verdict capped at REVIEW.
+    doc = fixture_doc()
+    ap_mac, ap_port = "bdb15e1655a1", "ge-0/0/30"
+    # fixture precondition: both ends really name each other
+    assert any(
+        r["mac"] == EDGE and r["port_id"] == ap_port and r.get("neighbor_mac") == ap_mac
+        for r in doc["port_stats"]
+    )
+    assert any(
+        s.get("mac") == ap_mac
+        and (s.get("lldp_stat") or {}).get("chassis_id") == EDGE
+        and (s.get("lldp_stat") or {}).get("port_id") == ap_port
+        for s in doc["device_stats"]
+    )
+    plan = plan_for(doc, [device_op(doc, EDGE, **{ap_port.replace("/", "__"): "disabled"})])
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.UNSAFE, v.decision_reasons
+    disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
+    assert disable.severity is Severity.ERROR
+    assert disable.subject is not None and disable.subject.id == ap_mac
+
+
+def test_gs_virtual_chassis_chassis_mac_is_the_vc_not_a_wired_client(tmp_path):
+    # VC 889c85171f8d advertises its chassis MAC 405d0ff2c0f4 (a VC member MAC)
+    # over LLDP, so 036020c81198's uplink row names an UNMANAGED neighbor_mac
+    # beside the VC's own system name, and the VC's row claims that port back.
+    # That neighbour used to become a phantom edge-device client on the
+    # inter-switch uplink, and disabling the uplink reported "1 active wired
+    # client(s) disconnect" instead of an inter-switch link going down.
+    doc = fixture_doc()
+    vc, chassis, sw, sw_port, vc_port = (
+        "889c85171f8d", "405d0ff2c0f4", "036020c81198", "ge-0/0/11", "ge-1/0/43",
+    )
+    vc_dev = next(d for d in doc["devices"] if d["mac"] == vc)
+    vc_hostname = next(s["hostname"] for s in doc["device_stats"] if s["mac"] == vc)
+    # fixture preconditions: the chassis MAC is the VC's own, and both ends agree
+    assert chassis in {m["mac"] for m in vc_dev["virtual_chassis"]["members"]}
+    assert not any(d["mac"] == chassis for d in doc["devices"])
+    assert any(
+        r["mac"] == sw and r["port_id"] == sw_port and r.get("neighbor_mac") == chassis
+        and r.get("neighbor_system_name") == vc_hostname
+        and r.get("neighbor_port_desc") == vc_port
+        for r in doc["port_stats"]
+    )
+    assert any(
+        r["mac"] == vc and r["port_id"] == vc_port and r.get("neighbor_mac") == sw
+        and r.get("neighbor_port_desc") == sw_port
+        for r in doc["port_stats"]
+    )
+    plan = plan_for(doc, [device_op(doc, sw, **{sw_port.replace("/", "__"): "disabled"})])
+    v = _simulate(doc, plan, tmp_path)
+    assert v.decision is Decision.REVIEW, v.decision_reasons
+    disable = next(f for f in v.findings if f.code == "wired.port.admin_disable.impact")
+    assert "inter-switch / gateway link goes down" in disable.message, disable.message

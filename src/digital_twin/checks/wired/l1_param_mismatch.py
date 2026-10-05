@@ -57,20 +57,32 @@ def _classify(pa: Port, pb: Port) -> tuple[str, Severity, str] | None:
     fa, fb = _forced(pa), _forced(pb)
     if fa and fb:
         if pa.speed != pb.speed:
-            return ("speed_conflict", Severity.ERROR,
-                    f"forced speeds differ ({pa.speed} vs {pb.speed}) — link will not establish")
+            return (
+                "speed_conflict",
+                Severity.ERROR,
+                f"forced speeds differ ({pa.speed} vs {pb.speed}) — link will not establish",
+            )
         if pa.duplex != pb.duplex:
-            return ("duplex_conflict", Severity.ERROR,
-                    f"forced duplex differs ({pa.duplex} vs {pb.duplex}) at {pa.speed}")
+            return (
+                "duplex_conflict",
+                Severity.ERROR,
+                f"forced duplex differs ({pa.duplex} vs {pb.duplex}) at {pa.speed}",
+            )
         return None
     if fa != fb:
         fp, other = (pa, pb) if fa else (pb, pa)
         hard = f"{fp.id} hard-set {fp.speed}/{fp.duplex} (autoneg off)"
         if config_stated(other):
-            return ("autoneg_mismatch", Severity.WARNING,
-                    f"{hard} but peer {other.id} autonegotiates — duplex-mismatch risk")
-        return ("unverified", Severity.WARNING,
-                f"{hard} but peer {other.id} has no config facts — mismatch cannot be ruled out")
+            return (
+                "autoneg_mismatch",
+                Severity.WARNING,
+                f"{hard} but peer {other.id} autonegotiates — duplex-mismatch risk",
+            )
+        return (
+            "unverified",
+            Severity.WARNING,
+            f"{hard} but peer {other.id} has no config facts — mismatch cannot be ruled out",
+        )
     return None
 
 
@@ -108,8 +120,10 @@ def _clean_negotiation(base_pair: tuple[Port, Port]) -> bool:
     hardware negotiated a working link despite the config-predicted mismatch."""
     a, b = base_pair
     return (
-        a.observed_duplex == "full" and b.observed_duplex == "full"
-        and a.observed_speed is not None and a.observed_speed == b.observed_speed
+        a.observed_duplex == "full"
+        and b.observed_duplex == "full"
+        and a.observed_speed is not None
+        and a.observed_speed == b.observed_speed
     )
 
 
@@ -175,7 +189,8 @@ class L1ParamMismatchCheck:
                     code=f"{self.id}.{code_out}",
                     severity=severity,
                     confidence=confidence,
-                    message=f"link {pa.id} <-> {pb.id}: {message}" if code_out != "preexisting"
+                    message=f"link {pa.id} <-> {pb.id}: {message}"
+                    if code_out != "preexisting"
                     else message,
                     affected_entities=(pa.id, pb.id),
                     subject=ObjectRef("link", lnk.id),
@@ -187,12 +202,16 @@ class L1ParamMismatchCheck:
                         "b_l1": list(_l1(pb)),
                     },
                     caused_by=tuple(
-                        c for c in (
+                        c
+                        for c in (
                             ctx.delta_index.cause("port", lnk.a_port),
                             ctx.delta_index.cause("port", lnk.b_port),
                             ctx.delta_index.cause("link", lnk.id),
-                        ) if c is not None
-                    ) if severity is not Severity.INFO else (),
+                        )
+                        if c is not None
+                    )
+                    if severity is not Severity.INFO
+                    else (),
                 )
             )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]

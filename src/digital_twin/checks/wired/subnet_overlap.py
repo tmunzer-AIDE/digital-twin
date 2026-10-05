@@ -64,8 +64,12 @@ class SubnetOverlapCheck:
                 # canonicalize the pair lo/hi by vlan_id so subject/affected/summary agree
                 (lo, ln), (hi, hn) = sorted(((va, na), (vb, nb)))
                 causes = tuple(
-                    c for c in (ctx.delta_index.cause("vlan", str(lo)),
-                                ctx.delta_index.cause("vlan", str(hi))) if c is not None
+                    c
+                    for c in (
+                        ctx.delta_index.cause("vlan", str(lo)),
+                        ctx.delta_index.cause("vlan", str(hi)),
+                    )
+                    if c is not None
                 )
                 viols.append(
                     Violation(

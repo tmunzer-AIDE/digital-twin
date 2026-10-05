@@ -40,10 +40,10 @@ def test_gs33_open_guest_remove_isolation_is_review(tmp_path):
     assert any(f.code == "wireless.wlan.open_guest.introduced" for f in v.findings)
 
 
-def test_gs32_duplicate_ssid_introduced_is_review(tmp_path):
+def test_gs32_duplicate_ssid_introduced_is_unsafe(tmp_path):
     doc, plan = config_lint_base_doc(kind="duplicate_ssid_introduce")
     v = _run(doc, plan, tmp_path, "gs32")
-    assert v.decision is Decision.REVIEW
+    assert v.decision is Decision.UNSAFE
     assert any(f.code == "wireless.wlan.duplicate_ssid.introduced" for f in v.findings)
 
 

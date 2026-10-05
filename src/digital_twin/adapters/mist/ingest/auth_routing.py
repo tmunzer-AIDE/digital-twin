@@ -52,7 +52,10 @@ def authenticator_state(effective: Mapping[str, Any]) -> tuple[int, bool, str]:
     return count, unresolved, digest
 
 
-def static_routes(effective: Mapping[str, Any], did: str) -> tuple[StaticRoute, ...]:
+def static_routes(
+    effective: Mapping[str, Any], did: str, vrf: str = "default"
+) -> tuple[StaticRoute, ...]:
+    """Routes of one table: the global ``extra_routes[6]`` or one VRF instance row."""
     routes: list[StaticRoute] = []
     for root, version in (("extra_routes", 4), ("extra_routes6", 6)):
         table = effective.get(root)
@@ -65,6 +68,7 @@ def static_routes(effective: Mapping[str, Any], did: str) -> tuple[StaticRoute, 
                     f"unresolved:{root}",
                     unresolved=True,
                     unresolved_token=_token(table),
+                    vrf=vrf,
                 )
             )
             continue
@@ -109,6 +113,7 @@ def static_routes(effective: Mapping[str, Any], did: str) -> tuple[StaticRoute, 
                     discard,
                     unresolved,
                     _token(raw) if unresolved else None,
+                    vrf,
                 )
             )
     return tuple(routes)

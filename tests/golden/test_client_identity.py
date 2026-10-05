@@ -8,7 +8,7 @@ from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
 from digital_twin.engine.pipeline import simulate
-from digital_twin.ir import ClientKind
+from digital_twin.ir import ClientKind, IRCapability
 from digital_twin.observability.replay.store import FixtureProvider, load_fixture_doc
 from digital_twin.verdict.decision import Decision
 
@@ -47,8 +47,19 @@ def test_captured_wireless_outage_survives_wired_search_overlap(search_shape, tm
     assert {c.mac for c in ir.clients if c.kind is ClientKind.WIRELESS} == wireless_macs
     # Physical neighbor sightings remain evidence even when their addresses
     # are also learned at another switch's uplink.
-    assert len(lldp_only.clients) == 27
+    # Main's reciprocal chassis proof now resolves the Virtual Chassis peer
+    # as a managed switch instead of counting its alternate MAC as a client.
+    assert len(lldp_only.clients) == 26
+    # This neighbor is reported on two current edge ports with different VLANs;
+    # the search evidence disputes its single LLDP attachment. Transit-only
+    # sightings of the other neighbors must not withdraw their direct proof.
+    disputed = "fe26d9c02fcb"
+    assert {c.mac for c in lldp_only.clients if c.mac not in clients} == {disputed}
+    assert IRCapability.CLIENTS_ACTIVE not in ir.capabilities
+    assert any("conflicting attachments" in gap for gap in ir.client_telemetry_gaps)
     for neighbor in lldp_only.clients:
+        if neighbor.mac == disputed:
+            continue
         assert clients[neighbor.mac].attach_id == neighbor.attach_id
     for row in doc["wireless_clients"]:
         enrichment = ir.client_enrichment[row["mac"]]

@@ -36,7 +36,7 @@ from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, ignored_raw_fields
 # pending OAS/allowlist reconciliation). The single SCOPE LEVER — for device-only
 # v1 this also lists networktemplate / site_setting / gatewaytemplate.
 OAS_UNKNOWN_KEY_SKIP: frozenset[str] = frozenset(
-    {"wlan", "nacrule", "sitetemplate", "networktemplate", "site_setting", "gatewaytemplate"}
+    {"nacrule", "sitetemplate", "networktemplate", "site_setting", "gatewaytemplate"}
 )
 
 # Top-level roots a real Mist device GET returns but the (closed) device PUT schema

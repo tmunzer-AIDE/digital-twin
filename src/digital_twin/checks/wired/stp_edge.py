@@ -111,7 +111,9 @@ class StpEdgeOnUplinkCheck:
                         },
                         caused_by=tuple(
                             c for c in (ctx.delta_index.cause("port", end.id),) if c is not None
-                        ) if severity is not Severity.INFO else (),
+                        )
+                        if severity is not Severity.INFO
+                        else (),
                     )
                 )
         conclusions = [f for f in findings if f.severity is not Severity.INFO]

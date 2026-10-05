@@ -3,8 +3,8 @@
 (a) Unit-tests for _gw_screen_view: full=True passes everything through;
     full=False projects to GATEWAY_SCREENED_ROOTS only.
 (b) Integration: _simulate_site_state rejects an out-of-scope gateway leaf
-    (ip_configs.*.netmask differs, netmask is NOT in GATEWAY_EFFECTIVE_ALLOWLIST)
-    with a derived_gate UNKNOWN verdict.
+    with a derived-gate UNKNOWN verdict while accepting modeled static-addressing
+    and DHCP client-option fields.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def _meta() -> StateMeta:
 GATEWAY_MAC = "bb0000000001"
 GATEWAY_ID = "gw-1"
 
-# ip_configs.*.ip is in GATEWAY_EFFECTIVE_ALLOWLIST; netmask is NOT.
+# Static-addressing fields are modeled; secondary_ips remains out of scope.
 _GATEWAY_BASE = {
     "mac": GATEWAY_MAC,
     "id": GATEWAY_ID,
@@ -122,7 +122,13 @@ _GATEWAY_BASE = {
 }
 _GATEWAY_PROP = {
     **_GATEWAY_BASE,
-    "ip_configs": {"corp": {"ip": "10.0.0.1", "netmask": "255.255.254.0"}},  # netmask changed!
+    "ip_configs": {
+        "corp": {
+            "ip": "10.0.0.1",
+            "netmask": "255.255.255.0",
+            "secondary_ips": ["10.0.0.2"],
+        }
+    },
 }
 
 
@@ -143,8 +149,7 @@ def _raw(gateway: dict) -> RawSiteState:
 
 
 def test_out_of_scope_gateway_leaf_rejected_as_unknown():
-    """A gateway whose ip_configs.*.netmask differs (netmask is NOT in
-    GATEWAY_EFFECTIVE_ALLOWLIST) -> coverage-gap UNKNOWN."""
+    """An unmodeled gateway IP attribute still produces a coverage gap."""
     baseline_raw = _raw(_GATEWAY_BASE)
     proposed_raw = _raw(_GATEWAY_PROP)
 
@@ -172,7 +177,7 @@ def test_out_of_scope_gateway_leaf_rejected_as_unknown():
     assert gap.subject.id == GATEWAY_MAC
     assert gap.affected_entities == (GATEWAY_MAC,)
     assert gap.evidence["artifact"] == f"gateway {GATEWAY_MAC}"
-    assert gap.evidence["paths"] == ["ip_configs.corp.netmask"]
+    assert gap.evidence["paths"] == ["ip_configs.corp.secondary_ips"]
     assert not any(f.subject and f.subject.kind == "gateway" for f in gaps)
 
 
@@ -259,6 +264,24 @@ def _gateway_address_verdict(before, after):
     )
 
 
+@pytest.mark.parametrize("row,expected", [
+    ({"type": "static", "netmask": "/24", "ip": "10.0.0.1"}, Decision.SAFE),
+    ({"netmask": "/24", "ip": "10.0.0.1"}, Decision.UNKNOWN),
+    ({"type": "static", "netmask": "invalid", "ip": "10.0.0.1"}, Decision.UNKNOWN),
+    ({"type": "static", "netmask": "/24", "ip": "10.0.0.0"}, Decision.UNKNOWN),
+    ({"type": "static", "netmask": "/24", "ip": "10.0.0.1", "future": True},
+     Decision.UNKNOWN),
+])
+def test_new_gateway_interface_requires_valid_explicit_addressing(row, expected):
+    verdict = _simulate_site_state(
+        _raw({**_GATEWAY_BASE, "ip_configs": {}}),
+        _raw({**_GATEWAY_BASE, "ip_configs": {"corp": row}}),
+        adapter=MistAdapter(), registry=CheckRegistry([]), run=RunContext(),
+        state_meta=build_state_meta(_meta(), now=datetime.now(UTC)),
+    )
+    assert verdict.decision is expected, verdict.decision_reasons
+
+
 @pytest.mark.parametrize("mask", ["255.255.255.0", "/24", "24"])
 def test_static_gateway_ip_change_inside_unchanged_subnet_requires_review(mask):
     before = {"type": "static", "netmask": mask, "ip": "10.0.0.1"}
@@ -295,3 +318,29 @@ def test_gateway_address_dependency_exception_cannot_admit_mode_mask_or_subnet_c
 def test_gateway_address_exception_does_not_bypass_implicit_or_opaque_dependencies(row):
     verdict = _gateway_address_verdict(row, {**row, "ip": "10.0.0.2"})
     assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+
+
+def test_in_scope_gateway_type_netmask_and_dhcp_options_not_rejected():
+    gateway_proposed = {
+        **_GATEWAY_BASE,
+        "ip_configs": {
+            "corp": {"type": "static", "ip": "10.0.0.1", "netmask": "/23"}
+        },
+        "dhcpd_config": {
+            "corp": {
+                "type": "local",
+                "dns_servers": ["1.1.1.1", "8.8.8.8"],
+                "lease_time": 86400,
+            }
+        },
+    }
+    verdict = _simulate_site_state(
+        _raw(_GATEWAY_BASE),
+        _raw(gateway_proposed),
+        adapter=MistAdapter(),
+        registry=CheckRegistry([]),
+        run=RunContext(),
+        state_meta=build_state_meta(_meta(), now=datetime.now(UTC)),
+    )
+    assert verdict.decision is not Decision.UNKNOWN
+    assert not any("derived_gate" in r for r in verdict.decision_reasons)

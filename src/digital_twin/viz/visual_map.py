@@ -152,7 +152,10 @@ _NODE_EV_KEYS = (
     "baseline_root", "proposed_root", "elected_root",
 )
 _PORT_EV_KEYS = (
-    "port", "new_member_ports", "untrusted_egress",  # snooping blocks egress ports
+    "port", "new_member_ports", "new_wlan_members", "untrusted_egress",
+    "assigned_auth_ports", "baseline_viable_paths", "proposed_viable_paths",
+    "removed_paths", "added_paths",
+    # snooping blocks egress ports; WLAN members are AP device ids
     "ports",  # l2_loop.self_loop: the self-looped pair (list of port ids)
 )
 _LINK_EV_KEYS = ("link", "link_ids")  # l2_loop emits the cycle's link_ids

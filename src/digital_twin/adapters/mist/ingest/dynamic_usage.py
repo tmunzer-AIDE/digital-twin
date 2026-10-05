@@ -119,6 +119,34 @@ def evaluate_rules(
     return RuleOutcome(kind="static")
 
 
+# OAS `src` enum values that read nothing derived from the neighbor's device name
+_NAME_INDEPENDENT_SOURCES = frozenset({
+    "link_peermac", "lldp_chassis_id", "lldp_hardware_revision",
+    "lldp_manufacturer_name", "lldp_oui", "lldp_serial_number",
+    "lldp_system_description", "radius_dynamicfilter", "radius_usermac",
+    "radius_username",
+})
+
+
+def rename_flips_dynamic_rule(rule: Mapping[str, Any], old_name: str, new_name: str) -> bool:
+    """Whether renaming a neighbor `old_name -> new_name` could change this one
+    rule's outcome. A Mist device advertises its name as its LLDP system name
+    (the identity the dynamic-port model above already relies on). Never
+    under-reports: an unknown source, a {{var}} operand or an unevaluable rule
+    counts as a possible flip."""
+    src = rule.get("src")
+    if src in _NAME_INDEPENDENT_SOURCES:
+        return False
+    if src != "lldp_system_name":
+        return True
+    operands = [rule.get("expression"), rule.get("equals"), *(rule.get("equals_any") or ())]
+    if any("{{" in str(x) for x in operands if x is not None):
+        return True
+    before = evaluate_rules([rule], {"lldp_system_name": old_name}).kind
+    after = evaluate_rules([rule], {"lldp_system_name": new_name}).kind
+    return "inconclusive" in (before, after) or before != after
+
+
 def _without_nulls(obj: Any) -> Any:
     """null == absent (project canon) — for definition-change comparison."""
     if isinstance(obj, Mapping):

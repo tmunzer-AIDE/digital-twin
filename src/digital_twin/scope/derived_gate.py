@@ -21,7 +21,7 @@ from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
 from digital_twin.scope.atomic_lists import atomic_list_issues
 from digital_twin.scope.dependency_gate import dependency_paths
-from digital_twin.scope.dhcp_screen import dhcp_row_rejection
+from digital_twin.scope.dhcp_screen import dhcp_row_rejection, is_empty_scope_map
 from digital_twin.scope.paths import allowed_tokens, changed_leaf_paths, leaf_changes
 
 _STAGE = "derived_gate"
@@ -53,6 +53,7 @@ def check_derived_gaps(
         delta.tokens
         for delta in changes
         if not allowed_tokens(delta.tokens, allowlist)
+        and not is_empty_scope_map(delta.tokens, baseline, proposed)
     }
     offending = tuple(".".join(tokens) for tokens in sorted(offending_tokens))
     if offending:

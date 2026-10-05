@@ -39,22 +39,27 @@ def touched_ids(diff: IRDiff, kind: str) -> set[str]:
 
 @dataclass(frozen=True)
 class Violation:
-    key: Hashable               # identity incl. facts (changed violation => introduced)
+    key: Hashable  # identity incl. facts (changed violation => introduced)
     subject: ObjectRef
     affected: tuple[str, ...]
-    summary: str                # human phrase
+    summary: str  # human phrase
     evidence: dict[str, Any] = field(default_factory=dict)
     caused_by: tuple[Cause, ...] = ()
 
 
 def run_delta_lint(
-    *, check_id: str, base: list[Violation], proposed: list[Violation], coverage: Coverage
+    *,
+    check_id: str,
+    base: list[Violation],
+    proposed: list[Violation],
+    coverage: Coverage,
+    introduced_severity: Severity = Severity.WARNING,
 ) -> CheckResult:
     base_keys = {v.key for v in base}
     findings: list[Finding] = []
     for v in proposed:
         introduced = v.key not in base_keys
-        sev = Severity.WARNING if introduced else Severity.INFO
+        sev = introduced_severity if introduced else Severity.INFO
         code = "introduced" if introduced else "preexisting"
         suffix = "" if introduced else " (pre-existing, unchanged by the delta — context)"
         findings.append(
@@ -74,7 +79,13 @@ def run_delta_lint(
     conclusions = [f for f in findings if f.severity is not Severity.INFO]
     return CheckResult(
         check_id=check_id,
-        status=Status.WARN if conclusions else Status.PASS,
+        status=(
+            Status.FAIL
+            if any(f.severity in (Severity.ERROR, Severity.CRITICAL) for f in conclusions)
+            else Status.WARN
+            if conclusions
+            else Status.PASS
+        ),
         findings=tuple(findings),
         coverage=coverage,
         confidence=_HIGH,

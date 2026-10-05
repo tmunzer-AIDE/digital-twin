@@ -80,6 +80,7 @@ def _net(subnet: str | None) -> _Net | None:
     except ValueError:
         return None
 
+
 _HIGH = Confidence(level=ConfidenceLevel.HIGH)
 _UNVERIFIED = Confidence(
     level=ConfidenceLevel.MEDIUM,
@@ -270,8 +271,11 @@ class OspfWithdrawalCheck:
                     },
                     caused_by=ctx.delta_index.causes(
                         "ospf_intf",
-                        [oi.id for oi in base_ir.ospf_intfs
-                         if oi.device_id == did and not oi.passive],
+                        [
+                            oi.id
+                            for oi in base_ir.ospf_intfs
+                            if oi.device_id == did and not oi.passive
+                        ],
                     ),
                 )
             )
@@ -300,8 +304,11 @@ class OspfWithdrawalCheck:
                     evidence={"device": did, "vlan": vid},
                     caused_by=ctx.delta_index.causes(
                         "ospf_intf",
-                        [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
-                         if oi.device_id == did and oi.vlan_id == vid],
+                        [
+                            oi.id
+                            for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                            if oi.device_id == did and oi.vlan_id == vid
+                        ],
                     ),
                 )
             )
@@ -310,8 +317,11 @@ class OspfWithdrawalCheck:
         def _ospf_caused_by(did: str, vid: int) -> tuple[Cause, ...]:
             return ctx.delta_index.causes(
                 "ospf_intf",
-                [oi.id for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
-                 if oi.device_id == did and oi.vlan_id == vid],
+                [
+                    oi.id
+                    for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+                    if oi.device_id == did and oi.vlan_id == vid
+                ],
             )
 
         def _mutation(
@@ -339,12 +349,16 @@ class OspfWithdrawalCheck:
 
             # 3a. area_changed: the area SET changed
             if b.areas != p.areas:
-                findings.append(_mutation(
-                    did, vid, "area_changed",
-                    f"OSPF area set for vlan {vid} on {did} changed "
-                    f"{sorted(b.areas)} → {sorted(p.areas)} — adjacency / LSA-scope may shift",
-                    {"base_areas": sorted(b.areas), "proposed_areas": sorted(p.areas)},
-                ))
+                findings.append(
+                    _mutation(
+                        did,
+                        vid,
+                        "area_changed",
+                        f"OSPF area set for vlan {vid} on {did} changed "
+                        f"{sorted(b.areas)} → {sorted(p.areas)} — adjacency / LSA-scope may shift",
+                        {"base_areas": sorted(b.areas), "proposed_areas": sorted(p.areas)},
+                    )
+                )
 
             # 3b. per-area passive/metric comparison (only non-ambiguous retained areas)
             ambiguous = b.ambiguous_areas | p.ambiguous_areas
@@ -361,12 +375,16 @@ class OspfWithdrawalCheck:
 
                 if b_row.passive != p_row.passive:
                     direction = "active→passive" if not b_row.passive else "passive→active"
-                    findings.append(_mutation(
-                        did, vid, "passive_flip",
-                        f"OSPF vlan {vid} on {did} area {area} flipped {direction}"
-                        " — transit role changed",
-                        {"area": area},
-                    ))
+                    findings.append(
+                        _mutation(
+                            did,
+                            vid,
+                            "passive_flip",
+                            f"OSPF vlan {vid} on {did} area {area} flipped {direction}"
+                            " — transit role changed",
+                            {"area": area},
+                        )
+                    )
 
                 # metric: if either side is templated/unparseable AND the token/state
                 # changed, the metric can't be compared -> PARTIAL note (never SAFE — closes
@@ -377,26 +395,37 @@ class OspfWithdrawalCheck:
                         "unparseable on one side — change impact unverifiable"
                     )
                 elif b_row.metric != p_row.metric:
-                    findings.append(_mutation(
-                        did, vid, "metric_changed",
-                        f"OSPF cost for vlan {vid} on {did} area {area} changed "
-                        f"{b_row.metric} → {p_row.metric} — path selection may shift "
-                        "(no RIB computed)",
-                        {"area": area, "base_metric": b_row.metric,
-                         "proposed_metric": p_row.metric},
-                    ))
+                    findings.append(
+                        _mutation(
+                            did,
+                            vid,
+                            "metric_changed",
+                            f"OSPF cost for vlan {vid} on {did} area {area} changed "
+                            f"{b_row.metric} → {p_row.metric} — path selection may shift "
+                            "(no RIB computed)",
+                            {
+                                "area": area,
+                                "base_metric": b_row.metric,
+                                "proposed_metric": p_row.metric,
+                            },
+                        )
+                    )
 
         # 4. participation_added: (device, vlan) wholly new to OSPF in proposed
         for key in sorted(set(prop.by_dev_vlan) - set(base.by_dev_vlan)):
             did, vid = key
             if not _routed(prop_ir, vid, prop_l3):
                 continue
-            findings.append(_mutation(
-                did, vid, "participation_added",
-                f"vlan {vid} on {did} is newly added to OSPF — new advertisement / "
-                "possible transit; review intended scope",
-                {},
-            ))
+            findings.append(
+                _mutation(
+                    did,
+                    vid,
+                    "participation_added",
+                    f"vlan {vid} on {did} is newly added to OSPF — new advertisement / "
+                    "possible transit; review intended scope",
+                    {},
+                )
+            )
 
         # 5. advertised_prefix_changed: retained OSPF (device, vlan) — active OR passive —
         # whose Vlan.subnet was delta-touched. Distinct source from the four ospf_intf-diff
@@ -411,27 +440,29 @@ class OspfWithdrawalCheck:
             bnet = _net(base_ir.vlans[vid].subnet if vid in base_ir.vlans else None)
             pnet = _net(prop_ir.vlans[vid].subnet if vid in prop_ir.vlans else None)
             if bnet is not None and pnet is not None and bnet != pnet:
-                findings.append(Finding(
-                    source=FindingSource.CHECK,
-                    category=FindingCategory.NETWORK,
-                    code=f"{self.id}.advertised_prefix_changed",
-                    subject=ObjectRef("vlan", str(vid)),
-                    severity=Severity.WARNING,
-                    confidence=_UNVERIFIED,
-                    message=(
-                        f"OSPF-participating vlan {vid} on {did} changed its connected "
-                        f"prefix {bnet} → {pnet} — the advertised subnet shifted; "
-                        "reachability impact unverifiable without RIB"
-                    ),
-                    affected_entities=(str(vid),),
-                    evidence={
-                        "device": did,
-                        "vlan": vid,
-                        "base_prefix": str(bnet),
-                        "proposed_prefix": str(pnet),
-                    },
-                    caused_by=ctx.delta_index.causes("vlan", [str(vid)]),
-                ))
+                findings.append(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.advertised_prefix_changed",
+                        subject=ObjectRef("vlan", str(vid)),
+                        severity=Severity.WARNING,
+                        confidence=_UNVERIFIED,
+                        message=(
+                            f"OSPF-participating vlan {vid} on {did} changed its connected "
+                            f"prefix {bnet} → {pnet} — the advertised subnet shifted; "
+                            "reachability impact unverifiable without RIB"
+                        ),
+                        affected_entities=(str(vid),),
+                        evidence={
+                            "device": did,
+                            "vlan": vid,
+                            "base_prefix": str(bnet),
+                            "proposed_prefix": str(pnet),
+                        },
+                        caused_by=ctx.delta_index.causes("vlan", [str(vid)]),
+                    )
+                )
             elif bnet is None or pnet is None:
                 notes.append(
                     f"OSPF-participating vlan {vid} on {did} advertised prefix could not "
@@ -461,20 +492,21 @@ class OspfWithdrawalCheck:
             and IRCapability.OSPF_TELEMETRY in prop_ir.capabilities
         )
         has_unparsed = (
-            base_ir.ospf_telemetry_unparsed_count > 0
-            or prop_ir.ospf_telemetry_unparsed_count > 0
+            base_ir.ospf_telemetry_unparsed_count > 0 or prop_ir.ospf_telemetry_unparsed_count > 0
         )
 
         # Adjacency-affecting codes: only these justify escalating a structural finding
         # to ERROR/UNSAFE when a confirmed peer break is attributed to them.
         # metric_changed and participation_added are NOT adjacency-affecting.
-        _ADJACENCY_AFFECTING = frozenset({
-            f"{self.id}.egress_lost",
-            f"{self.id}.advertised_removed",
-            f"{self.id}.passive_flip",
-            f"{self.id}.area_changed",
-            f"{self.id}.advertised_prefix_changed",
-        })
+        _ADJACENCY_AFFECTING = frozenset(
+            {
+                f"{self.id}.egress_lost",
+                f"{self.id}.advertised_removed",
+                f"{self.id}.passive_flip",
+                f"{self.id}.area_changed",
+                f"{self.id}.advertised_prefix_changed",
+            }
+        )
 
         if telemetry_known:
 
@@ -488,8 +520,11 @@ class OspfWithdrawalCheck:
                     ev = f.evidence or {}
                     if ev.get("device") == did and ev.get("vlan") == vid:
                         return i
-                    if f.code == f"{self.id}.egress_lost" and ev.get("device") == did \
-                            and vid in (ev.get("affected_vlans") or []):
+                    if (
+                        f.code == f"{self.id}.egress_lost"
+                        and ev.get("device") == did
+                        and vid in (ev.get("affected_vlans") or [])
+                    ):
                         return i
                 return None
 
@@ -502,18 +537,27 @@ class OspfWithdrawalCheck:
                 if cv is None:
                     continue  # shouldn't happen: broken_peers are covered-in-base
                 idx = _owner_idx(*cv)
-                (peers_by_owner.setdefault(idx, []) if idx is not None
-                 else unowned_peers.setdefault(cv, [])).append(n.peer_ip)
+                (
+                    peers_by_owner.setdefault(idx, [])
+                    if idx is not None
+                    else unowned_peers.setdefault(cv, [])
+                ).append(n.peer_ip)
 
             for owner_idx, peer_ips in peers_by_owner.items():
                 old = findings[owner_idx]
                 did = str((old.evidence or {}).get("device", ""))
                 named = ", ".join(sorted(set(peer_ips)))
                 findings[owner_idx] = Finding(
-                    source=old.source, category=old.category, code=old.code,
-                    subject=old.subject, severity=Severity.ERROR, confidence=_HIGH,
-                    message=(f"{old.message} | OSPF peer(s) {named} on {did} "
-                             "confirmed unreachable in proposed config"),
+                    source=old.source,
+                    category=old.category,
+                    code=old.code,
+                    subject=old.subject,
+                    severity=Severity.ERROR,
+                    confidence=_HIGH,
+                    message=(
+                        f"{old.message} | OSPF peer(s) {named} on {did} "
+                        "confirmed unreachable in proposed config"
+                    ),
                     affected_entities=old.affected_entities,
                     evidence={**(old.evidence or {}), "broken_peers": sorted(set(peer_ips))},
                     caused_by=old.caused_by,
@@ -522,17 +566,28 @@ class OspfWithdrawalCheck:
             for (did, vid), peer_ips in unowned_peers.items():
                 # Defensive backstop: confirmed break with no owning finding.
                 named = ", ".join(sorted(set(peer_ips)))
-                findings.append(Finding(
-                    source=FindingSource.CHECK, category=FindingCategory.NETWORK,
-                    code=f"{self.id}.peer_unreachable",
-                    subject=ObjectRef("device", did), severity=Severity.ERROR, confidence=_HIGH,
-                    message=(f"OSPF peer(s) {named} on {did} confirmed unreachable in the "
-                             "proposed config — no structural finding covers this break "
-                             "(attribution gap backstop)"),
-                    affected_entities=(str(vid),),
-                    evidence={"device": did, "vlan": vid, "broken_peers": sorted(set(peer_ips))},
-                    caused_by=(),
-                ))
+                findings.append(
+                    Finding(
+                        source=FindingSource.CHECK,
+                        category=FindingCategory.NETWORK,
+                        code=f"{self.id}.peer_unreachable",
+                        subject=ObjectRef("device", did),
+                        severity=Severity.ERROR,
+                        confidence=_HIGH,
+                        message=(
+                            f"OSPF peer(s) {named} on {did} confirmed unreachable in the "
+                            "proposed config — no structural finding covers this break "
+                            "(attribution gap backstop)"
+                        ),
+                        affected_entities=(str(vid),),
+                        evidence={
+                            "device": did,
+                            "vlan": vid,
+                            "broken_peers": sorted(set(peer_ips)),
+                        },
+                        caused_by=(),
+                    )
+                )
 
             # Unevaluable peers -> PARTIAL coverage NOTE (-> REVIEW floor), NOT a break.
             # A live established peer whose proposed coverage cannot be evaluated (subnet
@@ -552,8 +607,10 @@ class OspfWithdrawalCheck:
         # Compute OSPF-relevant context for note gating: a structural finding exists, OR
         # a delta-touched subnet belongs to an ACTIVE OSPF (device, vlan) in base or prop.
         ospf_relevant = bool(findings) or any(
-            any(oi.vlan_id == vid and not oi.passive
-                for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs))
+            any(
+                oi.vlan_id == vid and not oi.passive
+                for oi in (*base_ir.ospf_intfs, *prop_ir.ospf_intfs)
+            )
             for vid in touched_vids
         )
 
@@ -604,8 +661,6 @@ class OspfWithdrawalCheck:
                 state=CoverageState.PARTIAL if notes else CoverageState.COMPLETE,
                 notes=tuple(notes),
             ),
-            confidence=(
-                min_confidence(*(f.confidence for f in findings)) if findings else _HIGH
-            ),
+            confidence=(min_confidence(*(f.confidence for f in findings)) if findings else _HIGH),
             reasoning="compared per-(device,vlan) OSPF participation, baseline vs proposed",
         )

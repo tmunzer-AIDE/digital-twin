@@ -38,9 +38,9 @@ _SCHEMA_FILES: dict[str, str] = {
     # schema has no `additionalProperties: false`, so L0 stays PERMISSIVE for those
     # fields (no false-reject) — the field gate + compile + checks still cover them.
     "sitetemplate": "sitetemplate.schema.json",
-    # thin/permissive WLAN schema: types the modeled lint leaves so a `wlan` op
-    # L0-validates instead of fatal-rejecting; scoped L0 (changed roots) means a
-    # partial WLAN update only validates the touched root.
+    # Full WLAN schema: every policy-classified field receives type/enum
+    # validation. Scoped L0 (changed roots) means a partial WLAN update only
+    # validates the roots changed by this operation.
     "wlan": "wlan.schema.json",
     # thin/permissive nacrule schema (org NAC rules, GS34): types the modeled
     # leaves so a nacrule op L0-validates; NO additionalProperties:false, so

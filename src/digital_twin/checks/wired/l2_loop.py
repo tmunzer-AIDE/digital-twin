@@ -153,8 +153,9 @@ class L2LoopCheck:
                     if reciprocal
                     else Confidence(
                         level=ConfidenceLevel.MEDIUM,
-                        reasons=("the self-loop claim is one-sided — not corroborated "
-                                 "by the peer port",),
+                        reasons=(
+                            "the self-loop claim is one-sided — not corroborated by the peer port",
+                        ),
                     )
                 )
                 status = Status.FAIL if reciprocal else Status.WARN
@@ -163,19 +164,26 @@ class L2LoopCheck:
                     "STP protection disabled by this change"
                     if reciprocal
                     else "one-sided observed self-loop claim — STP protection disabled "
-                         "by this change, unconfirmed by the peer"
+                    "by this change, unconfirmed by the peer"
                 )
                 message = (
                     f"physical self-loop observed on {pid} ↔ {peer_id}; STP "
                     f"protection disabled by this change — broadcast-storm risk"
                 )
-                out.append((
-                    self._self_loop_finding(
-                        severity=severity, confidence=confidence, message=message,
-                        pair_ids=pair_ids, ctx=ctx, reason=reason, caused_by=caused_by,
-                    ),
-                    status,
-                ))
+                out.append(
+                    (
+                        self._self_loop_finding(
+                            severity=severity,
+                            confidence=confidence,
+                            message=message,
+                            pair_ids=pair_ids,
+                            ctx=ctx,
+                            reason=reason,
+                            caused_by=caused_by,
+                        ),
+                        status,
+                    )
+                )
                 continue
 
             pair_touched = self._pair_touched(ctx, pid, peer_id)
@@ -185,17 +193,21 @@ class L2LoopCheck:
                     f"change on this pair this delta — context only, STP protection "
                     f"unaffected"
                 )
-                out.append((
-                    self._self_loop_finding(
-                        severity=Severity.INFO,
-                        confidence=Confidence(level=ConfidenceLevel.HIGH),
-                        message=message, pair_ids=pair_ids, ctx=ctx,
-                        reason="observed self-loop pair touched by this delta, but STP "
-                               "protection (bpdu_filter) unaffected — context only",
-                        caused_by=caused_by,
-                    ),
-                    Status.PASS,
-                ))
+                out.append(
+                    (
+                        self._self_loop_finding(
+                            severity=Severity.INFO,
+                            confidence=Confidence(level=ConfidenceLevel.HIGH),
+                            message=message,
+                            pair_ids=pair_ids,
+                            ctx=ctx,
+                            reason="observed self-loop pair touched by this delta, but STP "
+                            "protection (bpdu_filter) unaffected — context only",
+                            caused_by=caused_by,
+                        ),
+                        Status.PASS,
+                    )
+                )
             # untouched: nothing — silent (per spec, no finding at all)
         return out
 

@@ -99,6 +99,52 @@ def test_l2_and_vlan_charts_emit_endpoint_interface_metadata():
         assert metadata["source_interfaces"] == ["ge-0/0/1"]
         assert metadata["target_interfaces"] == ["ge-0/0/1"]
         assert metadata["kind"] == "physical"
+        assert metadata["vlans"] == [30]
+        assert metadata["status"] == "observed"
+
+
+def _switch_ap_ir(*, disabled: bool):
+    builder = IRBuilder()
+    builder.add_device(Device(id="sw1", role=DeviceRole.SWITCH, site="s1", name="DNT-NTR-SWB-3"))
+    builder.add_device(Device(id="ap1", role=DeviceRole.AP, site="s1", name="DNT-NTR-APB"))
+    builder.add_port(Port(
+        id="sw1:ge-0/0/0", device_id="sw1", name="ge-0/0/0",
+        mode=PortMode.TRUNK, tagged_vlans=(20,), disabled=disabled,
+    ))
+    builder.add_port(Port(
+        id="ap1:eth0", device_id="ap1", name="eth0", mode=PortMode.TRUNK,
+    ))
+    builder.add_link(Link(
+        id=link_id("sw1:ge-0/0/0", "ap1:eth0"),
+        a_port="sw1:ge-0/0/0", b_port="ap1:eth0", kind=LinkKind.PHYSICAL,
+    ))
+    builder.add_vlan(Vlan(vlan_id=20, name="srv"))
+    builder.require_ap_vlans("ap1", frozenset({20}))
+    return builder.build()
+
+
+def test_disabled_port_keeps_baseline_link_as_broken_in_l2_and_vlan_views():
+    baseline = _switch_ap_ir(disabled=False)
+    proposed = _switch_ap_ir(disabled=True)
+
+    for diagram in (
+        next(d for d in build_diagrams(baseline, proposed, ()) if d.view == "l2"),
+        next(d for d in build_diagrams(baseline, proposed, ()) if d.view == "vlan:20"),
+    ):
+        assert "DNT-NTR-SWB-3" in diagram.mermaid
+        assert "DNT-NTR-APB" in diagram.mermaid
+        assert "ge-0/0/0" in diagram.mermaid
+        metadata = [
+            json.loads(line.split("%% mistmcp-link ", 1)[1])
+            for line in diagram.mermaid.splitlines()
+            if "%% mistmcp-link " in line
+        ]
+        assert len(metadata) == 1
+        assert metadata[0]["status"] == "broken"
+        assert {
+            tuple(metadata[0]["source_interfaces"]),
+            tuple(metadata[0]["target_interfaces"]),
+        } == {("ge-0/0/0",), ("eth0",)}
 
 
 def test_zero_vlan_physical_edge_is_labeled_as_no_vlans_not_physical():
@@ -108,7 +154,8 @@ def test_zero_vlan_physical_edge_is_labeled_as_no_vlans_not_physical():
     b.add_port(Port(id="s1:p1", device_id="s1", name="p1", mode=PortMode.TRUNK))
     b.add_port(Port(id="s2:p2", device_id="s2", name="p2", mode=PortMode.TRUNK))
     b.add_link(Link(
-        id=link_id("s1:p1", "s2:p2"), a_port="s1:p1", b_port="s2:p2", kind=LinkKind.PHYSICAL,
+        id=link_id("s1:p1", "s2:p2"), a_port="s1:p1", b_port="s2:p2",
+        kind=LinkKind.PHYSICAL,
     ))
     l2 = next(d for d in build_diagrams(b.build(), b.build(), ()) if d.view == "l2")
     assert '|"No VLANs"|' in l2.mermaid
@@ -197,8 +244,10 @@ def test_l3_exits_chart_includes_gateway_role_interface():
     )
     diagrams = build_diagrams(ir, ir, ())
     l3 = next(d for d in diagrams if d.view == "l3_exits")
+    vlan = next(d for d in diagrams if d.view == "vlan:2")
     assert "VLAN 2" in l3.mermaid
     assert "srx" in l3.mermaid  # gateway-role interface present
+    assert "gateway · routed exit" in vlan.mermaid
 
 
 def test_l3_exits_highlights_affected_gateway_device():

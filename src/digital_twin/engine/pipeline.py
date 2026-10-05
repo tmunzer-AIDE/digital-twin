@@ -24,8 +24,8 @@ them into DecisionInputs and stops at the right stage. No business logic.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -39,11 +39,19 @@ from digital_twin.adapters.mist.ingest.switch import (
 )
 from digital_twin.analysis.context import AnalysisContext
 from digital_twin.analysis.delta_cause import delta_index
-from digital_twin.checks.base import CheckContext
+from digital_twin.checks.base import (
+    CheckContext,
+    CheckResult,
+    Coverage,
+    CoverageState,
+    Status,
+)
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.checks.wired.topology_coverage import TopologyCoverageCheck
 from digital_twin.contracts import (
+    Cause,
+    ChangePlan,
     Finding,
     FindingCategory,
     FindingSource,
@@ -51,12 +59,22 @@ from digital_twin.contracts import (
     Rejection,
     Severity,
 )
+from digital_twin.engine.config_policy import simulate_configuration_policy
 from digital_twin.engine.effective_override import effective_override_result
+from digital_twin.engine.name_change import (
+    NameChangeAssessment,
+    RenameRisks,
+    assess_name_only_change,
+    device_rename_risks,
+)
 from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
 from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
-from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff, diff_ir
+from digital_twin.ir import Confidence, ConfidenceLevel, IRDiff, NacRule, diff_ir
 from digital_twin.providers.base import (
+    FetchError,
+    FetchFailure,
+    NacRuleUsageContext,
     OrgScope,
     OrgTemplateContext,
     OrgWlanContext,
@@ -65,6 +83,7 @@ from digital_twin.providers.base import (
     SiteScope,
     StateMeta,
     StateProvider,
+    WlanUsageContext,
 )
 from digital_twin.providers.fetch_limits import with_fetch_budget
 from digital_twin.scope.allowlist import GATEWAY_EFFECTIVE_ALLOWLIST, ORG_OBJECT_TYPES
@@ -76,6 +95,10 @@ from digital_twin.scope.gateway_addressing import gateway_address_change_finding
 from digital_twin.scope.object_gate import check_objects
 from digital_twin.scope.observation_gate import observation_gaps, proposed_observations
 from digital_twin.scope.switch_matching_gate import switch_matching_gaps
+from digital_twin.scope.wlan_policy import (
+    classify_wlan_delta,
+    usage_gated_paths_for_update,
+)
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
@@ -97,6 +120,642 @@ GATEWAY_SCREENED_ROOTS: tuple[str, ...] = (
     # Until gateway semantics are modeled, changes here must remain UNKNOWN.
     "radius_config", "mist_nac", "extra_routes", "extra_routes6",
 )
+
+
+@dataclass(frozen=True)
+class WlanAssociations:
+    """Current wireless association evidence for one WLAN (one site or merged).
+
+    Session history is not proof of absence: a client that is still connected
+    may have no session record yet. ``connected`` clients are proven use;
+    ``unidentified`` clients (no WLAN id, no comparable SSID) and telemetry
+    ``gaps`` are uncertainty, never evidence that nobody uses the WLAN.
+    ``shared_ssid`` clients carry only an SSID that another enabled WLAN at the
+    same site also serves, so they may or may not be on this WLAN; a surviving
+    SSID proves neither admission nor forwarding, so they are uncertainty too.
+    """
+
+    connected: tuple[Mapping[str, Any], ...] = ()
+    unidentified: tuple[Mapping[str, Any], ...] = ()
+    gaps: tuple[str, ...] = ()
+    shared_ssid: tuple[Mapping[str, Any], ...] = ()
+
+    def on_band(self, band: str | None) -> WlanAssociations:
+        return WlanAssociations(
+            tuple(c for c in self.connected if _on_band(c, band)),
+            tuple(c for c in self.unidentified if _on_band(c, band)),
+            self.gaps,
+            tuple(c for c in self.shared_ssid if _on_band(c, band)),
+        )
+
+    @property
+    def unverified_reasons(self) -> tuple[str, ...]:
+        reasons = list(self.gaps)
+        if self.unidentified:
+            reasons.append(
+                f"{len(self.unidentified)} connected client(s) could not be associated "
+                "with a WLAN"
+            )
+        if self.shared_ssid:
+            reasons.append(
+                f"{len(self.shared_ssid)} connected client(s) use an SSID that another "
+                "WLAN at the same site also serves"
+            )
+        return tuple(reasons)
+
+    @staticmethod
+    def merge(parts: Iterable[WlanAssociations]) -> WlanAssociations:
+        rows = tuple(parts)
+        return WlanAssociations(
+            tuple(c for p in rows for c in p.connected),
+            tuple(c for p in rows for c in p.unidentified),
+            tuple(g for p in rows for g in p.gaps),
+            tuple(c for p in rows for c in p.shared_ssid),
+        )
+
+
+def _site_wlan_associations(
+    raw: RawSiteState, wlan_id: str, wlan: Mapping[str, Any]
+) -> WlanAssociations:
+    """Classify the site's current wireless clients against one WLAN.
+
+    A client matches by WLAN id; without one, its SSID identifies this WLAN
+    only when no other enabled WLAN at the site serves the same SSID. A failed
+    or absent client fetch is a gap, not an empty population.
+    """
+    site = raw.scope.site_id
+    if "wireless_clients" not in raw.meta.fetched or any(
+        failure.object == "wireless_clients" for failure in raw.meta.failures
+    ):
+        return WlanAssociations(gaps=(f"site {site}: current wireless clients unavailable",))
+    raw_ssid = wlan.get("ssid")
+    ssid = raw_ssid if isinstance(raw_ssid, str) and raw_ssid and "{{" not in raw_ssid else None
+    shared = ssid is not None and any(
+        isinstance(other, Mapping)
+        and other.get("id") != wlan_id
+        and other.get("enabled") is not False
+        and other.get("ssid") == ssid
+        for other in raw.wlans
+    )
+    connected: list[Mapping[str, Any]] = []
+    unidentified: list[Mapping[str, Any]] = []
+    shared_ssid: list[Mapping[str, Any]] = []
+    for client in raw.wireless_clients:
+        if not isinstance(client, Mapping):
+            unidentified.append({})
+            continue
+        client_wlan = client.get("wlan_id")
+        client_ssid = client.get("ssid")
+        if client_wlan:
+            if client_wlan == wlan_id:
+                connected.append(client)
+        elif ssid is None or not client_ssid:
+            # Neither identity can rule this WLAN out.
+            unidentified.append(client)
+        elif client_ssid == ssid:
+            (shared_ssid if shared else connected).append(client)
+    return WlanAssociations(
+        tuple(connected), tuple(unidentified), shared_ssid=tuple(shared_ssid)
+    )
+
+
+def _org_wlan_associations(
+    raw_map: Mapping[str, RawSiteState | FetchError],
+    wlan_id: str,
+    rows_by_site: Mapping[str, Mapping[str, Any]],
+) -> WlanAssociations:
+    parts = []
+    for sid, row in sorted(rows_by_site.items()):
+        fetched = raw_map.get(sid)
+        if isinstance(fetched, RawSiteState):
+            parts.append(_site_wlan_associations(fetched, wlan_id, row))
+        else:
+            parts.append(WlanAssociations(gaps=(f"site {sid}: site state unavailable",)))
+    return WlanAssociations.merge(parts)
+
+
+def _on_band(client: Mapping[str, Any], band: str | None) -> bool:
+    # Mist reports the client radio as "24" | "5" | "6"; an unknown band counts.
+    observed = client.get("band")
+    return band is None or observed is None or str(observed) == band.split("-", 1)[0]
+
+
+def _resolve_wlan_usage(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    band: str | None = None,
+) -> WlanUsageContext | FetchError:
+    resolver = getattr(provider, "resolve_wlan_usage", None)
+    if resolver is None:
+        return FetchError(
+            scope=scope,
+            failures=(FetchFailure(
+                object="wlan_sessions",
+                error="provider does not expose historical WLAN usage",
+            ),),
+            acquired_at=datetime.now(UTC),
+            host="provider",
+        )
+    try:
+        context: WlanUsageContext | FetchError = (
+            resolver(scope, wlan_id, window_days=7)
+            if band is None
+            else resolver(scope, wlan_id, window_days=7, band=band)
+        )
+    except TypeError as exc:
+        # Older/custom providers may implement only whole-WLAN usage.  They
+        # remain usable for generic changes, while an unsupported per-band
+        # query fails closed to REVIEW rather than crashing the simulation.
+        context = FetchError(
+            scope=scope,
+            failures=(FetchFailure(object="wlan_sessions", error=str(exc)),),
+            acquired_at=datetime.now(UTC),
+            host="provider",
+        )
+    return context
+
+
+@dataclass(frozen=True)
+class _UsageAssessment:
+    used: bool  # proven: connected right now, or sessions inside the window
+    unverified: tuple[str, ...]  # why absence of use is not proven
+    reason: str
+    evidence: dict[str, Any]
+
+
+def _assess_wlan_usage(
+    context: WlanUsageContext | FetchError,
+    associations: WlanAssociations,
+    *,
+    band: str | None = None,
+) -> _UsageAssessment:
+    """Combine session history with current associations. Only complete, clean
+    evidence on BOTH sides can establish that nobody uses the WLAN."""
+    qualifier = f" on band {band}" if band is not None else ""
+    observed = associations.on_band(band)
+    unverified = list(observed.unverified_reasons)
+    window_days = 7
+    evidence: dict[str, Any] = {
+        "window_days": window_days,
+        "connected_clients": len(observed.connected),
+        "unidentified_clients": len(observed.unidentified),
+        "shared_ssid_clients": len(observed.shared_ssid),
+    }
+    if observed.gaps:
+        evidence["association_gaps"] = list(observed.gaps)
+    if band is not None:
+        evidence["band"] = band
+    active_site_ids: tuple[str, ...] = ()
+    if isinstance(context, FetchError):
+        unverified.insert(0, f"WLAN usage{qualifier} during the last 7 days could not be verified")
+    else:
+        window_days = context.window_days
+        active_site_ids = context.active_site_ids
+        evidence.update({
+            "window_days": context.window_days,
+            "checked_site_ids": list(context.checked_site_ids),
+            "active_site_ids": list(context.active_site_ids),
+        })
+        if context.failures:
+            unverified.insert(0, f"WLAN usage{qualifier} was only partially verified")
+    if context.failures:
+        evidence["fetch_failures"] = [failure.error for failure in context.failures]
+    if observed.connected:
+        reason = f"{len(observed.connected)} client(s) are connected to the WLAN{qualifier}"
+    elif active_site_ids:
+        reason = f"WLAN had client sessions{qualifier} during the last {window_days} days"
+    elif unverified:
+        reason = "; ".join(unverified)
+    else:
+        reason = (
+            f"WLAN had no client sessions{qualifier} during the last {window_days} days "
+            "and no connected client can be on it"
+        )
+    return _UsageAssessment(
+        used=bool(observed.connected) or bool(active_site_ids),
+        unverified=tuple(unverified),
+        reason=reason,
+        evidence=evidence,
+    )
+
+
+def _usage_gate_result(
+    check_id: str,
+    wlan_id: str,
+    assessment: _UsageAssessment,
+    *,
+    used_code: str,
+    unverified_code: str,
+    consequence: str,
+    extra_evidence: Mapping[str, Any] | None = None,
+) -> CheckResult:
+    """REVIEW on proven use or unverifiable use; PASS only on complete evidence."""
+    coverage_state = (
+        CoverageState.PARTIAL if assessment.unverified else CoverageState.COMPLETE
+    )
+    notes = (assessment.reason, *(r for r in assessment.unverified if r != assessment.reason))
+    if not assessment.used and not assessment.unverified:
+        return CheckResult(
+            check_id=check_id,
+            status=Status.PASS,
+            findings=(),
+            coverage=Coverage(CoverageState.COMPLETE, (assessment.reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=assessment.reason,
+        )
+    finding = Finding(
+        source=FindingSource.CHECK,
+        category=FindingCategory.NETWORK,
+        code=used_code if assessment.used else unverified_code,
+        severity=Severity.WARNING,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message=f"{assessment.reason}; {consequence}",
+        affected_entities=(wlan_id,),
+        evidence={**(extra_evidence or {}), **assessment.evidence},
+    )
+    return CheckResult(
+        check_id=check_id,
+        status=Status.WARN,
+        findings=(finding,),
+        coverage=Coverage(coverage_state, notes),
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        reasoning=assessment.reason,
+    )
+
+
+def _wlan_delete_usage_result(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    *,
+    associations: WlanAssociations,
+) -> CheckResult:
+    assessment = _assess_wlan_usage(
+        _resolve_wlan_usage(provider, scope, wlan_id), associations
+    )
+    return _usage_gate_result(
+        "wireless.wlan.recent_usage",
+        wlan_id,
+        assessment,
+        used_code="wireless.wlan.recent_usage",
+        unverified_code="wireless.wlan.recent_usage.unverified",
+        consequence="deletion requires review",
+    )
+
+
+def _wlan_auth_transition_result(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    current: Mapping[str, Any],
+    proposed: Mapping[str, Any],
+    *,
+    associations: WlanAssociations,
+) -> CheckResult | None:
+    """Assess the security downgrade from a secured WLAN to an open WLAN."""
+    current_auth = current.get("auth")
+    proposed_auth = proposed.get("auth")
+    before = current_auth.get("type") if isinstance(current_auth, Mapping) else None
+    after = proposed_auth.get("type") if isinstance(proposed_auth, Mapping) else None
+    if before in (None, "open") or after != "open":
+        return None
+
+    assessment = _assess_wlan_usage(
+        _resolve_wlan_usage(provider, scope, wlan_id), associations
+    )
+    evidence = {
+        "before_auth_type": str(before),
+        "after_auth_type": "open",
+        **assessment.evidence,
+    }
+    if assessment.used:
+        # Proven use makes the downgrade UNSAFE regardless of other gaps.
+        reason = f"WLAN authentication changes from {before} to open: {assessment.reason}"
+        code, severity, status = (
+            "wireless.wlan.auth_transition.recent_usage", Severity.ERROR, Status.FAIL
+        )
+    elif assessment.unverified:
+        reason = (
+            f"WLAN authentication changes from {before} to open, and client usage "
+            f"could not be verified: {assessment.reason}"
+        )
+        code, severity, status = (
+            "wireless.wlan.auth_transition.unverified", Severity.WARNING, Status.WARN
+        )
+    else:
+        reason = f"WLAN authentication changes from {before} to open; {assessment.reason}"
+        code, severity, status = (
+            "wireless.wlan.auth_transition", Severity.WARNING, Status.WARN
+        )
+    finding = Finding(
+        source=FindingSource.CHECK,
+        category=FindingCategory.NETWORK,
+        code=code,
+        severity=severity,
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        message=(
+            f"{reason}; the security downgrade requires review"
+            if status is Status.WARN else reason
+        ),
+        affected_entities=(wlan_id,),
+        evidence=evidence,
+    )
+    return CheckResult(
+        check_id="wireless.wlan.auth_transition",
+        status=status,
+        findings=(finding,),
+        coverage=Coverage(
+            CoverageState.PARTIAL if assessment.unverified else CoverageState.COMPLETE,
+            (reason, *assessment.unverified),
+        ),
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        reasoning=reason,
+    )
+
+
+def _wlan_changed_usage_result(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    changed_fields: tuple[str, ...],
+    *,
+    associations: WlanAssociations,
+    band: str | None = None,
+) -> CheckResult:
+    """Gate a client-affecting WLAN update on seven-day session history and on
+    the clients connected right now."""
+    assessment = _assess_wlan_usage(
+        _resolve_wlan_usage(provider, scope, wlan_id, band), associations, band=band
+    )
+    return _usage_gate_result(
+        "wireless.wlan.change_usage",
+        wlan_id,
+        assessment,
+        used_code="wireless.wlan.change.recent_usage",
+        unverified_code="wireless.wlan.change.unverified",
+        consequence="client-affecting changes require review",
+        extra_evidence={"changed_fields": list(changed_fields)},
+    )
+
+
+_FIVE_GHZ_BANDS = frozenset({"5", "5-dedicated", "5-selectable"})
+_SIX_GHZ_BANDS = frozenset({"6", "6-dedicated", "6-selectable"})
+
+
+def _configured_bands(wlan: Mapping[str, Any]) -> frozenset[str] | None:
+    bands = wlan.get("bands")
+    if isinstance(bands, list) and all(isinstance(value, str) for value in bands):
+        return frozenset(bands)
+    return None
+
+
+def _six_ghz_security_ready(wlan: Mapping[str, Any]) -> bool:
+    auth = wlan.get("auth")
+    if not isinstance(auth, Mapping):
+        return False
+    auth_type = auth.get("type")
+    if auth_type == "open":
+        return auth.get("owe") in {"enabled", "required"}
+    if auth_type == "eap192":
+        return True
+    pairwise = auth.get("pairwise")
+    return (
+        auth_type in {"eap", "psk", "psk-tkip", "psk-wpa2-tkip"}
+        and isinstance(pairwise, list)
+        and "wpa3" in pairwise
+    )
+
+
+def _wlan_band_change_results(
+    provider: StateProvider,
+    scope: OrgScope | SiteScope,
+    wlan_id: str,
+    current: Mapping[str, Any],
+    proposed: Mapping[str, Any],
+    *,
+    associations: WlanAssociations,
+) -> tuple[CheckResult, ...]:
+    """Evaluate exact Mist band removals and 6-GHz security transitions."""
+    delta = classify_wlan_delta(current, proposed)
+    if not delta.bands:
+        return ()
+
+    before = _configured_bands(current)
+    after = _configured_bands(proposed)
+    # The deprecated free-form `band` field, or a missing/invalid `bands`
+    # baseline, cannot be mapped honestly to exact RF scopes.  Fall back to the
+    # whole-WLAN seven-day gate instead of fabricating a safe band delta.
+    if "band" in delta.bands or before is None or after is None:
+        return (_wlan_changed_usage_result(
+            provider, scope, wlan_id, delta.bands, associations=associations
+        ),)
+
+    results: list[CheckResult] = []
+    added = after - before
+    removed = before - after
+
+    # Enabling 6 GHz is safe only when the WLAN was already using a compatible
+    # WPA3/OWE security posture.  If enabling it also requires a security
+    # transition, that combined change is reviewable even with no recent use.
+    if added & _SIX_GHZ_BANDS and not _six_ghz_security_ready(current):
+        reason = (
+            "enabling 6 GHz requires introducing WPA3 or OWE/transition security "
+            "to a WLAN that was not already 6-GHz compatible"
+        )
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code="wireless.wlan.band_change.security_transition",
+            severity=Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=f"{reason}; review client compatibility",
+            affected_entities=(wlan_id,),
+            evidence={
+                "added_bands": sorted(added & _SIX_GHZ_BANDS),
+                "before_bands": sorted(before),
+                "after_bands": sorted(after),
+            },
+        )
+        results.append(CheckResult(
+            check_id="wireless.wlan.band_change",
+            status=Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        ))
+
+    relevant_removals = set(removed & {"24"})
+    # A 5-GHz removal is usage-gated only when 2.4 GHz will not remain as the
+    # fallback.  Variant changes are real remove+add operations by policy.
+    if "24" not in after:
+        relevant_removals.update(removed & _FIVE_GHZ_BANDS)
+    # All 6-GHz removals are explicitly safe.
+    for band in sorted(relevant_removals):
+        results.append(_wlan_changed_usage_result(
+            provider, scope, wlan_id, ("bands",), band=band,
+            associations=associations,
+        ))
+
+    if not results:
+        reason = "band change only adds service or removes 6 GHz without client risk"
+        results.append(CheckResult(
+            check_id="wireless.wlan.band_change",
+            status=Status.PASS,
+            findings=(),
+            coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        ))
+    return tuple(results)
+
+
+def _org_wlan_usage_findings(
+    provider: StateProvider,
+    scope: OrgScope,
+    wlan_id: str,
+    rows_by_site: Mapping[str, Mapping[str, Any]],
+    before: Mapping[str, Any],
+    after: Mapping[str, Any] | None,
+    raw_map: Mapping[str, RawSiteState | FetchError],
+) -> list[Finding]:
+    """Org WLAN gates: org-wide session history plus the current associations
+    at every site where the WLAN is deployed."""
+    associations = _org_wlan_associations(raw_map, wlan_id, rows_by_site)
+    if after is None:
+        return list(_wlan_delete_usage_result(
+            provider, scope, wlan_id, associations=associations
+        ).findings)
+    findings: list[Finding] = []
+    usage_paths = usage_gated_paths_for_update(before, after)
+    if usage_paths:
+        findings.extend(_wlan_changed_usage_result(
+            provider, scope, wlan_id, usage_paths, associations=associations
+        ).findings)
+    for band_result in _wlan_band_change_results(
+        provider, scope, wlan_id, before, after, associations=associations
+    ):
+        findings.extend(band_result.findings)
+    auth_transition = _wlan_auth_transition_result(
+        provider, scope, wlan_id, before, after, associations=associations
+    )
+    if auth_transition is not None:
+        findings.extend(auth_transition.findings)
+    return findings
+
+
+def _nacrule_access_impact_result(
+    provider: StateProvider,
+    scope: OrgScope,
+    baseline: NacRule,
+    proposed: NacRule | None,
+    changed_fields: tuple[str, ...],
+) -> CheckResult:
+    nacrule_id = baseline.id
+    resolver = getattr(provider, "resolve_nacrule_usage", None)
+    if resolver is None:
+        context: NacRuleUsageContext | FetchError = FetchError(
+            scope=scope,
+            failures=(FetchFailure(
+                object="nacrule_usage",
+                error="provider does not expose historical NAC rule usage",
+            ),),
+            acquired_at=datetime.now(UTC),
+            host="provider",
+        )
+    else:
+        context = resolver(scope, nacrule_id, window_days=7)
+    if isinstance(context, FetchError):
+        reason = "NAC rule access impact during the last 7 days could not be verified"
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code="nac.rule.access_impact.unverified",
+            severity=Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=f"{reason}; the rule change requires review",
+            affected_entities=(nacrule_id,),
+            evidence={
+                "window_days": 7,
+                "changed_fields": list(changed_fields),
+                "fetch_failures": [f.error for f in context.failures],
+            },
+            subject=ObjectRef("nacrule", nacrule_id, baseline.name),
+            caused_by=(Cause(
+                ref=ObjectRef("nacrule", nacrule_id, baseline.name),
+                fields=changed_fields,
+            ),),
+        )
+        return CheckResult(
+            check_id="nac.rule.access_impact",
+            status=Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(CoverageState.PARTIAL, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        )
+    assert isinstance(context, NacRuleUsageContext)
+    if context.active_site_ids:
+        access_loss = (
+            baseline.action == "allow"
+            and (
+                proposed is None
+                or not proposed.enabled
+                or proposed.action == "block"
+            )
+        )
+        reason = (
+            f"NAC rule matched clients during the last {context.window_days} days; "
+            + (
+                "the change removes their proven allow decision"
+                if access_loss
+                else "the changed match/order/action can alter their access"
+            )
+        )
+        finding = Finding(
+            source=FindingSource.CHECK,
+            category=FindingCategory.NETWORK,
+            code=(
+                "nac.rule.access_impact.allow_removed"
+                if access_loss else "nac.rule.access_impact.recent_usage"
+            ),
+            severity=Severity.ERROR if access_loss else Severity.WARNING,
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            message=reason,
+            affected_entities=(nacrule_id,),
+            evidence={
+                "window_days": context.window_days,
+                "checked_site_ids": list(context.checked_site_ids),
+                "active_site_ids": list(context.active_site_ids),
+                "changed_fields": list(changed_fields),
+                "baseline_action": baseline.action,
+                "proposed_action": proposed.action if proposed else None,
+                "proposed_enabled": proposed.enabled if proposed else False,
+            },
+            subject=ObjectRef("nacrule", nacrule_id, baseline.name),
+            caused_by=(Cause(
+                ref=ObjectRef("nacrule", nacrule_id, baseline.name),
+                fields=changed_fields,
+            ),),
+        )
+        return CheckResult(
+            check_id="nac.rule.access_impact",
+            status=Status.FAIL if access_loss else Status.WARN,
+            findings=(finding,),
+            coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+            confidence=Confidence(level=ConfidenceLevel.HIGH),
+            reasoning=reason,
+        )
+    reason = f"NAC rule had no client matches during the last {context.window_days} days"
+    return CheckResult(
+        check_id="nac.rule.access_impact",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(CoverageState.COMPLETE, (reason,)),
+        confidence=Confidence(level=ConfidenceLevel.HIGH),
+        reasoning=reason,
+    )
 
 
 def _gw_screen_view(eff: dict[str, Any], *, full: bool) -> dict[str, Any]:
@@ -228,6 +887,248 @@ def _unknown(
     )
 
 
+def _rename_findings(op_type: str, device_id: str, risks: RenameRisks) -> tuple[Finding, ...]:
+    """WARNING findings (-> REVIEW, never UNSAFE) for one unproven device rename."""
+    subject = ObjectRef(op_type, device_id)
+    out: list[Finding] = []
+    for code, reasons, lead in (
+        ("config.name_change.matcher", risks.matchers,
+         "renaming the device can change a name-matched configuration rule"),
+        ("config.name_change.unverified", risks.unverified,
+         "the twin cannot prove the rename leaves name-matched rules unchanged"),
+    ):
+        if reasons:
+            out.append(Finding(
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=code,
+                severity=Severity.WARNING,
+                confidence=_HIGH,
+                message=f"{lead}: {'; '.join(reasons)}",
+                affected_entities=(device_id,),
+                subject=subject,
+                evidence={"reasons": list(reasons)},
+                caused_by=(Cause(ref=subject, fields=("name",)),),
+            ))
+    return tuple(out)
+
+
+def renamed_device_findings(
+    baseline_raw: RawSiteState, proposed_raw: RawSiteState
+) -> tuple[Finding, ...]:
+    """The device-rename proof for full-pipeline runs (a rename mixed with other
+    fields, or a composite batch's original -> composed pass). The compiler
+    re-evaluates switch_matching for port_config only; the matched rule's other
+    roots, gateway_matching and neighbor dynamic profiles stay blind, so every
+    renamed device is held to the same proof as a pure rename, against both the
+    baseline and the proposed configuration."""
+    before = {str(d.get("id")): d for d in baseline_raw.devices}
+    findings: list[Finding] = []
+    for device in proposed_raw.devices:
+        device_id = str(device.get("id"))
+        old = before.get(device_id)
+        new_name = str(device.get("name") or "")
+        if old is None or str(old.get("name") or "") == new_name:
+            continue
+        renamed = {**old, "type": device.get("type", old.get("type"))}
+        risks = [device_rename_risks(raw, renamed, new_name)
+                 for raw in (baseline_raw, proposed_raw)]
+        merged = RenameRisks(
+            tuple(dict.fromkeys(r for risk in risks for r in risk.matchers)),
+            tuple(dict.fromkeys(r for risk in risks for r in risk.unverified)),
+        )
+        findings.extend(_rename_findings("device", device_id, merged))
+    return tuple(findings)
+
+
+def _device_rename_verdict(
+    plan: ChangePlan,
+    assessment: NameChangeAssessment,
+    *,
+    provider: StateProvider,
+    run: RunContext,
+) -> Verdict:
+    """SAFE only when fetched configuration proves no name matcher changes.
+
+    Policy uncertainty is REVIEW; projection and observation gaps are UNKNOWN.
+    """
+    findings: list[Finding] = []
+    state_meta: StateMetaView | None = None
+    site_id = plan.scope.site_id
+    raw: RawSiteState | FetchError | None = None
+    if site_id is not None:
+        raw = provider.fetch_site(SiteScope(org_id=plan.scope.org_id, site_id=site_id))
+        meta = raw.meta if isinstance(raw, RawSiteState) else StateMeta(
+            acquired_at=raw.acquired_at, host=raw.host, fetched=(), failures=raw.failures
+        )
+        state_meta = build_state_meta(meta, now=datetime.now(UTC))
+
+    names: dict[str, dict[str, Any]] = (
+        {str(d.get("id")): dict(d) for d in raw.devices} if isinstance(raw, RawSiteState) else {}
+    )
+    for op in sorted(assessment.device_ops, key=lambda o: o.order):
+        new_name = str(op.payload["name"])
+        if raw is None:
+            risks = RenameRisks(unverified=(
+                "the plan has no site_id, so the device's site templates cannot be fetched",
+            ))
+        elif isinstance(raw, FetchError):
+            risks = RenameRisks(unverified=tuple(
+                f"site state could not be fetched ({f.object}: {f.error})" for f in raw.failures
+            ) or ("site state could not be fetched",))
+        elif (device := names.get(op.object_id)) is None:
+            failed = [f"{f.object}: {f.error}" for f in raw.meta.failures]
+            detail = f" (fetch failures: {'; '.join(failed)})" if failed else ""
+            risks = RenameRisks(unverified=(
+                f"device {op.object_id} is not in the fetched site inventory{detail}",
+            ))
+        else:
+            risks = device_rename_risks(raw, device, new_name)
+            device["name"] = new_name  # later ops in the plan rename from here
+        findings.extend(_rename_findings(op.object_type, op.object_id, risks))
+
+    if isinstance(raw, RawSiteState):
+        # The name-only shortcut must honor the same bounded projection and
+        # observation gaps as the full pipeline. A policy WARNING cannot
+        # downgrade an unmodeled selected setting or expired dynamic proof.
+        proposed_raw = proposed_observations(raw, replace(
+            raw, devices=tuple(names[str(d.get("id"))] for d in raw.devices),
+        ))
+        try:
+            compiler = MistAdapter(ingesters=[])
+            baseline = compiler.ingest(raw)
+            proposed = compiler.ingest(proposed_raw)
+            gaps = observation_gaps(
+                raw, proposed_raw, baseline.device_effective, proposed.device_effective,
+                requires_topology=False,
+            ) + tuple(gap.rejection for gap in switch_matching_gaps(
+                raw, proposed_raw, baseline.site_effective, proposed.site_effective,
+            ))
+        except Exception as e:  # noqa: BLE001 — unreadable projection is UNKNOWN
+            gaps = (Rejection(stage="name_change_rule", reasons=(
+                f"device rename projection failed: {e}",
+            )),)
+        if gaps:
+            return _unknown(
+                Rejection(stage="name_change_rule", reasons=tuple(
+                    reason for gap in gaps for reason in gap.reasons
+                )),
+                adapter_findings=tuple(findings), run=run, state_meta=state_meta,
+            )
+
+    if findings:
+        complete = not any(f.code == "config.name_change.unverified" for f in findings)
+        reasoning = (
+            "device rename is not proven free of name-matched configuration changes; "
+            "review required"
+        )
+        result = CheckResult(
+            check_id="config.name_change",
+            status=Status.WARN,
+            findings=tuple(findings),
+            coverage=Coverage(
+                CoverageState.COMPLETE if complete else CoverageState.PARTIAL, (reasoning,)
+            ),
+            confidence=_HIGH,
+            reasoning=reasoning,
+        )
+        return assemble(
+            inputs=DecisionInputs(
+                rejections=(), l0_fatal=False, baseline_unavailable=False,
+                check_results=(result,),
+            ),
+            ir_diff=_EMPTY_DIFF,
+            state_meta=state_meta,
+            trace_ref=run.run_id,
+        )
+
+    reason = (
+        f"name-only configuration update is safe for: {', '.join(assessment.object_types)} "
+        "(no name-matched rule or neighbor dynamic port profile changes for the "
+        f"renamed devices: {', '.join(op.object_id for op in assessment.device_ops)})"
+    )
+    result = CheckResult(
+        check_id="config.name_change",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(
+            CoverageState.COMPLETE,
+            ("fetched site configuration proves no name-based matcher changes outcome",),
+        ),
+        confidence=_HIGH,
+        reasoning=reason,
+    )
+    verdict = assemble(
+        inputs=DecisionInputs(
+            rejections=(), l0_fatal=False, baseline_unavailable=False, check_results=(result,),
+        ),
+        ir_diff=_EMPTY_DIFF,
+        state_meta=state_meta,
+        trace_ref=run.run_id,
+    )
+    return replace(verdict, decision_reasons=(reason,))
+
+
+def simulate_name_change(
+    plan_data: Mapping[str, Any],
+    *,
+    run: RunContext | None = None,
+    provider: StateProvider | None = None,
+) -> Verdict | None:
+    """Return a policy verdict for a pure name update, or ``None`` otherwise.
+
+    Without a ``provider`` this runs before provider selection and state fetch,
+    reasoning only about the request shape: every op must update exactly one
+    non-empty top-level ``name`` value.  All other payloads continue through the
+    normal default-deny simulation pipeline.  A plan that renames a DEVICE is
+    never granted pre-fetch: it returns ``None`` until a ``provider`` is given,
+    then the fetched site configuration must prove no name-matched rule changes.
+    """
+    run = run or RunContext()
+    trace = run.trace
+    assert trace is not None
+    with trace.stage("name_change_rule"):
+        plan = parse_change_plan(plan_data)
+        if isinstance(plan, Rejection):
+            return None
+        assessment = assess_name_only_change(plan)
+        if assessment is None:
+            return None
+        if assessment.device_ops:
+            if provider is None:
+                return None
+            return _device_rename_verdict(plan, assessment, provider=provider, run=run)
+        if not assessment.safe:
+            return _unknown(
+                Rejection(stage="name_change_rule", reasons=(assessment.reason,)),
+                adapter_findings=(),
+                run=run,
+            )
+
+        result = CheckResult(
+            check_id="config.name_change",
+            status=Status.PASS,
+            findings=(),
+            coverage=Coverage(
+                CoverageState.COMPLETE,
+                ("request changes only the top-level configuration object name",),
+            ),
+            confidence=_HIGH,
+            reasoning=assessment.reason,
+        )
+        verdict = assemble(
+            inputs=DecisionInputs(
+                rejections=(),
+                l0_fatal=False,
+                baseline_unavailable=False,
+                check_results=(result,),
+            ),
+            ir_diff=_EMPTY_DIFF,
+            trace_ref=run.run_id,
+        )
+        return replace(verdict, decision_reasons=(assessment.reason,))
+
+
 def _simulate_site_state(
     baseline_raw: RawSiteState,
     proposed_raw: RawSiteState,
@@ -241,6 +1142,7 @@ def _simulate_site_state(
     profile_proposed: IngestOutcome | None = None,
     extra_coverage_gaps: tuple[Rejection, ...] = (),
     extra_coverage_findings: tuple[Finding, ...] = (),
+    extra_check_results: tuple[CheckResult, ...] = (),
 ) -> Verdict:
     """Stages 5-10 for ONE site: ingest baseline + proposed, dynamic gate,
     derived gate, diff + checks, verdict. Both `simulate` (single-site) and
@@ -292,6 +1194,7 @@ def _simulate_site_state(
         adapter_findings += gateway_address_change_findings(
             baseline.gateway_effective, proposed.gateway_effective
         )
+        adapter_findings += renamed_device_findings(baseline_raw, proposed_raw)
         adapter_findings += unresolved_dynamic_findings(
             baseline.device_effective, proposed.device_effective, proposed_raw.port_stats
         )
@@ -378,14 +1281,16 @@ def _simulate_site_state(
                 diff=diff,
                 delta_index=delta_index(diff),
             )
-        )
-        override = effective_override_result(
+        ) + extra_check_results
+        override_result = effective_override_result(
             site_id=baseline_raw.scope.site_id,
-            baseline_lower=baseline.site_effective, proposed_lower=proposed.site_effective,
-            baseline_devices=baseline.device_effective, proposed_devices=proposed.device_effective,
+            baseline_lower=baseline.site_effective,
+            proposed_lower=proposed.site_effective,
+            baseline_devices=baseline.device_effective,
+            proposed_devices=proposed.device_effective,
         )
-        if override is not None:
-            results = (*results, override)
+        if override_result is not None:
+            results += (override_result,)
     profile_outcome = profile_proposed if profile_proposed is not None else proposed
     dp_gaps = device_profile_gaps(
         proposed_raw.devices,
@@ -434,6 +1339,12 @@ def simulate(
     l0_full_object: bool = False,
 ) -> Verdict:
     run = run or RunContext()
+    policy_verdict = simulate_configuration_policy(plan_data, provider=provider, run=run)
+    if policy_verdict is not None:
+        return policy_verdict
+    name_change_verdict = simulate_name_change(plan_data, run=run, provider=provider)
+    if name_change_verdict is not None:
+        return name_change_verdict
     trace = run.trace
     assert trace is not None  # RunContext.__post_init__ guarantees it
     adapter = adapter or MistAdapter()
@@ -448,6 +1359,10 @@ def simulate(
         rejection = check_objects(plan)
         if rejection:
             return _unknown(rejection, adapter_findings=adapter_findings, run=run)
+
+    # WLAN usage gates run per op after the fetch: they need the site's
+    # current wireless associations as well as the session history.
+    wlan_usage_results: list[CheckResult] = []
 
     # 2 — (L0 moved into the per-op loop: Mist update semantics are root-level
     # merge, so `required`/conditional validation is only meaningful against
@@ -501,6 +1416,64 @@ def simulate(
     with trace.stage("l0+scope.post+apply", note=f"{len(plan.ops)} op(s)"):
         for op in sorted(plan.ops, key=lambda o: o.order):
             current = get_object(proposed_raw, op.object_type, op.object_id)
+            if op.action == "create":
+                if current is not None:
+                    return _unknown(
+                        Rejection(stage="apply", reasons=(
+                            f"ops[order={op.order}]: {op.object_type} with id "
+                            f"{op.object_id!r} already exists",)),
+                        adapter_findings=adapter_findings, run=run,
+                        state_meta=state_meta, config_diffs=tuple(site_diffs),
+                    )
+                created = {**dict(op.payload), "id": op.object_id, "for_site": True}
+                site_diffs.append(object_config_diff(
+                    object_type=op.object_type, object_id=op.object_id,
+                    name=created.get("name") or created.get("ssid"),
+                    action=op.action, before=None, after=created))
+                result = adapter.validate(
+                    replace(op, payload=created),
+                    scope_roots=None if l0_full_object else _changed_roots(op.payload),
+                    unknown_scope_roots=(
+                        None if l0_full_object else frozenset(op.payload)
+                    ),
+                )
+                subject = ObjectRef(
+                    op.object_type, op.object_id,
+                    name=created.get("name") or created.get("ssid"),
+                )
+                adapter_findings += _stamp(result.findings, subject)
+                if result.fatal:
+                    return _unknown(
+                        None, adapter_findings=adapter_findings, run=run,
+                        l0_fatal=True, state_meta=state_meta,
+                        config_diffs=tuple(site_diffs),
+                    )
+                # A create has no persisted baseline row. Compare against an
+                # identity-only, explicitly site-owned stub: this validates all
+                # requested leaves while keeping the inherited-WLAN guard honest.
+                hard, gaps = screen_op_split(
+                    op.object_type,
+                    {"id": op.object_id, "for_site": True},
+                    created,
+                )
+                if hard:
+                    return _unknown(
+                        hard, adapter_findings=adapter_findings, run=run,
+                        state_meta=state_meta, config_diffs=tuple(site_diffs),
+                    )
+                for gap in gaps:
+                    _record_coverage_gap(
+                        field_gaps, field_gap_findings, gap,
+                        artifact=op.object_type, subject=subject,
+                    )
+                applied = adapter.apply(proposed_raw, (op,))
+                if isinstance(applied, Rejection):
+                    return _unknown(
+                        applied, adapter_findings=adapter_findings, run=run,
+                        state_meta=state_meta, config_diffs=tuple(site_diffs),
+                    )
+                proposed_raw = applied
+                continue
             if current is None:
                 return _unknown(
                     Rejection(stage="apply", reasons=(
@@ -510,6 +1483,13 @@ def simulate(
                     state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
             if op.action == "delete":
+                if op.object_type == "wlan":
+                    wlan_usage_results.append(_wlan_delete_usage_result(
+                        provider,
+                        SiteScope(plan.scope.org_id, plan.scope.site_id),
+                        op.object_id,
+                        associations=_site_wlan_associations(raw, op.object_id, current or {}),
+                    ))
                 site_diffs.append(object_config_diff(
                     object_type=op.object_type, object_id=op.object_id,
                     name=current.get("name"), action=op.action,
@@ -540,6 +1520,35 @@ def simulate(
                     state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
             effective = effective_update(current, op.payload, object_type=op.object_type)
+            if op.object_type == "wlan":
+                associations = _site_wlan_associations(raw, op.object_id, current or {})
+                usage_paths = usage_gated_paths_for_update(current, effective)
+                if usage_paths:
+                    wlan_usage_results.append(_wlan_changed_usage_result(
+                        provider,
+                        SiteScope(plan.scope.org_id, plan.scope.site_id),
+                        op.object_id,
+                        usage_paths,
+                        associations=associations,
+                    ))
+                wlan_usage_results.extend(_wlan_band_change_results(
+                    provider,
+                    SiteScope(plan.scope.org_id, plan.scope.site_id),
+                    op.object_id,
+                    current,
+                    effective,
+                    associations=associations,
+                ))
+                auth_transition = _wlan_auth_transition_result(
+                    provider,
+                    SiteScope(plan.scope.org_id, plan.scope.site_id),
+                    op.object_id,
+                    current,
+                    effective,
+                    associations=associations,
+                )
+                if auth_transition is not None:
+                    wlan_usage_results.append(auth_transition)
             # Build the before→after NOW (pure structural data, independent of
             # validation) so it is available to every downstream early exit.
             site_diffs.append(object_config_diff(
@@ -626,6 +1635,7 @@ def simulate(
         profile_proposed=profile_proposed,
         extra_coverage_gaps=tuple(field_gaps),
         extra_coverage_findings=tuple(field_gap_findings),
+        extra_check_results=tuple(wlan_usage_results),
     )
     return replace(verdict, config_diffs=tuple(site_diffs))
 
@@ -685,8 +1695,74 @@ def simulate_org_plan(
     overlays: list[OrgOverlay] = []
     template_findings: list[Finding] = []
     org_diffs: list[ObjectConfigDiff] = []
+    prefetched_all_sites: dict[str, RawSiteState | FetchError] | None = None
+    # (wlan_id, derived rows by site, before, after-or-None-for-delete): evaluated
+    # once the affected sites are fetched, so org gates see current associations.
+    pending_wlan_usage: list[
+        tuple[str, Mapping[str, Mapping[str, Any]], Mapping[str, Any], Mapping[str, Any] | None]
+    ] = []
     for i, op in enumerate(plan.ops):
         if op.object_type == "wlan":
+            if op.action == "create":
+                # An org WLAN can materialize at every site. Fetch that complete
+                # scope before constructing the overlay so duplicate-SSID and AP
+                # uplink VLAN checks run independently at every affected site.
+                if prefetched_all_sites is None:
+                    prefetched_all_sites = provider.fetch_sites(org_scope, site_ids=None)
+                if not prefetched_all_sites:
+                    return org_unknown((Rejection(
+                        stage="fetch",
+                        reasons=(
+                            "org WLAN create could not discover any organization sites; "
+                            "deployment scope cannot be verified",
+                        ),
+                    ),), changes=tuple(changes), config_diffs=tuple(org_diffs))
+
+                name = op.payload.get("name") or op.payload.get("ssid")
+                created = {
+                    **dict(op.payload),
+                    "id": op.object_id,
+                    # The derived row is org-owned at each site.
+                    "for_site": False,
+                }
+                ref = ObjectRef(op.object_type, op.object_id, name=name)
+                changes[i] = OrgChange(ref=ref, action=op.action)
+                org_diffs.append(object_config_diff(
+                    object_type=op.object_type, object_id=op.object_id,
+                    name=name, action=op.action, before=None, after=created))
+                l0 = adapter.validate(
+                    op,
+                    scope_roots=None if l0_full_object else _changed_roots(op.payload),
+                )
+                if l0.fatal:
+                    return org_unknown((Rejection(
+                        stage="l0",
+                        reasons=(
+                            f"structurally-fatal L0 on proposed {op.object_type} "
+                            f"{op.object_id}",
+                        ),
+                    ),), template_findings=tuple(template_findings),
+                        changes=tuple(changes), config_diffs=tuple(org_diffs))
+                template_findings.extend(_stamp(l0.findings, ref))
+                fg = screen_op(
+                    op.object_type,
+                    {"id": op.object_id, "for_site": False},
+                    created,
+                    enforce_wlan_site_ownership=False,
+                )
+                if fg:
+                    return org_unknown((fg,), template_findings=tuple(template_findings),
+                                       changes=tuple(changes), config_diffs=tuple(org_diffs))
+                site_ids = tuple(prefetched_all_sites)
+                overlays.append(OrgOverlay(
+                    object_type=op.object_type, object_id=op.object_id, name=name,
+                    action=op.action, assigned_site_ids=frozenset(site_ids),
+                    baseline={}, proposed=created,
+                    wlan_baseline_by_site={sid: None for sid in site_ids},
+                    wlan_proposed_by_site={sid: created for sid in site_ids},
+                ))
+                continue
+
             resolved_wlan = provider.resolve_org_wlan(org_scope, op.object_id)
             if not isinstance(resolved_wlan, OrgWlanContext):
                 return org_unknown((Rejection(stage="fetch", reasons=tuple(
@@ -704,6 +1780,7 @@ def simulate_org_plan(
             }
             proposed_by_site: dict[str, Mapping[str, Any] | None]
             if op.action == "delete":
+                pending_wlan_usage.append((op.object_id, baseline_by_site, snapshot, None))
                 proposed_org_wlan: Mapping[str, Any] | None = None
                 proposed_by_site = {sid: None for sid in baseline_by_site}
                 org_diffs.append(object_config_diff(
@@ -711,6 +1788,9 @@ def simulate_org_plan(
                     name=name, action=op.action, before=snapshot, after=None))
             else:
                 proposed_wlan = effective_update(snapshot, op.payload, object_type=op.object_type)
+                pending_wlan_usage.append(
+                    (op.object_id, baseline_by_site, snapshot, proposed_wlan)
+                )
                 org_diffs.append(object_config_diff(
                     object_type=op.object_type, object_id=op.object_id,
                     name=name, action=op.action, before=snapshot, after=proposed_wlan))
@@ -830,6 +1910,17 @@ def simulate_org_plan(
 
     ov_tuple = tuple(overlays)
     sites = affected_sites(ov_tuple)
+    raw_map: Mapping[str, RawSiteState | FetchError] = (
+        {}
+        if not sites
+        else prefetched_all_sites
+        if prefetched_all_sites is not None
+        else provider.fetch_sites(org_scope, site_ids=sites)
+    )
+    for wlan_id, wlan_rows, before, after in pending_wlan_usage:
+        template_findings.extend(_org_wlan_usage_findings(
+            provider, org_scope, wlan_id, wlan_rows, before, after, raw_map
+        ))
     tf = tuple(template_findings)
     if not sites:
         decision, reasons, driving = decide_org({}, template_findings=tf, org_rejections=())
@@ -841,7 +1932,6 @@ def simulate_org_plan(
             template_findings=tf, org_rejections=(),
             config_diffs=tuple(org_diffs))
 
-    raw_map = provider.fetch_sites(org_scope, site_ids=sites)
     per_site: dict[str, Verdict] = {}
     site_failures: dict[str, str] = {}
     for sid in sites:
@@ -899,7 +1989,6 @@ from digital_twin.checks.nac.delta import NacDeltaCheck  # noqa: E402
 from digital_twin.checks.nac.shadowing import NacShadowingCheck  # noqa: E402
 from digital_twin.config_diff import object_config_diff  # noqa: E402
 from digital_twin.contracts import ObjectConfigDiff  # noqa: E402
-from digital_twin.providers.base import FetchError  # noqa: E402
 from digital_twin.verdict.decision import decide  # noqa: E402
 from digital_twin.verdict.org_nac_verdict import (  # noqa: E402
     OrgNacVerdict,
@@ -1022,12 +2111,30 @@ def simulate_org_nac(
     # REVIEW), gates applies_to (NOT_APPLICABLE when the diff doesn't touch nac),
     # and resolves finding names centrally — so a check bug degrades, never escapes.
     results = CheckRegistry([NacDeltaCheck(), NacShadowingCheck()]).run_all(ctx)
+    base_map = {r.id: r for r in base_ir.nacrules}
+    prop_map = {r.id: r for r in prop_ir.nacrules}
+    modified_fields = {
+        modified.ref.id: modified.changed_fields
+        for modified in diff.modified
+        if modified.ref.kind == "nacrule"
+    }
+    removed_ids = {ref.id for ref in diff.removed if ref.kind == "nacrule"}
+    usage_results = tuple(
+        _nacrule_access_impact_result(
+            provider,
+            OrgScope(org_id=plan.scope.org_id),
+            baseline=base_map[rule_id],
+            proposed=prop_map.get(rule_id),
+            changed_fields=(modified_fields.get(rule_id) or ("deleted",)),
+        )
+        for rule_id in sorted(set(modified_fields) | removed_ids)
+        if set(modified_fields.get(rule_id, ("deleted",))) != {"name"}
+    )
+    results += usage_results
 
     decision, reasons = decide(DecisionInputs(
         rejections=(), l0_fatal=False, baseline_unavailable=False,
         check_results=results, adapter_findings=adapter_findings))
-    base_map = {r.id: r for r in base_ir.nacrules}
-    prop_map = {r.id: r for r in prop_ir.nacrules}
     return OrgNacVerdict(
         decision, reasons, nac_changes(diff, base_map, prop_map),
         results, adapter_findings, (),

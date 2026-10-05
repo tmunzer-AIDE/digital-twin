@@ -18,7 +18,11 @@ from digital_twin.adapters.mist.ingest.ports import (
 )
 from digital_twin.scope.allowlist import COSMETIC_RAW_ALLOWLIST
 from digital_twin.scope.atomic_lists import atomic_list_issues
-from digital_twin.scope.gateway_addressing import same_static_gateway_subnet
+from digital_twin.scope.dhcp_screen import is_empty_scope_map
+from digital_twin.scope.gateway_addressing import (
+    same_static_gateway_subnet,
+    valid_static_gateway_addition,
+)
 from digital_twin.scope.paths import LeafDelta, allowed_tokens, leaf_changes
 
 _ROW_ROOTS = frozenset({
@@ -192,6 +196,8 @@ def dependency_paths(
         and delta.tokens[-1] == "ip"
         and not same_static_gateway_subnet(_at(baseline, delta.tokens[:2]),
                                           _at(proposed, delta.tokens[:2]))
+        and not valid_static_gateway_addition(_at(baseline, delta.tokens[:2]),
+                                              _at(proposed, delta.tokens[:2]))
         for key in ("type", "netmask")
     }
     values = [(path, _at(config, path)) for path in sorted(fragments)
@@ -201,6 +207,8 @@ def dependency_paths(
             continue
         for delta in leaf_changes({}, {"fragment": value}):
             tokens = (*path, *delta.tokens[1:])
+            if is_empty_scope_map(tokens, baseline, proposed):
+                continue
             if (len(tokens) == 3 and tokens[0] == "ip_configs"
                 and tokens[-1] in ("type", "netmask")
                 and same_static_gateway_subnet(_at(baseline, tokens[:2]),

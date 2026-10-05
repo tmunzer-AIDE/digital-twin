@@ -44,6 +44,41 @@ def _rule_matches(rule: JsonObj, device: JsonObj) -> bool:
     return True
 
 
+def rename_sensitive_criterion(rule: JsonObj, old_name: str, new_name: str) -> str | None:
+    """The `match_*` key whose outcome renaming a device `old_name -> new_name`
+    could flip, or None when every criterion of the rule provably ignores it.
+
+    Serves the device-rename SAFE proof, so it never under-reports. It holds for
+    ANY rule-selection order (each rule's own outcome is compared) and for the
+    readings the OAS leaves open: case-sensitive or not, and `match_name[A:B]`
+    compared to the value or to the value's own `[A:B]` slice. Shared with
+    `gateway_matching`/`ap_matching`, which document the same key grammar.
+    """
+    for key, want in rule.items():
+        if not key.startswith("match_") or key in ("match_model", "match_role"):
+            continue
+        sl = _SLICE.match(key)
+        if sl is not None and sl.group(1) == "model":
+            continue
+        if key == "match_name":
+            old_part, new_part, wanted = old_name, new_name, [want]
+        elif sl is not None:
+            start, end = int(sl.group(2)), int(sl.group(3))
+            old_part, new_part = old_name[start:end], new_name[start:end]
+            wanted = [want, want[start:end]] if isinstance(want, str) else [want]
+        else:
+            return key  # unknown criterion: never assumed name-independent
+        if old_part == new_part:
+            continue  # the compared part of the name did not change
+        if not isinstance(want, str) or "{{" in want:
+            return key  # a {{var}} value is only known after var resolution
+        for value in wanted:
+            for fold in (str, str.casefold):
+                if (fold(old_part) == fold(value)) != (fold(new_part) == fold(value)):
+                    return key
+    return None
+
+
 def supported_match_key(key: str) -> bool:
     return key in _EXACT or _SLICE.fullmatch(key) is not None
 
