@@ -992,6 +992,16 @@ def gt_cosmetic_edit() -> tuple[dict[str, Any], dict[str, Any]]:
     return doc, _gt_plan(payload)
 
 
+def gt_add_dhcp_scope(**row_extra: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """GT-f: the template adds a local DHCP scope on gt_corp. `row_extra` adds
+    keys to the scope row, so a test can compare the same scope with and without
+    Mist's empty `fixed_bindings: {}` map."""
+    doc = gt_multisite_doc()
+    row = {"type": "local", "ip_start": "198.51.96.10", "ip_end": "198.51.96.90",
+           "gateway": GT_GW_IP, **row_extra}
+    return doc, _gt_plan({"dhcpd_config": {GT_NET: row}})
+
+
 def gt_fetch_fail_site() -> tuple[dict[str, Any], dict[str, Any]]:
     """GT-e: same IP change as GT-a but site B's fetch fails -> org UNKNOWN
     (site_failures contains GT_SITE_B)."""

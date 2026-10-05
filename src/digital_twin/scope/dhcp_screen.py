@@ -9,6 +9,7 @@ servers -> dhcp_relay_target); (3) inert range/gateway while both sides non-serv
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from digital_twin.adapters.mist.ingest.switch import _dhcp_active, _dhcp_serves_scope
@@ -16,6 +17,33 @@ from digital_twin.contracts import Rejection
 
 JsonObj = dict[str, Any]
 _SCOPE_FIELDS = ("ip_start", "ip_end", "gateway")
+
+
+def is_empty_fixed_bindings(
+    path: str, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> bool:
+    """`dhcpd_config.<scope>.fixed_bindings` holding no reservation on either side
+    (absent, null or `{}` — Mist writes `{}` on every scope) reserves nothing, so it
+    is not an unmodeled change. Only exactly-empty maps qualify (adding or emptying
+    reservations surfaces as reservation leaves, which stay gaps), and only on a row
+    that carries another setting on each side where it exists: a row holding nothing
+    else could switch a scope on with defaults, and only this path would show it."""
+    segments = path.split(".")
+    if len(segments) != 3 or segments[0] != "dhcpd_config" or segments[2] != "fixed_bindings":
+        return False
+    rows = [row for row in (_scope_row(before, segments[1]), _scope_row(after, segments[1]))
+            if row is not None]
+    return bool(rows) and all(
+        row.get("fixed_bindings") in (None, {})
+        and any(value is not None for key, value in row.items() if key != "fixed_bindings")
+        for row in rows
+    )
+
+
+def _scope_row(config: Mapping[str, Any], name: str) -> JsonObj | None:
+    rows = config.get("dhcpd_config")
+    row = rows.get(name) if isinstance(rows, Mapping) else None
+    return row if isinstance(row, dict) else None
 
 
 def _is_active_relay(row: JsonObj) -> bool:

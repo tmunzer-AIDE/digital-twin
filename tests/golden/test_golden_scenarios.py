@@ -50,6 +50,7 @@ from .builders import (
     dp_only_ap_profiled_not_tainted,
     dynamic_ap_wlan_doc,
     fixture_doc,
+    gt_add_dhcp_scope,
     gt_break_gateway_ip,
     gt_cosmetic_edit,
     gt_edit_networks,
@@ -1431,6 +1432,24 @@ def test_gt_d_cosmetic_edit_is_safe(tmp_path):
     doc, plan = gt_cosmetic_edit()
     ov = _simulate_org(doc, plan, tmp_path)
     assert ov.decision is Decision.SAFE, ov.decision_reasons
+
+
+def test_gt_f_empty_fixed_bindings_leave_the_verdict_unchanged(tmp_path):
+    # Mist writes `fixed_bindings: {}` on every DHCP scope. An empty reservation
+    # map reserves nothing, so it must not turn a modeled scope into UNKNOWN:
+    # same verdict as the scope without it (control), and no reason names it.
+    control = _simulate_org(*gt_add_dhcp_scope(), tmp_path)
+    assert control.decision is not Decision.UNKNOWN, control.decision_reasons
+    empty = _simulate_org(*gt_add_dhcp_scope(fixed_bindings={}), tmp_path)
+    assert empty.decision is control.decision, empty.decision_reasons
+    assert not any("fixed_bindings" in r for r in empty.decision_reasons)
+
+
+def test_gt_f_variant_fixed_binding_reservation_is_unknown(tmp_path):
+    doc, plan = gt_add_dhcp_scope(fixed_bindings={"aabbccddeeff": {"ip": "198.51.96.50"}})
+    ov = _simulate_org(doc, plan, tmp_path)
+    assert ov.decision is Decision.UNKNOWN, ov.decision_reasons
+    assert any("fixed_bindings.aabbccddeeff.ip" in r for r in ov.decision_reasons)
 
 
 def test_gt_e_fetch_fail_site_keeps_unsafe_site_headline(tmp_path):
