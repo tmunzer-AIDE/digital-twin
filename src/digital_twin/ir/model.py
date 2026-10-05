@@ -270,6 +270,14 @@ class IRBuilder:
     def get_client(self, mac: str) -> Client:
         return self._clients_by_id[client_id(mac)]
 
+    def replace_client(self, client: Client) -> IRBuilder:
+        """Coalesce evidence for an existing MAC without erasing enrichment."""
+        if client.id not in self._client_ids:
+            raise IRValidationError(f"cannot replace unknown client {client.id}")
+        self._clients = [client if old.id == client.id else old for old in self._clients]
+        self._clients_by_id[client.id] = client
+        return self
+
     def discard_clients(self, macs: Iterable[str]) -> IRBuilder:
         """Withdraw disputed observations before publishing client outage evidence."""
         ids = {client_id(mac) for mac in macs}
@@ -282,6 +290,10 @@ class IRBuilder:
 
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]
+
+    def linked_port_ids(self) -> frozenset[str]:
+        """Ports joining managed devices; learning here is transit evidence."""
+        return frozenset(pid for link in self._links for pid in (link.a_port, link.b_port))
 
     def replace_port(self, port: Port) -> IRBuilder:
         """Replace an already-added port (same id) — used by ingesters to enrich

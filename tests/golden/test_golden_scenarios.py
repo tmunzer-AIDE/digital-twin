@@ -123,7 +123,7 @@ def test_redundant_vlan_removal_with_captured_client_history_requires_review(tmp
     assert verdict.decision is Decision.REVIEW
     impact = next(r for r in verdict.check_results if r.check_id == "wired.client.impact")
     assert impact.coverage.state is CoverageState.PARTIAL
-    assert any("unknown port attachment" in note for note in impact.coverage.notes)
+    assert any("transit port without direct attachment" in note for note in impact.coverage.notes)
 
 
 def test_known_breakage_survives_partial_captured_client_telemetry(tmp_path):
