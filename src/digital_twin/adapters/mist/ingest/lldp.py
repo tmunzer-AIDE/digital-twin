@@ -5,8 +5,9 @@
 - Neighbor is NOT a Mist device      -> NO Link; the neighbor becomes a wired
   edge-device Client on the local port (user decision: printers/unmanaged
   routers stay in the impact surface — VLAN continuity, DHCP, routing, FW).
-  Except a Virtual Chassis' chassis MAC: a unique managed system name whose
-  device claims the port back resolves to that device (`_vouched_peer`).
+  Except a Virtual Chassis' chassis MAC: a system name that is ONE device's
+  running hostname, whose device claims the port back, resolves to that device
+  (`_vouched_peer`).
 - aggregated/lag_name                -> LinkKind.LAG with bundle_id.
 - stp_state on a port                -> Port.stp_state + stp_meta (OBSERVED);
   stp.state capability is EARNED only if >=1 such row was applied.
@@ -108,7 +109,7 @@ class LldpIngester:
             for d in ctx.raw.devices
             if d.get("name") and d.get("mac")
         }
-        unique = self._unique_names(ctx)
+        hostnames = self._running_hostnames(ctx)
         rows = {
             port_id(device_id(str(r["mac"])), str(r["port_id"])): r
             for r in ctx.raw.port_stats
@@ -121,7 +122,7 @@ class LldpIngester:
             if row.get("neighbor_mac"):
                 neighbor = device_id(str(row["neighbor_mac"]))
                 if not ctx.builder.has_device(neighbor):
-                    neighbor = self._vouched_peer(ctx, row, unique, rows) or neighbor
+                    neighbor = self._vouched_peer(ctx, row, hostnames, rows) or neighbor
             else:
                 named = by_name.get(str(row.get("neighbor_system_name")))
                 if named is None:
@@ -133,29 +134,34 @@ class LldpIngester:
             out[(src, dst)] = row
         return out
 
-    def _unique_names(self, ctx: IngestContext) -> dict[str, str]:
-        """name -> device id, for names held by exactly ONE managed device."""
+    def _running_hostnames(self, ctx: IngestContext) -> dict[str, str]:
+        """hostname -> device id, for hostnames run by exactly ONE device.
+
+        LLDP advertises the hostname a device RUNS, reported in its device stats.
+        The configured name is not it: a plan renaming a device edits `devices`,
+        while the recorded LLDP rows and stats keep the running hostname.
+        """
         owners: dict[str, set[str]] = {}
-        for d in ctx.raw.devices:
-            if d.get("name") and d.get("mac"):
-                owners.setdefault(str(d["name"]), set()).add(device_id(str(d["mac"])))
+        for s in ctx.raw.device_stats:
+            if s.get("hostname") and s.get("mac"):
+                owners.setdefault(str(s["hostname"]), set()).add(device_id(str(s["mac"])))
         return {name: next(iter(ids)) for name, ids in owners.items() if len(ids) == 1}
 
     def _vouched_peer(
-        self, ctx: IngestContext, row: _Json, unique: dict[str, str], rows: dict[str, _Json]
+        self, ctx: IngestContext, row: _Json, hostnames: dict[str, str], rows: dict[str, _Json]
     ) -> str | None:
         """The managed device behind an unmanaged neighbor_mac, or None.
 
         A Virtual Chassis advertises its chassis MAC over LLDP, not its Mist
         device MAC (found in the real-org recording), so its neighbours' rows
-        carry an unknown MAC next to the VC's own system name. The name alone
-        proves nothing (a non-Mist box can share a hostname), so it resolves
-        only when it is unique, names ANOTHER managed device, and that device's
-        row on the named port claims this exact port back. Otherwise None: the
-        neighbour stays an edge-device client, as before.
+        carry an unknown MAC next to the VC's hostname. The name alone proves
+        nothing (a non-Mist box can share a hostname), so it resolves only when
+        exactly one device runs that hostname, that device is not the reporter,
+        and its row on the named port claims this exact port back. Otherwise
+        None: the neighbour stays an edge-device client, as before.
         """
         reporter = device_id(str(row["mac"]))
-        peer = unique.get(str(row.get("neighbor_system_name") or ""))
+        peer = hostnames.get(str(row.get("neighbor_system_name") or ""))
         if peer is None or peer == reporter:
             return None
         back = rows.get(port_id(peer, str(row.get("neighbor_port_desc") or "?")))
@@ -166,7 +172,7 @@ class LldpIngester:
         if back_mac and ctx.builder.has_device(device_id(str(back_mac))):
             named = device_id(str(back_mac))
         else:  # macless, or itself a chassis MAC (VC <-> VC): its name must match
-            named = unique.get(str(back.get("neighbor_system_name") or ""))
+            named = hostnames.get(str(back.get("neighbor_system_name") or ""))
         return peer if named == reporter else None
 
     def _ap_claims(self, ctx: IngestContext) -> list[tuple[str, str, str]]:

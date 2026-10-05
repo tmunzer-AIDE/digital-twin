@@ -2139,12 +2139,13 @@ def test_gs_virtual_chassis_chassis_mac_is_the_vc_not_a_wired_client(tmp_path):
         "889c85171f8d", "405d0ff2c0f4", "036020c81198", "ge-0/0/11", "ge-1/0/43",
     )
     vc_dev = next(d for d in doc["devices"] if d["mac"] == vc)
+    vc_hostname = next(s["hostname"] for s in doc["device_stats"] if s["mac"] == vc)
     # fixture preconditions: the chassis MAC is the VC's own, and both ends agree
     assert chassis in {m["mac"] for m in vc_dev["virtual_chassis"]["members"]}
     assert not any(d["mac"] == chassis for d in doc["devices"])
     assert any(
         r["mac"] == sw and r["port_id"] == sw_port and r.get("neighbor_mac") == chassis
-        and r.get("neighbor_system_name") == vc_dev["name"]
+        and r.get("neighbor_system_name") == vc_hostname
         and r.get("neighbor_port_desc") == vc_port
         for r in doc["port_stats"]
     )
