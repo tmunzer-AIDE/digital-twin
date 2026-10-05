@@ -19,7 +19,7 @@ from typing import Any
 
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
-from digital_twin.scope.dhcp_screen import dhcp_row_rejection
+from digital_twin.scope.dhcp_screen import dhcp_row_rejection, is_empty_fixed_bindings
 from digital_twin.scope.paths import allowed, changed_leaf_paths
 
 _STAGE = "derived_gate"
@@ -50,6 +50,7 @@ def check_derived_gaps(
         path
         for path in changed_effective_paths(baseline, proposed)
         if not allowed(path, allowlist)
+        and not is_empty_fixed_bindings(path, baseline, proposed)
     ]
     if offending:
         gaps.append(

@@ -490,3 +490,57 @@ def test_fabricated_unknown_leaf_still_coverage_gap():
     r = screen_op("device", SWITCH_CUR, payload)
     assert isinstance(r, Rejection)
     assert any("not_a_real_knob" in reason for reason in r.reasons)
+
+
+# Mist writes `fixed_bindings: {}` (static DHCP reservations) on every scope row.
+# An EMPTY map reserves nothing, exactly like an absent one, so it must not open
+# a coverage gap by itself — but only on a row whose other settings are gated,
+# and never when it adds or empties real reservations.
+_SCOPE_ROW = {"type": "local", "ip_start": "10.3.199.10", "ip_end": "10.3.199.99",
+              "gateway": "10.3.199.9"}
+
+
+def test_empty_fixed_bindings_on_a_new_dhcp_scope_is_not_a_gap():
+    gw_cur = {"ip_configs": {"lan": {"ip": "10.3.199.9"}}}
+    gw_new = {**gw_cur, "dhcpd_config": {"lan": {**_SCOPE_ROW, "fixed_bindings": {}}}}
+    assert screen_op("gatewaytemplate", gw_cur, gw_new) is None
+    site_cur = {"networks": {"lan": {"vlan_id": 199}}}
+    site_new = {**site_cur, "dhcpd_config": {"lan": {**_SCOPE_ROW, "fixed_bindings": {}}}}
+    assert screen_op("site_setting", site_cur, site_new) is None
+
+
+def test_removing_a_dhcp_scope_with_empty_fixed_bindings_is_not_a_gap():
+    cur = {"dhcpd_config": {"lan": {**_SCOPE_ROW, "fixed_bindings": {}}}}
+    assert screen_op("gatewaytemplate", cur, {"dhcpd_config": {}}) is None
+
+
+def test_dhcp_fixed_binding_reservations_stay_a_gap():
+    empty = {"dhcpd_config": {"lan": {**_SCOPE_ROW, "fixed_bindings": {}}}}
+    reserved = {"dhcpd_config": {"lan": {
+        **_SCOPE_ROW, "fixed_bindings": {"aabbccddeeff": {"ip": "10.3.199.50"}}}}}
+    added = screen_op("gatewaytemplate", empty, reserved)
+    assert isinstance(added, Rejection)
+    assert any("fixed_bindings.aabbccddeeff.ip" in r for r in added.reasons)
+    emptied = screen_op("gatewaytemplate", reserved, empty)  # dropping reservations
+    assert isinstance(emptied, Rejection)
+    assert any("fixed_bindings.aabbccddeeff.ip" in r for r in emptied.reasons)
+
+
+def test_dhcp_scope_holding_only_empty_fixed_bindings_stays_a_gap():
+    # a row with no other setting can switch a scope on with defaults; nothing
+    # else on the row would surface that, so the empty map must stay a gap
+    cur = {"ip_configs": {"lan": {"ip": "10.3.199.9"}}}
+    new = {**cur, "dhcpd_config": {"lan": {"fixed_bindings": {}}}}
+    rej = screen_op("gatewaytemplate", cur, new)
+    assert isinstance(rej, Rejection)
+    assert any("dhcpd_config.lan.fixed_bindings" in r for r in rej.reasons)
+
+
+def test_dhcp_options_stay_a_gap_next_to_empty_fixed_bindings():
+    new = {"dhcpd_config": {"lan": {
+        **_SCOPE_ROW, "fixed_bindings": {},
+        "options": {"15": {"type": "string", "value": "stag.one"}}}}}
+    rej = screen_op("gatewaytemplate", {}, new)
+    assert isinstance(rej, Rejection)
+    assert any("options.15.value" in r for r in rej.reasons)
+    assert not any("fixed_bindings" in r for r in rej.reasons)

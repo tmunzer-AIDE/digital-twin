@@ -21,6 +21,7 @@ from digital_twin.adapters.mist.ingest.ports import expand_port_map
 from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
+from digital_twin.scope.dhcp_screen import is_empty_fixed_bindings
 from digital_twin.scope.paths import allowed, changed_leaf_paths
 
 _STAGE = "field_gate"
@@ -76,6 +77,7 @@ def screen_op_split(
         if not allowed(p, allowlist)
         and not _wlan_secure_to_open_companion_delete(object_type, p, changed, current, payload)
         and not _known_empty_nac_match(object_type, p, current, payload)
+        and not is_empty_fixed_bindings(p, current, payload)
     ]
     if object_type == "device":
         # no_local_overwrite is in scope, but flipping it activates/deactivates the
