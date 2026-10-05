@@ -13,9 +13,9 @@ from __future__ import annotations
 
 SUPPORTED_OBJECT_TYPES: tuple[str, ...] = ("site_setting", "device", "wlan")
 
-# Org-level object types simulated by fan-out (NOT single-site). networktemplate
-# carries the SAME modeled config layer as a site_setting, so its raw field gate
-# reuses the site_setting leaf tuple EXACTLY (switch_matching stays out -> UNKNOWN).
+# Org-level object types simulated by fan-out (NOT single-site). Networktemplate
+# shares modeled switch/site leaves, adds its display name, and excludes
+# site-only variable annotations. switch_matching stays out of the raw allowlist.
 # wlantemplate is delete-only in SP3; updates are rejected in the org pipeline
 # because Mist's generic Template body is open-ended.
 ORG_OBJECT_TYPES: tuple[str, ...] = (
@@ -241,7 +241,7 @@ _STP_CONFIG_LEAVES: tuple[str, ...] = ("stp_config.bridge_priority",)
 # modeled forwarding/security effect, so it is in scope (decidable, no findings)
 # rather than gated to UNKNOWN. `critical` changes port alarm generation and
 # stays denied until those operational effects are evaluated. `no_local_overwrite` IS modeled
-# (resolve_effective_ports/_overridable gate whether local_port_config applies),
+# (resolve_effective_ports/overridable gate whether local_port_config applies),
 # but a lone flip activates or deactivates the member's local entry wholesale —
 # including any local leaf the gates cannot otherwise see. So it is in scope,
 # AND field_gate re-screens the affected member's local leaves on a flip
@@ -407,26 +407,6 @@ GATEWAY_EFFECTIVE_ALLOWLIST: tuple[str, ...] = (
     *_GATEWAY_LEAVES, "vars.*", "name", "port_config.*.description",
 )
 
-# Modeled leaves a device-profile (higher precedence, unmodeled layer) can
-# override, per role. EXACTLY the leaves the IR consumes for that role (so the
-# gate cannot disagree with ingest): gateway = the modeled gateway leaves;
-# switch = the modeled switch leaves.
-DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
-    "gateway": (*_GATEWAY_LEAVES,),
-    # The FULL modeled switch surface (= EFFECTIVE_ALLOWLIST minus vars.*). The
-    # device-profile is an UNMODELED layer that wins over the template/site layers,
-    # so it could override ANY modeled leaf — under-listing one (stp_config /
-    # dhcp_snooping / ospf / other_ip_configs, which device profiles DO carry per the
-    # device_switch OAS) is a false-SAFE: a below-profile edit to it on a profiled
-    # switch would resolve SAFE/REVIEW instead of UNKNOWN. Fail-safe = list every
-    # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
-    "switch": (
-        *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
-        *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
-        *_AUTH_BACKEND_LEAVES, *_STATIC_ROUTE_LEAVES,
-    ),
-}
-
 # Cosmetic facts are never modeled profile overrides. Keep the existing inline
 # descriptions out too, so a profile cannot manufacture a forwarding blind spot
 # for a label-only edit. A device name is deliberately absent: it selects rules.
@@ -444,7 +424,25 @@ COSMETIC_RAW_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "wlan": (),
     "nacrule": ("name",),
 }
-DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"] = tuple(
-    p for p in DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE["switch"]
-    if p not in COSMETIC_RAW_ALLOWLIST["device"]
-)
+
+# Modeled leaves a device-profile (higher precedence, unmodeled layer) can
+# override, per role. EXACTLY the leaves the IR consumes for that role (so the
+# gate cannot disagree with ingest): gateway = the modeled gateway leaves;
+# switch = the modeled switch leaves.
+DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE: dict[str, tuple[str, ...]] = {
+    "gateway": (*_GATEWAY_LEAVES,),
+    # All modeled operational switch leaves, excluding cosmetic permissions. The
+    # device-profile is an UNMODELED layer that wins over the template/site layers,
+    # so it could override ANY modeled leaf — under-listing one (stp_config /
+    # dhcp_snooping / ospf / other_ip_configs, which device profiles DO carry per the
+    # device_switch OAS) is a false-SAFE: a below-profile edit to it on a profiled
+    # switch would resolve SAFE/REVIEW instead of UNKNOWN. Fail-safe = list every
+    # modeled leaf (over-tainting to UNKNOWN is acceptable; false-SAFE is not).
+    "switch": tuple(
+        path for path in (
+            *_NETWORK_LEAVES, *_USAGE_LEAVES, *_DEVICE_PORT_LEAVES, *_STP_CONFIG_LEAVES,
+            *_IRB_LEAVES, *_DHCP_LEAVES, *_SNOOPING_LEAVES, *_OSPF_LEAVES, *_BGP_LEAVES,
+            *_AUTH_BACKEND_LEAVES, *_STATIC_ROUTE_LEAVES,
+        ) if path not in COSMETIC_RAW_ALLOWLIST["device"]
+    ),
+}

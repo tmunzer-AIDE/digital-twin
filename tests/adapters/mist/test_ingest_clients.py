@@ -1,5 +1,8 @@
+import pytest
+
 from digital_twin.adapters.mist.ingest.base import IngestContext
 from digital_twin.adapters.mist.ingest.clients import ClientsIngester
+from digital_twin.adapters.mist.ingest.lldp import LldpIngester
 from digital_twin.adapters.mist.ingest.switch import SwitchIngester
 from digital_twin.ir import AttachKind, IRBuilder, IRCapability
 from tests.adapters.mist.fixtures import SITE_EFFECTIVE, SWITCH_A, raw_site
@@ -82,3 +85,31 @@ def test_zero_clients_with_successful_fetches_still_earns_capability():
 
 def test_produces_capability():
     assert IRCapability.CLIENTS_ACTIVE in ClientsIngester().produces()
+
+
+@pytest.mark.parametrize("field,first,second", [("vlan_id", 10, 20), ("ssid", "corp", "guest")])
+def test_missing_initial_identity_does_not_hide_later_conflicting_values(field, first, second):
+    row = {"mac": "112233445566", "ap_mac": "cc0000000001"}
+    ir = _ingest(wireless=[row, {**row, field: first}, {**row, field: second}])
+    assert not ir.clients
+    assert any("conflicting duplicate identity" in reason for reason in ir.client_telemetry_gaps)
+
+
+@pytest.mark.parametrize("port", ["ge-0/0/0", "ge-0/0/1"])
+def test_telemetry_conflict_with_an_lldp_client_withdraws_the_initial_sighting(port):
+    row = {"mac": "112233445566", "device_mac": SWITCH_A["mac"], "port_id": port, "vlan": 10}
+    other_port = "ge-0/0/1" if port == "ge-0/0/0" else "ge-0/0/0"
+    ctx = IngestContext(
+        raw=raw_site(port_stats=({
+            "mac": SWITCH_A["mac"], "port_id": other_port, "neighbor_mac": row["mac"],
+        },), wired_clients=(row,)),
+        site_effective=dict(SITE_EFFECTIVE),
+        device_effective={"aa0000000001": {**SITE_EFFECTIVE, **SWITCH_A}},
+        builder=IRBuilder(),
+    )
+    SwitchIngester().ingest(ctx)
+    LldpIngester().ingest(ctx)
+    assert ctx.builder.has_client(row["mac"])
+    assert not ClientsIngester().ingest(ctx)
+    assert not ctx.builder.has_client(row["mac"])
+    assert not ctx.builder.build().clients

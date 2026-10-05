@@ -12,8 +12,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from digital_twin.adapters.mist.ingest.ports import (
-    _overridable,
     expand_port_map,
+    overridable,
     resolve_port_bases,
 )
 from digital_twin.scope.allowlist import COSMETIC_RAW_ALLOWLIST
@@ -145,7 +145,7 @@ def dependency_paths(
             depend_on_networks(row, config)
             pc = expanded[index]["port_config"].get(member)
             for root in _PORT_ROOTS:
-                if root == "local_port_config" and not _overridable(pc):
+                if root == "local_port_config" and not overridable(pc):
                     continue
                 inline = expanded[index][root].get(member, {})
                 if inline:

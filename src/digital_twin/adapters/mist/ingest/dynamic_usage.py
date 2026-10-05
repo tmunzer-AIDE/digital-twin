@@ -55,14 +55,14 @@ class _NoValue(Exception):
     """The expression conclusively yields nothing (e.g. split index OOR)."""
 
 
-def _apply_expression(value: str, expression: Any) -> str:
+def _apply_expression(value: str, expression: str | None) -> str:
     """The transform of `value` the rule compares (OAS grammar: optional
     split(<delim>), then [n] index / [a:b] slice chains). Raises _Unparseable
     for unknown grammar (-> inconclusive) and _NoValue when the expression
     conclusively selects nothing (e.g. out-of-range split index -> miss)."""
-    if expression in (None, ""):
+    if expression is None or expression == "":
         return value
-    expr = str(expression)
+    expr = expression
     pos = 0
     current: str | list[str] = value
     for m in _EXPR_TOKEN.finditer(expr):
@@ -93,29 +93,29 @@ def _apply_expression(value: str, expression: Any) -> str:
 
 def evaluate_rules(
     rules: Sequence[Mapping[str, Any]],
-    sources: Mapping[str, str | None],
+    sources: Mapping[str, object],
 ) -> RuleOutcome:
     for index, rule in enumerate(rules):
         if not dynamic_rule_valid(rule):
             return RuleOutcome(kind="inconclusive")
-        src, usage = rule.get("src"), rule.get("usage")
-        equals, equals_any = rule.get("equals"), rule.get("equals_any")
-        wanted = [str(equals)] if equals is not None else [str(x) for x in equals_any or ()]
-        if not src or not wanted or not usage:
-            return RuleOutcome(kind="inconclusive")  # malformed = unevaluable
-        if str(src) not in sources:
+        src, usage = rule["src"], rule["usage"]
+        equals = rule.get("equals")
+        wanted = [equals] if equals is not None else rule["equals_any"]
+        if src not in sources:
             return RuleOutcome(kind="inconclusive")  # unobservable source
-        value = sources[str(src)]
+        value = sources[src]
         if value is None:
             continue  # known absent -> conclusive miss
+        if not isinstance(value, str):
+            return RuleOutcome(kind="inconclusive")  # malformed observation
         try:
-            transformed = _apply_expression(str(value), rule.get("expression"))
+            transformed = _apply_expression(value, rule.get("expression"))
         except _Unparseable:
             return RuleOutcome(kind="inconclusive")  # unknown grammar
         except _NoValue:
             continue  # the expression conclusively selects nothing -> miss
         if transformed in wanted:
-            return RuleOutcome(kind="matched", usage=str(usage), rule_index=index)
+            return RuleOutcome(kind="matched", usage=usage, rule_index=index)
     return RuleOutcome(kind="static")
 
 

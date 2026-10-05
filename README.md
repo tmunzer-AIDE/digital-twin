@@ -273,8 +273,9 @@ importing `FetchLimits` from `digital_twin.providers.fetch_limits`.
 Client telemetry earns complete visibility only when both client fetches succeed
 and observations can be attached to modeled APs/ports. Missing identities,
 unresolved attachments and org client rows without a site identity prevent a
-client-dependent `SAFE`. Valid observations still establish known impact and
-breakage, while coverage notes retain gap counts and sample row indexes. A
+client-dependent `SAFE`. Conflicting sightings of the same client are excluded
+from conclusive outage evidence. Unambiguous observations still establish known
+impact and breakage, while coverage notes retain gap counts and sample row indexes. A
 successfully fetched empty population remains distinct from missing data.
 
 ### ChangePlan format

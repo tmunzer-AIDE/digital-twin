@@ -270,6 +270,16 @@ class IRBuilder:
     def get_client(self, mac: str) -> Client:
         return self._clients_by_id[client_id(mac)]
 
+    def discard_clients(self, macs: Iterable[str]) -> IRBuilder:
+        """Withdraw disputed observations before publishing client outage evidence."""
+        ids = {client_id(mac) for mac in macs}
+        self._clients = [client for client in self._clients if client.id not in ids]
+        self._client_ids.difference_update(ids)
+        for cid in ids:
+            self._clients_by_id.pop(cid, None)
+            self._client_enrichment.pop(cid, None)
+        return self
+
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]
 

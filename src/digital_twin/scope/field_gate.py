@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from digital_twin.adapters.mist.ingest.ports import _overridable, expand_port_map
+from digital_twin.adapters.mist.ingest.ports import expand_port_map, overridable
 from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import RAW_ALLOWLIST, ignored_raw_fields
@@ -152,8 +152,8 @@ def _local_overwrite_ripple(
     new_local = expand_port_map(payload.get("local_port_config") or {})
     out: list[str] = []
     for member in cur_pc.keys() | new_pc.keys():
-        cur_flag = _overridable(cur_pc.get(member))
-        new_flag = _overridable(new_pc.get(member))
+        cur_flag = overridable(cur_pc.get(member))
+        new_flag = overridable(new_pc.get(member))
         if cur_flag == new_flag:
             continue
         entry = new_local.get(member, cur_local.get(member)) or {}
@@ -168,8 +168,8 @@ def _local_overwrite_ripple(
 
 def _offense_reason(delta: LeafDelta) -> str:
     """Distinguish deletions from edits: with Mist update semantics (omitted
-    roots persist), an absent path in the proposed object means it was deleted
-    — via a '-attribute' marker at root, or by a sent root that drops it."""
-    if delta.kind == "removed":
+    roots persist), an absent or null proposed path means it was deleted — via
+    a '-attribute' marker, a sent root that drops it, or an explicit null."""
+    if delta.kind == "removed" or delta.after is None:
         return f"out-of-scope raw path deleted: {delta.path} (not in the M1 allowlist)"
     return f"out-of-scope raw path changed: {delta.path} (not in the M1 allowlist)"

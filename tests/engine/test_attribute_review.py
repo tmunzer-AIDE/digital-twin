@@ -14,6 +14,7 @@ from digital_twin.scope.field_gate import screen_op
 from digital_twin.verdict.decision import Decision
 from tests.engine.test_org_pipeline import _FakeProvider, _site
 from tests.engine.test_pipeline import (
+    AP,
     FakeProvider,
     _op,
     _plan,
@@ -192,6 +193,53 @@ def test_conflicting_normalized_client_identity_is_a_coverage_gap():
     assert outcome.ir is not None
     assert IRCapability.CLIENTS_ACTIVE not in outcome.ir.capabilities
     assert "conflicting duplicate identity" in outcome.ir.client_telemetry_gaps[0]
+    assert not outcome.ir.clients
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("conflict", ["ssid", "attachment"])
+def test_disputed_wireless_client_cannot_prove_an_outage(conflict, reverse):
+    first = _wireless_client()
+    second = {**first, "mac": "112233445566"}
+    wlans = [_wlan()]
+    raw = _raw_wlan()
+    if conflict == "ssid":
+        second["ssid"] = "guest"
+    else:
+        peer = {**AP, "id": "ap-2", "mac": "cc0000000002"}
+        raw = replace(raw, devices=(*raw.devices, peer))
+        second["ap_mac"] = peer["mac"]
+        wlans = [
+            {**_wlan(), "apply_to": "aps", "ap_ids": [AP["mac"]]},
+            {**_wlan("w2"), "apply_to": "aps", "ap_ids": [peer["mac"]]},
+        ]
+    rows = (second, first, second) if reverse else (first, second, first)
+    raw = replace(raw, wlans=tuple(wlans), wireless_clients=rows)
+    verdict = simulate(_plan([_op("wlan", "w1", {"enabled": False})]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert not any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in verdict.findings)
+
+
+def test_unambiguous_client_still_proves_outage_beside_disputed_identity():
+    disputed = _wireless_client()
+    certain = _wireless_client(mac="22:33:44:55:66:77")
+    raw = _raw_wlan(_wlan(), clients=(disputed, {**disputed, "ssid": "guest"}, certain))
+    verdict = simulate(_plan([_op("wlan", "w1", {"enabled": False})]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.UNSAFE, verdict.decision_reasons
+    proof = next(f for f in verdict.findings
+                 if f.code == "wireless.wlan.client_impact.coverage_lost")
+    assert proof.affected_entities == ("223344556677",)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unattachable_duplicate_cannot_leave_another_sighting_as_outage_proof(reverse):
+    first = _wireless_client()
+    unknown = {**first, "ap_mac": "cc0000000009"}
+    rows = (unknown, first) if reverse else (first, unknown)
+    raw = _raw_wlan(_wlan(), clients=rows)
+    verdict = simulate(_plan([_op("wlan", "w1", {"enabled": False})]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert not any(f.code == "wireless.wlan.client_impact.coverage_lost" for f in verdict.findings)
 
 
 def test_identical_client_observations_remain_complete():

@@ -140,7 +140,7 @@ def test_disabled_not_in_scope_on_port_config():
 
 
 def test_no_local_overwrite_is_in_scope():
-    # no_local_overwrite is modeled (resolve_effective_ports/_overridable). A lone
+    # no_local_overwrite is modeled (resolve_effective_ports/overridable). A lone
     # flip activating an UNMODELED local leaf is caught by field_gate's
     # _local_overwrite_ripple, not by blanket-gating the flag itself.
     assert "port_config.*.no_local_overwrite" in set(RAW_ALLOWLIST["device"])

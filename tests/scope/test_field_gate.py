@@ -258,6 +258,13 @@ def test_deletion_rejections_are_named_as_deletions():
     assert "deleted" in reason
 
 
+def test_null_deletion_rejection_is_named_as_a_deletion():
+    current = {**SWITCH_CUR, "remote_syslog": {"enabled": True}}
+    rejection = screen_op("device", current, {**current, "remote_syslog": None})
+    assert isinstance(rejection, Rejection)
+    assert any("out-of-scope raw path deleted: remote_syslog" in r for r in rejection.reasons)
+
+
 def test_non_switch_device_rejected_post_fetch():
     # the review's P1 case: M1 models switch config only — an AP update must
     # not pass the gates even if its changed paths look allowable
