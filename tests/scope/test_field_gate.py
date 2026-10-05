@@ -539,8 +539,51 @@ def test_dhcp_scope_holding_only_empty_fixed_bindings_stays_a_gap():
 def test_dhcp_options_stay_a_gap_next_to_empty_fixed_bindings():
     new = {"dhcpd_config": {"lan": {
         **_SCOPE_ROW, "fixed_bindings": {},
-        "options": {"15": {"type": "string", "value": "stag.one"}}}}}
+        "options": {"43": {"type": "hex", "value": "f1"}}}}}
     rej = screen_op("gatewaytemplate", {}, new)
     assert isinstance(rej, Rejection)
-    assert any("options.15.value" in r for r in rej.reasons)
+    assert any("options.43.value" in r for r in rej.reasons)
     assert not any("fixed_bindings" in r for r in rej.reasons)
+
+
+_OPTION_15 = {"15": {"type": "string", "value": "example.test"}}
+
+
+_OPTION_119 = {"119": {"type": "string", "value": "example.test"}}
+_NAMING_ROW = {**_SCOPE_ROW, "dns_suffix": ["example.test"],
+               "options": {**_OPTION_15, **_OPTION_119}}
+
+
+def test_dhcp_naming_leaves_are_in_scope_on_gateway_rows():
+    assert screen_op("gatewaytemplate", {}, {"dhcpd_config": {"lan": _NAMING_ROW}}) is None
+
+
+def test_other_dhcp_options_stay_a_gap_next_to_option_15():
+    row = {**_SCOPE_ROW, "options": {**_OPTION_15, "43": {"type": "hex", "value": "f1"}}}
+    rej = screen_op("gatewaytemplate", {}, {"dhcpd_config": {"lan": row}})
+    assert isinstance(rej, Rejection)
+    assert any("options.43.value" in r for r in rej.reasons)
+    assert not any("options.15" in r for r in rej.reasons)
+
+
+def test_dhcp_naming_leaves_are_in_scope_on_switch_dhcp_rows():
+    for object_type in ("site_setting", "networktemplate", "sitetemplate"):
+        new = {"dhcpd_config": {"lan": _NAMING_ROW}}
+        assert screen_op(object_type, {}, new) is None, object_type
+
+
+def test_device_level_switch_dhcp_stays_out_of_scope():
+    dev = {**SWITCH_CUR, "dhcpd_config": {"lan": {"type": "local", "dns_suffix": ["example.test"]}}}
+    assert isinstance(screen_op("device", SWITCH_CUR, dev), Rejection)
+
+
+def test_empty_dhcp_options_map_on_a_scope_is_not_a_gap():
+    row = {**_SCOPE_ROW, "options": {}, "fixed_bindings": {}}
+    assert screen_op("gatewaytemplate", {}, {"dhcpd_config": {"lan": row}}) is None
+    assert screen_op("site_setting", {}, {"dhcpd_config": {"lan": row}}) is None
+
+
+def test_dhcp_scope_holding_only_an_empty_options_map_stays_a_gap():
+    rej = screen_op("gatewaytemplate", {}, {"dhcpd_config": {"lan": {"options": {}}}})
+    assert isinstance(rej, Rejection)
+    assert any("dhcpd_config.lan.options" in r for r in rej.reasons)

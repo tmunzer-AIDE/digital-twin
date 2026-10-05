@@ -1249,6 +1249,35 @@ def dp_gatewaytemplate_edit_with_profiled_gw() -> tuple[dict[str, Any], dict[str
     return doc, plan
 
 
+def dp_gatewaytemplate_dhcp_edit_with_profiled_gw(
+    **row_extra: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """DP-c: the gatewaytemplate changes ONLY the `row_extra` keys of an existing
+    DHCP scope on a site whose gateway carries a deviceprofile_id. For benign
+    leaves (never read by the IR) a profile overriding them changes nothing, so
+    the device-profile gate must not fire."""
+    site_doc = _dp_site_doc(gw_profiled=True, ap_profiled=False)
+    template = _dp_gt_template()
+    row = {"type": "local", "ip_start": "198.51.97.10", "ip_end": "198.51.97.90",
+           "gateway": "198.51.97.1"}
+    template["dhcpd_config"] = {DP_NET: row}
+    doc = {
+        "templates": {"gatewaytemplate": {DP_GT_ID: template}},
+        "sites": {DP_SITE: site_doc},
+        "fetch_failures": [],
+    }
+    plan = {
+        "source": "mist",
+        "scope": {"org_id": DP_ORG_ID},
+        "ops": [{
+            "action": "update", "order": 0, "object_type": "gatewaytemplate",
+            "object_id": DP_GT_ID,
+            "payload": {"dhcpd_config": {DP_NET: {**row, **row_extra}}},
+        }],
+    }
+    return doc, plan
+
+
 def dp_only_ap_profiled_not_tainted() -> tuple[dict[str, Any], dict[str, Any]]:
     """DP-b: ONLY the AP carries a deviceprofile_id (gateways do not). The
     gatewaytemplate changes ip_configs.dp_net.ip — APs are ignored by the
