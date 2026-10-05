@@ -607,21 +607,6 @@ def test_ambiguous_system_name_never_resolves_a_chassis_mac():
     assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
 
 
-def test_chassis_mac_naming_the_reporting_switch_itself_stays_an_edge_client():
-    # a VC cabled to itself: both rows carry its chassis MAC and its own name.
-    # Resolving would erase the port's only neighbour fact (a same-device tie is
-    # never a Link, and the self-loop rule is MAC-only), so leave it as it was
-    a_chassis = "aa00000000ff"
-    stats = [
-        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True, "neighbor_mac": a_chassis,
-         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/9"},
-        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True, "neighbor_mac": a_chassis,
-         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/8"},
-    ]
-    ir = _ctx(stats, _RUNNING).builder.build()
-    assert _edge_ports(ir, a_chassis) == ["aa0000000001:ge-0/0/8"]
-
-
 def test_a_renamed_switch_still_resolves_by_the_hostname_it_runs():
     # a plan renaming a switch edits its CONFIG name; the recorded LLDP rows and
     # device stats still carry the hostname it runs. Matching config names made
@@ -632,3 +617,117 @@ def test_a_renamed_switch_still_resolves_by_the_hostname_it_runs():
     ir = _ctx(stats, running).builder.build()
     assert _edge_ports(ir, B_CHASSIS) == []
     assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
+
+
+# A VC cabled to itself sees its own CHASSIS MAC, not its Mist device MAC. The
+# self-loop rule accepts a MAC the switch declares about ITSELF, wherever Mist
+# reports one (real-org recording: VC 889c85171f8d declares 405d0ff2c0f4 on
+# every port-stat row, in device_stats and in its virtual_chassis member list).
+VC_MAC, VC_CHASSIS = "dd0000000001", "dd00000000ff"
+VC = {**SWITCH_A, "mac": VC_MAC, "id": "dev-vc", "name": "sw-vc"}
+
+
+def _vc_self_loop_rows(**declared):
+    return [
+        {"mac": VC_MAC, "port_id": "ge-0/0/8", "up": True, "neighbor_mac": VC_CHASSIS,
+         "neighbor_system_name": VC["name"], "neighbor_port_desc": "ge-0/0/9", **declared},
+        {"mac": VC_MAC, "port_id": "ge-0/0/9", "up": True, "neighbor_mac": VC_CHASSIS,
+         "neighbor_system_name": VC["name"], "neighbor_port_desc": "ge-0/0/8", **declared},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rows", "device_stats", "device"),
+    [
+        (_vc_self_loop_rows(chassis_mac=VC_CHASSIS), (), VC),
+        (
+            _vc_self_loop_rows(),
+            ({"mac": VC_MAC, "type": "switch", "chassis_mac": VC_CHASSIS},),
+            VC,
+        ),
+        (
+            _vc_self_loop_rows(),
+            ({"mac": VC_MAC, "type": "switch",
+              "module_stat": [{"mac": "dd0000000002"}, {"mac": VC_CHASSIS}]},),
+            VC,
+        ),
+        (
+            _vc_self_loop_rows(),
+            (),
+            {**VC, "virtual_chassis": {"members": [
+                {"mac": "dd0000000002", "member_id": 0, "vc_role": "backup"},
+                {"mac": VC_CHASSIS, "member_id": 1, "vc_role": "master"},
+            ]}},
+        ),
+    ],
+    ids=["port_stat_chassis_mac", "device_stats_chassis_mac", "module_stat_mac", "vc_member_mac"],
+)
+def test_vc_cabled_to_itself_on_a_declared_chassis_mac_is_a_self_loop(rows, device_stats, device):
+    ir = _ctx(rows, device_stats, extra_devices=(device,)).builder.build()
+    a, b = ir.port(f"{VC_MAC}:ge-0/0/8"), ir.port(f"{VC_MAC}:ge-0/0/9")
+    assert a.self_loop_peer == b.id and a.self_loop_reciprocal
+    assert b.self_loop_peer == a.id and b.self_loop_reciprocal
+    # the fact lives on the ports only: never a Link, never a phantom edge client
+    assert _edge_ports(ir, VC_CHASSIS) == []
+    assert ir.links == ()
+
+
+def test_own_mac_and_declared_chassis_mac_claims_are_one_reciprocal_self_loop():
+    # one end sees the device MAC, the other the chassis MAC, in mixed formats:
+    # both are the switch's own, compared as canonical device ids
+    rows = [
+        {"mac": VC_MAC, "port_id": "ge-0/0/8", "up": True, "chassis_mac": "DD:00:00:00:00:FF",
+         "neighbor_mac": "dd-00-00-00-00-ff", "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": VC_MAC, "port_id": "ge-0/0/9", "up": True, "chassis_mac": "DD:00:00:00:00:FF",
+         "neighbor_mac": VC_MAC, "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(rows, extra_devices=(VC,)).builder.build()
+    a, b = ir.port(f"{VC_MAC}:ge-0/0/8"), ir.port(f"{VC_MAC}:ge-0/0/9")
+    assert a.self_loop_peer == b.id and a.self_loop_reciprocal
+    assert b.self_loop_peer == a.id and b.self_loop_reciprocal
+    assert ir.clients == ()
+
+
+def test_one_sided_declared_chassis_mac_claim_never_synthesizes_the_peer():
+    rows = [
+        _vc_self_loop_rows(chassis_mac=VC_CHASSIS)[0],
+        {"mac": VC_MAC, "port_id": "ge-0/0/9", "up": True, "chassis_mac": VC_CHASSIS},  # silent
+    ]
+    ir = _ctx(rows, extra_devices=(VC,)).builder.build()
+    a = ir.port(f"{VC_MAC}:ge-0/0/8")
+    assert a.self_loop_peer == f"{VC_MAC}:ge-0/0/9"
+    assert a.self_loop_reciprocal is False
+    assert ir.port(f"{VC_MAC}:ge-0/0/9").self_loop_peer is None
+
+
+def test_undeclared_mac_beside_the_reporting_switchs_own_name_stays_an_edge_client():
+    # the rule is MAC-only: the hostname the switch runs proves nothing (a
+    # non-Mist box can share it), so a MAC it never declared stays as it was
+    running = ({"mac": VC_MAC, "type": "switch", "hostname": VC["name"]},)
+    ir = _ctx(_vc_self_loop_rows(), running, extra_devices=(VC,)).builder.build()
+    assert ir.port(f"{VC_MAC}:ge-0/0/8").self_loop_peer is None
+    assert ir.port(f"{VC_MAC}:ge-0/0/9").self_loop_peer is None
+    assert _edge_ports(ir, VC_CHASSIS) == [f"{VC_MAC}:ge-0/0/8"]
+
+
+def test_chassis_mac_declared_by_two_devices_is_never_a_self_alias():
+    # SWITCH_B declares the same chassis MAC: whose it is is ambiguous, so the
+    # VC's rows prove nothing about the VC and stay as they were
+    other = {"mac": SWITCH_B["mac"], "type": "switch", "chassis_mac": VC_CHASSIS}
+    ir = _ctx(
+        _vc_self_loop_rows(chassis_mac=VC_CHASSIS), (other,), extra_devices=(VC,)
+    ).builder.build()
+    assert ir.port(f"{VC_MAC}:ge-0/0/8").self_loop_peer is None
+    assert ir.port(f"{VC_MAC}:ge-0/0/9").self_loop_peer is None
+    assert _edge_ports(ir, VC_CHASSIS) == [f"{VC_MAC}:ge-0/0/8"]
+
+
+def test_declared_mac_that_is_another_managed_devices_own_mac_is_never_a_self_alias():
+    # a stale VC member list naming a managed switch: that MAC is claimed twice
+    # (by its owner and by the VC), so the real link to it stays a link
+    vc = {**VC, "virtual_chassis": {"members": [{"mac": SWITCH_B["mac"], "member_id": 1}]}}
+    row = {"mac": VC_MAC, "port_id": "ge-0/0/8", "up": True,
+           "neighbor_mac": SWITCH_B["mac"], "neighbor_port_desc": "ge-0/0/47"}
+    ir = _ctx([row], extra_devices=(vc,)).builder.build()
+    assert ir.port(f"{VC_MAC}:ge-0/0/8").self_loop_peer is None
+    assert [lk.id for lk in ir.links] == [f"bb0000000002:ge-0/0/47__{VC_MAC}:ge-0/0/8"]
