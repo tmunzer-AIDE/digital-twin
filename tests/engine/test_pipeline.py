@@ -275,13 +275,15 @@ def test_coverage_gap_plus_modeled_network_error_is_unsafe():
     assert any(f.code == "fake.network.error" for f in v.findings)
 
 
-def test_name_only_rule_is_safe_without_target_fetch():
+def test_rename_of_device_absent_from_the_site_is_review_not_safe():
+    # the rename proof needs the device (its type picks the matching block)
     v = simulate(
         _plan([_op(object_type="device", object_id="ghost", payload={"name": "x"})]),
         provider=FakeProvider(),
     )
-    assert v.decision is Decision.SAFE
+    assert v.decision is Decision.REVIEW
     assert v.check_results[0].check_id == "config.name_change"
+    assert {f.code for f in v.findings} == {"config.name_change.unverified"}
 
 
 def test_l0_findings_reach_verdict():
@@ -441,7 +443,7 @@ def test_normal_verdict_carries_diagrams():
 
 def test_name_only_rule_has_no_diagrams():
     v = simulate(
-        _plan([_op(object_type="device", object_id="ghost", payload={"name": "x"})]),
+        _plan([_op(object_type="device", object_id="dev-a", payload={"name": "x"})]),
         provider=FakeProvider(),
     )
     assert v.decision is Decision.SAFE
@@ -569,7 +571,12 @@ def test_site_apply_reject_carries_config_diff(monkeypatch):
 
 
 def test_name_only_update_on_ap_device_is_safe_before_role_gate():
-    raw = dc_replace(_raw(), devices=(SWITCH, AP))
+    # the AP-rename proof reads the site WLANs (DHCP option 82 {{AP_NAME}})
+    raw = dc_replace(
+        _raw(),
+        devices=(SWITCH, AP),
+        meta=dc_replace(_raw().meta, fetched=("devices", "wlans")),
+    )
     v = simulate(
         _plan([_op(object_type="device", object_id="ap-a", payload={"name": "renamed"})]),
         provider=FakeProvider(raw=raw),

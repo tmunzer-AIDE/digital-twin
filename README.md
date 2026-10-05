@@ -187,7 +187,7 @@ produce `SAFE`.
 | 37 | Switching / LAG | `switch.lag_redundancy` | configured or observed member loss, unresolved membership, and incompatible peer LACP intent; per-member forwarding telemetry remains partial |
 | 38 | L3 / management | `wired.l3.control_plane_reachability` | loss of a configured IPv4/IPv6 default, or changed static-route, L3-interface, VRF or forwarding-port dependencies used by Mist cloud, DNS, NTP, AAA and syslog paths |
 | 39 | Port / config | `wired.port.storm_control_policy` | storm-triggered shutdown of uplink, linked or AP/uplink-profile ports, threshold reductions and unreadable values; traffic-rate telemetry remains partial |
-| P1 | Configuration policy | `config.name_change` | a non-empty, top-level `name`-only update; `SAFE` except for the explicitly excluded security profile/policy families |
+| P1 | Configuration policy | `config.name_change` | a non-empty, top-level `name`-only update; `SAFE` except for the explicitly excluded security profile/policy families; a device rename is `SAFE` only when the fetched site configuration proves no name-based matcher changes outcome, otherwise `REVIEW` (`config.name_change.matcher` / `config.name_change.unverified`) |
 | P2 | Configuration policy | `config.org_info` | organization information changes, classified `SAFE` |
 | P3 | Configuration policy | `config.alarmtemplate` | alarm-template create/update/delete changes, classified `SAFE` |
 | P4 | Configuration policy | `config.sitegroup` | site-group create/update changes, classified `SAFE` |
@@ -331,6 +331,52 @@ for Mist configuration objects without fetching topology.
 The security-sensitive `secintelprofiles`, `aamwprofiles`, `avprofiles`,
 `idpprofiles`, and `servicepolicies` families are explicitly excluded from this
 rule and return `UNKNOWN`.
+
+**Device renames are never `SAFE` before a fetch.** Mist selects device
+configuration by device name, so a rename can swap a device's whole matched rule
+(`port_config`, `ip_config`, `stp_config`, ...) or a neighbor port's profile. A
+rename of a `device` (also `devices`/`site_devices`) is `SAFE` only when the
+fetched site configuration proves that no name-based matcher changes outcome:
+
+- **switches**: every `switch_matching` rule in the assigned network template,
+  site template and site setting (including `setting.switch.switch_matching`);
+- **gateways**: every `gateway_matching` rule in the assigned gateway template
+  and site setting (`setting.gateway.gateway_matching`);
+- **APs**: `ap_matching` (model-only in the OAS, scanned so an undocumented name
+  criterion is never trusted), and site WLANs whose DHCP option 82 `circuit_id`
+  carries `{{AP_NAME}}` to a DHCP server the twin cannot see;
+- **every device type**: switch dynamic port profile rules on `lldp_system_name`
+  (templates, site setting, and every switch's own `port_usages`), because a
+  device advertises its name as its LLDP system name to the switch it plugs into.
+
+The proof compares each rule's own outcome for the old and new name, so it holds
+whatever the rule-selection order. `match_name[A:B]` is evaluated under every
+reading the OAS leaves open: case-sensitive or not, and compared against the
+value or the value's own `[A:B]` slice. A `match_model`/`match_role` criterion is
+name-independent; `enable` flags are ignored. A rule that can flip is `REVIEW`
+(`config.name_change.matcher`, naming the rule, the layer and the criterion).
+Missing evidence is also `REVIEW`, with partial coverage
+(`config.name_change.unverified`): a plan without `site_id`, a failed site
+fetch, a device absent from the fetched inventory, a device type with no
+modeled matcher, an assigned template absent from the fetched state, unreadable
+rules, unknown `match_*` criteria or rule sources, `{{var}}` operands, and
+unevaluable expressions.
+
+The rule covers every path that can carry a device rename:
+
+- the pre-fetch rule called by the CLI and MCP drivers returns no verdict for a
+  plan containing a device rename, so the plan reaches a fetching path;
+- `simulate()` (single site) runs the proof after fetching the site;
+- the composite driver runs it in the `site` segment (and in the `name`
+  segment for a rename without `site_id`, which is `REVIEW`), and its
+  original → composed batch pass applies it again;
+- a full-pipeline run where a rename is mixed with other fields (and the
+  composite batch pass) gets the same proof from the shared site stage, because
+  the switch compiler re-evaluates `switch_matching` for `port_config` only.
+  Org template fan-out shares that stage but never renames a device.
+
+Known limit: the proof sees the fetched site only. A neighbor switch assigned to
+another site, or a non-Mist switch matching on LLDP system names, is outside it.
 
 Additional configuration-policy coverage:
 

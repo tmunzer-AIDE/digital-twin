@@ -50,6 +50,7 @@ from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
 from digital_twin.contracts import (
     Cause,
+    ChangePlan,
     Finding,
     FindingCategory,
     FindingSource,
@@ -59,7 +60,12 @@ from digital_twin.contracts import (
 )
 from digital_twin.engine.config_policy import simulate_configuration_policy
 from digital_twin.engine.effective_override import effective_override_result
-from digital_twin.engine.name_change import assess_name_only_change
+from digital_twin.engine.name_change import (
+    NameChangeAssessment,
+    RenameRisks,
+    assess_name_only_change,
+    device_rename_risks,
+)
 from digital_twin.engine.org_overlay import OrgOverlay, affected_sites, apply_overlays
 from digital_twin.engine.org_template import apply_template
 from digital_twin.engine.run_context import RunContext
@@ -877,15 +883,171 @@ def _unknown(
     )
 
 
+def _rename_findings(op_type: str, device_id: str, risks: RenameRisks) -> tuple[Finding, ...]:
+    """WARNING findings (-> REVIEW, never UNSAFE) for one unproven device rename."""
+    subject = ObjectRef(op_type, device_id)
+    out: list[Finding] = []
+    for code, reasons, lead in (
+        ("config.name_change.matcher", risks.matchers,
+         "renaming the device can change a name-matched configuration rule"),
+        ("config.name_change.unverified", risks.unverified,
+         "the twin cannot prove the rename leaves name-matched rules unchanged"),
+    ):
+        if reasons:
+            out.append(Finding(
+                source=FindingSource.CHECK,
+                category=FindingCategory.NETWORK,
+                code=code,
+                severity=Severity.WARNING,
+                confidence=_HIGH,
+                message=f"{lead}: {'; '.join(reasons)}",
+                affected_entities=(device_id,),
+                subject=subject,
+                evidence={"reasons": list(reasons)},
+                caused_by=(Cause(ref=subject, fields=("name",)),),
+            ))
+    return tuple(out)
+
+
+def renamed_device_findings(
+    baseline_raw: RawSiteState, proposed_raw: RawSiteState
+) -> tuple[Finding, ...]:
+    """The device-rename proof for full-pipeline runs (a rename mixed with other
+    fields, or a composite batch's original -> composed pass). The compiler
+    re-evaluates switch_matching for port_config only; the matched rule's other
+    roots, gateway_matching and neighbor dynamic profiles stay blind, so every
+    renamed device is held to the same proof as a pure rename, against both the
+    baseline and the proposed configuration."""
+    before = {str(d.get("id")): d for d in baseline_raw.devices}
+    findings: list[Finding] = []
+    for device in proposed_raw.devices:
+        device_id = str(device.get("id"))
+        old = before.get(device_id)
+        new_name = str(device.get("name") or "")
+        if old is None or str(old.get("name") or "") == new_name:
+            continue
+        renamed = {**old, "type": device.get("type", old.get("type"))}
+        risks = [device_rename_risks(raw, renamed, new_name)
+                 for raw in (baseline_raw, proposed_raw)]
+        merged = RenameRisks(
+            tuple(dict.fromkeys(r for risk in risks for r in risk.matchers)),
+            tuple(dict.fromkeys(r for risk in risks for r in risk.unverified)),
+        )
+        findings.extend(_rename_findings("device", device_id, merged))
+    return tuple(findings)
+
+
+def _device_rename_verdict(
+    plan: ChangePlan,
+    assessment: NameChangeAssessment,
+    *,
+    provider: StateProvider,
+    run: RunContext,
+) -> Verdict:
+    """SAFE only when, for every renamed device, the fetched site configuration
+    proves no name-based matcher changes outcome; any blind spot is REVIEW."""
+    findings: list[Finding] = []
+    state_meta: StateMetaView | None = None
+    site_id = plan.scope.site_id
+    raw: RawSiteState | FetchError | None = None
+    if site_id is not None:
+        raw = provider.fetch_site(SiteScope(org_id=plan.scope.org_id, site_id=site_id))
+        meta = raw.meta if isinstance(raw, RawSiteState) else StateMeta(
+            acquired_at=raw.acquired_at, host=raw.host, fetched=(), failures=raw.failures
+        )
+        state_meta = build_state_meta(meta, now=datetime.now(UTC))
+
+    names: dict[str, dict[str, Any]] = (
+        {str(d.get("id")): dict(d) for d in raw.devices} if isinstance(raw, RawSiteState) else {}
+    )
+    for op in sorted(assessment.device_ops, key=lambda o: o.order):
+        new_name = str(op.payload["name"])
+        if raw is None:
+            risks = RenameRisks(unverified=(
+                "the plan has no site_id, so the device's site templates cannot be fetched",
+            ))
+        elif isinstance(raw, FetchError):
+            risks = RenameRisks(unverified=tuple(
+                f"site state could not be fetched ({f.object}: {f.error})" for f in raw.failures
+            ) or ("site state could not be fetched",))
+        elif (device := names.get(op.object_id)) is None:
+            failed = [f"{f.object}: {f.error}" for f in raw.meta.failures]
+            detail = f" (fetch failures: {'; '.join(failed)})" if failed else ""
+            risks = RenameRisks(unverified=(
+                f"device {op.object_id} is not in the fetched site inventory{detail}",
+            ))
+        else:
+            risks = device_rename_risks(raw, device, new_name)
+            device["name"] = new_name  # later ops in the plan rename from here
+        findings.extend(_rename_findings(op.object_type, op.object_id, risks))
+
+    if findings:
+        complete = not any(f.code == "config.name_change.unverified" for f in findings)
+        reasoning = (
+            "device rename is not proven free of name-matched configuration changes; "
+            "review required"
+        )
+        result = CheckResult(
+            check_id="config.name_change",
+            status=Status.WARN,
+            findings=tuple(findings),
+            coverage=Coverage(
+                CoverageState.COMPLETE if complete else CoverageState.PARTIAL, (reasoning,)
+            ),
+            confidence=_HIGH,
+            reasoning=reasoning,
+        )
+        return assemble(
+            inputs=DecisionInputs(
+                rejections=(), l0_fatal=False, baseline_unavailable=False,
+                check_results=(result,),
+            ),
+            ir_diff=_EMPTY_DIFF,
+            state_meta=state_meta,
+            trace_ref=run.run_id,
+        )
+
+    reason = (
+        f"name-only configuration update is safe for: {', '.join(assessment.object_types)} "
+        "(no name-matched rule or neighbor dynamic port profile changes for the "
+        f"renamed devices: {', '.join(op.object_id for op in assessment.device_ops)})"
+    )
+    result = CheckResult(
+        check_id="config.name_change",
+        status=Status.PASS,
+        findings=(),
+        coverage=Coverage(
+            CoverageState.COMPLETE,
+            ("fetched site configuration proves no name-based matcher changes outcome",),
+        ),
+        confidence=_HIGH,
+        reasoning=reason,
+    )
+    verdict = assemble(
+        inputs=DecisionInputs(
+            rejections=(), l0_fatal=False, baseline_unavailable=False, check_results=(result,),
+        ),
+        ir_diff=_EMPTY_DIFF,
+        state_meta=state_meta,
+        trace_ref=run.run_id,
+    )
+    return replace(verdict, decision_reasons=(reason,))
+
+
 def simulate_name_change(
-    plan_data: Mapping[str, Any], *, run: RunContext | None = None
+    plan_data: Mapping[str, Any],
+    *,
+    run: RunContext | None = None,
+    provider: StateProvider | None = None,
 ) -> Verdict | None:
     """Return a policy verdict for a pure name update, or ``None`` otherwise.
 
-    This deliberately runs before provider selection and state fetch.  The rule
-    reasons only about the request shape: every op must update exactly one
+    Without a ``provider`` this runs before provider selection and state fetch,
+    reasoning only about the request shape: every op must update exactly one
     non-empty top-level ``name`` value.  All other payloads continue through the
-    normal default-deny simulation pipeline.
+    normal default-deny simulation pipeline.  A plan that renames a DEVICE is
+    never granted pre-fetch: it returns ``None`` until a ``provider`` is given,
+    then the fetched site configuration must prove no name-matched rule changes.
     """
     run = run or RunContext()
     trace = run.trace
@@ -897,6 +1059,10 @@ def simulate_name_change(
         assessment = assess_name_only_change(plan)
         if assessment is None:
             return None
+        if assessment.device_ops:
+            if provider is None:
+                return None
+            return _device_rename_verdict(plan, assessment, provider=provider, run=run)
         if not assessment.safe:
             return _unknown(
                 Rejection(stage="name_change_rule", reasons=(assessment.reason,)),
@@ -989,6 +1155,7 @@ def _simulate_site_state(
                 adapter_findings=adapter_findings, run=run, state_meta=state_meta,
             )
     with trace.stage("dynamic_gate"):
+        adapter_findings += renamed_device_findings(baseline_raw, proposed_raw)
         adapter_findings += unresolved_dynamic_findings(
             baseline.device_effective, proposed.device_effective, proposed_raw.port_stats
         )
@@ -1119,7 +1286,7 @@ def simulate(
     policy_verdict = simulate_configuration_policy(plan_data, provider=provider, run=run)
     if policy_verdict is not None:
         return policy_verdict
-    name_change_verdict = simulate_name_change(plan_data, run=run)
+    name_change_verdict = simulate_name_change(plan_data, run=run, provider=provider)
     if name_change_verdict is not None:
         return name_change_verdict
     trace = run.trace
