@@ -31,6 +31,7 @@ from digital_twin.contracts import (
     Severity,
 )
 from digital_twin.ir import Confidence, ConfidenceLevel, device_id
+from digital_twin.scope.atomic_lists import dynamic_rule_valid
 
 # expression grammar (per the OAS): an optional `split(<delim>)` followed by
 # any chain of `[n]` (index) / `[a:b]` (slice) operations — e.g. "[0:3]",
@@ -95,6 +96,8 @@ def evaluate_rules(
     sources: Mapping[str, str | None],
 ) -> RuleOutcome:
     for index, rule in enumerate(rules):
+        if not dynamic_rule_valid(rule):
+            return RuleOutcome(kind="inconclusive")
         src, usage = rule.get("src"), rule.get("usage")
         equals, equals_any = rule.get("equals"), rule.get("equals_any")
         wanted = [str(equals)] if equals is not None else [str(x) for x in equals_any or ()]
@@ -144,8 +147,12 @@ def classify_dynamic_port(
     rules = spec.get("rules")
     if not isinstance(rules, list):
         return "unresolved", f"dynamic profile {profile!r} has no rules in the modeled config"
+    if not all(dynamic_rule_valid(rule) for rule in rules):
+        return "unresolved", f"dynamic profile {profile!r} has unsupported rule content"
     if row is None:
         return "unresolved", "no port stats for the dynamically-profiled port"
+    if row.get("_twin_dynamic_observation_stale"):
+        return "unresolved", "peer rename invalidates the observed LLDP dynamic-profile result"
     if not row.get("up"):
         if spec.get("reset_default_when") == "none":
             return "unresolved", (

@@ -72,6 +72,8 @@ from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op, screen_op_split
 from digital_twin.scope.object_gate import check_objects
+from digital_twin.scope.observation_gate import proposed_observations
+from digital_twin.scope.switch_matching_gate import switch_matching_gaps
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
 from digital_twin.verdict.state_meta import StateMetaView, build_state_meta
@@ -266,6 +268,9 @@ def _simulate_site_state(
             )
     with trace.stage("ingest.proposed"):
         try:
+            proposed_raw, observation_gaps = proposed_observations(
+                baseline_raw, proposed_raw, baseline.device_effective
+            )
             proposed = adapter.ingest(proposed_raw)
         except Exception as e:  # noqa: BLE001
             return _unknown(
@@ -296,6 +301,20 @@ def _simulate_site_state(
     coverage_gaps: list[Rejection] = list(extra_coverage_gaps)
     coverage_gap_findings: list[Finding] = list(extra_coverage_findings)
     with trace.stage("derived_gate"):
+        for observation_gap in observation_gaps:
+            _record_coverage_gap(
+                coverage_gaps, coverage_gap_findings, observation_gap,
+                artifact="observations", subject=ObjectRef("site", baseline_raw.scope.site_id),
+            )
+        for gap in switch_matching_gaps(
+            baseline_raw, proposed_raw, baseline.site_effective, proposed.site_effective
+        ):
+            _record_coverage_gap(
+                coverage_gaps, coverage_gap_findings, gap.rejection,
+                artifact=f"device {gap.device_id}",
+                subject=ObjectRef("device", gap.device_id),
+                affected_entities=(gap.device_id,), paths=gap.paths,
+            )
         site_gaps = check_derived_gaps(
             _site_screen_view(baseline.site_effective), _site_screen_view(proposed.site_effective)
         )
@@ -514,7 +533,7 @@ def simulate(
                     adapter_findings=adapter_findings, run=run,
                     state_meta=state_meta, config_diffs=tuple(site_diffs),
                 )
-            effective = effective_update(current, op.payload)
+            effective = effective_update(current, op.payload, object_type=op.object_type)
             # Build the before→after NOW (pure structural data, independent of
             # validation) so it is available to every downstream early exit.
             site_diffs.append(object_config_diff(
@@ -526,7 +545,8 @@ def simulate(
             # every persisted root, which the closed OAS does not fully document; auditing
             # them all would false-flag pre-existing fields. l0_full_object audits all.
             unknown_roots = frozenset(
-                p.split(".", 1)[0] for p in changed_paths(current, effective)
+                p.split(".", 1)[0]
+                for p in changed_paths(current, effective, object_type=op.object_type)
             )
             result = adapter.validate(
                 replace(op, payload=effective),
@@ -684,7 +704,7 @@ def simulate_org_plan(
                     object_type=op.object_type, object_id=op.object_id,
                     name=name, action=op.action, before=snapshot, after=None))
             else:
-                proposed_wlan = effective_update(snapshot, op.payload)
+                proposed_wlan = effective_update(snapshot, op.payload, object_type=op.object_type)
                 org_diffs.append(object_config_diff(
                     object_type=op.object_type, object_id=op.object_id,
                     name=name, action=op.action, before=snapshot, after=proposed_wlan))
@@ -708,7 +728,8 @@ def simulate_org_plan(
                                        changes=tuple(changes), config_diffs=tuple(org_diffs))
                 proposed_org_wlan = proposed_wlan
                 proposed_by_site = {
-                    sid: effective_update(row, op.payload) for sid, row in baseline_by_site.items()
+                    sid: effective_update(row, op.payload, object_type=op.object_type)
+                    for sid, row in baseline_by_site.items()
                 }
             overlays.append(OrgOverlay(
                 object_type=op.object_type, object_id=op.object_id, name=name,
@@ -772,7 +793,7 @@ def simulate_org_plan(
                 object_type=op.object_type, object_id=op.object_id,
                 name=snapshot.get("name"), action=op.action, before=snapshot, after=None))
         else:
-            proposed_t = apply_template(snapshot, op.payload)
+            proposed_t = apply_template(snapshot, op.payload, object_type=op.object_type)
             if isinstance(proposed_t, Rejection):
                 return org_unknown((proposed_t,),
                     template_findings=tuple(template_findings), changes=tuple(changes),
@@ -948,7 +969,7 @@ def simulate_org_nac(
                 f"ops[order={op.order}]: conflicting set AND '-' delete marker",)),
                 adapter_findings=adapter_findings, config_diffs=tuple(nac_diffs))
         current = baseline_raw.get(op.object_id, {"id": op.object_id})
-        effective = effective_update(current, op.payload)
+        effective = effective_update(current, op.payload, object_type="nacrule")
         if op.action == "create":
             effective["id"] = op.object_id
         nac_diffs.append(object_config_diff(

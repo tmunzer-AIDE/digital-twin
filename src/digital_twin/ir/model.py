@@ -109,6 +109,7 @@ class IRBuilder:
         self._bgp_neighbors: list[BgpNeighbor] = []
         self._bgp_unparsed = 0
         self._clients: list[Client] = []
+        self._clients_by_id: dict[str, Client] = {}
         self._client_telemetry_gaps: list[str] = []
         self._client_ids: set[str] = set()
         self._dhcp_scopes: dict[str, DhcpScope] = {}
@@ -181,6 +182,7 @@ class IRBuilder:
             raise IRValidationError(f"duplicate client id {client.id}")
         self._client_ids.add(client.id)
         self._clients.append(client)
+        self._clients_by_id[client.id] = client
         return self
 
     def add_wlan(self, wlan: Wlan) -> IRBuilder:
@@ -264,6 +266,9 @@ class IRBuilder:
 
     def has_client(self, mac: str) -> bool:
         return client_id(mac) in self._client_ids
+
+    def get_client(self, mac: str) -> Client:
+        return self._clients_by_id[client_id(mac)]
 
     def get_port(self, pid: str) -> Port:
         return self._ports[pid]

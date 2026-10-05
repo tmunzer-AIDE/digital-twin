@@ -22,17 +22,21 @@ from digital_twin.providers.base import RawSiteState
 
 _Json = Mapping[str, Any]
 
-# Server-managed: preserved from the current object regardless of the payload.
-IDENTITY_FIELDS: tuple[str, ...] = (
+# Server-managed identity is resource-specific. Gateway template `type`, for
+# example, is a platform selector, not immutable device identity.
+COMMON_IDENTITY_FIELDS: tuple[str, ...] = (
     "id",
     "org_id",
     "site_id",
+    "created_time",
+    "modified_time",
+)
+IDENTITY_FIELDS: tuple[str, ...] = (
+    *COMMON_IDENTITY_FIELDS,
     "mac",
     "serial",
     "model",
     "type",
-    "created_time",
-    "modified_time",
 )
 
 
@@ -56,13 +60,16 @@ def update_conflicts(payload: _Json) -> list[str]:
     return sorted(k[1:] for k in payload if k.startswith("-") and k[1:] in payload)
 
 
-def effective_update(current: _Json, payload: _Json) -> dict[str, Any]:
+def effective_update(
+    current: _Json, payload: _Json, *, object_type: str = "device"
+) -> dict[str, Any]:
     """The full object Mist would hold after this update (root-level merge +
     dash-marker deletions + identity preservation)."""
     deleted = {k[1:] for k in payload if k.startswith("-")}
     out = {k: v for k, v in current.items() if k not in deleted}
     out.update({k: v for k, v in payload.items() if not k.startswith("-")})
-    for key in IDENTITY_FIELDS:
+    identity = IDENTITY_FIELDS if object_type == "device" else COMMON_IDENTITY_FIELDS
+    for key in identity:
         if key in current:
             out[key] = current[key]
     return out
@@ -73,10 +80,13 @@ def replace_object(
 ) -> RawSiteState:
     """Caller must have resolved the object first (get_object is not None)."""
     if object_type == "site_setting":
-        return dc_replace(raw, setting=effective_update(raw.setting, payload))
+        return dc_replace(raw, setting=effective_update(
+            raw.setting, payload, object_type=object_type
+        ))
     if object_type == "wlan":
         wlans = tuple(
-            effective_update(w, payload) if str(w.get("id")) == object_id else w
+            effective_update(w, payload, object_type=object_type)
+            if str(w.get("id")) == object_id else w
             for w in raw.wlans
         )
         return dc_replace(raw, wlans=wlans)

@@ -9,6 +9,11 @@ neighbor admin-state field the twin's GS28 check acts on. UPSTREAM PR REQUIRED i
 mistsys/mist_openapi (add `disabled` to `switch_bgp_config_neighbor`) so the next
 re-extract is reproducible. The other schemas stay pinned (device-only scope);
 refresh them from mistsys when widening enforcement beyond `device`.
+2026-10-05 scoped addition: site_setting.vars_annotations extracted verbatim
+from the 2609.1.0 (September 7, 2026) specification, SHA-256
+22f55432535ab38f6c0539392a729b8fd515a9ccae9df693fbd4ff23d40b8fac.
+Only note/type UI metadata leaves were added to the allowlist; this is not a
+refresh or behavioral validation of other site-setting domains.
 gatewaytemplate.schema.json + sitetemplate.schema.json extracted 2026-06-15 from
 github tmunzer/mist_openapi master (components: gateway_template, site_template).
 NOTE: the OAS `site_template` component is incomplete (auto_upgrade/name/vars only);

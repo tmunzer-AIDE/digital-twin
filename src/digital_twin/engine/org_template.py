@@ -18,7 +18,9 @@ from digital_twin.contracts import Rejection
 _Json = Mapping[str, Any]
 
 
-def apply_template(snapshot: _Json, payload: _Json) -> dict[str, Any] | Rejection:
+def apply_template(
+    snapshot: _Json, payload: _Json, *, object_type: str = "networktemplate"
+) -> dict[str, Any] | Rejection:
     """The proposed template = snapshot + edit (Mist root-level update semantics).
     A set-AND-delete on the same attribute is an authoring error -> Rejection."""
     conflicts = update_conflicts(payload)
@@ -30,4 +32,4 @@ def apply_template(snapshot: _Json, payload: _Json) -> dict[str, Any] | Rejectio
                 for c in conflicts
             ),
         )
-    return effective_update(snapshot, payload)
+    return effective_update(snapshot, payload, object_type=object_type)

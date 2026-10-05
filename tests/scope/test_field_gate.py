@@ -117,13 +117,13 @@ def test_port_description_is_in_scope_on_every_inline_map():
         assert screen_op("device", SWITCH_CUR, payload) is None, key
 
 
-def test_port_config_critical_is_in_scope():
-    # `critical` is an inert metadata flag (no effect on the resolved port) — a
-    # change to it must pass the gate (decidable), not fall through to UNKNOWN.
+def test_port_config_critical_alarm_change_requires_operational_coverage():
     cur = {**SWITCH_CUR, "port_config": {"ge-0/0/0": {"usage": "office"}}}
     payload = {**SWITCH_CUR, "port_config": {
         "ge-0/0/0": {"usage": "office", "critical": True}}}
-    assert screen_op("device", cur, payload) is None
+    rejection = screen_op("device", cur, payload)
+    assert rejection is not None
+    assert "critical" in rejection.reasons[0]
 
 
 def test_no_local_overwrite_flip_passes_when_no_local_entry():

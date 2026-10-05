@@ -141,13 +141,13 @@ def test_missing_client_telemetry_added_only_wlan_stays_high_complete_pass():
     assert res.confidence.level is ConfidenceLevel.HIGH
 
 
-def test_zero_clients_on_affected_ssid_stays_high_complete_pass_with_note():
+def test_zero_clients_do_not_certify_service_removal_for_future_clients():
     res = _run(_ir(_wlan()), _ir())
-    assert res.status is Status.PASS
-    assert res.coverage.state is CoverageState.COMPLETE
+    assert res.status is Status.WARN
+    assert res.coverage.state is CoverageState.PARTIAL
     assert res.confidence is not None
     assert res.confidence.level is ConfidenceLevel.HIGH
-    assert res.coverage.notes
+    assert res.findings[0].evidence["reason"] == "future_or_disconnected_clients_unverified"
 
 
 def test_two_changed_wlans_same_ssid_aggregate_to_one_finding():

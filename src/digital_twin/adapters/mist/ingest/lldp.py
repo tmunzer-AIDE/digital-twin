@@ -40,6 +40,7 @@ from digital_twin.ir import (
 )
 
 from .base import IngestContext
+from .identity import ambiguous_lldp_names, unique_name_index
 
 _Json = Mapping[str, Any]
 
@@ -68,7 +69,8 @@ class LldpIngester:
             # masquerade as an authoritative empty graph. AP stats are only
             # required when the site actually contains APs; switch-only sites
             # derive their complete observed topology from port stats alone.
-            earned.add(IRCapability.L2_TOPOLOGY)
+            if not ambiguous_lldp_names(ctx.raw):
+                earned.add(IRCapability.L2_TOPOLOGY)
         if stp_seen:
             earned.add(IRCapability.STP_STATE)
         return frozenset(earned)
@@ -94,11 +96,8 @@ class LldpIngester:
         AP-uplink path already uses. A macless row whose name matches nothing
         is SKIPPED (no stable identity to attach a link or edge-client to).
         """
-        by_name = {
-            str(d["name"]): device_id(str(d["mac"]))
-            for d in ctx.raw.devices
-            if d.get("name") and d.get("mac")
-        }
+        observed = ctx.raw.observation_devices
+        by_name, _ = unique_name_index(observed if observed is not None else ctx.raw.devices)
         out: dict[tuple[str, str], _Json] = {}
         for row in ctx.raw.port_stats:
             if not row.get("port_id"):
@@ -240,7 +239,11 @@ class LldpIngester:
         self, ctx: IngestContext, claims: dict[tuple[str, str], _Json], emitted: set[str]
     ) -> None:
         switches = [d for d in ctx.raw.devices if d.get("type") == "switch" and d.get("mac")]
-        switch_by_name = {str(d.get("name")): device_id(str(d["mac"])) for d in switches}
+        observed = ctx.raw.observation_devices
+        observed_switches = switches if observed is None else [
+            d for d in observed if d.get("type") == "switch" and d.get("mac")
+        ]
+        switch_by_name, _ = unique_name_index(observed_switches)
         switch_macs = {device_id(str(d["mac"])) for d in switches}
         for stat in ctx.raw.device_stats:
             if stat.get("type") != "ap" or not stat.get("mac"):

@@ -125,6 +125,22 @@ def test_low_confidence_finding_floors_review():
     assert decide(_inputs(check_results=(res,)))[0] is Decision.REVIEW
 
 
+def test_uncertain_network_errors_cannot_claim_proven_breakage():
+    for level in (ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM):
+        for severity in (Severity.ERROR, Severity.CRITICAL):
+            result = _result(Status.FAIL, [_finding(severity, level=level)])
+            decision, reasons = decide(_inputs(check_results=(result,)))
+            assert decision is Decision.REVIEW
+            assert any("confidence" in r for r in reasons)
+
+
+def test_proven_breakage_survives_an_independent_uncertain_error():
+    result = _result(Status.FAIL, [
+        _finding(Severity.ERROR), _finding(Severity.ERROR, level=ConfidenceLevel.LOW),
+    ])
+    assert decide(_inputs(check_results=(result,)))[0] is Decision.UNSAFE
+
+
 def test_low_confidence_info_context_does_not_floor():
     # INFO findings are pre-existing CONTEXT (delta-untouched by the check
     # layer's contract) — their uncertainty is about the baseline, not the

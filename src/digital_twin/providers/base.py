@@ -84,6 +84,10 @@ class RawSiteState:
     # observed BGP neighbor stats (GET /sites/{id}/stats/bgp_peers/search) — the
     # GS28 telemetry layer. Trailing + defaulted: absence is "not fetched".
     bgp_neighbors: tuple[JsonObj, ...] = ()
+    # Names/identities at observation time. The simulation binds historical LLDP
+    # to the baseline inventory so a proposed rename cannot rewrite a cable.
+    # None means this state is itself the observation baseline.
+    observation_devices: tuple[JsonObj, ...] | None = None
 
 
 @dataclass(frozen=True)

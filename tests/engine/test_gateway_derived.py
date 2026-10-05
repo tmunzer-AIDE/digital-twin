@@ -222,9 +222,8 @@ def test_sitetemplate_gateway_only_leaf_does_not_taint_switch_gate():
     ), verdict.decision_reasons
 
 
-def test_in_scope_gateway_leaf_not_rejected():
-    """A gateway whose ip_configs.*.ip differs (ip IS in GATEWAY_EFFECTIVE_ALLOWLIST)
-    -> NOT rejected at derived_gate (may be SAFE or have check results)."""
+def test_gateway_ip_edit_with_unmodeled_existing_netmask_requires_coverage():
+    """The IP is admitted, but its unchanged unmodeled mask is a dependency."""
     gateway_proposed = {
         **_GATEWAY_BASE,
         "ip_configs": {"corp": {"ip": "10.0.1.1", "netmask": "255.255.255.0"}},  # ip changed
@@ -244,5 +243,6 @@ def test_in_scope_gateway_leaf_not_rejected():
         run=run,
         state_meta=sm,
     )
-    # Must NOT be a derived_gate rejection
-    assert not any("derived_gate" in r for r in verdict.decision_reasons), verdict.decision_reasons
+    assert verdict.decision is Decision.UNKNOWN
+    assert any("ip_configs.corp.netmask: unsupported dependency" in r
+               for r in verdict.decision_reasons), verdict.decision_reasons

@@ -79,8 +79,10 @@ safe to wire into an autonomous or assistive agent: the worst it can do is be
 
 ## The verdict contract
 
-The single field an agent acts on is `decision`, with strict precedence
-(`UNKNOWN > UNSAFE > REVIEW > SAFE`):
+The single field an agent acts on is `decision`, with strict precedence:
+hard `UNKNOWN` (no usable simulation), then proven `UNSAFE`, then coverage-gap
+`UNKNOWN`, then `REVIEW`, then `SAFE`. A proven failure survives an independent
+coverage gap; both remain visible in the findings.
 
 | Decision | Meaning | Exit code |
 |---|---|---|
@@ -277,9 +279,10 @@ successfully fetched empty population remains distinct from missing data.
 
 ### ChangePlan format
 
-A `ChangeOp.payload` is the **complete new object** (Mist `PUT` semantics — full
-replacement, never a merge-patch). `order` defines a strict total order; ops apply
-against a rolling state. One op per object.
+A `ChangeOp.payload` supplies **root-attribute updates**: supplied roots replace
+their values wholesale, omitted roots persist, and dash markers delete roots.
+`order` defines a strict total order; ops apply against a rolling state. One op
+per object.
 
 **Supported scope (three simulate paths):**
 
@@ -296,6 +299,20 @@ what is modeled (e.g. `networks.*.vlan_id`,
 Anything outside the allowlist — including a `vars` edit that *ripples* into an
 out-of-scope effective field after template compilation — returns `UNKNOWN`,
 never a silently-wrong verdict.
+
+The [Mist attribute review](docs/mist-attribute-review.md) records each pinned
+schema/operation input's disposition and the remaining blind spots. Reviewed
+cosmetic fields include profile descriptions, local port notes, template display
+labels, variable annotations and switch image URLs. These still pass schema,
+companion-change and derived-impact checks; a switch rename can select operational
+template settings and is evaluated separately.
+
+Allowed operational edits also screen relevant existing usage, network and
+protocol dependencies on both sides of the change. Unknown children inside
+atomic arrays remain outside the boundary. Historical LLDP names resolve against
+baseline identities; duplicate names and rename-dependent dynamic profiles cannot
+certify `SAFE`. Reducing WLAN coverage with no observed affected clients requires
+`REVIEW` because future or disconnected clients remain unverified.
 
 ## How it works
 

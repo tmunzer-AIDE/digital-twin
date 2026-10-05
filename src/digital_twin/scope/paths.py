@@ -39,6 +39,9 @@ class LeafDelta:
     kind: str  # "added" | "removed" | "changed"
     before: Any
     after: Any
+    # Display paths are deliberately unchanged. Authorization uses these
+    # original keys so a literal dot never manufactures another nesting level.
+    tokens: tuple[str, ...] = ()
 
 
 def leaf_changes(
@@ -50,8 +53,8 @@ def leaf_changes(
     Same traversal/semantics as changed_leaf_paths (null==absent, descended
     add/removed subtrees, atomic lists); sorted by path for determinism."""
     out: list[LeafDelta] = []
-    _walk(dict(current), dict(new), "", out, ignore_top)
-    return tuple(sorted(out, key=lambda d: d.path))
+    _walk(dict(current), dict(new), (), out, ignore_top)
+    return tuple(sorted(out, key=lambda d: (d.path, d.tokens)))
 
 
 def changed_leaf_paths(
@@ -64,12 +67,15 @@ def changed_leaf_paths(
     return tuple(d.path for d in leaf_changes(current, new, ignore_top))
 
 
-def _walk(cur: Any, new: Any, path: str, out: list[LeafDelta], ignore_top: tuple[str, ...]) -> None:
+def _walk(
+    cur: Any, new: Any, tokens: tuple[str, ...], out: list[LeafDelta], ignore_top: tuple[str, ...]
+) -> None:
     if isinstance(cur, dict) and isinstance(new, dict):
         for key in sorted(set(cur) | set(new)):
-            if not path and key in ignore_top:
+            if not tokens and key in ignore_top:
                 continue
-            sub = f"{path}.{key}" if path else key
+            sub = (*tokens, key)
+            path = ".".join(sub)
             cv, nv = cur.get(key, _MISSING), new.get(key, _MISSING)
             # null == absent (Mist PUT semantics, same canon as compile equivalence)
             if cv is _MISSING and nv is None or nv is _MISSING and cv is None:
@@ -80,24 +86,24 @@ def _walk(cur: Any, new: Any, path: str, out: list[LeafDelta], ignore_top: tuple
                 start = len(out)
                 _walk({}, nv, sub, out, ignore_top)
                 if len(out) == start:
-                    out.append(LeafDelta(sub, "added", None, nv))
+                    out.append(LeafDelta(path, "added", None, nv, sub))
                 continue
             if nv is _MISSING and isinstance(cv, dict):
                 start = len(out)
                 _walk(cv, {}, sub, out, ignore_top)
                 if len(out) == start:
-                    out.append(LeafDelta(sub, "removed", cv, None))
+                    out.append(LeafDelta(path, "removed", cv, None, sub))
                 continue
             # descend into an added/removed SUBTREE so its leaves surface individually
             if cv is _MISSING:
-                out.append(LeafDelta(sub, "added", None, nv))  # scalar/list added
+                out.append(LeafDelta(path, "added", None, nv, sub))  # scalar/list added
             elif nv is _MISSING:
-                out.append(LeafDelta(sub, "removed", cv, None))  # scalar/list removed
+                out.append(LeafDelta(path, "removed", cv, None, sub))  # scalar/list removed
             else:
                 _walk(cv, nv, sub, out, ignore_top)
         return
     if _normalized(cur) != _normalized(new):
-        out.append(LeafDelta(path, "changed", cur, new))
+        out.append(LeafDelta(".".join(tokens), "changed", cur, new, tokens))
 
 
 def _normalized(value: Any) -> Any:
@@ -160,3 +166,27 @@ def matches(path: str, entry: str) -> bool:
 
 def allowed(path: str, allowlist: tuple[str, ...]) -> bool:
     return any(matches(path, entry) for entry in allowlist)
+
+
+def allowed_tokens(tokens: tuple[str, ...], allowlist: tuple[str, ...]) -> bool:
+    """Authorize structural JSON keys, never the ambiguous display path.
+
+    Both '*' and the legacy '**' spelling consume ONE original map key. IPs
+    and dotted names are already single tokens; '**' must not consume subtrees.
+    Only a trailing '.*' retains the explicit whole-subtree contract (vars).
+    """
+    for entry in allowlist:
+        parts = tuple(entry.split("."))
+        if parts[-1] == "*":
+            root = parts[:-1]
+            if len(tokens) >= len(root) and all(
+                pattern in ("*", "**") or pattern == key
+                for pattern, key in zip(root, tokens, strict=False)
+            ):
+                return True
+        elif len(parts) == len(tokens) and all(
+            pattern in ("*", "**") or pattern == key
+            for pattern, key in zip(parts, tokens, strict=True)
+        ):
+            return True
+    return False

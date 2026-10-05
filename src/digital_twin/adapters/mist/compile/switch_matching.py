@@ -44,11 +44,23 @@ def _rule_matches(rule: JsonObj, device: JsonObj) -> bool:
     return True
 
 
-def resolve_switch_matching(switch_matching: JsonObj | None, device: JsonObj) -> JsonObj:
+def supported_match_key(key: str) -> bool:
+    return key in _EXACT or _SLICE.fullmatch(key) is not None
+
+
+def select_switch_matching_rule(
+    switch_matching: JsonObj | None, device: JsonObj
+) -> JsonObj | None:
+    """Return the entire selected rule, including uncompiled settings for gating."""
     sm = switch_matching or {}
     if not sm.get("enable"):
-        return {}
+        return None
     for rule in sm.get("rules") or []:
         if _rule_matches(rule, device):
-            return copy.deepcopy(dict(rule.get("port_config") or {}))
-    return {}
+            return rule  # type: ignore[no-any-return]
+    return None
+
+
+def resolve_switch_matching(switch_matching: JsonObj | None, device: JsonObj) -> JsonObj:
+    rule = select_switch_matching_rule(switch_matching, device)
+    return copy.deepcopy(dict((rule or {}).get("port_config") or {}))

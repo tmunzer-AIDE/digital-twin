@@ -7,7 +7,7 @@ from typing import Any
 from digital_twin.contracts import Rejection
 from digital_twin.ir.entities import device_id
 from digital_twin.scope.allowlist import DEVICE_PROFILE_OVERRIDABLE_LEAVES_BY_ROLE
-from digital_twin.scope.paths import allowed, changed_leaf_paths
+from digital_twin.scope.paths import allowed_tokens, leaf_changes
 
 JsonObj = dict[str, Any]
 
@@ -41,8 +41,8 @@ def device_profile_gaps(
         if not (dev or {}).get("deviceprofile_id") or not (dev or {}).get("mac"):
             continue
         did = device_id(str(dev["mac"]))
-        changed = changed_leaf_paths(baseline_eff.get(did) or {}, proposed_eff.get(did) or {})
-        paths = tuple(path for path in changed if allowed(path, patterns))
+        changed = leaf_changes(baseline_eff.get(did) or {}, proposed_eff.get(did) or {})
+        paths = tuple(d.path for d in changed if allowed_tokens(d.tokens, patterns))
         if paths:
             gaps.append(
                 DeviceProfileGap(

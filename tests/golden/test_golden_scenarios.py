@@ -822,7 +822,7 @@ def _gs25b_target(doc):
     return sw, str(row["port_id"])
 
 
-def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
+def test_gs25b_snooping_with_untrusted_uplink_and_opaque_alarm_setting_is_unknown(tmp_path):
     # enable snooping for vlan2 on the gateway-facing switch AND explicitly
     # distrust the gateway-facing port (allow_dhcpd=false beats trunk):
     # the SRX is vlan 2's only modeled source -> offers drop -> REVIEW.
@@ -841,7 +841,10 @@ def test_gs25b_snooping_with_untrusted_uplink_is_review(tmp_path):
         },
     }
     v = _simulate(doc, plan_for(doc, [op]), tmp_path)
-    assert v.decision is Decision.REVIEW, v.decision_reasons
+    # The forwarding check still identifies the untrusted path. The existing
+    # unmodeled alarm setting on that changed port now blocks a complete proof.
+    assert v.decision is Decision.UNKNOWN, v.decision_reasons
+    assert any("critical: unsupported dependency" in r for r in v.decision_reasons)
     f = next(f for f in v.findings if f.code == "wired.dhcp.snooping.untrusted_path")
     assert f.evidence["vlan"] == 2
 

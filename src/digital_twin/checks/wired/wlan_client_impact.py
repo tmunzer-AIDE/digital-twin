@@ -98,6 +98,15 @@ class WlanClientImpactCheck:
             for w in ir.wlans
         )
 
+    def _scope_preserved(self, ctx: CheckContext, ssid: str, ids: tuple[str, ...]) -> bool:
+        survivors = [w for w in ctx.proposed.ir.wlans if w.enabled is True and w.ssid == ssid]
+        if any(w.apply_to == "site" for w in survivors):
+            return True
+        covered_aps = {ap for w in survivors if w.apply_to == "aps" for ap in w.ap_ids}
+        previous = [w for w in ctx.baseline.ir.wlans if w.id in ids]
+        return all(w.apply_to == "aps" and bool(w.ap_ids) and set(w.ap_ids) <= covered_aps
+                   for w in previous)
+
     def _coverage_lost(
         self, ctx: CheckContext, ssid: str, changed_ids: tuple[str, ...], clients: list[Client]
     ) -> Finding:
@@ -141,7 +150,11 @@ class WlanClientImpactCheck:
             code=f"{self.id}.unverified",
             severity=Severity.WARNING,
             confidence=_HIGH,
-            message="WLAN coverage changed, but active wireless client impact is unverified",
+            message=(
+                "WLAN coverage reduced; future or disconnected client needs are unverified"
+                if reason == "future_or_disconnected_clients_unverified" else
+                "WLAN coverage changed, but active wireless client impact is unverified"
+            ),
             subject=subject,
             affected_entities=tuple(c.id for c in listed_clients),
             caused_by=ctx.delta_index.causes("wlan", changed_ids),
@@ -189,6 +202,13 @@ class WlanClientImpactCheck:
                             clients=unknown_ssid_clients,
                         )
                     )
+                if not findings and not unverified:
+                    reduced = {ssid: ids for ssid, ids in affected.items()
+                               if not self._scope_preserved(ctx, ssid, ids)}
+                    if reduced:
+                        unverified.append(self._unverified(
+                            ctx, reduced, reason="future_or_disconnected_clients_unverified",
+                        ))
 
         coverage = Coverage(
             state=CoverageState.PARTIAL if unverified else CoverageState.COMPLETE,

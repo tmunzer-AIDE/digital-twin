@@ -13457,6 +13457,36 @@
     }
    },
    "type": "object"
+  },
+  "vars_annotations": {
+   "additionalProperties": {
+    "additionalProperties": false,
+    "description": "Annotation for a single var, helping identify its purpose and enabling auto-complete/enumeration in UI",
+    "properties": {
+     "note": {
+      "description": "User-provided note to describe what this var was created for",
+      "type": "string"
+     },
+     "type": {
+      "default": "generic",
+      "description": "Used to identify where to enumerate / auto-complete the field from. Default is `generic` (plain string, no special handling).\n\nenum: `generic`, `mxtunnel_id`",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "description": "Optional annotations for vars defined in this site. Keys match var names; values describe the var purpose and type for UI auto-complete.",
+   "examples": [
+    {
+     "MXTUNNEL_GUEST": {
+      "type": "mxtunnel_id"
+     },
+     "RADIUS_IP1": {
+      "note": "RADIUS server IP address for US East Campus"
+     }
+    }
+   ],
+   "type": "object"
   }
  },
  "type": "object"

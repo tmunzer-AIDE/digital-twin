@@ -20,15 +20,20 @@ from typing import Any
 from digital_twin.adapters.mist.ingest.ports import expand_port_map
 from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
-from digital_twin.scope.allowlist import IGNORED_RAW_FIELDS, RAW_ALLOWLIST
-from digital_twin.scope.paths import allowed, changed_leaf_paths
+from digital_twin.scope.allowlist import RAW_ALLOWLIST, ignored_raw_fields
+from digital_twin.scope.atomic_lists import atomic_list_issues
+from digital_twin.scope.paths import LeafDelta, allowed_tokens, leaf_changes
 
 _STAGE = "field_gate"
 
 
-def changed_paths(current: Mapping[str, Any], payload: Mapping[str, Any]) -> tuple[str, ...]:
+def changed_paths(
+    current: Mapping[str, Any], payload: Mapping[str, Any], *, object_type: str = "device"
+) -> tuple[str, ...]:
     """Dot-paths of every leaf that differs (additions, edits, removals)."""
-    return changed_leaf_paths(current, payload, ignore_top=IGNORED_RAW_FIELDS)
+    return tuple(d.path for d in leaf_changes(
+        current, payload, ignore_top=ignored_raw_fields(object_type)
+    ))
 
 
 def screen_op_split(
@@ -69,21 +74,29 @@ def screen_op_split(
             ),
         ), ()
     allowlist = RAW_ALLOWLIST.get(object_type, ())
-    changed = changed_paths(current, payload)
+    changes = leaf_changes(current, payload, ignore_top=ignored_raw_fields(object_type))
     reasons = [
-        _offense_reason(p, current, payload)
-        for p in changed
-        if not allowed(p, allowlist)
-        and not _known_empty_nac_match(object_type, p, current, payload)
+        _offense_reason(delta)
+        for delta in changes
+        if not allowed_tokens(delta.tokens, allowlist)
+        and not _known_empty_nac_match(object_type, delta.path, current, payload)
     ]
+    for delta in changes:
+        if allowed_tokens(delta.tokens, allowlist):
+            for value in (delta.before, delta.after):
+                reasons.extend(
+                    f"unsupported atomic-list content: {'.'.join(path)} "
+                    "(the allowed parent does not authorize arbitrary children)"
+                    for path in atomic_list_issues(delta.tokens, value)
+                )
     if object_type == "device":
         # no_local_overwrite is in scope, but flipping it activates/deactivates the
         # member's local_port_config entry wholesale — including UNMODELED local
         # leaves the raw diff doesn't surface (the flag changed, not the leaves) and
         # the derived gate can't see (the resolver never projects them). Re-screen
         # those leaves here so a flip over an unmodeled local leaf -> coverage gap.
-        reasons.extend(_local_overwrite_ripple(changed, current, payload, allowlist))
-    gaps = (Rejection(stage=_STAGE, reasons=tuple(reasons)),) if reasons else ()
+        reasons.extend(_local_overwrite_ripple(changes, current, payload, allowlist))
+    gaps = (Rejection(stage=_STAGE, reasons=tuple(dict.fromkeys(reasons))),) if reasons else ()
     return None, gaps
 
 
@@ -121,14 +134,17 @@ def screen_op(
 
 
 def _local_overwrite_ripple(
-    changed: tuple[str, ...],
+    changes: tuple[LeafDelta, ...],
     current: Mapping[str, Any],
     payload: Mapping[str, Any],
     allowlist: tuple[str, ...],
 ) -> list[str]:
     """Members whose no_local_overwrite flipped AND whose effective local_port_config
     entry carries an out-of-scope leaf — the flip silently activates/deactivates it."""
-    if not any(".no_local_overwrite" in p for p in changed):
+    if not any(
+        len(d.tokens) == 3 and d.tokens[0] == "port_config"
+        and d.tokens[2] == "no_local_overwrite" for d in changes
+    ):
         return []
     cur_pc = expand_port_map(current.get("port_config") or {})
     new_pc = expand_port_map(payload.get("port_config") or {})
@@ -142,28 +158,19 @@ def _local_overwrite_ripple(
         if cur_flag == new_flag:
             continue
         entry = new_local.get(member, cur_local.get(member)) or {}
-        for leaf in entry:
-            if not allowed(f"local_port_config.{member}.{leaf}", allowlist):
+        for delta in leaf_changes({}, entry):
+            if not allowed_tokens(("local_port_config", member, *delta.tokens), allowlist):
                 out.append(
                     f"out-of-scope local leaf gated by a no_local_overwrite flip on {member}: "
-                    f"local_port_config.{member}.{leaf} (not in the M1 allowlist)"
+                    f"local_port_config.{member}.{delta.path} (not in the M1 allowlist)"
                 )
     return out
 
 
-def _offense_reason(path: str, current: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+def _offense_reason(delta: LeafDelta) -> str:
     """Distinguish deletions from edits: with Mist update semantics (omitted
     roots persist), an absent path in the proposed object means it was deleted
     — via a '-attribute' marker at root, or by a sent root that drops it."""
-    if _present(current, path) and not _present(payload, path):
-        return f"out-of-scope raw path deleted: {path} (not in the M1 allowlist)"
-    return f"out-of-scope raw path changed: {path} (not in the M1 allowlist)"
-
-
-def _present(obj: Mapping[str, Any], path: str) -> bool:
-    node: Any = obj
-    for segment in path.split("."):
-        if not isinstance(node, Mapping) or segment not in node:
-            return False
-        node = node[segment]
-    return node is not None  # null == absent (the established canon)
+    if delta.kind == "removed":
+        return f"out-of-scope raw path deleted: {delta.path} (not in the M1 allowlist)"
+    return f"out-of-scope raw path changed: {delta.path} (not in the M1 allowlist)"

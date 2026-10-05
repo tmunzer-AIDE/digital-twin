@@ -83,9 +83,12 @@ def test_ospf_allowlist_is_leaf_tightened():
         assert not allowed("ospf_areas.0.networks.corp.interface_type", al)
 
 
-def test_networktemplate_allowlist_equals_site_setting_exactly():
+def test_networktemplate_allowlist_tracks_documented_metadata_context():
     from digital_twin.scope.allowlist import RAW_ALLOWLIST
-    assert RAW_ALLOWLIST["networktemplate"] == RAW_ALLOWLIST["site_setting"]
+    site = set(RAW_ALLOWLIST["site_setting"])
+    template = set(RAW_ALLOWLIST["networktemplate"])
+    assert template - site == {"name"}
+    assert site - template == {"vars_annotations.*.note", "vars_annotations.*.type"}
 
 
 def test_org_object_types_includes_all_fanout_types():
@@ -110,7 +113,7 @@ def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
 
 def test_sitetemplate_raw_allowlist_is_union():
     st = set(RAW_ALLOWLIST["sitetemplate"])
-    assert set(RAW_ALLOWLIST["site_setting"]).issubset(st)        # switch/site surface
+    assert set(RAW_ALLOWLIST["networktemplate"]).issubset(st)  # switch/template surface
     assert "ip_configs.*.ip" in st                                # + gateway leaves
 
 

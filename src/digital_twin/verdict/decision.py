@@ -64,6 +64,7 @@ def decide(inputs: DecisionInputs) -> tuple[Decision, tuple[str, ...]]:
         for f in findings
         if f.category is FindingCategory.NETWORK
         and f.severity in (Severity.ERROR, Severity.CRITICAL)
+        and f.confidence.level is ConfidenceLevel.HIGH
     ]
     if unsafe:
         return Decision.UNSAFE, tuple(unsafe)

@@ -2,8 +2,8 @@
 
 - Unattachable observations are recorded as coverage gaps without failing ingest.
   Valid rows remain available, but incomplete telemetry cannot earn clients.active.
-- A MAC already present (e.g. added by LldpIngester as an unmanaged edge device)
-  is skipped — first writer wins, no duplicate-id crash.
+- Consistent duplicate MAC observations are coalesced. Conflicting attachment,
+  VLAN or SSID identities remain visible as coverage gaps.
 - clients.active is EARNED only if BOTH client fetches succeeded and every
   non-duplicate observation could be attached: an empty site
   with successful fetches legitimately knows "no clients"; a failed fetch must
@@ -49,6 +49,22 @@ class ClientsIngester:
         def gap(reason: str, index: int) -> None:
             gaps.setdefault(reason, []).append(index)
 
+        def admit(client: Client, index: int, domain: str) -> None:
+            if ctx.builder.has_client(client.mac):
+                existing = ctx.builder.get_client(client.mac)
+                conflict = (
+                    (existing.kind, existing.attach_kind, existing.attach_id)
+                    != (client.kind, client.attach_kind, client.attach_id)
+                    or existing.vlan is not None and client.vlan is not None
+                    and existing.vlan != client.vlan
+                    or existing.ssid is not None and client.ssid is not None
+                    and existing.ssid != client.ssid
+                )
+                if conflict:
+                    gap(f"{domain} client telemetry: conflicting duplicate identity", index)
+                return
+            ctx.builder.add_client(client)
+
         for index, w in enumerate(ctx.raw.wireless_clients):
             if not w.get("mac") or not w.get("ap_mac"):
                 gap("wireless client telemetry: missing mac or ap_mac", index)
@@ -57,10 +73,8 @@ class ClientsIngester:
             if not ctx.builder.has_device(ap):
                 gap("wireless client telemetry: unknown AP attachment", index)
                 continue
-            if ctx.builder.has_client(str(w["mac"])):
-                continue  # already represented (e.g. by LLDP)
             vlan = w.get("vlan_id")
-            ctx.builder.add_client(
+            admit(
                 Client(
                     mac=client_id(str(w["mac"])),
                     kind=ClientKind.WIRELESS,
@@ -69,7 +83,7 @@ class ClientsIngester:
                     vlan=int(vlan) if vlan is not None else None,
                     ip=w.get("ip"),
                     ssid=_ssid(w.get("ssid")),
-                )
+                ), index, "wireless",
             )
         for index, w in enumerate(ctx.raw.wired_clients):
             if not w.get("mac") or not w.get("device_mac") or not w.get("port_id"):
@@ -79,10 +93,8 @@ class ClientsIngester:
             if not ctx.builder.has_port(pid):
                 gap("wired client telemetry: unknown port attachment", index)
                 continue
-            if ctx.builder.has_client(str(w["mac"])):
-                continue
             vlan = w.get("vlan")
-            ctx.builder.add_client(
+            admit(
                 Client(
                     mac=client_id(str(w["mac"])),
                     kind=ClientKind.WIRED,
@@ -90,7 +102,7 @@ class ClientsIngester:
                     attach_id=pid,
                     vlan=int(vlan) if vlan is not None else None,
                     ip=w.get("ip"),
-                )
+                ), index, "wired",
             )
         for reason, indexes in gaps.items():
             ctx.builder.mark_client_telemetry_gap(
