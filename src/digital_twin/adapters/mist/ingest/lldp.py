@@ -57,11 +57,12 @@ class LldpIngester:
 
     def ingest(self, ctx: IngestContext) -> frozenset[str]:
         self._ensure_stat_ports(ctx)
-        claims = self._claims(ctx)
+        own_macs = self._own_macs(ctx)
+        claims = self._claims(ctx, own_macs)
         ap_claims = self._ap_claims(ctx)
         stp_seen = self._apply_stp(ctx)
         self._apply_port_uplink(ctx)
-        self._apply_self_loops(ctx)
+        self._apply_self_loops(ctx, own_macs)
         emitted: set[str] = set()
         self._emit_links(ctx, claims, ap_claims, emitted)
         self._emit_ap_uplinks(ctx, claims, ap_claims, emitted)
@@ -89,8 +90,52 @@ class LldpIngester:
             pid = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             self._ensure_port(ctx, pid)
 
+    # -- identity -------------------------------------------------------------
+    def _own_macs(self, ctx: IngestContext) -> dict[str, str]:
+        """MAC -> the ONE device that declares it as its own.
+
+        A Virtual Chassis advertises its chassis MAC over LLDP, not its Mist
+        device MAC (found in the real-org recording), so a VC cabled to itself
+        sees that MAC. A device declares its own MACs as its device MAC, the
+        `chassis_mac` on its port-stat rows and in device_stats, its
+        device_stats `module_stat[].mac` and its `virtual_chassis.members[].mac`.
+        MAC evidence only, never names. A MAC two devices claim (including
+        another device's own MAC) is ambiguous and is never used.
+        """
+        owners: dict[str, set[str]] = {}
+
+        def claim(dev: object, mac: object) -> None:
+            if dev and mac:
+                owners.setdefault(device_id(str(mac)), set()).add(device_id(str(dev)))
+
+        for d in ctx.raw.devices:
+            claim(d.get("mac"), d.get("mac"))
+            vc = d.get("virtual_chassis")
+            members = vc.get("members") if isinstance(vc, Mapping) else None
+            for member in members if isinstance(members, list) else ():
+                if isinstance(member, Mapping):
+                    claim(d.get("mac"), member.get("mac"))
+        for stat in ctx.raw.device_stats:
+            claim(stat.get("mac"), stat.get("chassis_mac"))
+            modules = stat.get("module_stat")
+            for module in modules if isinstance(modules, list) else ():
+                if isinstance(module, Mapping):
+                    claim(stat.get("mac"), module.get("mac"))
+        for row in ctx.raw.port_stats:
+            claim(row.get("mac"), row.get("chassis_mac"))
+        return {mac: next(iter(devs)) for mac, devs in owners.items() if len(devs) == 1}
+
+    def _sees_itself(self, row: _Json, own_macs: dict[str, str]) -> bool:
+        """The row's neighbor_mac is the reporting device's own: its device MAC,
+        or a MAC only that device declares (`_own_macs`)."""
+        me = device_id(str(row["mac"]))
+        seen = device_id(str(row["neighbor_mac"]))
+        return seen == me or own_macs.get(seen) == me
+
     # -- claims ---------------------------------------------------------------
-    def _claims(self, ctx: IngestContext) -> dict[tuple[str, str], _Json]:
+    def _claims(
+        self, ctx: IngestContext, own_macs: dict[str, str]
+    ) -> dict[tuple[str, str], _Json]:
         """(reporter_port_id_global, claimed_neighbor_port_id_global) -> stat row.
 
         Some orgs' port stats carry NO neighbor_mac — only neighbor_system_name
@@ -102,7 +147,8 @@ class LldpIngester:
 
         A row whose neighbor_mac is not a managed device may still name one: a
         Virtual Chassis advertises its chassis MAC, not its Mist device MAC (see
-        `_vouched_peer`).
+        `_vouched_peer`). A row naming its own declared chassis MAC names its
+        own device: a self-loop, whose fact lives on the ports.
         """
         by_name = {
             str(d["name"]): device_id(str(d["mac"]))
@@ -121,7 +167,9 @@ class LldpIngester:
                 continue
             if row.get("neighbor_mac"):
                 neighbor = device_id(str(row["neighbor_mac"]))
-                if not ctx.builder.has_device(neighbor):
+                if self._sees_itself(row, own_macs):
+                    neighbor = device_id(str(row["mac"]))
+                elif not ctx.builder.has_device(neighbor):
                     neighbor = self._vouched_peer(ctx, row, hostnames, rows) or neighbor
             else:
                 named = by_name.get(str(row.get("neighbor_system_name")))
@@ -233,17 +281,19 @@ class LldpIngester:
         return seen
 
     # -- self-loops -------------------------------------------------------------
-    def _apply_self_loops(self, ctx: IngestContext) -> None:
-        """A row claims a physical self-loop iff its neighbor_mac equals its OWN
-        mac (the chassis sees itself via LLDP) — row-level MAC rule ONLY, no
-        name fallback for this fact. `reciprocal` requires BOTH ends to name
-        each other; a one-sided claim never synthesizes the peer's fields."""
+    def _apply_self_loops(self, ctx: IngestContext, own_macs: dict[str, str]) -> None:
+        """A row claims a physical self-loop iff its neighbor_mac is one of its
+        device's OWN MACs (the chassis sees itself via LLDP): its device MAC,
+        or a chassis MAC only it declares, as a Virtual Chassis advertises
+        (`_own_macs`). MAC evidence ONLY, no name fallback for this fact.
+        `reciprocal` requires BOTH ends to name each other; a one-sided claim
+        never synthesizes the peer's fields."""
         claimed: dict[str, str] = {}  # claiming port -> claimed peer port
         for row in ctx.raw.port_stats:
             if not row.get("port_id") or not row.get("neighbor_mac"):
                 continue
-            if device_id(str(row["neighbor_mac"])) != device_id(str(row["mac"])):
-                continue  # canonical ids: the two fields may carry different formats
+            if not self._sees_itself(row, own_macs):
+                continue  # canonical ids: the fields may carry different formats
             src = port_id(device_id(str(row["mac"])), str(row["port_id"]))
             dst = port_id(device_id(str(row["mac"])), str(row.get("neighbor_port_desc") or "?"))
             claimed[src] = dst
