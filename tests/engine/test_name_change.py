@@ -31,10 +31,25 @@ def test_unmodeled_configuration_object_name_change_is_safe_without_fetch():
     )
 
 
-def test_modeled_object_name_change_uses_the_same_authoritative_rule():
-    verdict = simulate_name_change(_plan("device"))
-    assert verdict is not None
-    assert verdict.decision is Decision.SAFE
+@pytest.mark.parametrize("object_type", ["device", "devices", "site_devices"])
+def test_device_rename_is_never_granted_before_fetch(object_type):
+    # switch_matching/gateway_matching `match_name` rules and neighbor dynamic
+    # port profiles select config by device name: SAFE needs the fetched site
+    assert simulate_name_change(_plan(object_type)) is None
+
+
+def test_plan_mixing_device_and_object_renames_is_withheld_before_fetch():
+    plan = _plan("device")
+    plan["ops"].append(
+        {
+            "action": "update",
+            "order": 1,
+            "object_type": "networks",
+            "object_id": "obj-2",
+            "payload": {"name": "corp"},
+        }
+    )
+    assert simulate_name_change(plan) is None
 
 
 @pytest.mark.parametrize(
