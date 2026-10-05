@@ -48,9 +48,10 @@ def check_derived_gaps(
     allowlist: tuple[str, ...] = EFFECTIVE_ALLOWLIST,
 ) -> tuple[DerivedGap, ...]:
     gaps: list[DerivedGap] = []
+    changes = leaf_changes(baseline, proposed)
     offending_tokens = {
         delta.tokens
-        for delta in leaf_changes(baseline, proposed)
+        for delta in changes
         if not allowed_tokens(delta.tokens, allowlist)
     }
     offending = tuple(".".join(tokens) for tokens in sorted(offending_tokens))
@@ -68,8 +69,8 @@ def check_derived_gaps(
                 paths=tuple(offending),
             )
         )
-    dependent = set(dependency_paths(baseline, proposed, allowlist=allowlist))
-    for delta in leaf_changes(baseline, proposed):
+    dependent = set(dependency_paths(baseline, proposed, allowlist=allowlist, changes=changes))
+    for delta in changes:
         if allowed_tokens(delta.tokens, allowlist):
             for value in (delta.before, delta.after):
                 dependent.update(atomic_list_issues(delta.tokens, value))

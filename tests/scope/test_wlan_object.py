@@ -74,13 +74,19 @@ def test_apply_plan_rejects_unsupported_delete_without_crashing():
 def test_field_gate_modeled_leaf_passes_unmodeled_rejects():
     # the engine passes the EFFECTIVE object (effective_update) to screen_op, not the
     # partial payload — a partial dict would read every other root as a deletion.
-    assert screen_op("wlan", _SITE, effective_update(_SITE, {"isolation": True})) is None
-    r = screen_op("wlan", _SITE, effective_update(_SITE, {"hide_ssid": True}))   # unmodeled
+    assert screen_op("wlan", _SITE, effective_update(
+        _SITE, {"isolation": True}, object_type="wlan",
+    )) is None
+    r = screen_op("wlan", _SITE, effective_update(
+        _SITE, {"hide_ssid": True}, object_type="wlan",
+    ))  # unmodeled
     assert isinstance(r, Rejection)
 
 
 def test_inherited_wlan_op_rejected_post_fetch():
-    r = screen_op("wlan", _INHERITED, effective_update(_INHERITED, {"isolation": True}))
+    r = screen_op("wlan", _INHERITED, effective_update(
+        _INHERITED, {"isolation": True}, object_type="wlan",
+    ))
     assert isinstance(r, Rejection) and any("inherited" in x for x in r.reasons)
 
 
@@ -88,7 +94,7 @@ def test_org_wlan_screening_bypasses_site_ownership_check():
     r = screen_op(
         "wlan",
         _INHERITED,
-        effective_update(_INHERITED, {"isolation": True}),
+        effective_update(_INHERITED, {"isolation": True}, object_type="wlan"),
         enforce_wlan_site_ownership=False,
     )
     assert r is None
@@ -98,7 +104,7 @@ def test_org_wlan_assignment_edit_remains_out_of_scope():
     r = screen_op(
         "wlan",
         _INHERITED,
-        effective_update(_INHERITED, {"site_ids": ["s2"]}),
+        effective_update(_INHERITED, {"site_ids": ["s2"]}, object_type="wlan"),
         enforce_wlan_site_ownership=False,
     )
     assert isinstance(r, Rejection)
@@ -114,5 +120,7 @@ def test_auth_root_replace_currently_out_of_scope():
     # make this transition a sharp GS33 REVIEW instead.
     psk = {"id": "w1", "ssid": "corp", "enabled": True, "for_site": True,
            "isolation": False, "auth": {"type": "psk", "psk": "secret"}}
-    r = screen_op("wlan", psk, effective_update(psk, {"auth": {"type": "open"}}))
+    r = screen_op("wlan", psk, effective_update(
+        psk, {"auth": {"type": "open"}}, object_type="wlan",
+    ))
     assert isinstance(r, Rejection) and any("auth.psk" in x for x in r.reasons)

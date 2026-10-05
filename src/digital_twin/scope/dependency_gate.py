@@ -11,10 +11,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from digital_twin.adapters.mist.ingest.ports import expand_port_map, resolve_port_bases
+from digital_twin.adapters.mist.ingest.ports import (
+    _overridable,
+    expand_port_map,
+    resolve_port_bases,
+)
 from digital_twin.scope.allowlist import COSMETIC_RAW_ALLOWLIST
 from digital_twin.scope.atomic_lists import atomic_list_issues
-from digital_twin.scope.paths import allowed_tokens, leaf_changes
+from digital_twin.scope.gateway_addressing import same_static_gateway_subnet
+from digital_twin.scope.paths import LeafDelta, allowed_tokens, leaf_changes
 
 _ROW_ROOTS = frozenset({
     "networks", "port_usages", "dhcpd_config", "other_ip_configs", "ip_configs",
@@ -52,12 +57,28 @@ def _behavior_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bo
     return any(d.tokens[0] not in ("description", "note") for d in leaf_changes(before, after))
 
 
+def _closure(seeds: set[str], graph: Mapping[str, set[str]]) -> set[str]:
+    visited = set(seeds)
+    pending = list(seeds)
+    while pending:
+        for target in graph.get(pending.pop(), ()):
+            if target not in visited:
+                visited.add(target)
+                pending.append(target)
+    return visited
+
+
 def dependency_paths(
-    baseline: Mapping[str, Any], proposed: Mapping[str, Any], *, allowlist: tuple[str, ...]
+    baseline: Mapping[str, Any], proposed: Mapping[str, Any], *, allowlist: tuple[str, ...],
+    changes: tuple[LeafDelta, ...] | None = None,
 ) -> tuple[tuple[str, ...], ...]:
     """Exact opaque paths in the bounded union of relevant before/after fragments."""
-    changes = tuple(d for d in leaf_changes(baseline, proposed)
-                    if not allowed_tokens(d.tokens, _COSMETIC))
+    changes = tuple(
+        d for d in (changes if changes is not None else leaf_changes(baseline, proposed))
+        if not allowed_tokens(d.tokens, _COSMETIC)
+    )
+    if not changes:
+        return ()
     fragments: set[tuple[str, ...]] = set()
     inline_fragments: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
     usages: set[str] = set()
@@ -74,6 +95,16 @@ def dependency_paths(
             fragments.add((root,))
         if root == "ospf_config":
             fragments.add(("ospf_areas",))
+
+    parents: dict[str, set[str]] = {}
+    for config in (baseline, proposed):
+        for name, row in _map(config.get("port_usages")).items():
+            rules = _map(row).get("rules")
+            if isinstance(rules, list):
+                for rule in rules:
+                    if isinstance(rule, Mapping) and isinstance(rule.get("usage"), str):
+                        parents.setdefault(rule["usage"], set()).add(name)
+    affected_usages = _closure(usages, parents)
 
     def depend_on_networks(row: Mapping[str, Any], config: Mapping[str, Any]) -> None:
         for key in _NETWORK_SCALARS:
@@ -101,7 +132,7 @@ def dependency_paths(
                 for config, ports in ((baseline, base_ports), (proposed, prop_ports))]
         selected = {str(row[k]) for _, row in rows
                     for k in ("usage", "dynamic_usage") if row.get(k)}
-        referenced = any(("port_usages", name) in fragments for name in selected)
+        referenced = bool(selected & affected_usages)
         port_changed = _behavior_changed(rows[0][1], rows[1][1])
         # Overwrite fields are applied after selection and are absent from bases.
         port_changed |= any(_behavior_changed(
@@ -112,9 +143,9 @@ def dependency_paths(
         usages.update(selected)
         for index, (config, row) in enumerate(rows):
             depend_on_networks(row, config)
-            pc = expanded[index]["port_config"].get(member, {})
+            pc = expanded[index]["port_config"].get(member)
             for root in _PORT_ROOTS:
-                if root == "local_port_config" and pc.get("no_local_overwrite", True):
+                if root == "local_port_config" and not _overridable(pc):
                     continue
                 inline = expanded[index][root].get(member, {})
                 if inline:
@@ -152,7 +183,17 @@ def dependency_paths(
                               and isinstance(rule.get("usage"), str))
     fragments.update(("networks", name) for name in networks)
 
-    issues: set[tuple[str, ...]] = set()
+    # Missing addressing fields also carry defaults. Sparse IP-only rows must
+    # not evade the static-subnet proof merely by omitting type and netmask.
+    issues: set[tuple[str, ...]] = {
+        (*delta.tokens[:2], key)
+        for delta in changes
+        if len(delta.tokens) == 3 and delta.tokens[0] == "ip_configs"
+        and delta.tokens[-1] == "ip"
+        and not same_static_gateway_subnet(_at(baseline, delta.tokens[:2]),
+                                          _at(proposed, delta.tokens[:2]))
+        for key in ("type", "netmask")
+    }
     values = [(path, _at(config, path)) for path in sorted(fragments)
               for config in (baseline, proposed)]
     for path, value in (*values, *inline_fragments):
@@ -160,6 +201,21 @@ def dependency_paths(
             continue
         for delta in leaf_changes({}, {"fragment": value}):
             tokens = (*path, *delta.tokens[1:])
+            if (len(tokens) == 3 and tokens[0] == "ip_configs"
+                and tokens[-1] in ("type", "netmask")
+                and same_static_gateway_subnet(_at(baseline, tokens[:2]),
+                                               _at(proposed, tokens[:2]))):
+                # The connected prefix remains invariant. Gateway IP changes
+                # still receive an operational REVIEW finding in the pipeline.
+                continue
+            if (len(tokens) == 3 and tokens[0] == "port_config" and tokens[-1] == "critical"
+                and type(expanded[0]["port_config"].get(tokens[1], {}).get("critical")) is bool
+                and expanded[0]["port_config"].get(tokens[1], {}).get("critical")
+                    == expanded[1]["port_config"].get(tokens[1], {}).get("critical")
+                and type(expanded[1]["port_config"].get(tokens[1], {}).get("critical")) is bool):
+                # An unchanged alarm toggle does not select or override the
+                # modeled forwarding configuration. Edits remain denied.
+                continue
             if delta.after == {} and any(
                 len(pattern) == len(tokens) and all(p == "*" or p == t
                     for p, t in zip(pattern, tokens, strict=True)) for pattern in _KNOWN_EMPTY

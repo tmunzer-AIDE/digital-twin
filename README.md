@@ -310,8 +310,12 @@ template settings and is evaluated separately.
 Allowed operational edits also screen relevant existing usage, network and
 protocol dependencies on both sides of the change. Unknown children inside
 atomic arrays remain outside the boundary. Historical LLDP names resolve against
-baseline identities; duplicate names and rename-dependent dynamic profiles cannot
-certify `SAFE`. Reducing WLAN coverage with no observed affected clients requires
+baseline identities; ambiguous names block topology-dependent changes, while
+rename-dependent dynamic profiles expire even when the chassis ID differs from
+the Mist MAC. Unrelated notes remain eligible for `SAFE`. Static gateway address
+moves within an unchanged valid subnet require `REVIEW`; subnet/mode changes and
+opaque interface settings still require coverage. Reducing WLAN coverage with
+no observed affected clients requires
 `REVIEW` because future or disconnected clients remain unverified.
 
 ## How it works

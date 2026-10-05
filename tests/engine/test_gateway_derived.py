@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.engine.pipeline import (
@@ -246,3 +248,50 @@ def test_gateway_ip_edit_with_unmodeled_existing_netmask_requires_coverage():
     assert verdict.decision is Decision.UNKNOWN
     assert any("ip_configs.corp.netmask: unsupported dependency" in r
                for r in verdict.decision_reasons), verdict.decision_reasons
+
+
+def _gateway_address_verdict(before, after):
+    return _simulate_site_state(
+        _raw({**_GATEWAY_BASE, "ip_configs": {"corp": before}}),
+        _raw({**_GATEWAY_BASE, "ip_configs": {"corp": after}}),
+        adapter=MistAdapter(), registry=CheckRegistry([]), run=RunContext(),
+        state_meta=build_state_meta(_meta(), now=datetime.now(UTC)),
+    )
+
+
+@pytest.mark.parametrize("mask", ["255.255.255.0", "/24", "24"])
+def test_static_gateway_ip_change_inside_unchanged_subnet_requires_review(mask):
+    before = {"type": "static", "netmask": mask, "ip": "10.0.0.1"}
+    verdict = _gateway_address_verdict(before, {**before, "ip": "10.0.0.2"})
+    assert verdict.decision is Decision.REVIEW, verdict.decision_reasons
+    assert any(f.code == "scope.gateway_address_change.requires_review" for f in verdict.findings)
+    assert not any(f.code == "coverage.gap" for f in verdict.findings)
+
+
+@pytest.mark.parametrize("changes", [
+    {"ip": "10.0.1.1"},
+    {"netmask": "255.255.254.0", "ip": "10.0.0.2"},
+    {"type": "dhcp", "ip": "10.0.0.2"},
+    {"ip": "10.0.0.0"},
+    {"ip": "10.0.0.255"},
+    {"ip": "not-an-address"},
+])
+def test_gateway_address_dependency_exception_cannot_admit_mode_mask_or_subnet_changes(changes):
+    before = {"type": "static", "netmask": "255.255.255.0", "ip": "10.0.0.1"}
+    verdict = _gateway_address_verdict(before, {**before, **changes})
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+
+
+@pytest.mark.parametrize("row", [
+    {"ip": "10.0.0.1"},
+    {"type": "static", "ip": "10.0.0.1"},
+    {"netmask": "255.255.255.0", "ip": "10.0.0.1"},
+    {"type": "dhcp", "netmask": "255.255.255.0", "ip": "10.0.0.1"},
+    {"type": "static", "netmask": "invalid", "ip": "10.0.0.1"},
+    {"type": "static", "netmask": "0.0.0.255", "ip": "10.0.0.1"},
+    {"type": "static", "netmask": "/24", "ip": "10.0.0.1", "secondary_ips": ["10.0.0.5/24"]},
+    {"type": "static", "netmask": "/24", "ip": "10.0.0.1", "future": True},
+])
+def test_gateway_address_exception_does_not_bypass_implicit_or_opaque_dependencies(row):
+    verdict = _gateway_address_verdict(row, {**row, "ip": "10.0.0.2"})
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons

@@ -319,3 +319,76 @@ def test_rename_keeps_name_only_observed_topology_without_fabricating_an_outage(
                        provider=FakeProvider(raw))
     assert verdict.decision is Decision.SAFE, verdict.decision_reasons
     assert not verdict.ir_diff.touches("link")
+
+
+def test_notes_only_edit_remains_safe_with_ambiguous_name_only_lldp():
+    from tests.scope.test_observation_gate import _linked_raw
+
+    raw = _linked_raw()
+    raw = replace(raw, devices=(*raw.devices,
+                  {**raw.devices[1], "id": "dev-c", "mac": "dd0000000003"}))
+    verdict = simulate(_plan([_op("device", "dev-a", {"notes": "Reviewed label"})]),
+                       provider=FakeProvider(raw))
+    assert verdict.decision is Decision.SAFE, verdict.decision_reasons
+
+
+def test_rename_with_noncanonical_neighbor_chassis_still_requires_unknown():
+    from tests.scope.test_observation_gate import _linked_raw
+
+    raw = _linked_raw(macs=True, dynamic=True)
+    raw = replace(raw, port_stats=({**raw.port_stats[0], "neighbor_mac": "ee0000000009"},
+                                   raw.port_stats[1]))
+    verdict = simulate(_plan([_op("device", "dev-b", {"name": "renamed"})]),
+                       provider=FakeProvider(raw))
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+
+
+def test_forwarding_edit_with_ambiguous_name_only_lldp_still_requires_unknown():
+    from tests.scope.test_observation_gate import _linked_raw
+
+    raw = _linked_raw()
+    raw = replace(raw, devices=(*raw.devices,
+                  {**raw.devices[1], "id": "dev-c", "mac": "dd0000000003"}))
+    verdict = simulate(_plan([_op("device", "dev-a", {
+        "port_config": {"ge-0/0/0-1": {"usage": "office", "poe_disabled": True}},
+    })]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+    assert any("ambiguous LLDP system name" in r for r in verdict.decision_reasons)
+
+
+def test_local_only_port_usage_change_rescreens_existing_opaque_settings():
+    raw = _metadata_raw()
+    device = {**raw.devices[0], "port_config": {}, "local_port_config": {
+        "ge-0/0/0": {"usage": "office", "enable_qos": True},
+    }}
+    setting = deepcopy(raw.setting)
+    setting["port_usages"]["guest"] = deepcopy(setting["port_usages"]["office"])
+    raw = replace(raw, devices=(device,), setting=setting)
+    verdict = simulate(_plan([_op("device", "dev-a", {
+        "local_port_config": {"ge-0/0/0": {"usage": "guest", "enable_qos": True}},
+    })]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+    assert any("local_port_config.ge-0/0/0.enable_qos: unsupported dependency" in r
+               for r in verdict.decision_reasons)
+
+
+def test_dynamic_target_edit_rescreens_the_port_that_selects_it():
+    raw = _metadata_raw()
+    setting = deepcopy(raw.setting)
+    setting["port_usages"]["guest"] = deepcopy(setting["port_usages"]["office"])
+    setting["port_usages"]["dyn"] = {"mode": "dynamic", "rules": [
+        {"src": "lldp_system_name", "equals": "peer", "usage": "office"},
+    ]}
+    device = {**raw.devices[0], "port_config": {"ge-0/0/0": {
+        "usage": "guest", "dynamic_usage": "dyn", "enable_qos": True,
+    }}}
+    raw = replace(raw, setting=setting, devices=(device,), port_stats=({
+        "mac": device["mac"], "port_id": "ge-0/0/0", "up": True,
+        "neighbor_system_name": "peer",
+    },))
+    usages = deepcopy(setting["port_usages"])
+    usages["office"]["poe_disabled"] = True
+    verdict = simulate(_plan([_op(payload={"port_usages": usages})]), provider=FakeProvider(raw))
+    assert verdict.decision is Decision.UNKNOWN, verdict.decision_reasons
+    assert any("port_config.ge-0/0/0.enable_qos: unsupported dependency" in r
+               for r in verdict.decision_reasons)

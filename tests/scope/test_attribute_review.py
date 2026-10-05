@@ -1,6 +1,7 @@
 """The review ledger must not spread cosmetic exceptions across contexts."""
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from tools.review_mist_attributes import build_review, disposition
@@ -91,3 +92,12 @@ def test_committed_review_has_a_disposition_for_every_inventory_occurrence():
         for i, field in enumerate(op["input_fields"]):
             assert field["source_field_index"] == i
             assert field["rationale"] in report["rationales"]
+
+
+def test_committed_attribute_ledger_matches_the_current_permission_registry():
+    inventory_bytes = Path("docs/evidence/mist-oas-coverage-audit.json").read_bytes()
+    expected = build_review(
+        json.loads(inventory_bytes), inventory_digest=sha256(inventory_bytes).hexdigest(),
+    )
+    report = json.loads(Path("docs/evidence/mist-attribute-review.json").read_text())
+    assert report == expected

@@ -151,7 +151,9 @@ def classify_dynamic_port(
         return "unresolved", f"dynamic profile {profile!r} has unsupported rule content"
     if row is None:
         return "unresolved", "no port stats for the dynamically-profiled port"
-    if row.get("_twin_dynamic_observation_stale"):
+    if row.get("_twin_dynamic_observation_stale") and any(
+        rule.get("src") == "lldp_system_name" for rule in rules
+    ):
         return "unresolved", "peer rename invalidates the observed LLDP dynamic-profile result"
     if not row.get("up"):
         if spec.get("reset_default_when") == "none":

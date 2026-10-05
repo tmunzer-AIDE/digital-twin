@@ -61,7 +61,7 @@ def update_conflicts(payload: _Json) -> list[str]:
 
 
 def effective_update(
-    current: _Json, payload: _Json, *, object_type: str = "device"
+    current: _Json, payload: _Json, *, object_type: str
 ) -> dict[str, Any]:
     """The full object Mist would hold after this update (root-level merge +
     dash-marker deletions + identity preservation)."""
@@ -91,7 +91,8 @@ def replace_object(
         )
         return dc_replace(raw, wlans=wlans)
     devices = tuple(
-        effective_update(dev, payload) if str(dev.get("id")) == object_id else dev
+        effective_update(dev, payload, object_type=object_type)
+        if str(dev.get("id")) == object_id else dev
         for dev in raw.devices
     )
     return dc_replace(raw, devices=devices)

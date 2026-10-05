@@ -42,6 +42,7 @@ from digital_twin.analysis.delta_cause import delta_index
 from digital_twin.checks.base import CheckContext
 from digital_twin.checks.registry import CheckRegistry
 from digital_twin.checks.wired import ALL_WIRED_CHECKS
+from digital_twin.checks.wired.topology_coverage import TopologyCoverageCheck
 from digital_twin.contracts import (
     Finding,
     FindingCategory,
@@ -71,8 +72,9 @@ from digital_twin.scope.derived_gate import check_derived_gaps
 from digital_twin.scope.device_profile_gate import device_profile_gaps
 from digital_twin.scope.envelope import parse_change_plan
 from digital_twin.scope.field_gate import changed_paths, screen_op, screen_op_split
+from digital_twin.scope.gateway_addressing import gateway_address_change_findings
 from digital_twin.scope.object_gate import check_objects
-from digital_twin.scope.observation_gate import proposed_observations
+from digital_twin.scope.observation_gate import observation_gaps, proposed_observations
 from digital_twin.scope.switch_matching_gate import switch_matching_gaps
 from digital_twin.verdict.decision import Decision, DecisionInputs
 from digital_twin.verdict.org_verdict import OrgChange, OrgVerdict, decide_org
@@ -268,9 +270,7 @@ def _simulate_site_state(
             )
     with trace.stage("ingest.proposed"):
         try:
-            proposed_raw, observation_gaps = proposed_observations(
-                baseline_raw, proposed_raw, baseline.device_effective
-            )
+            proposed_raw = proposed_observations(baseline_raw, proposed_raw)
             proposed = adapter.ingest(proposed_raw)
         except Exception as e:  # noqa: BLE001
             return _unknown(
@@ -289,6 +289,9 @@ def _simulate_site_state(
                 adapter_findings=adapter_findings, run=run, state_meta=state_meta,
             )
     with trace.stage("dynamic_gate"):
+        adapter_findings += gateway_address_change_findings(
+            baseline.gateway_effective, proposed.gateway_effective
+        )
         adapter_findings += unresolved_dynamic_findings(
             baseline.device_effective, proposed.device_effective, proposed_raw.port_stats
         )
@@ -300,8 +303,12 @@ def _simulate_site_state(
         )
     coverage_gaps: list[Rejection] = list(extra_coverage_gaps)
     coverage_gap_findings: list[Finding] = list(extra_coverage_findings)
+    diff = diff_ir(baseline.ir, proposed.ir)
     with trace.stage("derived_gate"):
-        for observation_gap in observation_gaps:
+        for observation_gap in observation_gaps(
+            baseline_raw, proposed_raw, baseline.device_effective, proposed.device_effective,
+            requires_topology=TopologyCoverageCheck().applies_to(diff),
+        ):
             _record_coverage_gap(
                 coverage_gaps, coverage_gap_findings, observation_gap,
                 artifact="observations", subject=ObjectRef("site", baseline_raw.scope.site_id),
@@ -364,7 +371,6 @@ def _simulate_site_state(
                     dhcp_row=gateway_gap.dhcp_row,
                 )
     with trace.stage("checks"):
-        diff = diff_ir(baseline.ir, proposed.ir)
         results = registry.run_all(
             CheckContext(
                 baseline=AnalysisContext(baseline.ir),

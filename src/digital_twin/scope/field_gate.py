@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from digital_twin.adapters.mist.ingest.ports import expand_port_map
+from digital_twin.adapters.mist.ingest.ports import _overridable, expand_port_map
 from digital_twin.adapters.mist.ingest.wlan import wlan_is_inherited
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import RAW_ALLOWLIST, ignored_raw_fields
@@ -28,7 +28,7 @@ _STAGE = "field_gate"
 
 
 def changed_paths(
-    current: Mapping[str, Any], payload: Mapping[str, Any], *, object_type: str = "device"
+    current: Mapping[str, Any], payload: Mapping[str, Any], *, object_type: str
 ) -> tuple[str, ...]:
     """Dot-paths of every leaf that differs (additions, edits, removals)."""
     return tuple(d.path for d in leaf_changes(
@@ -152,9 +152,8 @@ def _local_overwrite_ripple(
     new_local = expand_port_map(payload.get("local_port_config") or {})
     out: list[str] = []
     for member in cur_pc.keys() | new_pc.keys():
-        # default true (OAS): local discarded unless explicitly allowed
-        cur_flag = (cur_pc.get(member) or {}).get("no_local_overwrite", True)
-        new_flag = (new_pc.get(member) or {}).get("no_local_overwrite", True)
+        cur_flag = _overridable(cur_pc.get(member))
+        new_flag = _overridable(new_pc.get(member))
         if cur_flag == new_flag:
             continue
         entry = new_local.get(member, cur_local.get(member)) or {}

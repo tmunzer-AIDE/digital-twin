@@ -5,8 +5,17 @@ import pytest
 
 from digital_twin.adapters.mist.adapter import MistAdapter
 from digital_twin.ir import IRCapability, diff_ir
-from digital_twin.scope.observation_gate import proposed_observations
+from digital_twin.scope.observation_gate import observation_gaps, proposed_observations
 from tests.engine.test_pipeline import AP, _raw
+
+
+def _observe(baseline, proposed, baseline_effective, *, requires_topology=True):
+    bound = proposed_observations(baseline, proposed)
+    outcome = MistAdapter().ingest(bound)
+    return bound, observation_gaps(
+        baseline, bound, baseline_effective, outcome.device_effective,
+        requires_topology=requires_topology,
+    )
 
 
 def _linked_raw(*, macs=False, dynamic=False):
@@ -39,7 +48,7 @@ def test_name_only_lldp_stays_bound_to_baseline_identity_after_peer_rename():
     adapter = MistAdapter()
     baseline = adapter.ingest(raw)
     proposed = replace(raw, devices=(raw.devices[0], {**raw.devices[1], "name": "renamed"}))
-    bound, gaps = proposed_observations(raw, proposed, baseline.device_effective)
+    bound, gaps = _observe(raw, proposed, baseline.device_effective)
     outcome = adapter.ingest(bound)
     assert not gaps
     assert baseline.ir is not None and outcome.ir is not None
@@ -57,7 +66,7 @@ def test_ap_name_only_lldp_uplink_stays_bound_to_baseline_switch_identity():
     adapter = MistAdapter()
     baseline = adapter.ingest(raw)
     proposed = replace(raw, devices=({**raw.devices[0], "name": "renamed"}, AP))
-    bound, gaps = proposed_observations(raw, proposed, baseline.device_effective)
+    bound, gaps = _observe(raw, proposed, baseline.device_effective)
     outcome = adapter.ingest(bound)
     assert not gaps
     assert baseline.ir is not None and outcome.ir is not None
@@ -71,7 +80,7 @@ def test_dynamic_observation_is_invalidated_after_peer_rename(macs):
     adapter = MistAdapter()
     baseline = adapter.ingest(raw)
     proposed = replace(raw, devices=(raw.devices[0], {**raw.devices[1], "name": "renamed"}))
-    bound, gaps = proposed_observations(raw, proposed, baseline.device_effective)
+    bound, gaps = _observe(raw, proposed, baseline.device_effective)
     assert gaps and any("proposed runtime profile is unverified" in r
                         for g in gaps for r in g.reasons)
     assert bound.port_stats[0]["_twin_dynamic_observation_stale"] is True
@@ -92,7 +101,7 @@ def test_duplicate_name_is_never_a_last_wins_lldp_identity():
     # link to the last device named sw-b is allowed.
     assert not any("dd0000000003" in link.a_port or "dd0000000003" in link.b_port
                    for link in outcome.ir.links)
-    _, gaps = proposed_observations(raw, raw, outcome.device_effective)
+    _, gaps = _observe(raw, raw, outcome.device_effective)
     assert any("ambiguous LLDP system name" in r for g in gaps for r in g.reasons)
 
 
@@ -103,7 +112,7 @@ def test_duplicate_names_do_not_taint_mac_based_observations():
     outcome = MistAdapter().ingest(raw)
     assert outcome.ir is not None
     assert IRCapability.L2_TOPOLOGY in outcome.ir.capabilities
-    _, gaps = proposed_observations(raw, raw, outcome.device_effective)
+    _, gaps = _observe(raw, raw, outcome.device_effective)
     assert not gaps
 
 
@@ -111,7 +120,7 @@ def test_rename_to_an_existing_managed_name_requires_coverage():
     raw = _linked_raw(macs=True)
     baseline = MistAdapter().ingest(raw)
     proposed = replace(raw, devices=(raw.devices[0], {**raw.devices[1], "name": "sw-a"}))
-    _, gaps = proposed_observations(raw, proposed, baseline.device_effective)
+    _, gaps = _observe(raw, proposed, baseline.device_effective)
     assert any("rename creates an ambiguous managed device name" in r
                for g in gaps for r in g.reasons)
 
@@ -124,6 +133,26 @@ def test_peer_rename_invalidates_a_newly_activated_dynamic_profile_too():
     baseline_raw = replace(raw, devices=(baseline_device, raw.devices[1]))
     baseline = MistAdapter().ingest(baseline_raw)
     proposed = replace(raw, devices=(raw.devices[0], {**raw.devices[1], "name": "renamed"}))
-    bound, gaps = proposed_observations(baseline_raw, proposed, baseline.device_effective)
+    bound, gaps = _observe(baseline_raw, proposed, baseline.device_effective)
     assert gaps
     assert bound.port_stats[0]["_twin_dynamic_observation_stale"] is True
+
+
+def test_peer_rename_expires_name_rules_when_chassis_mac_is_not_the_mist_mac():
+    raw = _linked_raw(macs=True, dynamic=True)
+    row = {**raw.port_stats[0], "neighbor_mac": "ee0000000009"}
+    raw = replace(raw, port_stats=(row, raw.port_stats[1]))
+    baseline = MistAdapter().ingest(raw)
+    proposed = replace(raw, devices=(raw.devices[0], {**raw.devices[1], "name": "renamed"}))
+    bound, gaps = _observe(raw, proposed, baseline.device_effective)
+    assert gaps
+    assert bound.port_stats[0]["_twin_dynamic_observation_stale"] is True
+
+
+def test_ambiguous_lldp_identity_is_only_a_gap_for_topology_dependent_changes():
+    raw = _linked_raw()
+    raw = replace(raw, devices=(*raw.devices,
+                  {**raw.devices[1], "id": "dev-c", "mac": "dd0000000003"}))
+    outcome = MistAdapter().ingest(raw)
+    _, gaps = _observe(raw, raw, outcome.device_effective, requires_topology=False)
+    assert not gaps

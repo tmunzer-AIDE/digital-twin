@@ -6,7 +6,7 @@ from digital_twin.scope.allowlist import (
     RAW_ALLOWLIST,
     SUPPORTED_OBJECT_TYPES,
 )
-from digital_twin.scope.paths import allowed
+from digital_twin.scope.paths import allowed_tokens
 
 
 def test_supported_object_types_are_the_m1_pair():
@@ -38,10 +38,14 @@ def test_raw_allowlist_is_leaf_tightened_to_modeled_fields():
 def test_l1_attrs_in_scope():
     dev = set(RAW_ALLOWLIST["device"])
     for leaf in (
-        "port_config.*.speed", "port_config.*.duplex", "port_config.*.disable_autoneg",
-        "local_port_config.*.speed", "local_port_config.*.duplex",
+        "port_config.*.speed",
+        "port_config.*.duplex",
+        "port_config.*.disable_autoneg",
+        "local_port_config.*.speed",
+        "local_port_config.*.duplex",
         "local_port_config.*.disable_autoneg",
-        "port_config_overwrite.*.speed", "port_config_overwrite.*.duplex",
+        "port_config_overwrite.*.speed",
+        "port_config_overwrite.*.duplex",
     ):
         assert leaf in dev, leaf
 
@@ -74,17 +78,18 @@ def test_server_metadata_is_ignored_in_raw_diffs():
 def test_ospf_allowlist_is_leaf_tightened():
     for al in (RAW_ALLOWLIST["device"], RAW_ALLOWLIST["site_setting"], EFFECTIVE_ALLOWLIST):
         # modeled + acted-on leaves are in scope
-        assert allowed("ospf_config.enabled", al)
-        assert allowed("ospf_areas.0.networks.corp.passive", al)
-        assert allowed("ospf_areas.0.networks.corp.metric", al)  # GS27-T1
+        assert allowed_tokens(("ospf_config", "enabled"), al)
+        assert allowed_tokens(("ospf_areas", "0", "networks", "corp", "passive"), al)
+        assert allowed_tokens(("ospf_areas", "0", "networks", "corp", "metric"), al)  # GS27-T1
         # unmodeled leaves stay DENIED (deny prevents false-SAFE)
-        assert not allowed("ospf_areas.0.type", al)
-        assert not allowed("ospf_areas.0.networks.corp.auth_password", al)
-        assert not allowed("ospf_areas.0.networks.corp.interface_type", al)
+        assert not allowed_tokens(("ospf_areas", "0", "type"), al)
+        assert not allowed_tokens(("ospf_areas", "0", "networks", "corp", "auth_password"), al)
+        assert not allowed_tokens(("ospf_areas", "0", "networks", "corp", "interface_type"), al)
 
 
 def test_networktemplate_allowlist_tracks_documented_metadata_context():
     from digital_twin.scope.allowlist import RAW_ALLOWLIST
+
     site = set(RAW_ALLOWLIST["site_setting"])
     template = set(RAW_ALLOWLIST["networktemplate"])
     assert template - site == {"name"}
@@ -105,16 +110,16 @@ def test_org_object_types_includes_all_fanout_types():
 def test_gatewaytemplate_raw_allowlist_is_modeled_leaves_only():
     gw = set(RAW_ALLOWLIST["gatewaytemplate"])
     assert "port_config.*.disabled" in gw and "ip_configs.*.ip" in gw
-    assert "vars.*" in gw                        # a vars edit must pass the RAW field
+    assert "vars.*" in gw  # a vars edit must pass the RAW field
     # gate so the derived gate can evaluate the ripple (mirrors site_setting)
-    assert "port_config.*.usage" not in gw      # inert -> excluded
-    assert "networks.*.vlan_id" not in gw       # org-namespace -> excluded
+    assert "port_config.*.usage" not in gw  # inert -> excluded
+    assert "networks.*.vlan_id" not in gw  # org-namespace -> excluded
 
 
 def test_sitetemplate_raw_allowlist_is_union():
     st = set(RAW_ALLOWLIST["sitetemplate"])
     assert set(RAW_ALLOWLIST["networktemplate"]).issubset(st)  # switch/template surface
-    assert "ip_configs.*.ip" in st                                # + gateway leaves
+    assert "ip_configs.*.ip" in st  # + gateway leaves
 
 
 def test_gateway_effective_allowlist_includes_disabled_ip_and_vars():
@@ -149,8 +154,13 @@ def test_local_dynamic_usage_still_out_of_scope():
 
 def test_auth_usage_leaves_in_scope_everywhere_usages_live():
     from digital_twin.scope.allowlist import EFFECTIVE_ALLOWLIST
-    for coll in (RAW_ALLOWLIST["site_setting"], RAW_ALLOWLIST["device"],
-                 RAW_ALLOWLIST["networktemplate"], EFFECTIVE_ALLOWLIST):
+
+    for coll in (
+        RAW_ALLOWLIST["site_setting"],
+        RAW_ALLOWLIST["device"],
+        RAW_ALLOWLIST["networktemplate"],
+        EFFECTIVE_ALLOWLIST,
+    ):
         s = set(coll)
         for a in ("port_auth", "enable_mac_auth", "dynamic_vlan_networks", "guest_network"):
             assert f"port_usages.*.{a}" in s, a
@@ -234,9 +244,14 @@ def test_spec1_reviewed_leaves_are_in_all_three_gates():
     )
 
     reviewed = (
-        "bypass_auth_when_server_down_for_voip", "poe_priority", "community_vlan_id",
-        "inter_isolation_network_link", "stp_required", "stp_no_root_port",
-        "stp_p2p", "use_vstp",
+        "bypass_auth_when_server_down_for_voip",
+        "poe_priority",
+        "community_vlan_id",
+        "inter_isolation_network_link",
+        "stp_required",
+        "stp_no_root_port",
+        "stp_p2p",
+        "use_vstp",
     )
     for attr in reviewed:
         leaf = f"port_usages.*.{attr}"
@@ -253,6 +268,11 @@ def test_spec1_usage_only_leaves_are_not_dead_allowed_on_local():
     # the maps documented")
     from digital_twin.scope.allowlist import RAW_ALLOWLIST
 
-    for attr in ("bypass_auth_when_server_down_for_voip", "poe_priority",
-                 "community_vlan_id", "inter_isolation_network_link", "stp_required"):
+    for attr in (
+        "bypass_auth_when_server_down_for_voip",
+        "poe_priority",
+        "community_vlan_id",
+        "inter_isolation_network_link",
+        "stp_required",
+    ):
         assert f"local_port_config.*.{attr}" not in RAW_ALLOWLIST["device"], attr

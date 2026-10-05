@@ -4,7 +4,7 @@ from pathlib import Path
 from digital_twin.contracts import Rejection
 from digital_twin.scope.allowlist import RAW_ALLOWLIST
 from digital_twin.scope.field_gate import changed_paths, screen_op
-from digital_twin.scope.paths import allowed
+from digital_twin.scope.paths import allowed_tokens
 
 _DEVICE_SWITCH_OAS_PATH = (
     Path(__file__).parents[2]
@@ -30,19 +30,21 @@ SWITCH_CUR = {
 
 def test_changed_paths_detects_leaf_edit():
     payload = {**CURRENT, "networks": {"corp": {"vlan_id": 10}, "voice": {"vlan_id": 31}}}
-    assert changed_paths(CURRENT, payload) == ("networks.voice.vlan_id",)
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == (
+        "networks.voice.vlan_id",
+    )
 
 
 def test_changed_paths_descends_removed_subtree_to_leaves():
     # full-object replacement: a key present in current but absent from payload
     # IS a change — surfaced at LEAF granularity
     payload = {k: v for k, v in CURRENT.items() if k != "dhcpd_config"}
-    assert changed_paths(CURRENT, payload) == ("dhcpd_config.corp.ip",)
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == ("dhcpd_config.corp.ip",)
 
 
 def test_changed_paths_ignores_server_metadata():
     payload = {k: v for k, v in CURRENT.items() if k not in ("id", "modified_time")}
-    assert changed_paths(CURRENT, payload) == ()
+    assert changed_paths(CURRENT, payload, object_type="site_setting") == ()
 
 
 def test_in_scope_change_passes():
@@ -198,7 +200,7 @@ def test_no_local_overwrite_flip_over_an_unmodeled_local_leaf_still_gaps():
     device_allowlist = RAW_ALLOWLIST["device"]
     unmodeled = sorted(
         leaf for leaf in local_props
-        if not allowed(f"local_port_config.ge-0/0/0.{leaf}", device_allowlist)
+        if not allowed_tokens(("local_port_config", "ge-0/0/0", leaf), device_allowlist)
     )
     if not unmodeled:
         assert unmodeled == []

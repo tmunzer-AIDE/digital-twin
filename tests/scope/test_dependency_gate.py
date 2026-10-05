@@ -166,3 +166,50 @@ def test_dynamic_rule_description_is_an_inert_supported_child():
     rule = {"src": "lldp_system_name", "equals": "peer", "usage": "office",
             "description": "Peer annotation"}
     assert evaluate_rules([rule], {"lldp_system_name": "peer"}).kind == "matched"
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_local_only_port_and_explicitly_overridable_port_share_dependency_screen(protected):
+    before = _config()
+    before["port_config"] = ({"ge-0/0/0": {"no_local_overwrite": False}} if protected else {})
+    before["local_port_config"] = {"ge-0/0/0": {"usage": "office", "enable_qos": True}}
+    after = deepcopy(before)
+    after["local_port_config"]["ge-0/0/0"]["usage"] = "guest"
+    rejection = check_derived(before, after)
+    assert rejection is not None
+    assert any("local_port_config.ge-0/0/0.enable_qos" in r for r in rejection.reasons)
+
+
+@pytest.mark.parametrize("chain", [False, True])
+def test_edited_dynamic_target_rescreens_the_ports_that_can_select_it(chain):
+    before = _config()
+    before["port_usages"]["dyn"] = {
+        "mode": "dynamic", "rules": [{"src": "lldp_system_name", "equals": "peer",
+                                      "usage": "office"}],
+    }
+    if chain:
+        before["port_usages"]["outer"] = {
+            "mode": "dynamic", "rules": [{"src": "lldp_system_name", "equals": "peer",
+                                          "usage": "dyn"}],
+        }
+    before["port_config"]["ge-0/0/0"] = {
+        "usage": "guest", "dynamic_usage": "outer" if chain else "dyn", "future": True,
+    }
+    after = deepcopy(before)
+    after["port_usages"]["office"]["poe_disabled"] = True
+    rejection = check_derived(before, after)
+    assert rejection is not None
+    assert any("port_config.ge-0/0/0.future" in r for r in rejection.reasons)
+
+
+@pytest.mark.parametrize("port_key", ["ge-0/0/0", "ge-0/0/0-1"])
+def test_unchanged_alarm_flag_is_not_a_forwarding_dependency(port_key):
+    before = _config()
+    before["port_config"] = {port_key: {"usage": "office", "critical": True}}
+    after = deepcopy(before)
+    after["port_config"][port_key]["poe_disabled"] = True
+    assert check_derived(before, after) is None
+    changed_alarm = deepcopy(before)
+    changed_alarm["port_config"][port_key]["critical"] = False
+    assert check_derived(before, changed_alarm) is not None
+    assert screen_op("device", before, changed_alarm) is not None
