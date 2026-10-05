@@ -597,3 +597,28 @@ def test_empty_device_inventory_does_not_invent_effective_override():
     raw = replace(_raw(), devices=())
     v = _run(raw, _op({"radius_config": {"auth_servers": [_server()]}}))
     assert not any(f.code.startswith("scope.effective_noop") for f in v.findings)
+
+
+def _with_default(setting=None):
+    setting = deepcopy(SITE_EFFECTIVE) if setting is None else setting
+    return {**setting, "extra_routes": {"0.0.0.0/0": {"via": "10.0.10.254"}}}
+
+
+def test_adding_a_layer2_only_network_to_a_trunk_is_not_a_control_plane_change():
+    # the live DNT-NTR shape: a new network with no subnet, appended to a trunk
+    # profile. The switch's routed traffic (SVI on corp) keeps the same path.
+    setting = _with_default()
+    networks = {**setting["networks"], "test": {"vlan_id": 199}}
+    usages = deepcopy(setting["port_usages"])
+    usages["uplink"]["networks"] = ["voice", "test"]
+    v = _run(_raw(setting=setting), _op({"networks": networks, "port_usages": usages}))
+    assert not _result(v, CONTROL).findings, _result(v, CONTROL).findings
+
+
+def test_removing_a_network_from_a_trunk_still_warns_control_plane():
+    setting = _with_default()
+    usages = deepcopy(setting["port_usages"])
+    usages["uplink"]["networks"] = []
+    v = _run(_raw(setting=setting), _op({"port_usages": usages}))
+    f = next(f for f in _result(v, CONTROL).findings if f.code.endswith(".path_dependency_changed"))
+    assert f.evidence["ports"] == [f"{DID}:ge-0/0/47"]
