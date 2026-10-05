@@ -521,3 +521,114 @@ def test_no_same_device_link_is_minted():
         link for link in ir.links
         if link.a_port.split(":")[0] == link.b_port.split(":")[0]
     ]
+
+
+# A Virtual Chassis advertises its chassis MAC over LLDP, not its Mist device MAC
+# (found in the real-org recording: VC 889c85171f8d is seen as 405d0ff2c0f4, one
+# of its member MACs). Its neighbours' rows carry an UNMANAGED neighbor_mac next
+# to the VC's own system name, and used to mint a phantom edge-device client on
+# the inter-switch uplink.
+B_CHASSIS = "bb00000000ff"
+_A_SEES_B_CHASSIS = {
+    "mac": "aa0000000001",
+    "port_id": "ge-0/0/47",
+    "up": True,
+    "neighbor_mac": B_CHASSIS,
+    "neighbor_system_name": SWITCH_B["name"],
+    "neighbor_port_desc": "ge-0/0/47",
+}
+_B_SEES_A = {
+    "mac": "bb0000000002",
+    "port_id": "ge-0/0/47",
+    "up": True,
+    "neighbor_mac": "aa0000000001",
+    "neighbor_port_desc": "ge-0/0/47",
+}
+
+
+# the hostnames the switches RUN (device stats): what LLDP advertises
+_RUNNING = (
+    {"mac": "aa0000000001", "type": "switch", "hostname": SWITCH_A["name"]},
+    {"mac": "bb0000000002", "type": "switch", "hostname": SWITCH_B["name"]},
+)
+
+
+def _edge_ports(ir, mac):
+    return [c.attach_id for c in ir.clients if c.mac == mac]
+
+
+def test_chassis_mac_neighbor_named_and_claimed_back_is_that_switch():
+    ir = _ctx([_A_SEES_B_CHASSIS, _B_SEES_A], _RUNNING).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == []  # no phantom client on the uplink
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
+    assert ir.links[0].meta.confidence.level is ConfidenceLevel.HIGH  # both ends agree
+
+
+def test_two_chassis_macs_naming_each_other_are_one_two_sided_link():
+    # VC <-> VC: each side reports the other's chassis MAC and name
+    b_sees_a_chassis = {
+        **_B_SEES_A, "neighbor_mac": "aa00000000ff", "neighbor_system_name": SWITCH_A["name"],
+    }
+    ir = _ctx([_A_SEES_B_CHASSIS, b_sees_a_chassis], _RUNNING).builder.build()
+    assert ir.clients == ()
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
+    assert ir.links[0].meta.confidence.level is ConfidenceLevel.HIGH
+
+
+def test_chassis_mac_neighbor_without_reverse_claim_stays_an_edge_client():
+    # the name alone proves nothing: a non-Mist box can share a managed switch's
+    # hostname. Unconfirmed -> unchanged (edge client, the impact stays visible)
+    ir = _ctx([_A_SEES_B_CHASSIS], _RUNNING).builder.build()
+    assert ir.links == ()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+@pytest.mark.parametrize(
+    "reverse",
+    [
+        {**_B_SEES_A, "neighbor_port_desc": "ge-0/0/10"},
+        {**_B_SEES_A, "neighbor_mac": "cc0000000001"},
+        {**_B_SEES_A, "port_id": "ge-0/0/46"},
+    ],
+    ids=["names_another_port", "names_another_device", "from_another_port"],
+)
+def test_reverse_claim_must_name_the_reporting_port_back(reverse):
+    ir = _ctx([_A_SEES_B_CHASSIS, reverse], _RUNNING).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+def test_ambiguous_system_name_never_resolves_a_chassis_mac():
+    # two managed switches answer to "sw-b" and both claim the port back: any
+    # rule that picks one of them (first or last name wins) would resolve
+    twin = {**SWITCH_B, "mac": "bb0000000003", "id": "dev-b2"}
+    stats = [_A_SEES_B_CHASSIS, _B_SEES_A, {**_B_SEES_A, "mac": "bb0000000003"}]
+    running = (*_RUNNING, {"mac": "bb0000000003", "type": "switch", "hostname": "sw-b"})
+    ir = _ctx(stats, running, extra_devices=(twin,)).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == ["aa0000000001:ge-0/0/47"]
+
+
+def test_chassis_mac_naming_the_reporting_switch_itself_stays_an_edge_client():
+    # a VC cabled to itself: both rows carry its chassis MAC and its own name.
+    # Resolving would erase the port's only neighbour fact (a same-device tie is
+    # never a Link, and the self-loop rule is MAC-only), so leave it as it was
+    a_chassis = "aa00000000ff"
+    stats = [
+        {"mac": "aa0000000001", "port_id": "ge-0/0/8", "up": True, "neighbor_mac": a_chassis,
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/9"},
+        {"mac": "aa0000000001", "port_id": "ge-0/0/9", "up": True, "neighbor_mac": a_chassis,
+         "neighbor_system_name": SWITCH_A["name"], "neighbor_port_desc": "ge-0/0/8"},
+    ]
+    ir = _ctx(stats, _RUNNING).builder.build()
+    assert _edge_ports(ir, a_chassis) == ["aa0000000001:ge-0/0/8"]
+
+
+def test_a_renamed_switch_still_resolves_by_the_hostname_it_runs():
+    # a plan renaming a switch edits its CONFIG name; the recorded LLDP rows and
+    # device stats still carry the hostname it runs. Matching config names made
+    # the proposed state re-mint the phantom, so a pure rename of the VC looked
+    # like a wired client appearing (golden GS5)
+    running = ({**_RUNNING[0]}, {**_RUNNING[1], "hostname": "sw-b-before-rename"})
+    stats = [{**_A_SEES_B_CHASSIS, "neighbor_system_name": "sw-b-before-rename"}, _B_SEES_A]
+    ir = _ctx(stats, running).builder.build()
+    assert _edge_ports(ir, B_CHASSIS) == []
+    assert [lk.id for lk in ir.links] == ["aa0000000001:ge-0/0/47__bb0000000002:ge-0/0/47"]
